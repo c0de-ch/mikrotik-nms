@@ -106,6 +106,66 @@ kubectl apply -f deploy/k8s/
 
 Edit `secret.yaml` to supply your `JWT_SECRET` and any other credentials before applying. Adjust the `Ingress` resource to match your domain and TLS setup.
 
+## Deploy on MikroTik CHR (Container)
+
+RouterOS v7.4+ supports running Docker containers directly on MikroTik devices via the **Container** package. This lets you run MikroTik NMS on a CHR or hardware router with enough resources.
+
+### Prerequisites
+
+- RouterOS v7.4+ with the **container** package installed
+- At least 256MB RAM and 512MB disk free
+- A VETH interface and bridge for container networking
+
+### Setup
+
+1. **Enable containers** on the router:
+
+```routeros
+/system/device-mode/update container=yes
+# Router will reboot
+```
+
+2. **Create a VETH interface and bridge** for the container:
+
+```routeros
+/interface/veth/add name=veth-nms address=172.17.0.2/24 gateway=172.17.0.1
+/interface/bridge/add name=br-containers
+/ip/address/add address=172.17.0.1/24 interface=br-containers
+/interface/bridge/port/add bridge=br-containers interface=veth-nms
+```
+
+3. **Add environment variables**:
+
+```routeros
+/container/envs/add name=nms-env key=MIKROTIK_NMS_JWT_SECRET value="your-secret-here"
+/container/envs/add name=nms-env key=MIKROTIK_NMS_DB_PATH value="/data/mikrotik-nms.db"
+/container/envs/add name=nms-env key=MIKROTIK_NMS_LISTEN value=":8080"
+```
+
+4. **Create mount point** for persistent data:
+
+```routeros
+/container/mounts/add name=nms-data src=disk1/nms-data dst=/data
+```
+
+5. **Pull and create the backend container**:
+
+```routeros
+/container/add remote-image=ghcr.io/c0de-ch/mikrotik-nms/backend:latest \
+  interface=veth-nms envlist=nms-env mounts=nms-data \
+  hostname=mikrotik-nms start-on-boot=yes
+```
+
+6. **Start the container**:
+
+```routeros
+/container/start 0
+```
+
+The backend API will be available at `http://172.17.0.2:8080`. You can add NAT rules or a web proxy to expose it on the router's management IP.
+
+> **Note:** For the frontend, it's recommended to run it on a separate host or VM since Node.js containers need more resources. Alternatively, build the frontend as a static export and serve it from any web server.
+
 ## Tech Stack
 
 | Layer | Technology |

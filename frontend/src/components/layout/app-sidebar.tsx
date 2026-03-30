@@ -97,6 +97,9 @@ export function AppSidebar() {
             </SidebarMenuButton>
           </SidebarMenuItem>
         </SidebarMenu>
+        <div className="px-3 pb-2 text-[10px] text-sidebar-foreground/40 font-mono">
+          v{process.env.NEXT_PUBLIC_APP_VERSION || "dev"} · {process.env.NEXT_PUBLIC_COMMIT_SHA?.slice(0, 7) || "local"}
+        </div>
       </SidebarFooter>
     </Sidebar>
   );
