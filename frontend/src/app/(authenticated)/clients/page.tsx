@@ -59,16 +59,32 @@ export default function ClientsPage() {
   const [tab, setTab] = useState("all");
   const [selected, setSelected] = useState<NetworkClient | null>(null);
   const [scanTime, setScanTime] = useState<string | null>(null);
+  const [scanTimeout, setScanTimeout] = useState(30);
+  const [scanLimit, setScanLimit] = useState(0);
+  const [scanTotal, setScanTotal] = useState(0);
+  const [wasLimited, setWasLimited] = useState(false);
+  const [wasTimedOut, setWasTimedOut] = useState(false);
 
   const handleScan = async () => {
     if (!token) return;
     setScanning(true);
+    setWasLimited(false);
+    setWasTimedOut(false);
     try {
-      const results = await api.clients.scan(token);
-      setClients(results);
+      const result = await api.clients.scan(token, {
+        limit: scanLimit > 0 ? scanLimit : undefined,
+        timeout: scanTimeout,
+      });
+      setClients(result.clients);
+      setScanTotal(result.total);
+      setWasLimited(result.limited);
+      setWasTimedOut(result.timed_out);
       setScanned(true);
       setScanTime(new Date().toLocaleTimeString());
-      toast.success(`Found ${results.length} client(s) on the network`);
+      let msg = `Found ${result.total} client(s)`;
+      if (result.limited) msg += ` (showing ${result.clients.length})`;
+      if (result.timed_out) msg += " (scan timed out)";
+      toast.success(msg);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Scan failed");
     } finally {
@@ -127,15 +143,51 @@ export default function ClientsPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold">Network Clients</h1>
-          {scanTime && <p className="text-xs text-muted-foreground">Last scan: {scanTime}</p>}
-        </div>
-        <Button onClick={handleScan} disabled={scanning} size="lg">
-          {scanning ? (
-            <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Scanning all devices...</>
-          ) : (
-            <><Radar className="mr-2 h-4 w-4" />Scan Network</>
+          {scanTime && (
+            <p className="text-xs text-muted-foreground">
+              Last scan: {scanTime} — {scanTotal} total
+              {wasLimited && ` (limited to ${clients.length})`}
+              {wasTimedOut && " (timed out)"}
+            </p>
           )}
-        </Button>
+        </div>
+        <div className="flex items-end gap-3">
+          <div className="space-y-1">
+            <label className="text-xs text-muted-foreground">Timeout (s)</label>
+            <select
+              className="flex h-8 w-20 rounded-md border bg-transparent px-2 text-sm"
+              value={scanTimeout}
+              onChange={(e) => setScanTimeout(Number(e.target.value))}
+            >
+              <option value={10}>10s</option>
+              <option value={30}>30s</option>
+              <option value={60}>60s</option>
+              <option value={120}>120s</option>
+            </select>
+          </div>
+          <div className="space-y-1">
+            <label className="text-xs text-muted-foreground">Max clients</label>
+            <select
+              className="flex h-8 w-24 rounded-md border bg-transparent px-2 text-sm"
+              value={scanLimit}
+              onChange={(e) => setScanLimit(Number(e.target.value))}
+            >
+              <option value={0}>All</option>
+              <option value={50}>50</option>
+              <option value={100}>100</option>
+              <option value={250}>250</option>
+              <option value={500}>500</option>
+              <option value={1000}>1000</option>
+            </select>
+          </div>
+          <Button onClick={handleScan} disabled={scanning}>
+            {scanning ? (
+              <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Scanning ({scanTimeout}s)...</>
+            ) : (
+              <><Radar className="mr-2 h-4 w-4" />Scan Network</>
+            )}
+          </Button>
+        </div>
       </div>
 
       {scanned && (
