@@ -79,7 +79,13 @@ export const api = {
 
   // Network clients
   clients: {
-    scan: (token: string) => apiFetch<NetworkClient[]>("/clients", { token }),
+    scan: (token: string, options?: { limit?: number; timeout?: number }) => {
+      const params = new URLSearchParams();
+      if (options?.limit) params.set("limit", String(options.limit));
+      if (options?.timeout) params.set("timeout", String(options.timeout));
+      const qs = params.toString() ? `?${params}` : "";
+      return apiFetch<ClientScanResult>(`/clients${qs}`, { token });
+    },
   },
 
   // Devices
@@ -295,6 +301,13 @@ export interface DNSServer {
   port: number;
   enabled: boolean;
   created_at: string;
+}
+
+export interface ClientScanResult {
+  clients: NetworkClient[];
+  total: number;
+  limited: boolean;
+  timed_out: boolean;
 }
 
 export interface NetworkClient {
