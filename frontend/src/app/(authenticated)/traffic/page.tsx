@@ -55,14 +55,34 @@ export default function TrafficPage() {
   const [chartData, setChartData] = useState<ChartPoint[]>([]);
   const [deviceTraffic, setDeviceTraffic] = useState<Map<string, DeviceTraffic>>(new Map());
 
+  const [trafficSummary, setTrafficSummary] = useState<Map<string, { rx: number; tx: number }>>(new Map());
+  const [loadingTraffic, setLoadingTraffic] = useState(false);
+
   useEffect(() => {
     if (!token) return;
     api.devices.list(token).then(setDevices).catch(console.error);
   }, [token]);
 
+  // Load traffic summary when on overview
+  const loadTrafficSummary = useCallback(() => {
+    if (!token || viewLevel !== "overview") return;
+    setLoadingTraffic(true);
+    api.traffic.summary(token).then((data) => {
+      const map = new Map<string, { rx: number; tx: number }>();
+      for (const d of data) map.set(d.device_id, { rx: d.rx_bps, tx: d.tx_bps });
+      setTrafficSummary(map);
+    }).catch(console.error).finally(() => setLoadingTraffic(false));
+  }, [token, viewLevel]);
+
+  useEffect(() => {
+    loadTrafficSummary();
+    if (viewLevel !== "overview") return;
+    const interval = setInterval(loadTrafficSummary, 15000);
+    return () => clearInterval(interval);
+  }, [loadTrafficSummary, viewLevel]);
+
   // Live device health updates for traffic overview
   useWebSocket("device.health", useCallback((data: unknown) => {
-    // We use this to keep device status updated
     const update = data as { device_id: string; status: string };
     setDevices((prev) =>
       prev.map((d) => d.id === update.device_id ? { ...d, status: update.status as Device["status"] } : d)
@@ -201,30 +221,49 @@ export default function TrafficPage() {
       {/* LEVEL 1: All devices overview */}
       {viewLevel === "overview" && (
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {onlineDevices.map((device) => (
-            <Card
-              key={device.id}
-              className="cursor-pointer hover:ring-2 hover:ring-primary/30 transition-all"
-              onClick={() => navigateToDevice(device)}
-            >
-              <CardContent className="pt-4">
-                <div className="flex items-center justify-between mb-2">
-                  <div>
-                    <p className="font-medium">{device.identity || device.address}</p>
-                    <p className="text-xs text-muted-foreground">{device.address} · {device.board}</p>
+          {onlineDevices.map((device) => {
+            const traffic = trafficSummary.get(device.id);
+            return (
+              <Card
+                key={device.id}
+                className="cursor-pointer hover:ring-2 hover:ring-primary/30 transition-all"
+                onClick={() => navigateToDevice(device)}
+              >
+                <CardContent className="pt-4">
+                  <div className="flex items-center justify-between mb-2">
+                    <div>
+                      <p className="font-medium">{device.identity || device.address}</p>
+                      <p className="text-xs text-muted-foreground">{device.address} · {device.board}</p>
+                    </div>
+                    <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0" />
                   </div>
-                  <div className="flex items-center gap-2">
-                    <Badge variant="default">online</Badge>
-                    <ChevronRight className="h-4 w-4 text-muted-foreground" />
-                  </div>
-                </div>
-                <div className="grid grid-cols-2 gap-2 text-xs text-muted-foreground">
-                  <div>CPU: {device.cpu_load ?? "—"}%</div>
-                  <div>Mem: {device.memory_used && device.memory_total ? Math.round((device.memory_used / device.memory_total) * 100) : "—"}%</div>
-                </div>
-              </CardContent>
-            </Card>
-          ))}
+                  {traffic ? (
+                    <div className="space-y-1.5 mt-3">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="text-muted-foreground">RX</span>
+                        <span className="font-medium" style={{ color: "#5A9CB5" }}>{formatBps(traffic.rx)}</span>
+                      </div>
+                      <div className="h-1.5 rounded-full bg-muted overflow-hidden">
+                        <div className="h-full rounded-full transition-all" style={{ width: `${Math.min(100, Math.max(2, traffic.rx / 1e6))}%`, backgroundColor: "#5A9CB5" }} />
+                      </div>
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="text-muted-foreground">TX</span>
+                        <span className="font-medium" style={{ color: "#FAAC68" }}>{formatBps(traffic.tx)}</span>
+                      </div>
+                      <div className="h-1.5 rounded-full bg-muted overflow-hidden">
+                        <div className="h-full rounded-full transition-all" style={{ width: `${Math.min(100, Math.max(2, traffic.tx / 1e6))}%`, backgroundColor: "#FAAC68" }} />
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-2 gap-2 text-xs text-muted-foreground mt-3">
+                      <div>CPU: {device.cpu_load ?? "—"}%</div>
+                      <div>Mem: {device.memory_used && device.memory_total ? Math.round((device.memory_used / device.memory_total) * 100) : "—"}%</div>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            );
+          })}
           {onlineDevices.length === 0 && (
             <Card className="col-span-full">
               <CardContent className="py-12 text-center text-muted-foreground">

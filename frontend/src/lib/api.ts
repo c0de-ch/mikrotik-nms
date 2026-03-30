@@ -77,6 +77,11 @@ export const api = {
       apiFetch<DiscoveredDevice[]>(`/discovery?duration=${duration}`, { token }),
   },
 
+  // Network clients
+  clients: {
+    scan: (token: string) => apiFetch<NetworkClient[]>("/clients", { token }),
+  },
+
   // Devices
   devices: {
     list: (token: string) => apiFetch<Device[]>("/devices", { token }),
@@ -100,6 +105,8 @@ export const api = {
 
   // Traffic
   traffic: {
+    summary: (token: string) =>
+      apiFetch<{ device_id: string; rx_bps: number; tx_bps: number }[]>("/traffic/summary", { token }),
     get: (token: string, deviceId: string, iface: string, from?: string, to?: string) => {
       const params = new URLSearchParams();
       if (from) params.set("from", from);
@@ -116,6 +123,18 @@ export const api = {
       apiFetch("/firmware/check", { method: "POST", token }),
     upgrade: (token: string, deviceIds: string[], reboot: boolean) =>
       apiFetch("/firmware/upgrade", {
+        method: "POST",
+        token,
+        body: JSON.stringify({ device_ids: deviceIds, reboot }),
+      }),
+    setChannel: (token: string, deviceIds: string[], channel: string) =>
+      apiFetch<{ changed: number; errors: string[] }>("/firmware/channel", {
+        method: "POST",
+        token,
+        body: JSON.stringify({ device_ids: deviceIds, channel }),
+      }),
+    upgradeRouterboard: (token: string, deviceIds: string[], reboot: boolean) =>
+      apiFetch<{ upgraded: number; errors: string[] }>("/firmware/routerboard", {
         method: "POST",
         token,
         body: JSON.stringify({ device_ids: deviceIds, reboot }),
@@ -254,6 +273,25 @@ export interface User {
   username: string;
   role: string;
   created_at: string;
+}
+
+export interface NetworkClient {
+  mac_address: string;
+  ip_address: string;
+  host_name: string;
+  interface: string;
+  source: "arp" | "dhcp" | "wifi";
+  device_id: string;
+  device_name: string;
+  ap?: string;
+  ssid?: string;
+  band?: string;
+  channel?: string;
+  frequency?: string;
+  signal?: string;
+  tx_rate?: string;
+  rx_rate?: string;
+  uptime?: string;
 }
 
 export interface DiscoveredDevice {

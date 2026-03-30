@@ -10,6 +10,7 @@ import {
   Download,
   Users,
   LogOut,
+  Monitor,
 } from "lucide-react";
 import {
   Sidebar,
@@ -29,6 +30,7 @@ const navItems = [
   { title: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
   { title: "Topology", href: "/topology", icon: Network },
   { title: "Devices", href: "/devices", icon: Server },
+  { title: "Clients", href: "/clients", icon: Monitor },
   { title: "Traffic", href: "/traffic", icon: Activity },
   { title: "Firmware", href: "/firmware", icon: Download },
 ];

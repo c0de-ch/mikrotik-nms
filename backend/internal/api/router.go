@@ -62,6 +62,7 @@ func NewRouter(db *sql.DB, hub *ws.Hub, cfg *config.Config, pool *routeros.Pool)
 
 			// Discovery
 			r.Get("/discovery", s.handleDiscoverDevices)
+			r.Get("/clients", s.handleScanClients)
 
 			// Devices
 			r.Get("/devices", s.handleListDevices)
@@ -81,6 +82,7 @@ func NewRouter(db *sql.DB, hub *ws.Hub, cfg *config.Config, pool *routeros.Pool)
 			r.Get("/topology", s.handleGetTopology)
 
 			// Traffic
+			r.Get("/traffic/summary", s.handleGetTrafficSummary)
 			r.Get("/traffic/{deviceId}/{iface}", s.handleGetTraffic)
 
 			// Firmware
@@ -90,6 +92,8 @@ func NewRouter(db *sql.DB, hub *ws.Hub, cfg *config.Config, pool *routeros.Pool)
 				r.Use(auth.RequireRole("admin"))
 				r.Post("/firmware/check", s.handleCheckFirmware)
 				r.Post("/firmware/upgrade", s.handleUpgradeFirmware)
+				r.Post("/firmware/channel", s.handleSetChannel)
+				r.Post("/firmware/routerboard", s.handleUpgradeRouterboard)
 			})
 
 			// WebSocket

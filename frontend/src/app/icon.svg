@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="none">
+  <rect width="32" height="32" rx="6" fill="#1a2332"/>
+  <!-- Center node -->
+  <circle cx="16" cy="16" r="4" fill="#5A9CB5"/>
+  <!-- Top node -->
+  <circle cx="16" cy="5" r="2.5" fill="#FACE68"/>
+  <line x1="16" y1="7.5" x2="16" y2="12" stroke="#FACE68" stroke-width="1.5" stroke-linecap="round"/>
+  <!-- Bottom-left node -->
+  <circle cx="6.5" cy="25" r="2.5" fill="#FAAC68"/>
+  <line x1="8.2" y1="23.5" x2="13" y2="18.5" stroke="#FAAC68" stroke-width="1.5" stroke-linecap="round"/>
+  <!-- Bottom-right node -->
+  <circle cx="25.5" cy="25" r="2.5" fill="#FA6868"/>
+  <line x1="23.8" y1="23.5" x2="19" y2="18.5" stroke="#FA6868" stroke-width="1.5" stroke-linecap="round"/>
+  <!-- Left node -->
+  <circle cx="5" cy="14" r="2.5" fill="#5A9CB5" opacity="0.7"/>
+  <line x1="7.5" y1="14.5" x2="12" y2="15.5" stroke="#5A9CB5" stroke-width="1.5" stroke-linecap="round" opacity="0.7"/>
+  <!-- Right node -->
+  <circle cx="27" cy="14" r="2.5" fill="#5A9CB5" opacity="0.7"/>
+  <line x1="24.5" y1="14.5" x2="20" y2="15.5" stroke="#5A9CB5" stroke-width="1.5" stroke-linecap="round" opacity="0.7"/>
+</svg>

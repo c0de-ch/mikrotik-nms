@@ -101,6 +101,84 @@ func (s *Server) handleGetUpgradeJob(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) handleSetChannel(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		DeviceIDs []string `json:"device_ids"`
+		Channel   string   `json:"channel"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Channel != "stable" && req.Channel != "long-term" && req.Channel != "testing" && req.Channel != "development" {
+		writeError(w, http.StatusBadRequest, "channel must be stable, long-term, testing, or development")
+		return
+	}
+	if len(req.DeviceIDs) == 0 {
+		writeError(w, http.StatusBadRequest, "device_ids required")
+		return
+	}
+
+	var changed int
+	var errors []string
+	for _, deviceID := range req.DeviceIDs {
+		client := s.pool.Get(deviceID)
+		if client == nil {
+			errors = append(errors, deviceID+": not connected")
+			continue
+		}
+		if err := routeros.SetChannel(client, req.Channel); err != nil {
+			errors = append(errors, deviceID+": "+err.Error())
+			continue
+		}
+		changed++
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"changed": changed,
+		"errors":  errors,
+	})
+}
+
+func (s *Server) handleUpgradeRouterboard(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		DeviceIDs []string `json:"device_ids"`
+		Reboot    bool     `json:"reboot"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if len(req.DeviceIDs) == 0 {
+		writeError(w, http.StatusBadRequest, "device_ids required")
+		return
+	}
+
+	var upgraded int
+	var errors []string
+	for _, deviceID := range req.DeviceIDs {
+		client := s.pool.Get(deviceID)
+		if client == nil {
+			errors = append(errors, deviceID+": not connected")
+			continue
+		}
+		if err := routeros.UpgradeRouterboard(client); err != nil {
+			errors = append(errors, deviceID+": "+err.Error())
+			continue
+		}
+		upgraded++
+		if req.Reboot {
+			_ = routeros.TriggerReboot(client)
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"upgraded": upgraded,
+		"reboot":   req.Reboot,
+		"errors":   errors,
+	})
+}
+
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }

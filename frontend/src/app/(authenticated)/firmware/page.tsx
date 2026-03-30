@@ -1,7 +1,13 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import { RefreshCw, Download } from "lucide-react";
+import { RefreshCw, Download, Cpu, ArrowRightLeft } from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+} from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -41,7 +47,10 @@ export default function FirmwarePage() {
   useEffect(() => { load(); }, [load]);
 
   const deviceMap = new Map(devices.map((d) => [d.id, d]));
+  const firmwareMap = new Map(firmware.map((f) => [f.device_id, f]));
   const isAdmin = user?.role === "admin";
+  // Show all online devices, merging firmware data
+  const allDeviceRows = devices.filter((d) => d.status === "online" || firmwareMap.has(d.id));
 
   const toggleSelect = (id: string) => {
     setSelected((prev) => {
@@ -74,6 +83,30 @@ export default function FirmwarePage() {
       setUpgradeProgress(new Map());
       toast.success(`Upgrade job started for ${selected.size} device(s)`);
       setSelected(new Set());
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed");
+    }
+  };
+
+  const handleSetChannel = async (channel: string) => {
+    if (!token || selected.size === 0) return;
+    try {
+      const result = await api.firmware.setChannel(token, Array.from(selected), channel);
+      toast.success(`Channel set to "${channel}" on ${result.changed} device(s)`);
+      if (result.errors?.length) toast.error(`Errors: ${result.errors.join(", ")}`, { duration: 8000 });
+      setTimeout(load, 2000);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed");
+    }
+  };
+
+  const handleUpgradeRouterboard = async () => {
+    if (!token || selected.size === 0) return;
+    try {
+      const result = await api.firmware.upgradeRouterboard(token, Array.from(selected), true);
+      toast.success(`RouterBoard firmware upgrade triggered on ${result.upgraded} device(s). Devices will reboot.`);
+      if (result.errors?.length) toast.error(`Errors: ${result.errors.join(", ")}`, { duration: 8000 });
+      setTimeout(load, 5000);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed");
     }
@@ -113,9 +146,28 @@ export default function FirmwarePage() {
                 <RefreshCw className={`mr-2 h-4 w-4 ${checking ? "animate-spin" : ""}`} />
                 Check All
               </Button>
+
+              <DropdownMenu>
+                <DropdownMenuTrigger render={<Button variant="outline" disabled={selected.size === 0} />}>
+                  <ArrowRightLeft className="mr-2 h-4 w-4" />
+                  Channel ({selected.size})
+                </DropdownMenuTrigger>
+                <DropdownMenuContent>
+                  <DropdownMenuItem onClick={() => handleSetChannel("stable")}>Stable</DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => handleSetChannel("long-term")}>Long-term</DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => handleSetChannel("testing")}>Testing</DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => handleSetChannel("development")}>Development</DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+
+              <Button variant="outline" onClick={handleUpgradeRouterboard} disabled={selected.size === 0 || !!activeJobId}>
+                <Cpu className="mr-2 h-4 w-4" />
+                RouterBoard FW ({selected.size})
+              </Button>
+
               <Button onClick={handleUpgrade} disabled={selected.size === 0 || !!activeJobId}>
                 <Download className="mr-2 h-4 w-4" />
-                {activeJobId ? "Upgrading..." : `Upgrade Selected (${selected.size})`}
+                {activeJobId ? "Upgrading..." : `Upgrade RouterOS (${selected.size})`}
               </Button>
             </>
           )}
@@ -136,55 +188,62 @@ export default function FirmwarePage() {
           </TableRow>
         </TableHeader>
         <TableBody>
-          {firmware.map((fw) => {
-            const device = deviceMap.get(fw.device_id);
-            const progress = getDeviceUpgradeStatus(fw.device_id);
+          {allDeviceRows.map((device) => {
+            const fw = firmwareMap.get(device.id);
+            const progress = getDeviceUpgradeStatus(device.id);
             return (
-              <TableRow key={fw.id}>
+              <TableRow key={device.id}>
                 {isAdmin && (
                   <TableCell>
                     <input
                       type="checkbox"
-                      checked={selected.has(fw.device_id)}
-                      onChange={() => toggleSelect(fw.device_id)}
-                      disabled={!fw.update_available || !!activeJobId}
+                      checked={selected.has(device.id)}
+                      onChange={() => toggleSelect(device.id)}
+                      disabled={!!activeJobId}
                     />
                   </TableCell>
                 )}
-                <TableCell className="font-medium">{device?.identity || device?.address || fw.device_id}</TableCell>
-                <TableCell>{fw.channel}</TableCell>
-                <TableCell>{fw.installed_version}</TableCell>
-                <TableCell>{fw.latest_version || "—"}</TableCell>
+                <TableCell className="font-medium">
+                  {device.identity || device.address}
+                  <span className="ml-2 text-xs text-muted-foreground">{device.board}</span>
+                </TableCell>
+                <TableCell>{fw?.channel || "—"}</TableCell>
+                <TableCell>{fw?.installed_version || device.ros_version || "—"}</TableCell>
+                <TableCell>{fw?.latest_version || "—"}</TableCell>
                 <TableCell>
                   {progress ? (
                     <Badge variant={progress.status === "failed" ? "destructive" : progress.status === "completed" ? "secondary" : "default"}>
                       {progress.status}
                     </Badge>
-                  ) : fw.update_available ? (
+                  ) : device.status !== "online" ? (
+                    <Badge variant="secondary">offline</Badge>
+                  ) : fw?.update_available ? (
                     <Badge variant="default">Update Available</Badge>
-                  ) : (
+                  ) : fw ? (
                     <Badge variant="secondary">Up to date</Badge>
+                  ) : (
+                    <Badge variant="secondary">Checking...</Badge>
                   )}
                   {progress?.message && (
                     <p className="mt-1 text-xs text-muted-foreground">{progress.message}</p>
                   )}
                 </TableCell>
                 <TableCell className="text-xs">
-                  {fw.routerboard_current || "—"}
-                  {fw.routerboard_upgrade && fw.routerboard_upgrade !== fw.routerboard_current && (
+                  {fw?.routerboard_current || "—"}
+                  {fw?.routerboard_upgrade && fw.routerboard_upgrade !== fw.routerboard_current && (
                     <span className="text-yellow-600"> → {fw.routerboard_upgrade}</span>
                   )}
                 </TableCell>
                 <TableCell className="text-xs text-muted-foreground">
-                  {fw.last_checked ? new Date(fw.last_checked).toLocaleString() : "—"}
+                  {fw?.last_checked ? new Date(fw.last_checked).toLocaleString() : "—"}
                 </TableCell>
               </TableRow>
             );
           })}
-          {firmware.length === 0 && (
+          {allDeviceRows.length === 0 && (
             <TableRow>
               <TableCell colSpan={isAdmin ? 8 : 7} className="py-8 text-center text-muted-foreground">
-                No firmware data — add devices and wait for the firmware check
+                No devices — add devices first
               </TableCell>
             </TableRow>
           )}

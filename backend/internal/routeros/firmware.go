@@ -38,6 +38,18 @@ func CheckFirmwareUpdate(client *ros.Client) (*FirmwareInfo, error) {
 	}, nil
 }
 
+// SetChannel changes the update channel (stable, long-term, testing, development).
+func SetChannel(client *ros.Client, channel string) error {
+	_, err := RunCommand(client, "/system/package/update/set", "=channel="+channel)
+	return err
+}
+
+// UpgradeRouterboard upgrades the RouterBoard firmware to match the installed RouterOS version.
+func UpgradeRouterboard(client *ros.Client) error {
+	_, err := RunCommand(client, "/system/routerboard/upgrade")
+	return err
+}
+
 func GetRouterboardInfo(client *ros.Client) (*RouterboardInfo, error) {
 	reply, err := RunCommand(client, "/system/routerboard/print")
 	if err != nil {
