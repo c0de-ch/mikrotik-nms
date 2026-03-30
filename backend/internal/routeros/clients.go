@@ -111,10 +111,18 @@ func getWifiRegistrations(client *ros.Client) ([]WifiRegistration, error) {
 	var regs []WifiRegistration
 	for _, re := range reply.Re {
 		m := GetSentenceMap(re)
+		// AP field: try "ap", "ap-name", "radio-name"; interface often contains the CAP radio name
+		ap := m["ap"]
+		if ap == "" {
+			ap = m["ap-name"]
+		}
+		if ap == "" {
+			ap = m["radio-name"]
+		}
 		regs = append(regs, WifiRegistration{
 			Interface: m["interface"],
 			MAC:       m["mac-address"],
-			AP:        m["ap"],
+			AP:        ap,
 			SSID:      m["ssid"],
 			Band:      m["band"],
 			Channel:   m["channel"],

@@ -1,6 +1,8 @@
 package routeros
 
 import (
+	"time"
+
 	ros "github.com/go-routeros/routeros"
 )
 
@@ -17,25 +19,45 @@ type RouterboardInfo struct {
 }
 
 func CheckFirmwareUpdate(client *ros.Client) (*FirmwareInfo, error) {
-	// First trigger a check
+	// Trigger async check
 	_, _ = RunCommand(client, "/system/package/update/check-for-updates")
 
-	reply, err := RunCommand(client, "/system/package/update/print")
-	if err != nil {
-		return nil, err
+	// Wait for RouterOS to fetch update info (it contacts MikroTik servers)
+	var info *FirmwareInfo
+	for range 5 {
+		time.Sleep(2 * time.Second)
+
+		reply, err := RunCommand(client, "/system/package/update/print")
+		if err != nil {
+			return nil, err
+		}
+		if len(reply.Re) == 0 {
+			continue
+		}
+
+		m := GetSentenceMap(reply.Re[0])
+		info = &FirmwareInfo{
+			Channel:          m["channel"],
+			InstalledVersion: m["installed-version"],
+			LatestVersion:    m["latest-version"],
+			UpdateAvailable:  m["status"] == "New version is available",
+		}
+
+		// If we got latest-version, the check is done
+		if info.LatestVersion != "" {
+			return info, nil
+		}
+		// If status says "checking", keep waiting
+		if m["status"] == "checking..." || m["status"] == "" {
+			continue
+		}
+		break
 	}
 
-	if len(reply.Re) == 0 {
+	if info == nil {
 		return &FirmwareInfo{}, nil
 	}
-
-	m := GetSentenceMap(reply.Re[0])
-	return &FirmwareInfo{
-		Channel:          m["channel"],
-		InstalledVersion: m["installed-version"],
-		LatestVersion:    m["latest-version"],
-		UpdateAvailable:  m["status"] == "New version is available",
-	}, nil
+	return info, nil
 }
 
 // SetChannel changes the update channel (stable, long-term, testing, development).
