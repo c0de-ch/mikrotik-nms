@@ -11,6 +11,7 @@ import {
   Users,
   LogOut,
   Monitor,
+  Settings,
 } from "lucide-react";
 import {
   Sidebar,
@@ -37,6 +38,7 @@ const navItems = [
 
 const adminItems = [
   { title: "Users", href: "/users", icon: Users },
+  { title: "Settings", href: "/settings", icon: Settings },
 ];
 
 export function AppSidebar() {

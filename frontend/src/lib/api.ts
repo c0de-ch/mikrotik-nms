@@ -141,6 +141,19 @@ export const api = {
       }),
   },
 
+  // DNS
+  dns: {
+    list: (token: string) => apiFetch<DNSServer[]>("/dns", { token }),
+    create: (token: string, data: { name: string; address: string; port: number }) =>
+      apiFetch<DNSServer>("/dns", { method: "POST", token, body: JSON.stringify(data) }),
+    update: (token: string, id: string, data: { name: string; address: string; port: number; enabled: boolean }) =>
+      apiFetch<DNSServer>(`/dns/${id}`, { method: "PUT", token, body: JSON.stringify(data) }),
+    delete: (token: string, id: string) =>
+      apiFetch(`/dns/${id}`, { method: "DELETE", token }),
+    resolve: (token: string, ips: string[]) =>
+      apiFetch<Record<string, string>>("/dns/resolve", { method: "POST", token, body: JSON.stringify({ ips }) }),
+  },
+
   // Users
   users: {
     list: (token: string) => apiFetch<User[]>("/users", { token }),
@@ -275,10 +288,20 @@ export interface User {
   created_at: string;
 }
 
+export interface DNSServer {
+  id: string;
+  name: string;
+  address: string;
+  port: number;
+  enabled: boolean;
+  created_at: string;
+}
+
 export interface NetworkClient {
   mac_address: string;
   ip_address: string;
   host_name: string;
+  dns_name: string;
   interface: string;
   source: "arp" | "dhcp" | "wifi";
   device_id: string;
