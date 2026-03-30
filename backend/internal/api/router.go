@@ -9,19 +9,21 @@ import (
 	"github.com/go-chi/cors"
 	"github.com/mikrotik-nms/backend/internal/auth"
 	"github.com/mikrotik-nms/backend/internal/config"
+	"github.com/mikrotik-nms/backend/internal/resolver"
 	"github.com/mikrotik-nms/backend/internal/routeros"
 	"github.com/mikrotik-nms/backend/internal/ws"
 )
 
 type Server struct {
-	db   *sql.DB
-	hub  *ws.Hub
-	cfg  *config.Config
-	pool *routeros.Pool
+	db       *sql.DB
+	hub      *ws.Hub
+	cfg      *config.Config
+	pool     *routeros.Pool
+	resolver *resolver.Resolver
 }
 
 func NewRouter(db *sql.DB, hub *ws.Hub, cfg *config.Config, pool *routeros.Pool) http.Handler {
-	s := &Server{db: db, hub: hub, cfg: cfg, pool: pool}
+	s := &Server{db: db, hub: hub, cfg: cfg, pool: pool, resolver: resolver.New(db)}
 
 	r := chi.NewRouter()
 
@@ -63,6 +65,7 @@ func NewRouter(db *sql.DB, hub *ws.Hub, cfg *config.Config, pool *routeros.Pool)
 			// Discovery
 			r.Get("/discovery", s.handleDiscoverDevices)
 			r.Get("/clients", s.handleScanClients)
+			r.Get("/debug/wifi", s.handleDebugWifiRaw)
 
 			// Devices
 			r.Get("/devices", s.handleListDevices)
@@ -94,6 +97,16 @@ func NewRouter(db *sql.DB, hub *ws.Hub, cfg *config.Config, pool *routeros.Pool)
 				r.Post("/firmware/upgrade", s.handleUpgradeFirmware)
 				r.Post("/firmware/channel", s.handleSetChannel)
 				r.Post("/firmware/routerboard", s.handleUpgradeRouterboard)
+			})
+
+			// DNS
+			r.Get("/dns", s.handleListDNSServers)
+			r.Post("/dns/resolve", s.handleResolveDNS)
+			r.Group(func(r chi.Router) {
+				r.Use(auth.RequireRole("admin"))
+				r.Post("/dns", s.handleCreateDNSServer)
+				r.Put("/dns/{id}", s.handleUpdateDNSServer)
+				r.Delete("/dns/{id}", s.handleDeleteDNSServer)
 			})
 
 			// WebSocket

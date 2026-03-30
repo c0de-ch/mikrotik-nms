@@ -13,6 +13,7 @@ type networkClient struct {
 	MAC       string `json:"mac_address"`
 	IP        string `json:"ip_address"`
 	HostName  string `json:"host_name"`
+	DNSName   string `json:"dns_name"`
 	Interface string `json:"interface"`
 	Source    string `json:"source"`      // "arp", "dhcp", "wifi"
 	DeviceID  string `json:"device_id"`   // which managed device reported this
@@ -27,6 +28,41 @@ type networkClient struct {
 	TxRate    string `json:"tx_rate,omitempty"`
 	RxRate    string `json:"rx_rate,omitempty"`
 	Uptime    string `json:"uptime,omitempty"`
+}
+
+// handleDebugWifiRaw returns raw fields from the wifi registration table for debugging.
+func (s *Server) handleDebugWifiRaw(w http.ResponseWriter, r *http.Request) {
+	deviceID := r.URL.Query().Get("device_id")
+	if deviceID == "" {
+		writeError(w, http.StatusBadRequest, "device_id required")
+		return
+	}
+	client := s.pool.Get(deviceID)
+	if client == nil {
+		writeError(w, http.StatusNotFound, "device not connected")
+		return
+	}
+
+	results := make(map[string]interface{})
+
+	// Try all three sources
+	for _, cmd := range []string{
+		"/interface/wifi/registration-table/print",
+		"/caps-man/registration-table/print",
+		"/interface/wireless/registration-table/print",
+	} {
+		func() {
+			defer func() { recover() }()
+			raw, err := routeros.RawCommand(client, cmd)
+			if err != nil {
+				results[cmd] = map[string]string{"error": err.Error()}
+				return
+			}
+			results[cmd] = raw
+		}()
+	}
+
+	writeJSON(w, http.StatusOK, results)
 }
 
 func (s *Server) handleScanClients(w http.ResponseWriter, r *http.Request) {
@@ -138,9 +174,18 @@ func (s *Server) handleScanClients(w http.ResponseWriter, r *http.Request) {
 				if mac == "" {
 					continue
 				}
+				// Resolve AP name: use AP field, or extract from interface name
+				apName := reg.AP
+				if apName == "" && reg.Interface != "" {
+					// Interface is often "capName/radioName" or just the radio identity
+					apName = reg.Interface
+					if idx := strings.Index(apName, "/"); idx > 0 {
+						apName = apName[:idx]
+					}
+				}
 				if existing, ok := clientMap[mac]; ok {
 					// Enrich with wifi data
-					existing.AP = reg.AP
+					existing.AP = apName
 					existing.SSID = reg.SSID
 					existing.Band = reg.Band
 					existing.Channel = reg.Channel
@@ -157,7 +202,7 @@ func (s *Server) handleScanClients(w http.ResponseWriter, r *http.Request) {
 						Source:     "wifi",
 						DeviceID:   dev.ID,
 						DeviceName: devName,
-						AP:         reg.AP,
+						AP:         apName,
 						SSID:       reg.SSID,
 						Band:       reg.Band,
 						Channel:    reg.Channel,
@@ -172,8 +217,24 @@ func (s *Server) handleScanClients(w http.ResponseWriter, r *http.Request) {
 		}()
 	}
 
+	// Resolve DNS names for all IPs
+	ips := make([]string, 0, len(clientMap))
+	for _, c := range clientMap {
+		if c.IP != "" {
+			ips = append(ips, c.IP)
+		}
+	}
+	dnsNames := s.resolver.ResolveMany(ips)
+
 	results := make([]networkClient, 0, len(clientMap))
 	for _, c := range clientMap {
+		if name, ok := dnsNames[c.IP]; ok && name != "" {
+			c.DNSName = name
+			// If no hostname from DHCP, use DNS name
+			if c.HostName == "" {
+				c.HostName = name
+			}
+		}
 		results = append(results, *c)
 	}
 

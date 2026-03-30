@@ -255,16 +255,25 @@ func (m *Manager) firmwareLoop(ctx context.Context) {
 
 	// Initial check after 30s delay
 	time.Sleep(30 * time.Second)
-	m.checkFirmware(ctx)
+	m.safeCheckFirmware(ctx)
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			m.checkFirmware(ctx)
+			m.safeCheckFirmware(ctx)
 		}
 	}
+}
+
+func (m *Manager) safeCheckFirmware(ctx context.Context) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("poller: panic in firmware check: %v", r)
+		}
+	}()
+	m.checkFirmware(ctx)
 }
 
 func (m *Manager) checkFirmware(ctx context.Context) {
@@ -289,13 +298,26 @@ func (m *Manager) checkFirmware(ctx context.Context) {
 			continue
 		}
 
-		fw, err := routeros.CheckFirmwareUpdate(client)
-		if err != nil {
-			log.Printf("poller firmware: check %s: %v", dev.Identity, err)
+		var fw *routeros.FirmwareInfo
+		var rb *routeros.RouterboardInfo
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("poller firmware: panic checking %s: %v", dev.Identity, r)
+					m.pool.Close(dev.ID)
+				}
+			}()
+			var err error
+			fw, err = routeros.CheckFirmwareUpdate(client)
+			if err != nil {
+				log.Printf("poller firmware: check %s: %v", dev.Identity, err)
+				return
+			}
+			rb, _ = routeros.GetRouterboardInfo(client)
+		}()
+		if fw == nil {
 			continue
 		}
-
-		rb, _ := routeros.GetRouterboardInfo(client)
 
 		fws := &queries.FirmwareStatus{
 			ID:               dev.ID + ":fw",

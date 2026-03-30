@@ -1,11 +1,11 @@
 "use client";
 
 import { useState, useMemo } from "react";
-import { Radar, Loader2, Wifi, ArrowUpDown, Monitor } from "lucide-react";
+import { Radar, Loader2, Wifi, ArrowUpDown, Monitor, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Table,
   TableBody,
@@ -14,12 +14,39 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Separator } from "@/components/ui/separator";
 import { Input } from "@/components/ui/input";
 import { useAuth } from "@/context/auth";
 import { api, type NetworkClient } from "@/lib/api";
 import { toast } from "sonner";
 
 type SortKey = "mac_address" | "ip_address" | "host_name" | "device_name" | "interface" | "source" | "ssid" | "signal" | "ap";
+
+function formatRate(rate?: string): string | undefined {
+  if (!rate) return undefined;
+  const n = parseInt(rate);
+  if (isNaN(n)) return rate;
+  if (n >= 1e9) return `${(n / 1e9).toFixed(1)} Gbps`;
+  if (n >= 1e6) return `${(n / 1e6).toFixed(0)} Mbps`;
+  if (n >= 1e3) return `${(n / 1e3).toFixed(0)} Kbps`;
+  return `${n} bps`;
+}
+
+function DetailRow({ label, value }: { label: string; value?: string | null }) {
+  if (!value) return null;
+  return (
+    <div className="flex justify-between py-1.5">
+      <span className="text-muted-foreground text-sm">{label}</span>
+      <span className="text-sm font-medium">{value}</span>
+    </div>
+  );
+}
 
 export default function ClientsPage() {
   const { token } = useAuth();
@@ -30,6 +57,8 @@ export default function ClientsPage() {
   const [sortKey, setSortKey] = useState<SortKey>("ip_address");
   const [sortAsc, setSortAsc] = useState(true);
   const [tab, setTab] = useState("all");
+  const [selected, setSelected] = useState<NetworkClient | null>(null);
+  const [scanTime, setScanTime] = useState<string | null>(null);
 
   const handleScan = async () => {
     if (!token) return;
@@ -38,6 +67,7 @@ export default function ClientsPage() {
       const results = await api.clients.scan(token);
       setClients(results);
       setScanned(true);
+      setScanTime(new Date().toLocaleTimeString());
       toast.success(`Found ${results.length} client(s) on the network`);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Scan failed");
@@ -84,11 +114,22 @@ export default function ClientsPage() {
     </TableHead>
   );
 
+  const signalBadge = (signal?: string) => {
+    if (!signal) return null;
+    const val = parseInt(signal);
+    const color = val > -60 ? "text-green-600" : val > -75 ? "text-yellow-600" : "text-red-600";
+    const label = val > -60 ? "Good" : val > -75 ? "Fair" : "Poor";
+    return <span className={color}>{signal} ({label})</span>;
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">Network Clients</h1>
-        <Button onClick={handleScan} disabled={scanning}>
+        <div>
+          <h1 className="text-2xl font-bold">Network Clients</h1>
+          {scanTime && <p className="text-xs text-muted-foreground">Last scan: {scanTime}</p>}
+        </div>
+        <Button onClick={handleScan} disabled={scanning} size="lg">
           {scanning ? (
             <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Scanning all devices...</>
           ) : (
@@ -99,22 +140,22 @@ export default function ClientsPage() {
 
       {scanned && (
         <>
-          <div className="grid gap-4 md:grid-cols-3">
+          <div className="grid gap-4 md:grid-cols-4">
             <Card>
               <CardHeader className="pb-2"><CardTitle className="text-sm font-medium">Total Clients</CardTitle></CardHeader>
               <CardContent><div className="text-2xl font-bold">{clients.length}</div></CardContent>
             </Card>
             <Card>
               <CardHeader className="pb-2"><CardTitle className="text-sm font-medium">WiFi Clients</CardTitle></CardHeader>
-              <CardContent>
-                <div className="text-2xl font-bold">{wifiClients.length}</div>
-              </CardContent>
+              <CardContent><div className="text-2xl font-bold">{wifiClients.length}</div></CardContent>
             </Card>
             <Card>
               <CardHeader className="pb-2"><CardTitle className="text-sm font-medium">With Hostname</CardTitle></CardHeader>
-              <CardContent>
-                <div className="text-2xl font-bold">{clients.filter((c) => c.host_name).length}</div>
-              </CardContent>
+              <CardContent><div className="text-2xl font-bold">{clients.filter((c) => c.host_name).length}</div></CardContent>
+            </Card>
+            <Card>
+              <CardHeader className="pb-2"><CardTitle className="text-sm font-medium">Unique Devices</CardTitle></CardHeader>
+              <CardContent><div className="text-2xl font-bold">{new Set(clients.map((c) => c.device_name)).size}</div></CardContent>
             </Card>
           </div>
 
@@ -130,98 +171,59 @@ export default function ClientsPage() {
               </TabsList>
             </Tabs>
             <Input
-              placeholder="Search MAC, IP, hostname, SSID..."
+              placeholder="Search MAC, IP, hostname, SSID, AP..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               className="max-w-sm"
             />
+            <span className="text-xs text-muted-foreground ml-auto">{filtered.length} result(s)</span>
           </div>
 
-          {tab === "all" ? (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <SortableHead label="IP Address" field="ip_address" />
-                  <SortableHead label="MAC Address" field="mac_address" />
-                  <SortableHead label="Hostname" field="host_name" />
-                  <SortableHead label="Interface" field="interface" />
-                  <SortableHead label="Source" field="source" />
-                  <SortableHead label="Reported By" field="device_name" />
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <SortableHead label="IP Address" field="ip_address" />
+                <SortableHead label="MAC Address" field="mac_address" />
+                <SortableHead label="Hostname" field="host_name" />
+                {tab === "wifi" && <SortableHead label="AP" field="ap" />}
+                {tab === "wifi" && <SortableHead label="SSID" field="ssid" />}
+                {tab === "wifi" && <SortableHead label="Signal" field="signal" />}
+                <SortableHead label="Source" field="source" />
+                <SortableHead label="Reported By" field="device_name" />
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {filtered.map((c, i) => (
+                <TableRow
+                  key={`${c.mac_address}-${i}`}
+                  className="cursor-pointer hover:bg-muted/50"
+                  onClick={() => setSelected(c)}
+                >
+                  <TableCell className="font-mono text-sm">{c.ip_address || "—"}</TableCell>
+                  <TableCell className="font-mono text-xs whitespace-nowrap">{c.mac_address}</TableCell>
+                  <TableCell>{c.host_name || <span className="text-muted-foreground">—</span>}</TableCell>
+                  {tab === "wifi" && <TableCell className="text-sm">{c.ap || "—"}</TableCell>}
+                  {tab === "wifi" && <TableCell className="text-sm">{c.ssid || "—"}</TableCell>}
+                  {tab === "wifi" && (
+                    <TableCell className="text-sm whitespace-nowrap">{signalBadge(c.signal) || "—"}</TableCell>
+                  )}
+                  <TableCell>
+                    <Badge variant={c.source === "wifi" ? "default" : c.source === "dhcp" ? "secondary" : "outline"}>
+                      {c.source}
+                    </Badge>
+                  </TableCell>
+                  <TableCell className="text-sm">{c.device_name}</TableCell>
                 </TableRow>
-              </TableHeader>
-              <TableBody>
-                {filtered.map((c, i) => (
-                  <TableRow key={`${c.mac_address}-${i}`}>
-                    <TableCell className="font-mono text-sm">{c.ip_address || "—"}</TableCell>
-                    <TableCell className="font-mono text-xs whitespace-nowrap">{c.mac_address}</TableCell>
-                    <TableCell>{c.host_name || <span className="text-muted-foreground">—</span>}</TableCell>
-                    <TableCell className="text-sm">{c.interface || "—"}</TableCell>
-                    <TableCell>
-                      <Badge variant={c.source === "wifi" ? "default" : c.source === "dhcp" ? "secondary" : "outline"}>
-                        {c.source}
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="text-sm">{c.device_name}</TableCell>
-                  </TableRow>
-                ))}
-                {filtered.length === 0 && (
-                  <TableRow>
-                    <TableCell colSpan={6} className="py-8 text-center text-muted-foreground">
-                      {search ? "No clients match your search" : "No clients found"}
-                    </TableCell>
-                  </TableRow>
-                )}
-              </TableBody>
-            </Table>
-          ) : (
-            <Table>
-              <TableHeader>
+              ))}
+              {filtered.length === 0 && (
                 <TableRow>
-                  <SortableHead label="IP Address" field="ip_address" />
-                  <SortableHead label="MAC Address" field="mac_address" />
-                  <SortableHead label="Hostname" field="host_name" />
-                  <SortableHead label="AP" field="ap" />
-                  <SortableHead label="SSID" field="ssid" />
-                  <TableHead className="whitespace-nowrap">Band / Channel</TableHead>
-                  <SortableHead label="Signal" field="signal" />
-                  <TableHead className="whitespace-nowrap">TX / RX Rate</TableHead>
-                  <TableHead>Uptime</TableHead>
+                  <TableCell colSpan={tab === "wifi" ? 8 : 6} className="py-8 text-center text-muted-foreground">
+                    {search ? "No clients match your search" : "No clients found"}
+                  </TableCell>
                 </TableRow>
-              </TableHeader>
-              <TableBody>
-                {filtered.map((c, i) => (
-                  <TableRow key={`${c.mac_address}-${i}`}>
-                    <TableCell className="font-mono text-sm">{c.ip_address || "—"}</TableCell>
-                    <TableCell className="font-mono text-xs whitespace-nowrap">{c.mac_address}</TableCell>
-                    <TableCell>{c.host_name || <span className="text-muted-foreground">—</span>}</TableCell>
-                    <TableCell className="text-sm">{c.ap || "—"}</TableCell>
-                    <TableCell className="text-sm">{c.ssid || "—"}</TableCell>
-                    <TableCell className="text-sm whitespace-nowrap">
-                      {c.band || "—"}{c.channel ? ` / ${c.channel}` : ""}{c.frequency ? ` (${c.frequency})` : ""}
-                    </TableCell>
-                    <TableCell className="text-sm whitespace-nowrap">
-                      {c.signal ? (
-                        <span className={parseInt(c.signal) > -60 ? "text-green-600" : parseInt(c.signal) > -75 ? "text-yellow-600" : "text-red-600"}>
-                          {c.signal}
-                        </span>
-                      ) : "—"}
-                    </TableCell>
-                    <TableCell className="text-xs whitespace-nowrap">
-                      {c.tx_rate || "—"} / {c.rx_rate || "—"}
-                    </TableCell>
-                    <TableCell className="text-sm">{c.uptime || "—"}</TableCell>
-                  </TableRow>
-                ))}
-                {filtered.length === 0 && (
-                  <TableRow>
-                    <TableCell colSpan={9} className="py-8 text-center text-muted-foreground">
-                      {search ? "No WiFi clients match your search" : "No WiFi clients found"}
-                    </TableCell>
-                  </TableRow>
-                )}
-              </TableBody>
-            </Table>
-          )}
+              )}
+            </TableBody>
+          </Table>
         </>
       )}
 
@@ -234,6 +236,53 @@ export default function ClientsPage() {
           </CardContent>
         </Card>
       )}
+
+      {/* Client Detail Modal */}
+      <Dialog open={!!selected} onOpenChange={(open) => !open && setSelected(null)}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>{selected?.host_name || selected?.ip_address || selected?.mac_address}</DialogTitle>
+          </DialogHeader>
+          {selected && (
+            <div className="space-y-4">
+              <div>
+                <h3 className="text-xs font-semibold uppercase text-muted-foreground mb-1">Network</h3>
+                <div className="rounded-lg border p-3">
+                  <DetailRow label="IP Address" value={selected.ip_address} />
+                  <DetailRow label="MAC Address" value={selected.mac_address} />
+                  <DetailRow label="Hostname" value={selected.host_name} />
+                  <DetailRow label="DNS Name" value={selected.dns_name} />
+                  <DetailRow label="Interface" value={selected.interface} />
+                  <DetailRow label="Source" value={selected.source} />
+                  <DetailRow label="Reported By" value={selected.device_name} />
+                </div>
+              </div>
+
+              {(selected.ssid || selected.ap || selected.signal) && (
+                <div>
+                  <h3 className="text-xs font-semibold uppercase text-muted-foreground mb-1">Wireless</h3>
+                  <div className="rounded-lg border p-3">
+                    <DetailRow label="Access Point" value={selected.ap} />
+                    <DetailRow label="Radio Interface" value={selected.interface} />
+                    <DetailRow label="SSID" value={selected.ssid} />
+                    <DetailRow label="Band" value={selected.band} />
+                    <DetailRow label="Channel" value={selected.channel} />
+                    <DetailRow label="Frequency" value={selected.frequency} />
+                    <div className="flex justify-between py-1.5">
+                      <span className="text-muted-foreground text-sm">Signal</span>
+                      <span className="text-sm font-medium">{signalBadge(selected.signal) || "—"}</span>
+                    </div>
+                    <DetailRow label="TX Rate" value={formatRate(selected.tx_rate)} />
+                    <DetailRow label="RX Rate" value={formatRate(selected.rx_rate)} />
+                    <DetailRow label="Connected" value={selected.uptime} />
+                    <DetailRow label="CAPsMAN Controller" value={selected.device_name} />
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
