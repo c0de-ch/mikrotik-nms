@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useMemo } from "react";
 import { useRouter } from "next/navigation";
-import { Plus, ExternalLink, Trash2, Radar, Loader2, Check, ArrowUpDown } from "lucide-react";
+import { Plus, ExternalLink, Trash2, Radar, Loader2, Check, ArrowUpDown, AlertTriangle, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -37,6 +37,7 @@ export default function DevicesPage() {
   const [addingMAC, setAddingMAC] = useState<Set<string>>(new Set());
   const [discoveryCredentials, setDiscoveryCredentials] = useState({ username: "admin", password: "", api_port: "8728" });
   const [addingSelected, setAddingSelected] = useState(false);
+  const [discoveryError, setDiscoveryError] = useState<string | null>(null);
   const [form, setForm] = useState({ address: "", identity: "", username: "admin", password: "", api_port: "8728" });
   const router = useRouter();
 
@@ -101,6 +102,11 @@ export default function DevicesPage() {
 
   const handleAddDiscovered = async (dev: DiscoveredDevice) => {
     if (!token) return;
+    if (!discoveryCredentials.password) {
+      setDiscoveryError("Password is required. Enter the RouterOS API password before adding devices.");
+      return;
+    }
+    setDiscoveryError(null);
     setAddingMAC((prev) => new Set(prev).add(dev.mac_address));
     try {
       await api.devices.create(token, {
@@ -113,7 +119,7 @@ export default function DevicesPage() {
       toast.success(`Added ${dev.identity || dev.ip_address}`);
       loadDevices();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to add device");
+      setDiscoveryError(`Failed to add ${dev.identity || dev.ip_address}: ${err instanceof Error ? err.message : "connection failed"}`);
     } finally {
       setAddingMAC((prev) => {
         const next = new Set(prev);
@@ -163,8 +169,14 @@ export default function DevicesPage() {
     if (!token || selectedMACs.size === 0) return;
     const toAdd = discovered.filter((d) => selectedMACs.has(d.mac_address) && d.ip_address && !existingAddresses.has(d.ip_address));
     if (toAdd.length === 0) return;
+    if (!discoveryCredentials.password) {
+      setDiscoveryError("Password is required. Enter the RouterOS API password before adding devices.");
+      return;
+    }
+    setDiscoveryError(null);
     setAddingSelected(true);
     let added = 0;
+    const failed: string[] = [];
     for (const dev of toAdd) {
       try {
         await api.devices.create(token, {
@@ -175,11 +187,12 @@ export default function DevicesPage() {
           api_port: parseInt(discoveryCredentials.api_port) || 8728,
         });
         added++;
-      } catch {
-        // skip duplicates
+      } catch (err) {
+        failed.push(`${dev.identity || dev.ip_address}: ${err instanceof Error ? err.message : "failed"}`);
       }
     }
-    toast.success(`Added ${added} device(s)`);
+    if (added > 0) toast.success(`Added ${added} device(s)`);
+    if (failed.length > 0) setDiscoveryError(`Failed to add ${failed.length} device(s):\n${failed.join("\n")}`);
     loadDevices();
     setSelectedMACs(new Set());
     setAddingSelected(false);
@@ -211,8 +224,8 @@ export default function DevicesPage() {
                     <Input value={discoveryCredentials.username} onChange={(e) => setDiscoveryCredentials({ ...discoveryCredentials, username: e.target.value })} placeholder="admin" />
                   </div>
                   <div className="space-y-1">
-                    <Label className="text-xs">Password (for all)</Label>
-                    <Input type="password" value={discoveryCredentials.password} onChange={(e) => setDiscoveryCredentials({ ...discoveryCredentials, password: e.target.value })} placeholder="password" />
+                    <Label className="text-xs">Password (for all) *</Label>
+                    <Input type="password" value={discoveryCredentials.password} onChange={(e) => { setDiscoveryCredentials({ ...discoveryCredentials, password: e.target.value }); setDiscoveryError(null); }} placeholder="required" required />
                   </div>
                   <div className="space-y-1">
                     <Label className="text-xs">API Port</Label>
@@ -226,6 +239,19 @@ export default function DevicesPage() {
                     )}
                   </Button>
                 </div>
+
+                {discoveryError && (
+                  <div className="flex items-start gap-3 rounded-lg border-2 border-destructive bg-destructive/10 p-4">
+                    <AlertTriangle className="h-5 w-5 shrink-0 text-destructive mt-0.5" />
+                    <div className="flex-1">
+                      <p className="font-semibold text-destructive">Error</p>
+                      <p className="text-sm text-destructive whitespace-pre-wrap">{discoveryError}</p>
+                    </div>
+                    <button onClick={() => setDiscoveryError(null)} className="shrink-0 text-destructive hover:text-destructive/70">
+                      <X className="h-4 w-4" />
+                    </button>
+                  </div>
+                )}
 
                 {discovered.length > 0 && (
                   <>

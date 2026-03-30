@@ -39,7 +39,7 @@ The frontend is available at **http://localhost:3000** and the backend API at **
 
 | Tool | Version |
 |------|---------|
-| Go | 1.24+ |
+| Go | 1.25+ |
 | Node.js | 22+ |
 
 ### Backend
