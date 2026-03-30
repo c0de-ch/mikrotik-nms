@@ -1,0 +1,34 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: ../deploy/docker/Dockerfile.backend
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./backend:/app
+      - mikrotik-data:/data
+    environment:
+      - MIKROTIK_NMS_DB_PATH=/data/mikrotik-nms.db
+      - MIKROTIK_NMS_LISTEN=:8080
+      - MIKROTIK_NMS_JWT_SECRET=dev-secret-change-me
+    command: ["mikrotik-nms"]
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: ../deploy/docker/Dockerfile.frontend
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8080
+      - NEXT_PUBLIC_WS_URL=ws://localhost:8080
+    depends_on:
+      - backend
+
+volumes:
+  mikrotik-data:

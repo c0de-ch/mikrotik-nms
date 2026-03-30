@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mikrotik-nms-config
+  namespace: mikrotik-nms
+data:
+  MIKROTIK_NMS_LISTEN: ":8080"
+  MIKROTIK_NMS_DB_PATH: "/data/mikrotik-nms.db"
+  MIKROTIK_NMS_HEALTH_INTERVAL: "30s"
+  MIKROTIK_NMS_TOPOLOGY_INTERVAL: "60s"
+  MIKROTIK_NMS_FIRMWARE_INTERVAL: "6h"
+  MIKROTIK_NMS_RETENTION_DAYS: "7"
+  MIKROTIK_NMS_DEFAULT_ROS_USER: "admin"
+  MIKROTIK_NMS_DEFAULT_ROS_PORT: "8728"
