@@ -1,9 +1,12 @@
 package api
 
 import (
+	"context"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/mikrotik-nms/backend/internal/database/queries"
 	"github.com/mikrotik-nms/backend/internal/routeros"
@@ -66,6 +69,26 @@ func (s *Server) handleDebugWifiRaw(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleScanClients(w http.ResponseWriter, r *http.Request) {
+	// Parse query params
+	limitParam := r.URL.Query().Get("limit")
+	maxClients := 0 // 0 = unlimited
+	if limitParam != "" {
+		if v, err := strconv.Atoi(limitParam); err == nil && v > 0 {
+			maxClients = v
+		}
+	}
+
+	timeoutParam := r.URL.Query().Get("timeout")
+	scanTimeout := 30 * time.Second // default 30s
+	if timeoutParam != "" {
+		if v, err := strconv.Atoi(timeoutParam); err == nil && v >= 5 && v <= 120 {
+			scanTimeout = time.Duration(v) * time.Second
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), scanTimeout)
+	defer cancel()
+
 	devices, err := queries.ListDevices(s.db)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list devices")
@@ -76,6 +99,13 @@ func (s *Server) handleScanClients(w http.ResponseWriter, r *http.Request) {
 	clientMap := make(map[string]*networkClient) // key: uppercase MAC
 
 	for _, dev := range devices {
+		// Check timeout
+		select {
+		case <-ctx.Done():
+			goto done
+		default:
+		}
+
 		if dev.Status != "online" {
 			continue
 		}
@@ -217,6 +247,7 @@ func (s *Server) handleScanClients(w http.ResponseWriter, r *http.Request) {
 		}()
 	}
 
+done:
 	// Resolve DNS names for all IPs
 	ips := make([]string, 0, len(clientMap))
 	for _, c := range clientMap {
@@ -238,5 +269,15 @@ func (s *Server) handleScanClients(w http.ResponseWriter, r *http.Request) {
 		results = append(results, *c)
 	}
 
-	writeJSON(w, http.StatusOK, results)
+	// Apply limit
+	if maxClients > 0 && len(results) > maxClients {
+		results = results[:maxClients]
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"clients":   results,
+		"total":     len(clientMap),
+		"limited":   maxClients > 0 && len(clientMap) > maxClients,
+		"timed_out": ctx.Err() != nil,
+	})
 }
