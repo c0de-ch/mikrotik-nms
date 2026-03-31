@@ -19,7 +19,9 @@ export class NmsWebSocket {
   connect() {
     if (this.ws?.readyState === WebSocket.OPEN) return;
 
-    this.ws = new WebSocket(`${getWsBase()}/api/v1/ws?token=${this.token}`);
+    // Use latest token from localStorage on reconnect (may have been refreshed)
+    const currentToken = (typeof window !== "undefined" && localStorage.getItem("access_token")) || this.token;
+    this.ws = new WebSocket(`${getWsBase()}/api/v1/ws?token=${currentToken}`);
 
     this.ws.onopen = () => {
       // Re-subscribe to all active topics

@@ -8,6 +8,38 @@ interface FetchOptions extends RequestInit {
   token?: string;
 }
 
+// Deduplicate concurrent refresh attempts
+let refreshPromise: Promise<{ access_token: string; refresh_token: string } | null> | null = null;
+
+async function tryRefreshToken(): Promise<{ access_token: string; refresh_token: string } | null> {
+  const refreshToken = typeof window !== "undefined" ? localStorage.getItem("refresh_token") : null;
+  if (!refreshToken) return null;
+
+  try {
+    const res = await fetch(`${getApiBase()}/api/v1/auth/refresh`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ refresh_token: refreshToken }),
+    });
+    if (res.ok) {
+      const tokens = await res.json();
+      localStorage.setItem("access_token", tokens.access_token);
+      localStorage.setItem("refresh_token", tokens.refresh_token);
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent("auth:refreshed", { detail: tokens }));
+      }
+      return tokens;
+    }
+  } catch {
+    // refresh failed
+  }
+
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent("auth:expired"));
+  }
+  return null;
+}
+
 async function apiFetch<T>(path: string, options: FetchOptions = {}): Promise<T> {
   const { token, ...fetchOptions } = options;
 
@@ -28,25 +60,14 @@ async function apiFetch<T>(path: string, options: FetchOptions = {}): Promise<T>
 
   let res = await doFetch(token);
 
-  // Auto-refresh on 401
+  // Auto-refresh on 401: deduplicate concurrent refresh attempts
   if (res.status === 401 && token) {
-    const refreshToken = typeof window !== "undefined" ? localStorage.getItem("refresh_token") : null;
-    if (refreshToken) {
-      try {
-        const refreshRes = await fetch(`${getApiBase()}/api/v1/auth/refresh`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ refresh_token: refreshToken }),
-        });
-        if (refreshRes.ok) {
-          const tokens = await refreshRes.json();
-          localStorage.setItem("access_token", tokens.access_token);
-          localStorage.setItem("refresh_token", tokens.refresh_token);
-          res = await doFetch(tokens.access_token);
-        }
-      } catch {
-        // refresh failed, fall through to error
-      }
+    if (!refreshPromise) {
+      refreshPromise = tryRefreshToken().finally(() => { refreshPromise = null; });
+    }
+    const tokens = await refreshPromise;
+    if (tokens) {
+      res = await doFetch(tokens.access_token);
     }
   }
 
