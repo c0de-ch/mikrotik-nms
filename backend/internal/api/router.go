@@ -118,6 +118,13 @@ func NewRouter(db *sql.DB, hub *ws.Hub, cfg *config.Config, pool *routeros.Pool)
 				r.Delete("/dns/{id}", s.handleDeleteDNSServer)
 			})
 
+			// App settings
+			r.Get("/settings", s.handleGetSettings)
+			r.Group(func(r chi.Router) {
+				r.Use(auth.RequireRole("admin"))
+				r.Put("/settings", s.handleUpdateSettings)
+			})
+
 			// WebSocket
 			r.Get("/ws", s.handleWebSocket)
 		})

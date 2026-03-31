@@ -210,7 +210,7 @@ export default function DevicesPage() {
               <DialogTrigger render={<Button variant="outline" />}>
                 <Radar className="mr-2 h-4 w-4" />Discover
               </DialogTrigger>
-              <DialogContent className="sm:max-w-6xl max-h-[85vh] overflow-y-auto">
+              <DialogContent className="sm:max-w-[calc(100vw-4rem)] max-h-[85vh] overflow-y-auto">
                 <DialogHeader>
                   <DialogTitle>Network Discovery</DialogTitle>
                 </DialogHeader>
@@ -266,10 +266,10 @@ export default function DevicesPage() {
                         Add Selected ({selectedMACs.size})
                       </Button>
                     </div>
-                    <Table>
+                    <Table className="table-fixed w-full">
                       <TableHeader>
                         <TableRow>
-                          <TableHead className="w-10">
+                          <TableHead className="w-8">
                             <input
                               type="checkbox"
                               checked={addableDevices.length > 0 && selectedMACs.size === addableDevices.length}
@@ -277,12 +277,12 @@ export default function DevicesPage() {
                               className="accent-primary"
                             />
                           </TableHead>
-                          {([["identity","Identity"],["ip_address","IP Address"],["mac_address","MAC Address"],["board","Board"],["version","Version"],["uptime","Uptime"]] as [SortKey, string][]).map(([key, label]) => (
-                            <TableHead key={key} className="whitespace-nowrap cursor-pointer select-none" onClick={() => toggleSort(key)}>
-                              <span className="inline-flex items-center gap-1">{label}<ArrowUpDown className={`h-3 w-3 ${sortKey === key ? "text-foreground" : "text-muted-foreground/40"}`} /></span>
+                          {([["identity","Identity"],["ip_address","IP"],["mac_address","MAC"],["board","Board"],["version","Ver"],["uptime","Uptime"]] as [SortKey, string][]).map(([key, label]) => (
+                            <TableHead key={key} className="cursor-pointer select-none truncate" onClick={() => toggleSort(key)}>
+                              <span className="inline-flex items-center gap-1">{label}<ArrowUpDown className={`h-3 w-3 shrink-0 ${sortKey === key ? "text-foreground" : "text-muted-foreground/40"}`} /></span>
                             </TableHead>
                           ))}
-                          <TableHead className="w-[80px]" />
+                          <TableHead className="w-16" />
                         </TableRow>
                       </TableHeader>
                       <TableBody>
@@ -291,7 +291,7 @@ export default function DevicesPage() {
                           const canAdd = !!dev.ip_address && !alreadyAdded;
                           return (
                             <TableRow key={dev.mac_address}>
-                              <TableCell>
+                              <TableCell className="w-8">
                                 <input
                                   type="checkbox"
                                   checked={selectedMACs.has(dev.mac_address)}
@@ -300,12 +300,12 @@ export default function DevicesPage() {
                                   className="accent-primary"
                                 />
                               </TableCell>
-                              <TableCell className="font-medium whitespace-nowrap">{dev.identity || "—"}</TableCell>
-                              <TableCell className="whitespace-nowrap">{dev.ip_address || "—"}</TableCell>
-                              <TableCell className="font-mono text-xs whitespace-nowrap">{dev.mac_address}</TableCell>
-                              <TableCell className="text-sm whitespace-nowrap">{dev.board || "—"}</TableCell>
-                              <TableCell className="text-sm whitespace-nowrap">{dev.version || "—"}</TableCell>
-                              <TableCell className="text-sm whitespace-nowrap">{dev.uptime || "—"}</TableCell>
+                              <TableCell className="font-medium truncate" title={dev.identity}>{dev.identity || "—"}</TableCell>
+                              <TableCell className="truncate font-mono text-xs" title={dev.ip_address}>{dev.ip_address || "—"}</TableCell>
+                              <TableCell className="font-mono text-xs truncate" title={dev.mac_address}>{dev.mac_address}</TableCell>
+                              <TableCell className="text-xs truncate" title={dev.board}>{dev.board || "—"}</TableCell>
+                              <TableCell className="text-xs truncate">{dev.version || "—"}</TableCell>
+                              <TableCell className="text-xs truncate">{dev.uptime || "—"}</TableCell>
                               <TableCell>
                                 {alreadyAdded ? (
                                   <Badge variant="secondary"><Check className="mr-1 h-3 w-3" />Added</Badge>

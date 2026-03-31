@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useAuth } from "@/context/auth";
 import { AppSidebar } from "@/components/layout/app-sidebar";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
+import { api } from "@/lib/api";
 
 export default function AuthenticatedLayout({
   children,
@@ -19,6 +20,18 @@ export default function AuthenticatedLayout({
       router.push("/login");
     }
   }, [loading, token, router]);
+
+  // Load dark mode preference from backend settings
+  useEffect(() => {
+    if (!token) return;
+    api.settings.get(token).then((settings) => {
+      if (settings.dark_mode === "true") {
+        document.documentElement.classList.add("dark");
+      } else {
+        document.documentElement.classList.remove("dark");
+      }
+    }).catch(() => {});
+  }, [token]);
 
   if (loading) {
     return (
