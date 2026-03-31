@@ -97,6 +97,18 @@ func (wt *WifiTracker) poll(ctx context.Context) {
 				if mac == "" {
 					continue
 				}
+
+				// Skip non-wireless entries: no SSID/band/signal and
+				// interface looks like ether/bridge
+				if reg.SSID == "" && reg.Band == "" && reg.Signal == "" {
+					iface := strings.ToLower(reg.Interface)
+					if strings.Contains(iface, "ether") || strings.Contains(iface, "bridge") ||
+						strings.Contains(iface, "vlan") || strings.Contains(iface, "pppoe") ||
+						strings.Contains(iface, "l2tp") || strings.Contains(iface, "ovpn") {
+						continue
+					}
+				}
+
 				apName := reg.AP
 				if apName == "" && reg.Interface != "" {
 					apName = reg.Interface
