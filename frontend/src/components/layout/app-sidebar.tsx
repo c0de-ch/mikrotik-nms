@@ -12,6 +12,7 @@ import {
   LogOut,
   Monitor,
   Settings,
+  FileOutput,
 } from "lucide-react";
 import {
   Sidebar,
@@ -37,6 +38,7 @@ const navItems = [
 ];
 
 const adminItems = [
+  { title: "NetBox Export", href: "/export", icon: FileOutput },
   { title: "Users", href: "/users", icon: Users },
   { title: "Settings", href: "/settings", icon: Settings },
 ];
