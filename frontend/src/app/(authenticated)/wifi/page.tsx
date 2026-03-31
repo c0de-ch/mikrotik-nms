@@ -392,15 +392,29 @@ export default function WifiPage() {
       <Dialog open={!!selectedMAC} onOpenChange={(open) => !open && setSelectedMAC(null)}>
         <DialogContent className="sm:max-w-2xl max-h-[80vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>Client History: {selectedMAC}</DialogTitle>
+            <DialogTitle>Client History: {selectedMAC && resolveName(selectedMAC) || selectedMAC}</DialogTitle>
           </DialogHeader>
-          {clientHistory.length > 0 && (
+          {clientHistory.length > 0 && (() => {
+            const latest = clientHistory[0];
+            const lookup = macLookups[selectedMAC || ""];
+            const hostname = latest.host_name || lookup?.host_name || lookup?.dns_name || "";
+            const ip = latest.ip_address || lookup?.ip_address || "";
+            // Find most recent entry with SSID/band (may not be the latest if it's a "leave")
+            const withSSID = clientHistory.find((e) => e.ssid);
+            const withBand = clientHistory.find((e) => e.band);
+            const withSignal = clientHistory.find((e) => e.signal);
+            return (
             <div className="space-y-3">
-              <div className="rounded-lg border p-3 text-sm">
-                <div className="flex justify-between"><span className="text-muted-foreground">Hostname</span><span className="font-medium">{clientHistory[0].host_name || "—"}</span></div>
-                <div className="flex justify-between"><span className="text-muted-foreground">Current AP</span><span className="font-medium">{clientHistory[0].ap_name}</span></div>
-                <div className="flex justify-between"><span className="text-muted-foreground">SSID</span><span>{clientHistory[0].ssid}</span></div>
-                <div className="flex justify-between"><span className="text-muted-foreground">Band</span><span>{clientHistory[0].band}</span></div>
+              <div className="rounded-lg border p-3 text-sm space-y-1">
+                {hostname && <div className="flex justify-between"><span className="text-muted-foreground">Hostname</span><span className="font-medium">{hostname}</span></div>}
+                {ip && <div className="flex justify-between"><span className="text-muted-foreground">IP Address</span><span className="font-mono">{ip}</span></div>}
+                <div className="flex justify-between"><span className="text-muted-foreground">MAC Address</span><span className="font-mono">{selectedMAC}</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">Current AP</span><span className="font-medium">{latest.ap_name || "—"}</span></div>
+                {(withSSID?.ssid) && <div className="flex justify-between"><span className="text-muted-foreground">SSID / Network</span><span>{withSSID.ssid}</span></div>}
+                {(withBand?.band) && <div className="flex justify-between"><span className="text-muted-foreground">Band</span><span>{withBand.band}</span></div>}
+                {(latest.channel) && <div className="flex justify-between"><span className="text-muted-foreground">Channel</span><span>{latest.channel}</span></div>}
+                {(withSignal?.signal) && <div className="flex justify-between"><span className="text-muted-foreground">Signal</span><span className={signalColor(withSignal.signal)}>{withSignal.signal}</span></div>}
+                {(latest.tx_rate) && <div className="flex justify-between"><span className="text-muted-foreground">TX / RX Rate</span><span>{formatRate(latest.tx_rate)} / {formatRate(latest.rx_rate)}</span></div>}
               </div>
 
               {/* Roaming timeline */}
@@ -424,7 +438,7 @@ export default function WifiPage() {
                 <p className="text-sm text-muted-foreground">No roaming events recorded yet — only polling data.</p>
               )}
             </div>
-          )}
+          ); })()}
         </DialogContent>
       </Dialog>
     </div>
