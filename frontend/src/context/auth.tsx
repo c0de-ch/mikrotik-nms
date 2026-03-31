@@ -72,6 +72,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     checkAuth();
   }, [checkAuth]);
 
+  // Sync React state when apiFetch auto-refreshes tokens or detects expiry
+  useEffect(() => {
+    const handleRefreshed = (e: Event) => {
+      const { access_token } = (e as CustomEvent).detail;
+      if (access_token) {
+        setState((prev) => ({ ...prev, token: access_token }));
+      }
+    };
+
+    const handleExpired = () => {
+      clearTokens();
+      setState({ token: null, user: null, loading: false });
+    };
+
+    window.addEventListener("auth:refreshed", handleRefreshed);
+    window.addEventListener("auth:expired", handleExpired);
+    return () => {
+      window.removeEventListener("auth:refreshed", handleRefreshed);
+      window.removeEventListener("auth:expired", handleExpired);
+    };
+  }, []);
+
   const login = async (username: string, password: string) => {
     const tokens = await api.auth.login(username, password);
     saveTokens(tokens.access_token, tokens.refresh_token);
