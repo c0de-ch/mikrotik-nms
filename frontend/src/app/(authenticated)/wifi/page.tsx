@@ -39,6 +39,7 @@ interface WifiEntry {
   rx_rate: string;
   event: string;
   controller_id: string;
+  controller_name: string;
   recorded_at: string;
 }
 
@@ -330,6 +331,7 @@ export default function WifiPage() {
                 <TableHead>AP</TableHead>
                 <TableHead>SSID / Band</TableHead>
                 <TableHead>Signal</TableHead>
+                <TableHead>Source</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -344,11 +346,12 @@ export default function WifiPage() {
                   <TableCell className="text-sm">{e.ap_name || "—"}</TableCell>
                   <TableCell className="text-xs">{e.ssid} {e.band && `· ${e.band}`}</TableCell>
                   <TableCell className={`text-xs font-mono ${e.signal ? signalColor(e.signal) : ""}`}>{e.signal || "—"}</TableCell>
+                  <TableCell className="text-xs text-muted-foreground">{e.controller_name || "—"}</TableCell>
                 </TableRow>
               ))}
               {filteredHistory.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={6} className="py-8 text-center text-muted-foreground">No history yet</TableCell>
+                  <TableCell colSpan={7} className="py-8 text-center text-muted-foreground">No history yet</TableCell>
                 </TableRow>
               )}
             </TableBody>
@@ -415,6 +418,7 @@ export default function WifiPage() {
                 {(latest.channel) && <div className="flex justify-between"><span className="text-muted-foreground">Channel</span><span>{latest.channel}</span></div>}
                 {(withSignal?.signal) && <div className="flex justify-between"><span className="text-muted-foreground">Signal</span><span className={signalColor(withSignal.signal)}>{withSignal.signal}</span></div>}
                 {(latest.tx_rate) && <div className="flex justify-between"><span className="text-muted-foreground">TX / RX Rate</span><span>{formatRate(latest.tx_rate)} / {formatRate(latest.rx_rate)}</span></div>}
+                {latest.controller_name && <div className="flex justify-between"><span className="text-muted-foreground">Source Controller</span><span>{latest.controller_name}</span></div>}
               </div>
 
               {/* Roaming timeline */}
@@ -429,7 +433,7 @@ export default function WifiPage() {
                         <span className="font-medium text-sm">{e.ap_name}</span>
                         {e.signal && <span className={`text-xs font-mono ${signalColor(e.signal)}`}>{e.signal}</span>}
                       </div>
-                      <p className="text-xs text-muted-foreground">{new Date(e.recorded_at).toLocaleString()} · {e.band} · {formatRate(e.tx_rate)}</p>
+                      <p className="text-xs text-muted-foreground">{new Date(e.recorded_at).toLocaleString()} · {e.band} · {formatRate(e.tx_rate)}{e.controller_name ? ` · via ${e.controller_name}` : ""}</p>
                     </div>
                   </div>
                 ))}

@@ -7,6 +7,33 @@ import (
 	"github.com/mikrotik-nms/backend/internal/database/queries"
 )
 
+type enrichedWifiEntry struct {
+	queries.WifiHistoryEntry
+	ControllerName string `json:"controller_name"`
+}
+
+func (s *Server) enrichWifiEntries(entries []queries.WifiHistoryEntry) []enrichedWifiEntry {
+	// Build device ID → name lookup
+	devices, _ := queries.ListDevices(s.db)
+	deviceNames := make(map[string]string)
+	for _, d := range devices {
+		name := d.Identity
+		if name == "" {
+			name = d.Address
+		}
+		deviceNames[d.ID] = name
+	}
+
+	result := make([]enrichedWifiEntry, len(entries))
+	for i, e := range entries {
+		result[i] = enrichedWifiEntry{
+			WifiHistoryEntry: e,
+			ControllerName:   deviceNames[e.ControllerID],
+		}
+	}
+	return result
+}
+
 func (s *Server) handleMACLookup(w http.ResponseWriter, r *http.Request) {
 	lookups, err := queries.GetAllMACLookups(s.db)
 	if err != nil {
@@ -25,7 +52,7 @@ func (s *Server) handleWifiCurrent(w http.ResponseWriter, r *http.Request) {
 	if clients == nil {
 		clients = []queries.WifiHistoryEntry{}
 	}
-	writeJSON(w, http.StatusOK, clients)
+	writeJSON(w, http.StatusOK, s.enrichWifiEntries(clients))
 }
 
 func (s *Server) handleWifiHistory(w http.ResponseWriter, r *http.Request) {
@@ -56,5 +83,5 @@ func (s *Server) handleWifiHistory(w http.ResponseWriter, r *http.Request) {
 	if entries == nil {
 		entries = []queries.WifiHistoryEntry{}
 	}
-	writeJSON(w, http.StatusOK, entries)
+	writeJSON(w, http.StatusOK, s.enrichWifiEntries(entries))
 }
