@@ -28,11 +28,14 @@ import {
 } from "@/components/ui/sidebar";
 import { useAuth } from "@/context/auth";
 
+import { Wifi as WifiIcon } from "lucide-react";
+
 const navItems = [
   { title: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
   { title: "Topology", href: "/topology", icon: Network },
   { title: "Devices", href: "/devices", icon: Server },
   { title: "Clients", href: "/clients", icon: Monitor },
+  { title: "WiFi", href: "/wifi", icon: WifiIcon },
   { title: "Traffic", href: "/traffic", icon: Activity },
   { title: "Firmware", href: "/firmware", icon: Download },
 ];

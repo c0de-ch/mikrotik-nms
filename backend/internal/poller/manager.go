@@ -8,6 +8,7 @@ import (
 
 	"github.com/mikrotik-nms/backend/internal/config"
 	"github.com/mikrotik-nms/backend/internal/database/queries"
+	"github.com/mikrotik-nms/backend/internal/resolver"
 	"github.com/mikrotik-nms/backend/internal/routeros"
 	"github.com/mikrotik-nms/backend/internal/topology"
 	"github.com/mikrotik-nms/backend/internal/ws"
@@ -41,6 +42,12 @@ func (m *Manager) Start() {
 
 	trafficMgr := NewTrafficManager(m.db, m.pool, m.hub)
 	go trafficMgr.Run(ctx)
+
+	wifiTracker := NewWifiTracker(m.db, m.pool, m.hub, 30*time.Second)
+	go wifiTracker.Run(ctx)
+
+	clientDisc := NewClientDiscoveryPoller(m.db, m.pool, resolver.New(m.db), 15*time.Minute)
+	go clientDisc.Run(ctx)
 
 	log.Println("poller: started all pollers")
 }
@@ -370,6 +377,19 @@ func (m *Manager) retentionLoop(ctx context.Context) {
 				log.Printf("poller retention: neighbors: %v", err)
 			} else if n > 0 {
 				log.Printf("poller retention: deleted %d stale neighbors", n)
+			}
+
+			wifiCutoff := time.Now().AddDate(0, 0, -m.cfg.RetentionDays)
+			if n, err := queries.DeleteOldWifiHistory(m.db, wifiCutoff); err != nil {
+				log.Printf("poller retention: wifi history: %v", err)
+			} else if n > 0 {
+				log.Printf("poller retention: deleted %d old wifi history entries", n)
+			}
+
+			if n, err := queries.DeleteOldClientHistory(m.db, wifiCutoff); err != nil {
+				log.Printf("poller retention: client history: %v", err)
+			} else if n > 0 {
+				log.Printf("poller retention: deleted %d old client history entries", n)
 			}
 		}
 	}
