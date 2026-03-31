@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import { Radar, Loader2, Wifi, ArrowUpDown, Monitor, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -91,6 +91,33 @@ export default function ClientsPage() {
       setScanning(false);
     }
   };
+
+  // Load cached clients on mount, then auto-scan for fresh data
+  const didInit = useRef(false);
+  useEffect(() => {
+    if (!token || didInit.current) return;
+    didInit.current = true;
+
+    // Load cached data immediately (instant, no scan delay)
+    api.clients.cached(token).then((result) => {
+      if (result.clients?.length > 0) {
+        setClients(result.clients);
+        setScanTotal(result.total);
+        setScanned(true);
+      }
+    }).catch(() => {});
+
+    // Auto-trigger a fresh scan in the background
+    setScanning(true);
+    api.clients.scan(token, { timeout: scanTimeout }).then((result) => {
+      setClients(result.clients);
+      setScanTotal(result.total);
+      setWasLimited(result.limited);
+      setWasTimedOut(result.timed_out);
+      setScanned(true);
+      setScanTime(new Date().toLocaleTimeString());
+    }).catch(() => {}).finally(() => setScanning(false));
+  }, [token, scanTimeout]);
 
   const toggleSort = (key: SortKey) => {
     if (sortKey === key) setSortAsc(!sortAsc);
@@ -279,12 +306,21 @@ export default function ClientsPage() {
         </>
       )}
 
-      {!scanned && (
+      {!scanned && !scanning && (
         <Card>
           <CardContent className="py-16 text-center text-muted-foreground">
             <Radar className="mx-auto mb-3 h-10 w-10" />
-            <p className="text-lg font-medium mb-1">Scan your network</p>
-            <p className="text-sm">Queries ARP tables, DHCP leases, and CAPsMAN/WiFi registrations from all managed devices</p>
+            <p className="text-lg font-medium mb-1">No clients discovered yet</p>
+            <p className="text-sm">Scanning will start automatically, or click Scan Network above</p>
+          </CardContent>
+        </Card>
+      )}
+      {!scanned && scanning && (
+        <Card>
+          <CardContent className="py-16 text-center text-muted-foreground">
+            <Loader2 className="mx-auto mb-3 h-10 w-10 animate-spin" />
+            <p className="text-lg font-medium mb-1">Scanning network...</p>
+            <p className="text-sm">Querying ARP tables, DHCP leases, and WiFi registrations from all managed devices</p>
           </CardContent>
         </Card>
       )}
