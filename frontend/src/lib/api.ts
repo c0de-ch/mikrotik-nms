@@ -147,6 +147,13 @@ export const api = {
       }),
   },
 
+  // App settings
+  settings: {
+    get: (token: string) => apiFetch<Record<string, string>>("/settings", { token }),
+    update: (token: string, data: Record<string, string>) =>
+      apiFetch<Record<string, string>>("/settings", { method: "PUT", token, body: JSON.stringify(data) }),
+  },
+
   // DNS
   dns: {
     list: (token: string) => apiFetch<DNSServer[]>("/dns", { token }),
