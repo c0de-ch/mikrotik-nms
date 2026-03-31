@@ -282,10 +282,72 @@ done:
 		results = results[:maxClients]
 	}
 
+	// Persist all results to mac_lookup cache (async, don't block response)
+	go func() {
+		for _, c := range results {
+			_ = queries.UpsertMACLookup(s.db, &queries.MACLookup{
+				MACAddress:    c.MAC,
+				IPAddress:     c.IP,
+				HostName:      c.HostName,
+				DNSName:       c.DNSName,
+				Source:        c.Source,
+				DeviceName:    c.DeviceName,
+				InterfaceName: c.Interface,
+				DeviceID:      c.DeviceID,
+				AP:            c.AP,
+				SSID:          c.SSID,
+				Band:          c.Band,
+				Channel:       c.Channel,
+				Frequency:     c.Frequency,
+				Signal:        c.Signal,
+				TxRate:        c.TxRate,
+				RxRate:        c.RxRate,
+				Uptime:        c.Uptime,
+			})
+		}
+	}()
+
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"clients":   results,
 		"total":     len(clientMap),
 		"limited":   maxClients > 0 && len(clientMap) > maxClients,
 		"timed_out": ctx.Err() != nil,
+	})
+}
+
+func (s *Server) handleCachedClients(w http.ResponseWriter, r *http.Request) {
+	entries, err := queries.GetAllMACLookupsSlice(s.db)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load cached clients")
+		return
+	}
+
+	clients := make([]networkClient, 0, len(entries))
+	for _, e := range entries {
+		clients = append(clients, networkClient{
+			MAC:        e.MACAddress,
+			IP:         e.IPAddress,
+			HostName:   e.HostName,
+			DNSName:    e.DNSName,
+			Interface:  e.InterfaceName,
+			Source:     e.Source,
+			DeviceID:   e.DeviceID,
+			DeviceName: e.DeviceName,
+			AP:         e.AP,
+			SSID:       e.SSID,
+			Band:       e.Band,
+			Channel:    e.Channel,
+			Frequency:  e.Frequency,
+			Signal:     e.Signal,
+			TxRate:     e.TxRate,
+			RxRate:     e.RxRate,
+			Uptime:     e.Uptime,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"clients": clients,
+		"total":   len(clients),
+		"cached":  true,
 	})
 }

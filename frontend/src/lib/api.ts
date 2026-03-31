@@ -132,6 +132,8 @@ export const api = {
       const qs = params.toString() ? `?${params}` : "";
       return apiFetch<ClientScanResult>(`/clients${qs}`, { token });
     },
+    cached: (token: string) =>
+      apiFetch<{ clients: NetworkClient[]; total: number; cached: boolean }>("/clients/cached", { token }),
   },
 
   // Devices
