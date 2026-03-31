@@ -67,6 +67,11 @@ func NewRouter(db *sql.DB, hub *ws.Hub, cfg *config.Config, pool *routeros.Pool)
 			r.Get("/clients", s.handleScanClients)
 			r.Get("/debug/wifi", s.handleDebugWifiRaw)
 
+			// WiFi tracking & MAC lookup
+			r.Get("/wifi/current", s.handleWifiCurrent)
+			r.Get("/wifi/history", s.handleWifiHistory)
+			r.Get("/mac-lookup", s.handleMACLookup)
+
 			// Devices
 			r.Get("/devices", s.handleListDevices)
 			r.Get("/devices/{id}", s.handleGetDevice)
