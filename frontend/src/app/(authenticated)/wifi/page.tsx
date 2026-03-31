@@ -178,6 +178,7 @@ export default function WifiPage() {
 
   const openClientHistory = async (mac: string) => {
     setSelectedMAC(mac);
+    setClientHistory([]); // Clear stale data immediately
     if (!token) return;
     const entries = await apiFetch<WifiEntry[]>(`/wifi/history?mac=${encodeURIComponent(mac)}&limit=200`, token);
     setClientHistory(entries);
@@ -395,8 +396,11 @@ export default function WifiPage() {
       <Dialog open={!!selectedMAC} onOpenChange={(open) => !open && setSelectedMAC(null)}>
         <DialogContent className="sm:max-w-2xl max-h-[80vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>Client History: {selectedMAC && resolveName(selectedMAC) || selectedMAC}</DialogTitle>
+            <DialogTitle>Client History: {(selectedMAC && resolveName(selectedMAC)) || selectedMAC}</DialogTitle>
           </DialogHeader>
+          {clientHistory.length === 0 && selectedMAC && (
+            <div className="py-8 text-center text-muted-foreground">Loading history...</div>
+          )}
           {clientHistory.length > 0 && (() => {
             const latest = clientHistory[0];
             const lookup = macLookups[selectedMAC || ""];

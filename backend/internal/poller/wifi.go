@@ -103,7 +103,7 @@ func (wt *WifiTracker) poll(ctx context.Context) {
 			}
 			for _, reg := range regs {
 				mac := strings.ToUpper(reg.MAC)
-				if mac == "" {
+				if mac == "" || mac == "00:00:00:00:00:00" {
 					continue
 				}
 
