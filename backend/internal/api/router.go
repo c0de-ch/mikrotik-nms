@@ -99,6 +99,10 @@ func NewRouter(db *sql.DB, hub *ws.Hub, cfg *config.Config, pool *routeros.Pool)
 				r.Post("/firmware/routerboard", s.handleUpgradeRouterboard)
 			})
 
+			// NetBox export
+			r.Get("/netbox/export", s.handleNetboxExport)
+			r.Get("/netbox/export/{type}", s.handleNetboxExportCSV)
+
 			// DNS
 			r.Get("/dns", s.handleListDNSServers)
 			r.Post("/dns/resolve", s.handleResolveDNS)
