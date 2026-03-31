@@ -22,6 +22,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useAuth } from "@/context/auth";
+import { api } from "@/lib/api";
 import { useWebSocket } from "@/hooks/use-websocket";
 import { toast } from "sonner";
 
@@ -39,6 +40,7 @@ interface WifiEntry {
   rx_rate: string;
   event: string;
   controller_id: string;
+  controller_name: string;
   recorded_at: string;
 }
 
@@ -49,20 +51,6 @@ interface WifiEvent {
   event: string;
   signal: string;
   time: string;
-}
-
-function getApiBase() {
-  if (process.env.NEXT_PUBLIC_API_URL) return process.env.NEXT_PUBLIC_API_URL;
-  if (typeof window !== "undefined") return `http://${window.location.hostname}:8080`;
-  return "http://localhost:8080";
-}
-
-async function apiFetch<T>(path: string, token: string): Promise<T> {
-  const res = await fetch(`${getApiBase()}/api/v1${path}`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  if (!res.ok) throw new Error("API error");
-  return res.json();
 }
 
 function formatRate(rate?: string): string {
@@ -136,17 +124,17 @@ export default function WifiPage() {
 
   const loadCurrent = useCallback(() => {
     if (!token) return;
-    apiFetch<WifiEntry[]>("/wifi/current", token).then(setCurrent).catch(console.error);
+    api.wifi.current(token).then((d) => setCurrent(d as WifiEntry[])).catch(console.error);
   }, [token]);
 
   const loadHistory = useCallback(() => {
     if (!token) return;
-    apiFetch<WifiEntry[]>("/wifi/history?limit=500", token).then(setHistory).catch(console.error);
+    api.wifi.history(token, { limit: 500 }).then((d) => setHistory(d as WifiEntry[])).catch(console.error);
   }, [token]);
 
   const loadMACLookups = useCallback(() => {
     if (!token) return;
-    apiFetch<MACLookupMap>("/mac-lookup", token).then(setMacLookups).catch(console.error);
+    api.wifi.macLookup(token).then((d) => setMacLookups(d as MACLookupMap)).catch(console.error);
   }, [token]);
 
   useEffect(() => {
@@ -177,8 +165,9 @@ export default function WifiPage() {
 
   const openClientHistory = async (mac: string) => {
     setSelectedMAC(mac);
+    setClientHistory([]); // Clear stale data immediately
     if (!token) return;
-    const entries = await apiFetch<WifiEntry[]>(`/wifi/history?mac=${encodeURIComponent(mac)}&limit=200`, token);
+    const entries = await api.wifi.history(token, { mac, limit: 200 }) as WifiEntry[];
     setClientHistory(entries);
   };
 
@@ -330,6 +319,7 @@ export default function WifiPage() {
                 <TableHead>AP</TableHead>
                 <TableHead>SSID / Band</TableHead>
                 <TableHead>Signal</TableHead>
+                <TableHead>Source</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -344,11 +334,12 @@ export default function WifiPage() {
                   <TableCell className="text-sm">{e.ap_name || "—"}</TableCell>
                   <TableCell className="text-xs">{e.ssid} {e.band && `· ${e.band}`}</TableCell>
                   <TableCell className={`text-xs font-mono ${e.signal ? signalColor(e.signal) : ""}`}>{e.signal || "—"}</TableCell>
+                  <TableCell className="text-xs text-muted-foreground">{e.controller_name || "—"}</TableCell>
                 </TableRow>
               ))}
               {filteredHistory.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={6} className="py-8 text-center text-muted-foreground">No history yet</TableCell>
+                  <TableCell colSpan={7} className="py-8 text-center text-muted-foreground">No history yet</TableCell>
                 </TableRow>
               )}
             </TableBody>
@@ -392,8 +383,11 @@ export default function WifiPage() {
       <Dialog open={!!selectedMAC} onOpenChange={(open) => !open && setSelectedMAC(null)}>
         <DialogContent className="sm:max-w-2xl max-h-[80vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>Client History: {selectedMAC && resolveName(selectedMAC) || selectedMAC}</DialogTitle>
+            <DialogTitle>Client History: {(selectedMAC && resolveName(selectedMAC)) || selectedMAC}</DialogTitle>
           </DialogHeader>
+          {clientHistory.length === 0 && selectedMAC && (
+            <div className="py-8 text-center text-muted-foreground">Loading history...</div>
+          )}
           {clientHistory.length > 0 && (() => {
             const latest = clientHistory[0];
             const lookup = macLookups[selectedMAC || ""];
@@ -415,6 +409,7 @@ export default function WifiPage() {
                 {(latest.channel) && <div className="flex justify-between"><span className="text-muted-foreground">Channel</span><span>{latest.channel}</span></div>}
                 {(withSignal?.signal) && <div className="flex justify-between"><span className="text-muted-foreground">Signal</span><span className={signalColor(withSignal.signal)}>{withSignal.signal}</span></div>}
                 {(latest.tx_rate) && <div className="flex justify-between"><span className="text-muted-foreground">TX / RX Rate</span><span>{formatRate(latest.tx_rate)} / {formatRate(latest.rx_rate)}</span></div>}
+                {latest.controller_name && <div className="flex justify-between"><span className="text-muted-foreground">Source Controller</span><span>{latest.controller_name}</span></div>}
               </div>
 
               {/* Roaming timeline */}
@@ -429,7 +424,7 @@ export default function WifiPage() {
                         <span className="font-medium text-sm">{e.ap_name}</span>
                         {e.signal && <span className={`text-xs font-mono ${signalColor(e.signal)}`}>{e.signal}</span>}
                       </div>
-                      <p className="text-xs text-muted-foreground">{new Date(e.recorded_at).toLocaleString()} · {e.band} · {formatRate(e.tx_rate)}</p>
+                      <p className="text-xs text-muted-foreground">{new Date(e.recorded_at).toLocaleString()} · {e.band} · {formatRate(e.tx_rate)}{e.controller_name ? ` · via ${e.controller_name}` : ""}</p>
                     </div>
                   </div>
                 ))}

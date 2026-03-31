@@ -10,20 +10,45 @@ interface FetchOptions extends RequestInit {
 
 async function apiFetch<T>(path: string, options: FetchOptions = {}): Promise<T> {
   const { token, ...fetchOptions } = options;
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    ...(fetchOptions.headers as Record<string, string>),
+
+  const doFetch = async (accessToken?: string) => {
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      ...(fetchOptions.headers as Record<string, string>),
+    };
+    if (accessToken) {
+      headers["Authorization"] = `Bearer ${accessToken}`;
+    }
+    return fetch(`${getApiBase()}/api/v1${path}`, {
+      ...fetchOptions,
+      headers,
+      credentials: "include",
+    });
   };
 
-  if (token) {
-    headers["Authorization"] = `Bearer ${token}`;
-  }
+  let res = await doFetch(token);
 
-  const res = await fetch(`${getApiBase()}/api/v1${path}`, {
-    ...fetchOptions,
-    headers,
-    credentials: "include",
-  });
+  // Auto-refresh on 401
+  if (res.status === 401 && token) {
+    const refreshToken = typeof window !== "undefined" ? localStorage.getItem("refresh_token") : null;
+    if (refreshToken) {
+      try {
+        const refreshRes = await fetch(`${getApiBase()}/api/v1/auth/refresh`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ refresh_token: refreshToken }),
+        });
+        if (refreshRes.ok) {
+          const tokens = await refreshRes.json();
+          localStorage.setItem("access_token", tokens.access_token);
+          localStorage.setItem("refresh_token", tokens.refresh_token);
+          res = await doFetch(tokens.access_token);
+        }
+      } catch {
+        // refresh failed, fall through to error
+      }
+    }
+  }
 
   if (!res.ok) {
     const body = await res.json().catch(() => ({ error: res.statusText }));
@@ -145,6 +170,20 @@ export const api = {
         token,
         body: JSON.stringify({ device_ids: deviceIds, reboot }),
       }),
+  },
+
+  // WiFi
+  wifi: {
+    current: (token: string) => apiFetch<unknown[]>("/wifi/current", { token }),
+    history: (token: string, params?: { mac?: string; ap?: string; limit?: number }) => {
+      const qs = new URLSearchParams();
+      if (params?.mac) qs.set("mac", params.mac);
+      if (params?.ap) qs.set("ap", params.ap);
+      if (params?.limit) qs.set("limit", String(params.limit));
+      const q = qs.toString() ? `?${qs}` : "";
+      return apiFetch<unknown[]>(`/wifi/history${q}`, { token });
+    },
+    macLookup: (token: string) => apiFetch<Record<string, unknown>>("/mac-lookup", { token }),
   },
 
   // App settings
