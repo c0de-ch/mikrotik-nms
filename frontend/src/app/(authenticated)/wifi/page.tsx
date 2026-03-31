@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import { Wifi, ArrowRight, Clock, Signal, Radio, Search } from "lucide-react";
+import { Wifi, ArrowRight, Clock, Signal, Radio, Search, ChevronDown, ChevronRight } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -101,6 +101,26 @@ function timeAgo(dateStr: string): string {
 }
 
 type MACLookupMap = Record<string, { mac_address: string; ip_address: string; host_name: string; dns_name: string }>;
+
+function UnknownSection({ count, groups, renderGroup }: { count: number; groups: string[]; renderGroup: (g: string) => React.ReactNode }) {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <div>
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="flex w-full items-center gap-2 rounded-lg border border-dashed p-3 text-sm text-muted-foreground hover:bg-muted/30 transition-colors"
+      >
+        {expanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+        <span>Non-wireless / Unknown ({count} entries in {groups.length} groups)</span>
+      </button>
+      {expanded && (
+        <div className="mt-2 space-y-4 opacity-70">
+          {groups.map(renderGroup)}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function WifiPage() {
   const { token } = useAuth();
@@ -229,53 +249,70 @@ export default function WifiPage() {
       </div>
 
       {/* Current view: clients grouped */}
-      {tab === "live" && (
-        <div className="space-y-4">
-          {sortedGroups.map((group) => (
-            <Card key={group}>
-              <CardHeader className="pb-2">
-                <div className="flex items-center gap-2">
-                  <Wifi className="h-4 w-4 text-primary" />
-                  <CardTitle className="text-sm">{group}</CardTitle>
-                  <Badge variant="secondary">{groups[group].length} clients</Badge>
-                </div>
-              </CardHeader>
-              <CardContent className="pt-0">
-                <div className="space-y-1">
-                  {groups[group].map((c) => {
-                    const name = resolveName(c.mac_address, c.host_name);
-                    return (
-                      <button
-                        key={c.mac_address}
-                        onClick={() => openClientHistory(c.mac_address)}
-                        className="flex w-full items-center gap-3 rounded-md px-3 py-2 text-xs hover:bg-muted/50 transition-colors text-left"
-                      >
-                        <div className="flex-1 min-w-0">
-                          <span className="font-medium">{name || c.mac_address}</span>
-                          {name && <span className="text-muted-foreground ml-2 font-mono">{c.mac_address}</span>}
-                        </div>
-                        {groupBy === "ssid" && <span className="text-muted-foreground shrink-0">{c.ap_name}</span>}
-                        {groupBy === "ap" && <span className="text-muted-foreground shrink-0">{c.ssid}</span>}
-                        <span className="text-muted-foreground shrink-0">{c.band}</span>
-                        {c.signal && <span className={`font-mono shrink-0 ${signalColor(c.signal)}`}>{c.signal}</span>}
-                        <span className="text-muted-foreground shrink-0">{formatRate(c.tx_rate)}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </CardContent>
-            </Card>
-          ))}
-          {sortedGroups.length === 0 && (
-            <Card>
-              <CardContent className="py-12 text-center text-muted-foreground">
-                <Wifi className="mx-auto mb-3 h-8 w-8" />
-                <p>No WiFi clients tracked yet. Data appears after the first polling cycle (30s).</p>
-              </CardContent>
-            </Card>
-          )}
-        </div>
-      )}
+      {tab === "live" && (() => {
+        const isUnknown = (key: string) => {
+          if (groupBy === "ssid") return !key || key === "Unknown SSID" || key === "";
+          // For AP grouping, check if all clients in that AP have no SSID/band (likely not wireless)
+          const clients = groups[key];
+          return clients?.every((c) => !c.ssid && !c.band && !c.signal);
+        };
+        const knownGroups = sortedGroups.filter((g) => !isUnknown(g));
+        const unknownGroups = sortedGroups.filter((g) => isUnknown(g));
+        const unknownCount = unknownGroups.reduce((sum, g) => sum + groups[g].length, 0);
+
+        const renderGroup = (group: string) => (
+          <Card key={group}>
+            <CardHeader className="pb-2">
+              <div className="flex items-center gap-2">
+                <Wifi className="h-4 w-4 text-primary" />
+                <CardTitle className="text-sm">{group}</CardTitle>
+                <Badge variant="secondary">{groups[group].length} clients</Badge>
+              </div>
+            </CardHeader>
+            <CardContent className="pt-0">
+              <div className="space-y-1">
+                {groups[group].map((c) => {
+                  const name = resolveName(c.mac_address, c.host_name);
+                  return (
+                    <button
+                      key={c.mac_address}
+                      onClick={() => openClientHistory(c.mac_address)}
+                      className="flex w-full items-center gap-3 rounded-md px-3 py-2 text-xs hover:bg-muted/50 transition-colors text-left"
+                    >
+                      <div className="flex-1 min-w-0">
+                        <span className="font-medium">{name || c.mac_address}</span>
+                        {name && <span className="text-muted-foreground ml-2 font-mono">{c.mac_address}</span>}
+                      </div>
+                      {groupBy === "ssid" && <span className="text-muted-foreground shrink-0">{c.ap_name}</span>}
+                      {groupBy === "ap" && <span className="text-muted-foreground shrink-0">{c.ssid}</span>}
+                      <span className="text-muted-foreground shrink-0">{c.band}</span>
+                      {c.signal && <span className={`font-mono shrink-0 ${signalColor(c.signal)}`}>{c.signal}</span>}
+                      <span className="text-muted-foreground shrink-0">{formatRate(c.tx_rate)}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </CardContent>
+          </Card>
+        );
+
+        return (
+          <div className="space-y-4">
+            {knownGroups.map(renderGroup)}
+            {knownGroups.length === 0 && unknownGroups.length === 0 && (
+              <Card>
+                <CardContent className="py-12 text-center text-muted-foreground">
+                  <Wifi className="mx-auto mb-3 h-8 w-8" />
+                  <p>No WiFi clients tracked yet. Data appears after the first polling cycle (30s).</p>
+                </CardContent>
+              </Card>
+            )}
+            {unknownGroups.length > 0 && (
+              <UnknownSection count={unknownCount} groups={unknownGroups} renderGroup={renderGroup} />
+            )}
+          </div>
+        );
+      })()}
 
       {/* Timeline view */}
       {tab === "timeline" && (
