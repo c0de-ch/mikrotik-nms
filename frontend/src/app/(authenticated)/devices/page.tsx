@@ -402,7 +402,7 @@ export default function DevicesPage() {
               <TableCell className="text-sm">{device.uptime || "—"}</TableCell>
               <TableCell>
                 <div className="flex gap-1" onClick={(e) => e.stopPropagation()}>
-                  <Button variant="ghost" size="icon" render={<a href={`winbox://${device.address}`} title="Open in WinBox" />}>
+                  <Button variant="ghost" size="icon" render={<a href={`http://${device.address}`} target="_blank" rel="noopener" title="Open WebFig" />}>
                     <ExternalLink className="h-4 w-4" />
                   </Button>
                   {isAdmin && (
