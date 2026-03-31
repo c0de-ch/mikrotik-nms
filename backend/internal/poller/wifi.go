@@ -200,11 +200,15 @@ func (wt *WifiTracker) poll(ctx context.Context) {
 		_ = queries.InsertWifiHistory(wt.db, entry)
 
 		if event == "roam" || event == "join" {
+			prevAP := ""
+			if prev != nil {
+				prevAP = prev.AP
+			}
 			wt.hub.Publish("wifi.event", map[string]interface{}{
 				"mac":     mac,
 				"ap":      snap.ap,
 				"event":   event,
-				"prev_ap": prev.AP,
+				"prev_ap": prevAP,
 				"signal":  snap.signal,
 				"time":    now.Format(time.RFC3339),
 			})
