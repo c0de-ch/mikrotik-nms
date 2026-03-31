@@ -125,7 +125,7 @@ function UnknownSection({ count, groups, renderGroup }: { count: number; groups:
 export default function WifiPage() {
   const { token } = useAuth();
   const [tab, setTab] = useState("live");
-  const [groupBy, setGroupBy] = useState<"ap" | "ssid">("ap");
+  const [groupBy, setGroupBy] = useState<"ap" | "ssid">("ssid");
   const [current, setCurrent] = useState<WifiEntry[]>([]);
   const [history, setHistory] = useState<WifiEntry[]>([]);
   const [liveEvents, setLiveEvents] = useState<WifiEvent[]>([]);
