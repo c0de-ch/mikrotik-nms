@@ -22,6 +22,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useAuth } from "@/context/auth";
+import { api } from "@/lib/api";
 import { useWebSocket } from "@/hooks/use-websocket";
 import { toast } from "sonner";
 
@@ -50,20 +51,6 @@ interface WifiEvent {
   event: string;
   signal: string;
   time: string;
-}
-
-function getApiBase() {
-  if (process.env.NEXT_PUBLIC_API_URL) return process.env.NEXT_PUBLIC_API_URL;
-  if (typeof window !== "undefined") return `http://${window.location.hostname}:8080`;
-  return "http://localhost:8080";
-}
-
-async function apiFetch<T>(path: string, token: string): Promise<T> {
-  const res = await fetch(`${getApiBase()}/api/v1${path}`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  if (!res.ok) throw new Error("API error");
-  return res.json();
 }
 
 function formatRate(rate?: string): string {
@@ -137,17 +124,17 @@ export default function WifiPage() {
 
   const loadCurrent = useCallback(() => {
     if (!token) return;
-    apiFetch<WifiEntry[]>("/wifi/current", token).then(setCurrent).catch(console.error);
+    api.wifi.current(token).then((d) => setCurrent(d as WifiEntry[])).catch(console.error);
   }, [token]);
 
   const loadHistory = useCallback(() => {
     if (!token) return;
-    apiFetch<WifiEntry[]>("/wifi/history?limit=500", token).then(setHistory).catch(console.error);
+    api.wifi.history(token, { limit: 500 }).then((d) => setHistory(d as WifiEntry[])).catch(console.error);
   }, [token]);
 
   const loadMACLookups = useCallback(() => {
     if (!token) return;
-    apiFetch<MACLookupMap>("/mac-lookup", token).then(setMacLookups).catch(console.error);
+    api.wifi.macLookup(token).then((d) => setMacLookups(d as MACLookupMap)).catch(console.error);
   }, [token]);
 
   useEffect(() => {
@@ -180,7 +167,7 @@ export default function WifiPage() {
     setSelectedMAC(mac);
     setClientHistory([]); // Clear stale data immediately
     if (!token) return;
-    const entries = await apiFetch<WifiEntry[]>(`/wifi/history?mac=${encodeURIComponent(mac)}&limit=200`, token);
+    const entries = await api.wifi.history(token, { mac, limit: 200 }) as WifiEntry[];
     setClientHistory(entries);
   };
 
