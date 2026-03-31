@@ -64,9 +64,9 @@ export default function DeviceDetailPage() {
         <Badge variant={device.status === "online" ? "default" : "destructive"} className="text-sm">
           {device.status}
         </Badge>
-        <Button variant="outline" render={<a href={`winbox://${device.address}`} />}>
+        <Button variant="outline" render={<a href={`http://${device.address}`} target="_blank" rel="noopener" />}>
           <ExternalLink className="mr-2 h-4 w-4" />
-          Open in WinBox
+          Open WebFig
         </Button>
       </div>
 
