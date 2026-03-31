@@ -204,6 +204,14 @@ func (s *Server) handleScanClients(w http.ResponseWriter, r *http.Request) {
 				if mac == "" {
 					continue
 				}
+				// Skip non-wireless entries
+				if reg.SSID == "" && reg.Band == "" && reg.Signal == "" {
+					iface := strings.ToLower(reg.Interface)
+					if strings.Contains(iface, "ether") || strings.Contains(iface, "bridge") ||
+						strings.Contains(iface, "vlan") || strings.Contains(iface, "pppoe") {
+						continue
+					}
+				}
 				// Resolve AP name: use AP field, or extract from interface name
 				apName := reg.AP
 				if apName == "" && reg.Interface != "" {
