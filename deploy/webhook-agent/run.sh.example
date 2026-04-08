@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+#
+# Sample DEPLOY_COMMAND for the MikroTik NMS deploy webhook agent.
+#
+# Copy to /etc/mikrotik-nms-deploy-agent/run.sh, mark executable, edit
+# LXC_HOST and SSH_KEY to match your environment, then point
+# DEPLOY_COMMAND at this file in /etc/mikrotik-nms-deploy-agent/env.
+#
+# What it does:
+#   1. SSH into the existing MikroTik NMS LXC as root
+#   2. Pull the latest code from origin/main
+#   3. Re-run deploy/lxc/install.sh --skip-deps (rebuilds backend +
+#      frontend, restarts the systemd services)
+#
+# This script ASSUMES the LXC was already created (e.g. via
+# deploy/lxc/proxmox-create.sh) and has the repo cloned at
+# /opt/src/mikrotik-nms.
+
+set -euo pipefail
+
+# --- Configure these ---
+LXC_HOST="${LXC_HOST:-mikrotik-nms.lan}"             # IP or hostname of the LXC
+SSH_KEY="${SSH_KEY:-/etc/mikrotik-nms-deploy-agent/id_ed25519}"
+SRC_DIR="${SRC_DIR:-/opt/src/mikrotik-nms}"
+BRANCH="${BRANCH:-main}"
+# -----------------------
+
+# Forwarded by the agent.
+COMMIT="${DEPLOY_COMMIT:-unknown}"
+COMMIT_MSG="${DEPLOY_COMMIT_MESSAGE:-}"
+
+echo "==> deploying ${COMMIT:0:12} (${COMMIT_MSG}) to ${LXC_HOST}"
+
+ssh -i "$SSH_KEY" \
+    -o StrictHostKeyChecking=accept-new \
+    -o BatchMode=yes \
+    -o ConnectTimeout=10 \
+    "root@$LXC_HOST" \
+    "set -e; cd '$SRC_DIR'; git fetch --all; git reset --hard 'origin/$BRANCH'; ./deploy/lxc/install.sh --skip-deps"
+
+echo "==> deploy OK"
