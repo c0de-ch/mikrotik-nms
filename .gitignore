@@ -10,6 +10,7 @@ bin/
 # Environment
 .env
 .env.local
+deploy/lxc/proxmox-create.env
 
 # Go
 backend/vendor/
