@@ -206,6 +206,176 @@ If you already have a public IP and a domain pointed at your network:
 
 Caddy handles cert provisioning automatically.
 
+#### Option D — WireGuard tunnel to a public-IP host (self-hosted relay)
+
+For users who want zero third-party trust and don't want to expose the
+agent host directly to the internet. The trade-off is that you need **one
+host with a public IP** that you control — a cheap VPS (€3/mo Hetzner /
+Netcup), an OpenWrt router, a homelab gateway, anything always-on with
+port 443 reachable.
+
+The setup is essentially "Tailscale Funnel, but self-hosted". GitHub talks
+HTTPS to the public-IP host; that host runs Caddy + WireGuard and proxies
+the request through an encrypted tunnel to the agent host inside your LAN.
+
+```
+GitHub ──HTTPS──► [VPS / public-IP host]  ──WireGuard──► [agent host (private)]
+                  Caddy :443                              deploy-agent :9000
+                  WG server                               WG client
+```
+
+##### 1. Install WireGuard on both hosts
+
+```sh
+# Debian/Ubuntu, both sides
+sudo apt-get install -y wireguard
+```
+
+##### 2. Generate keys on each side
+
+```sh
+# on the VPS
+wg genkey | tee /etc/wireguard/server.key | wg pubkey > /etc/wireguard/server.pub
+chmod 600 /etc/wireguard/server.key
+
+# on the agent host
+wg genkey | tee /etc/wireguard/agent.key | wg pubkey > /etc/wireguard/agent.pub
+chmod 600 /etc/wireguard/agent.key
+```
+
+Then exchange the `.pub` files between the two hosts (they're not secret).
+
+##### 3. WireGuard server on the VPS
+
+`/etc/wireguard/wg0.conf`:
+
+```ini
+[Interface]
+Address = 10.88.0.1/24
+ListenPort = 51820
+PrivateKey = <contents of /etc/wireguard/server.key>
+
+[Peer]
+# the agent host
+PublicKey = <contents of agent.pub>
+AllowedIPs = 10.88.0.2/32
+PersistentKeepalive = 25
+```
+
+```sh
+sudo systemctl enable --now wg-quick@wg0
+```
+
+Open UDP/51820 on the VPS firewall (and only that port, plus 443 for the
+GitHub-facing Caddy).
+
+##### 4. WireGuard client on the agent host
+
+`/etc/wireguard/wg0.conf`:
+
+```ini
+[Interface]
+Address = 10.88.0.2/24
+PrivateKey = <contents of /etc/wireguard/agent.key>
+
+[Peer]
+# the VPS
+PublicKey = <contents of server.pub>
+Endpoint = vps.example.com:51820
+AllowedIPs = 10.88.0.1/32
+PersistentKeepalive = 25
+```
+
+```sh
+sudo systemctl enable --now wg-quick@wg0
+```
+
+Verify the tunnel:
+
+```sh
+# from the agent host
+ping -c 3 10.88.0.1
+
+# from the VPS
+ping -c 3 10.88.0.2
+curl -s http://10.88.0.2:9000/healthz   # should reach the deploy-agent
+```
+
+##### 5. Caddy on the VPS
+
+`/etc/caddy/Caddyfile`:
+
+```
+nms-deploy.example.com {
+    reverse_proxy 10.88.0.2:9000 {
+        # only forward to the WG peer, never to localhost
+        header_up Host {host}
+    }
+    log {
+        output stdout
+        format console
+    }
+}
+```
+
+```sh
+sudo systemctl reload caddy
+```
+
+DNS-wise, point `nms-deploy.example.com` (an A record) at the VPS public
+IP. Caddy provisions the cert via Let's Encrypt automatically on first hit.
+
+##### 6. Lock the agent down to the WG interface
+
+By default the agent listens on `127.0.0.1:9000`, which means only
+processes on the agent host itself can talk to it — including the
+WireGuard tunnel endpoint, which terminates locally. **The default is
+already correct**: the WG peer's traffic enters the agent host's network
+stack as if it were local, and `127.0.0.1` accepts it via the loopback
+route through `wg0`.
+
+If you'd rather bind the agent explicitly to the WireGuard address for
+clarity, edit `/etc/mikrotik-nms-deploy-agent/env`:
+
+```
+LISTEN=10.88.0.2:9000
+```
+
+Then `systemctl restart mikrotik-nms-deploy-agent`. This makes the intent
+explicit and prevents the agent from being accessible if WireGuard is
+ever down.
+
+##### 7. Webhook URL for GitHub
+
+```
+https://nms-deploy.example.com/webhook
+```
+
+##### Security notes for this setup
+
+- **GitHub never reaches the agent host directly.** The only inbound port
+  the agent host needs open is UDP/51820 from the VPS public IP — and
+  even that you can drop by using a `PersistentKeepalive` and letting the
+  agent host be the dialing peer, never the listener (the config above
+  already does this).
+- **If the VPS is compromised**, the attacker can hit
+  `http://10.88.0.2:9000/webhook` directly, bypassing TLS — but they
+  still need the `WEBHOOK_SECRET` to sign a valid request, and the agent
+  rejects everything else with `401`. So a VPS compromise downgrades the
+  threat to "knows your HMAC secret = can trigger deploys", which is the
+  same threat surface as any other exposure option.
+- **Rotate the WG keys** by regenerating on both sides and updating the
+  configs. No agent restart needed — only `systemctl restart wg-quick@wg0`.
+- **Lock the VPS Caddy down** so only `/webhook` and `/healthz` are
+  reachable, by adding a `handle` block:
+  ```
+  handle /webhook* { reverse_proxy 10.88.0.2:9000 }
+  handle /healthz  { reverse_proxy 10.88.0.2:9000 }
+  handle           { respond 404 }
+  ```
+- The agent host doesn't need *any* inbound port open from the public
+  internet. Only outbound UDP/51820 to the VPS.
+
 ### 7. Add the webhook in GitHub
 
 In your repo on GitHub: **Settings → Webhooks → Add webhook**
