@@ -1,0 +1,37 @@
+[Unit]
+Description=MikroTik NMS frontend (Next.js standalone)
+Documentation=https://github.com/c0de-ch/mikrotik-c0de
+After=network-online.target mikrotik-nms-backend.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mikrotik-nms
+Group=mikrotik-nms
+WorkingDirectory=/opt/mikrotik-nms/frontend
+EnvironmentFile=/etc/mikrotik-nms/env
+ExecStart=/usr/bin/node /opt/mikrotik-nms/frontend/server.js
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65536
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target
