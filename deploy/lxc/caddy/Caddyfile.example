@@ -1,0 +1,41 @@
+{
+	# Disable the admin API; we manage Caddy via systemd.
+	admin off
+}
+
+# The site address is rewritten by install.sh.
+# Examples after substitution:
+#   nms.example.com           → auto Let's Encrypt
+#   nms.lan                   → Caddy "tls internal" (self-signed)
+#   http://nms.lan            → plain HTTP on :80
+#   :80                       → plain HTTP on all hostnames
+@@SITE@@ {
+	encode gzip zstd
+
+	# Backend: REST API + WebSocket (chi router serves both under /api/v1/*)
+	handle /api/* {
+		reverse_proxy 127.0.0.1:8080 {
+			# Forward original host/scheme so the backend can build correct links.
+			header_up X-Forwarded-Proto {scheme}
+			header_up X-Forwarded-Host  {host}
+		}
+	}
+
+	# Everything else: Next.js frontend
+	handle {
+		reverse_proxy 127.0.0.1:3000
+	}
+
+	# Reasonable security headers (frontend is same-origin via this proxy).
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options    "nosniff"
+		Referrer-Policy           "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	log {
+		output stdout
+		format console
+	}
+}
