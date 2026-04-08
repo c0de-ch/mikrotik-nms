@@ -14,7 +14,16 @@
 #
 # Usage:
 #   sudo ./deploy/webhook-agent/install.sh
-#   sudo ./deploy/webhook-agent/install.sh --skip-go    # if Go already installed
+#   sudo ./deploy/webhook-agent/install.sh --skip-go      # if Go already installed
+#   sudo ./deploy/webhook-agent/install.sh --no-expose    # don't ask about exposure
+#   sudo ./deploy/webhook-agent/install.sh --expose tailscale
+#   sudo ./deploy/webhook-agent/install.sh --expose caddy --hostname nms-deploy.example.com
+#
+# After the agent itself is installed, this script (by default) prompts you
+# to choose how GitHub will reach the agent — Tailscale Funnel, Caddy +
+# port-forward, WireGuard tunnel, Cloudflare Tunnel, or skip. The chosen
+# option is then set up by deploy/webhook-agent/expose.sh, which is also
+# runnable on its own at any time.
 
 set -euo pipefail
 
@@ -25,11 +34,16 @@ CONFIG_DIR="/etc/mikrotik-nms-deploy-agent"
 SERVICE_USER="mikrotik-nms-agent"
 
 SKIP_GO=0
+NO_EXPOSE=0
+EXPOSE_MODE=""
+EXPOSE_ARGS=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --skip-go) SKIP_GO=1; shift ;;
-        -h|--help) sed -n '2,18p' "$0"; exit 0 ;;
-        *) echo "unknown flag: $1" >&2; exit 1 ;;
+        --skip-go)   SKIP_GO=1; shift ;;
+        --no-expose) NO_EXPOSE=1; shift ;;
+        --expose)    EXPOSE_MODE="$2"; shift 2 ;;
+        -h|--help)   sed -n '2,24p' "$0"; exit 0 ;;
+        *)           EXPOSE_ARGS+=("$1"); shift ;;
     esac
 done
 
@@ -122,23 +136,41 @@ cat <<EOF
   Script  : $CONFIG_DIR/run.sh    <-- EDIT THIS
   Service : mikrotik-nms-deploy-agent
 
-  Next steps:
+  Local-side next steps (do these BEFORE starting the service):
     1. Edit $CONFIG_DIR/env (set ALLOWED_REPO; review LISTEN, etc.)
-    2. Edit $CONFIG_DIR/run.sh (set LXC_HOST, install an SSH key)
+    2. Edit $CONFIG_DIR/run.sh (set LXC_HOST)
     3. Generate an SSH keypair the agent will use to log into the LXC:
          sudo -u $SERVICE_USER ssh-keygen -t ed25519 -N '' \\
              -f $CONFIG_DIR/id_ed25519
        Then copy the .pub to the LXC's /root/.ssh/authorized_keys
-    4. Start the agent:
-         systemctl start mikrotik-nms-deploy-agent
-         journalctl -u mikrotik-nms-deploy-agent -f
-    5. Expose the listener to GitHub (Tailscale Funnel / Cloudflare Tunnel /
-       reverse proxy). See deploy/webhook-agent/README.md for the recipes.
-    6. Add a webhook in GitHub:
-         repo settings -> Webhooks -> Add webhook
-         Payload URL  = the public URL from step 5
-         Content type = application/json
-         Secret       = the WEBHOOK_SECRET from $CONFIG_DIR/env
-         Events       = "Just the push event"
+    4. systemctl start mikrotik-nms-deploy-agent
+       journalctl -u mikrotik-nms-deploy-agent -f
 ============================================================================
 EOF
+
+# ---- exposure setup ------------------------------------------------------
+#
+# Hand off to expose.sh, which sets up exactly one of: Tailscale Funnel,
+# Caddy + port-forward, WireGuard tunnel, or Cloudflare Tunnel.
+#
+# Behaviour:
+#   --no-expose            → skip entirely (current default for non-TTY runs)
+#   --expose MODE [args]   → run expose.sh MODE [args] non-interactively
+#   (otherwise + TTY)      → run expose.sh with no args, which prompts a menu
+#   (otherwise + non-TTY)  → skip with a notice
+
+if [[ "$NO_EXPOSE" == "1" ]]; then
+    log "skipping exposure setup (--no-expose)"
+elif [[ -n "$EXPOSE_MODE" ]]; then
+    log "running expose.sh $EXPOSE_MODE ${EXPOSE_ARGS[*]}"
+    "$SCRIPT_DIR/expose.sh" "$EXPOSE_MODE" "${EXPOSE_ARGS[@]}"
+elif [[ -t 0 || -e /dev/tty ]]; then
+    "$SCRIPT_DIR/expose.sh"
+else
+    cat <<EOF
+
+  No TTY detected — exposure setup skipped.
+  Run this when you're ready:
+      sudo $SCRIPT_DIR/expose.sh
+EOF
+fi

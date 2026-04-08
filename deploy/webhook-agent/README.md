@@ -104,6 +104,16 @@ The installer:
 4. Drops a templated env file to `/etc/mikrotik-nms-deploy-agent/env` with a randomly-generated `WEBHOOK_SECRET`.
 5. Drops a sample deploy script to `/etc/mikrotik-nms-deploy-agent/run.sh`.
 6. Installs and enables the systemd unit (but does not start it — you have to edit the configs first).
+7. Hands off to `expose.sh`, which prompts you to pick how GitHub should reach the agent (Tailscale Funnel / Caddy / WireGuard / Cloudflare Tunnel / skip).
+
+Skip the exposure prompt with `--no-expose`, or pick a mode non-interactively:
+
+```sh
+sudo ./deploy/webhook-agent/install.sh --no-expose
+sudo ./deploy/webhook-agent/install.sh --expose tailscale
+sudo ./deploy/webhook-agent/install.sh --expose caddy --hostname nms-deploy.example.com
+sudo ./deploy/webhook-agent/install.sh --expose wireguard --endpoint vps.example.com:51820 --server-pubkey AAAA...
+```
 
 ### 2. Edit the env file
 
@@ -164,7 +174,19 @@ deploy-agent listening on 127.0.0.1:9000
 
 ### 6. Expose `/webhook` to GitHub
 
-GitHub needs to be able to reach the agent. The agent listens on `127.0.0.1:9000` by default; you need a reverse-proxy or tunnel that takes inbound HTTPS traffic and forwards it to that local port. Pick whichever fits your setup:
+GitHub needs to be able to reach the agent. The agent listens on `127.0.0.1:9000` by default; you need a reverse-proxy or tunnel that takes inbound HTTPS traffic and forwards it to that local port.
+
+`install.sh` already prompted you to pick one when it ran. If you skipped, or want to switch to a different mode later, **`expose.sh`** sets up exactly one option at a time and is fully re-runnable:
+
+```sh
+sudo ./deploy/webhook-agent/expose.sh                    # interactive menu
+sudo ./deploy/webhook-agent/expose.sh tailscale [--authkey KEY]
+sudo ./deploy/webhook-agent/expose.sh caddy --hostname nms-deploy.example.com
+sudo ./deploy/webhook-agent/expose.sh wireguard --endpoint vps.example.com:51820 --server-pubkey AAAA...
+sudo ./deploy/webhook-agent/expose.sh cloudflare
+```
+
+Each option below describes what `expose.sh` does for that mode (so you can audit before running) and what manual steps remain afterwards.
 
 #### Option A — Tailscale Funnel (recommended, easiest)
 
