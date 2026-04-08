@@ -19,21 +19,28 @@ type WifiHistoryEntry struct {
 	RxRate       string    `json:"rx_rate"`
 	Event        string    `json:"event"`
 	ControllerID string    `json:"controller_id"`
-	RecordedAt   time.Time `json:"recorded_at"`
+	// Source identifies where this row came from:
+	//   "log"      — parsed from the controller wireless log (authoritative)
+	//   "snapshot" — inferred from registration-table polling
+	//   "absence"  — absence safety net (client missing for N polls)
+	//   ""         — legacy rows from before the source column existed
+	Source     string    `json:"source"`
+	Reason     string    `json:"reason"` // disconnect reason for log-based leaves
+	RecordedAt time.Time `json:"recorded_at"`
 }
 
 func InsertWifiHistory(db *sql.DB, e *WifiHistoryEntry) error {
 	_, err := db.Exec(
-		`INSERT INTO wifi_history (mac_address, ip_address, host_name, ap_name, ssid, band, channel, signal, tx_rate, rx_rate, event, controller_id)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		e.MACAddress, e.IPAddress, e.HostName, e.APName, e.SSID, e.Band, e.Channel, e.Signal, e.TxRate, e.RxRate, e.Event, e.ControllerID,
+		`INSERT INTO wifi_history (mac_address, ip_address, host_name, ap_name, ssid, band, channel, signal, tx_rate, rx_rate, event, controller_id, source, reason)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		e.MACAddress, e.IPAddress, e.HostName, e.APName, e.SSID, e.Band, e.Channel, e.Signal, e.TxRate, e.RxRate, e.Event, e.ControllerID, e.Source, e.Reason,
 	)
 	return err
 }
 
 func GetWifiHistoryByMAC(db *sql.DB, mac string, limit int) ([]WifiHistoryEntry, error) {
 	rows, err := db.Query(
-		`SELECT id, mac_address, ip_address, host_name, ap_name, ssid, band, channel, signal, tx_rate, rx_rate, event, controller_id, recorded_at
+		`SELECT id, mac_address, ip_address, host_name, ap_name, ssid, band, channel, signal, tx_rate, rx_rate, event, controller_id, source, reason, recorded_at
 		 FROM wifi_history WHERE mac_address=? ORDER BY recorded_at DESC LIMIT ?`, mac, limit,
 	)
 	if err != nil {
@@ -45,7 +52,7 @@ func GetWifiHistoryByMAC(db *sql.DB, mac string, limit int) ([]WifiHistoryEntry,
 
 func GetWifiHistoryByAP(db *sql.DB, ap string, limit int) ([]WifiHistoryEntry, error) {
 	rows, err := db.Query(
-		`SELECT id, mac_address, ip_address, host_name, ap_name, ssid, band, channel, signal, tx_rate, rx_rate, event, controller_id, recorded_at
+		`SELECT id, mac_address, ip_address, host_name, ap_name, ssid, band, channel, signal, tx_rate, rx_rate, event, controller_id, source, reason, recorded_at
 		 FROM wifi_history WHERE ap_name=? ORDER BY recorded_at DESC LIMIT ?`, ap, limit,
 	)
 	if err != nil {
@@ -57,7 +64,7 @@ func GetWifiHistoryByAP(db *sql.DB, ap string, limit int) ([]WifiHistoryEntry, e
 
 func GetWifiHistoryRecent(db *sql.DB, limit int) ([]WifiHistoryEntry, error) {
 	rows, err := db.Query(
-		`SELECT id, mac_address, ip_address, host_name, ap_name, ssid, band, channel, signal, tx_rate, rx_rate, event, controller_id, recorded_at
+		`SELECT id, mac_address, ip_address, host_name, ap_name, ssid, band, channel, signal, tx_rate, rx_rate, event, controller_id, source, reason, recorded_at
 		 FROM wifi_history ORDER BY recorded_at DESC LIMIT ?`, limit,
 	)
 	if err != nil {
@@ -96,7 +103,7 @@ func scanWifiHistory(rows *sql.Rows) ([]WifiHistoryEntry, error) {
 	var entries []WifiHistoryEntry
 	for rows.Next() {
 		var e WifiHistoryEntry
-		if err := rows.Scan(&e.ID, &e.MACAddress, &e.IPAddress, &e.HostName, &e.APName, &e.SSID, &e.Band, &e.Channel, &e.Signal, &e.TxRate, &e.RxRate, &e.Event, &e.ControllerID, &e.RecordedAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.MACAddress, &e.IPAddress, &e.HostName, &e.APName, &e.SSID, &e.Band, &e.Channel, &e.Signal, &e.TxRate, &e.RxRate, &e.Event, &e.ControllerID, &e.Source, &e.Reason, &e.RecordedAt); err != nil {
 			return nil, err
 		}
 		entries = append(entries, e)

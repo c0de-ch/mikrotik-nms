@@ -41,6 +41,8 @@ interface WifiEntry {
   event: string;
   controller_id: string;
   controller_name: string;
+  source: string;
+  reason: string;
   recorded_at: string;
 }
 
@@ -76,6 +78,36 @@ function eventBadge(event: string) {
     case "roam": return <Badge className="bg-blue-100 text-blue-700">roam</Badge>;
     default: return <Badge variant="secondary">seen</Badge>;
   }
+}
+
+// SourceBadge shows where a wifi_history row came from. "log" = parsed
+// from the controller's wireless log (authoritative). "snapshot" = caught
+// by the registration-table poll. "absence" = inferred because the client
+// disappeared from the registration table for several polls (safety net).
+function SourceBadge({ source }: { source: string }) {
+  let label = source;
+  let title = "";
+  let cls = "bg-muted text-muted-foreground";
+  switch (source) {
+    case "log":
+      label = "log";
+      title = "Parsed from controller wireless log";
+      cls = "bg-slate-100 text-slate-700";
+      break;
+    case "snapshot":
+      label = "poll";
+      title = "Inferred from registration-table polling";
+      cls = "bg-amber-100 text-amber-700";
+      break;
+    case "absence":
+      label = "absence";
+      title = "Client missing from registration table for >5min (fallback)";
+      cls = "bg-orange-100 text-orange-700";
+      break;
+    default:
+      return null;
+  }
+  return <Badge title={title} className={`text-[10px] font-normal ${cls}`}>{label}</Badge>;
 }
 
 function timeAgo(dateStr: string): string {
@@ -427,7 +459,16 @@ export default function WifiPage() {
               {/* Roaming timeline */}
               <h3 className="font-medium text-sm">Movement Timeline</h3>
               <div className="space-y-0">
-                {clientHistory.filter((e) => e.event !== "seen").map((e) => (
+                {clientHistory.filter((e) => e.event !== "seen").map((e) => {
+                  const detail = [
+                    formatDateTime(e.recorded_at),
+                    e.band,
+                    formatRate(e.tx_rate),
+                  ].filter(Boolean).join(" · ");
+                  const trailing: string[] = [];
+                  if (e.controller_name) trailing.push(`via ${e.controller_name}`);
+                  if (e.event === "leave" && e.reason) trailing.push(e.reason);
+                  return (
                   <div key={e.id} className="flex items-center gap-3 border-l-2 border-muted pl-4 py-2 ml-2 relative">
                     <div className="absolute -left-1.5 h-3 w-3 rounded-full bg-background border-2 border-primary" />
                     <div className="flex-1">
@@ -435,11 +476,13 @@ export default function WifiPage() {
                         {eventBadge(e.event)}
                         <span className="font-medium text-sm">{e.ap_name}</span>
                         {e.signal && <span className={`text-xs font-mono ${signalColor(e.signal)}`}>{e.signal}</span>}
+                        {e.source && <SourceBadge source={e.source} />}
                       </div>
-                      <p className="text-xs text-muted-foreground">{formatDateTime(e.recorded_at)} · {e.band} · {formatRate(e.tx_rate)}{e.controller_name ? ` · via ${e.controller_name}` : ""}</p>
+                      <p className="text-xs text-muted-foreground">{detail}{trailing.length > 0 ? ` · ${trailing.join(" · ")}` : ""}</p>
                     </div>
                   </div>
-                ))}
+                  );
+                })}
               </div>
               {clientHistory.filter((e) => e.event !== "seen").length === 0 && (
                 <p className="text-sm text-muted-foreground">No roaming events recorded yet — only polling data.</p>
