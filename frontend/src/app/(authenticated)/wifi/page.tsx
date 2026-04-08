@@ -88,6 +88,18 @@ function timeAgo(dateStr: string): string {
   return `${Math.floor(hrs / 24)}d ago`;
 }
 
+// formatDateTime renders an ISO date string as "dd.mm.yyyy HH:mm" in 24h
+// format using the user's local timezone.
+function formatDateTime(dateStr: string): string {
+  const d = new Date(dateStr);
+  const dd = String(d.getDate()).padStart(2, "0");
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const yyyy = d.getFullYear();
+  const hh = String(d.getHours()).padStart(2, "0");
+  const min = String(d.getMinutes()).padStart(2, "0");
+  return `${dd}.${mm}.${yyyy} ${hh}:${min}`;
+}
+
 type MACLookupMap = Record<string, { mac_address: string; ip_address: string; host_name: string; dns_name: string }>;
 
 function UnknownSection({ count, groups, renderGroup }: { count: number; groups: string[]; renderGroup: (g: string) => React.ReactNode }) {
@@ -424,7 +436,7 @@ export default function WifiPage() {
                         <span className="font-medium text-sm">{e.ap_name}</span>
                         {e.signal && <span className={`text-xs font-mono ${signalColor(e.signal)}`}>{e.signal}</span>}
                       </div>
-                      <p className="text-xs text-muted-foreground">{new Date(e.recorded_at).toLocaleString()} · {e.band} · {formatRate(e.tx_rate)}{e.controller_name ? ` · via ${e.controller_name}` : ""}</p>
+                      <p className="text-xs text-muted-foreground">{formatDateTime(e.recorded_at)} · {e.band} · {formatRate(e.tx_rate)}{e.controller_name ? ` · via ${e.controller_name}` : ""}</p>
                     </div>
                   </div>
                 ))}
