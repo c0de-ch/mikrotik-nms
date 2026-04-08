@@ -213,7 +213,7 @@ func (wt *WifiTracker) poll(ctx context.Context) {
 		}
 		state.MissedPolls++
 		if state.MissedPolls >= missedPollThreshold {
-			wt.emitLeave(mac, state.AP, state.SSID, state.Signal, "", macLookups, now)
+			wt.emitLeave(mac, state.AP, state.SSID, state.Signal, "absence", "", macLookups, now)
 			delete(wt.clients, mac)
 		}
 	}
@@ -277,6 +277,7 @@ func (wt *WifiTracker) handleLogEvent(ev *routeros.WirelessLogEvent, devID strin
 			MACAddress: ev.MAC, IPAddress: ip, HostName: hostname,
 			APName: ev.AP, SSID: ev.SSID, Signal: ev.Signal,
 			Event: event, ControllerID: devID,
+			Source: "log",
 		})
 		wt.hub.Publish("wifi.event", map[string]interface{}{
 			"mac":     ev.MAC,
@@ -284,12 +285,14 @@ func (wt *WifiTracker) handleLogEvent(ev *routeros.WirelessLogEvent, devID strin
 			"event":   event,
 			"prev_ap": prevAP,
 			"signal":  ev.Signal,
+			"source":  "log",
 			"time":    now.Format(time.RFC3339),
 		})
 
 	case "disconnected":
 		ap := ev.AP
 		ssid := ev.SSID
+		signal := ev.Signal
 		if prev := wt.clients[ev.MAC]; prev != nil {
 			if ap == "" {
 				ap = prev.AP
@@ -297,8 +300,11 @@ func (wt *WifiTracker) handleLogEvent(ev *routeros.WirelessLogEvent, devID strin
 			if ssid == "" {
 				ssid = prev.SSID
 			}
+			if signal == "" {
+				signal = prev.Signal
+			}
 		}
-		wt.emitLeave(ev.MAC, ap, ssid, ev.Signal, ev.Reason, macLookups, now)
+		wt.emitLeave(ev.MAC, ap, ssid, signal, "log", ev.Reason, macLookups, now)
 		delete(wt.clients, ev.MAC)
 
 	case "roamed":
@@ -314,6 +320,7 @@ func (wt *WifiTracker) handleLogEvent(ev *routeros.WirelessLogEvent, devID strin
 			MACAddress: ev.MAC, IPAddress: ip, HostName: hostname,
 			APName: ev.ToAP, SSID: ev.ToSSID, Signal: ev.Signal,
 			Event: "roam", ControllerID: devID,
+			Source: "log",
 		})
 		wt.hub.Publish("wifi.event", map[string]interface{}{
 			"mac":     ev.MAC,
@@ -321,6 +328,7 @@ func (wt *WifiTracker) handleLogEvent(ev *routeros.WirelessLogEvent, devID strin
 			"event":   "roam",
 			"prev_ap": prevAP,
 			"signal":  ev.Signal,
+			"source":  "log",
 			"time":    now.Format(time.RFC3339),
 		})
 	}
@@ -341,6 +349,7 @@ func (wt *WifiTracker) emitFromSnapshot(snap *wifiSnapshot, event, prevAP string
 		RxRate:       snap.rxRate,
 		Event:        event,
 		ControllerID: snap.devID,
+		Source:       "snapshot",
 	})
 	wt.hub.Publish("wifi.event", map[string]interface{}{
 		"mac":     snap.mac,
@@ -348,22 +357,26 @@ func (wt *WifiTracker) emitFromSnapshot(snap *wifiSnapshot, event, prevAP string
 		"event":   event,
 		"prev_ap": prevAP,
 		"signal":  snap.signal,
+		"source":  "snapshot",
 		"time":    now.Format(time.RFC3339),
 	})
 }
 
-func (wt *WifiTracker) emitLeave(mac, ap, ssid, signal, reason string, macLookups map[string]*queries.MACLookup, now time.Time) {
+func (wt *WifiTracker) emitLeave(mac, ap, ssid, signal, source, reason string, macLookups map[string]*queries.MACLookup, now time.Time) {
 	hostname, ip := lookupHostnameIP(mac, macLookups)
 	_ = queries.InsertWifiHistory(wt.db, &queries.WifiHistoryEntry{
 		MACAddress: mac, IPAddress: ip, HostName: hostname,
 		APName: ap, SSID: ssid, Signal: signal,
-		Event: "leave",
+		Event:  "leave",
+		Source: source,
+		Reason: reason,
 	})
 	payload := map[string]interface{}{
 		"mac":    mac,
 		"ap":     ap,
 		"event":  "leave",
 		"signal": signal,
+		"source": source,
 		"time":   now.Format(time.RFC3339),
 	}
 	if reason != "" {
