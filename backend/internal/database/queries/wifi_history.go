@@ -77,7 +77,7 @@ func GetWifiHistoryRecent(db *sql.DB, limit int) ([]WifiHistoryEntry, error) {
 // GetWifiClientsCurrentAP returns the latest AP for each active MAC.
 func GetWifiClientsCurrentAP(db *sql.DB) ([]WifiHistoryEntry, error) {
 	rows, err := db.Query(
-		`SELECT w.id, w.mac_address, w.ip_address, w.host_name, w.ap_name, w.ssid, w.band, w.channel, w.signal, w.tx_rate, w.rx_rate, w.event, w.controller_id, w.recorded_at
+		`SELECT w.id, w.mac_address, w.ip_address, w.host_name, w.ap_name, w.ssid, w.band, w.channel, w.signal, w.tx_rate, w.rx_rate, w.event, w.controller_id, w.source, w.reason, w.recorded_at
 		 FROM wifi_history w
 		 INNER JOIN (SELECT mac_address, MAX(recorded_at) as max_time FROM wifi_history GROUP BY mac_address) latest
 		 ON w.mac_address = latest.mac_address AND w.recorded_at = latest.max_time

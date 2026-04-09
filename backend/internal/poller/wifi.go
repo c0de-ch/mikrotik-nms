@@ -14,10 +14,21 @@ import (
 
 // clientState tracks the last known state of a wifi client.
 type clientState struct {
-	AP          string
-	SSID        string
-	Signal      string
-	MissedPolls int // how many consecutive polls the client was absent
+	AP           string
+	SSID         string
+	Signal       string
+	MissedPolls  int            // how many consecutive polls the client was absent
+	PendingLeave *pendingLeave  // deferred leave awaiting registration-table confirmation
+}
+
+// pendingLeave holds a log-based disconnect that has not yet been confirmed
+// by the absence of the client from the registration table.
+type pendingLeave struct {
+	AP     string
+	SSID   string
+	Signal string
+	Source string
+	Reason string
 }
 
 // WifiTracker periodically polls CAPsMAN/WiFi registrations and records history.
@@ -152,14 +163,10 @@ func (wt *WifiTracker) poll(ctx context.Context) {
 				if mac == "" || mac == "00:00:00:00:00:00" {
 					continue
 				}
-				// Skip non-wireless entries.
+				// Skip non-wireless entries — a real wireless registration
+				// will have at least an SSID, band, or signal.
 				if reg.SSID == "" && reg.Band == "" && reg.Signal == "" {
-					iface := strings.ToLower(reg.Interface)
-					if strings.Contains(iface, "ether") || strings.Contains(iface, "bridge") ||
-						strings.Contains(iface, "vlan") || strings.Contains(iface, "pppoe") ||
-						strings.Contains(iface, "l2tp") || strings.Contains(iface, "ovpn") {
-						continue
-					}
+					continue
 				}
 				apName := reg.AP
 				if apName == "" && reg.Interface != "" {
@@ -201,6 +208,25 @@ func (wt *WifiTracker) poll(ctx context.Context) {
 		prev.Signal = snap.signal
 		prev.SSID = snap.ssid
 		prev.MissedPolls = 0
+	}
+
+	// Phase 3.5: resolve deferred leaves. If a client had a log-based
+	// disconnect but is still in the registration table, the disconnect was
+	// transient — suppress it. Otherwise confirm and emit the leave.
+	for mac, state := range wt.clients {
+		if state.PendingLeave == nil {
+			continue
+		}
+		if seenMACs[mac] {
+			// Client is still registered — transient disconnect, suppress.
+			state.PendingLeave = nil
+			continue
+		}
+		// Client is gone from registration table — confirm the leave.
+		wt.emitLeave(mac, state.PendingLeave.AP, state.PendingLeave.SSID,
+			state.PendingLeave.Signal, state.PendingLeave.Source,
+			state.PendingLeave.Reason, macLookups, now)
+		delete(wt.clients, mac)
 	}
 
 	// Phase 4: absence safety net. Only fires when a client has been missing
@@ -262,12 +288,33 @@ func (wt *WifiTracker) handleLogEvent(ev *routeros.WirelessLogEvent, devID strin
 	switch ev.Event {
 	case "connected", "reconnecting":
 		prev := wt.clients[ev.MAC]
+
+		// If there is a pending leave to the same AP, this is a transient
+		// reconnect — suppress both the leave and the redundant join.
+		if prev != nil && prev.PendingLeave != nil && prev.PendingLeave.AP == ev.AP {
+			prev.PendingLeave = nil
+			prev.Signal = ev.Signal
+			prev.SSID = ev.SSID
+			return
+		}
+
+		// If there is a pending leave to a *different* AP, flush it before
+		// recording the join on the new AP.
 		prevAP := ""
 		event := "join"
 		if prev != nil {
-			prevAP = prev.AP
-			if prev.AP != "" && prev.AP != ev.AP {
+			if prev.PendingLeave != nil {
+				wt.emitLeave(ev.MAC, prev.PendingLeave.AP, prev.PendingLeave.SSID,
+					prev.PendingLeave.Signal, prev.PendingLeave.Source,
+					prev.PendingLeave.Reason, macLookups, now)
+				prev.PendingLeave = nil
+				prevAP = prev.AP
 				event = "roam"
+			} else {
+				prevAP = prev.AP
+				if prev.AP != "" && prev.AP != ev.AP {
+					event = "roam"
+				}
 			}
 		}
 		wt.clients[ev.MAC] = &clientState{
@@ -293,7 +340,8 @@ func (wt *WifiTracker) handleLogEvent(ev *routeros.WirelessLogEvent, devID strin
 		ap := ev.AP
 		ssid := ev.SSID
 		signal := ev.Signal
-		if prev := wt.clients[ev.MAC]; prev != nil {
+		prev := wt.clients[ev.MAC]
+		if prev != nil {
 			if ap == "" {
 				ap = prev.AP
 			}
@@ -303,9 +351,16 @@ func (wt *WifiTracker) handleLogEvent(ev *routeros.WirelessLogEvent, devID strin
 			if signal == "" {
 				signal = prev.Signal
 			}
+		} else {
+			prev = &clientState{AP: ap, SSID: ssid, Signal: signal}
+			wt.clients[ev.MAC] = prev
 		}
-		wt.emitLeave(ev.MAC, ap, ssid, signal, "log", ev.Reason, macLookups, now)
-		delete(wt.clients, ev.MAC)
+		// Defer the leave — it will be confirmed or suppressed after the
+		// registration-table snapshot in the same poll cycle.
+		prev.PendingLeave = &pendingLeave{
+			AP: ap, SSID: ssid, Signal: signal,
+			Source: "log", Reason: ev.Reason,
+		}
 
 	case "roamed":
 		prev := wt.clients[ev.MAC]
