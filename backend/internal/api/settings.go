@@ -28,8 +28,10 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		"firmware_interval":         true,
 		"wifi_interval":             true,
 		"client_discovery_interval": true,
+		"network_health_interval":   true,
 		"retention_days":            true,
 		"dark_mode":                 true,
+		"kea_url":                   true,
 	}
 
 	for key, value := range req {

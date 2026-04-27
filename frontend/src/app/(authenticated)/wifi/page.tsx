@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import { Wifi, ArrowRight, Clock, Signal, Radio, Search, ChevronDown, ChevronRight } from "lucide-react";
+import { Wifi, ArrowRight, Clock, Radio, Search, ChevronDown, ChevronRight } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -198,6 +198,12 @@ export default function WifiPage() {
     return "";
   };
 
+  // Resolve a MAC to an IP address
+  const resolveIP = (mac: string, entryIP?: string) => {
+    if (entryIP) return entryIP;
+    return macLookups[mac]?.ip_address || "";
+  };
+
   // Live wifi events via WebSocket
   useWebSocket("wifi.event", useCallback((data: unknown) => {
     const evt = data as WifiEvent;
@@ -308,13 +314,16 @@ export default function WifiPage() {
                   const name = resolveName(c.mac_address, c.host_name);
                   return (
                     <button
-                      key={c.mac_address}
+                      key={c.id}
                       onClick={() => openClientHistory(c.mac_address)}
                       className="flex w-full items-center gap-3 rounded-md px-3 py-2 text-xs hover:bg-muted/50 transition-colors text-left"
                     >
                       <div className="flex-1 min-w-0">
                         <span className="font-medium">{name || c.mac_address}</span>
                         {name && <span className="text-muted-foreground ml-2 font-mono">{c.mac_address}</span>}
+                        {resolveIP(c.mac_address, c.ip_address) && (
+                          <span className="text-muted-foreground ml-2 font-mono">{resolveIP(c.mac_address, c.ip_address)}</span>
+                        )}
                       </div>
                       {groupBy === "ssid" && <span className="text-muted-foreground shrink-0">{c.ap_name}</span>}
                       {groupBy === "ap" && <span className="text-muted-foreground shrink-0">{c.ssid}</span>}
@@ -372,8 +381,13 @@ export default function WifiPage() {
                   <TableCell className="text-xs text-muted-foreground whitespace-nowrap">{timeAgo(e.recorded_at)}</TableCell>
                   <TableCell>{eventBadge(e.event)}</TableCell>
                   <TableCell>
-                    <span className="font-medium text-sm">{resolveName(e.mac_address, e.host_name) || e.mac_address}</span>
-                    {resolveName(e.mac_address, e.host_name) && <span className="text-xs text-muted-foreground ml-1 font-mono">{e.mac_address}</span>}
+                    <div>
+                      <span className="font-medium text-sm">{resolveName(e.mac_address, e.host_name) || e.mac_address}</span>
+                      {resolveName(e.mac_address, e.host_name) && <span className="text-xs text-muted-foreground ml-1 font-mono">{e.mac_address}</span>}
+                    </div>
+                    {resolveIP(e.mac_address, e.ip_address) && (
+                      <span className="text-xs text-muted-foreground font-mono">{resolveIP(e.mac_address, e.ip_address)}</span>
+                    )}
                   </TableCell>
                   <TableCell className="text-sm">{e.ap_name || "—"}</TableCell>
                   <TableCell className="text-xs">{e.ssid} {e.band && `· ${e.band}`}</TableCell>
@@ -403,11 +417,16 @@ export default function WifiPage() {
               </CardContent>
             </Card>
           )}
-          {liveEvents.map((evt, i) => (
+          {liveEvents.map((evt, i) => {
+            const evtName = resolveName(evt.mac);
+            const evtIP = resolveIP(evt.mac);
+            return (
             <div key={i} className="flex items-center gap-3 rounded-lg border p-3 text-sm">
               <div className="shrink-0">{eventBadge(evt.event)}</div>
               <div className="flex-1 min-w-0">
-                <span className="font-mono font-medium">{evt.mac}</span>
+                <span className="font-medium">{evtName || <span className="font-mono">{evt.mac}</span>}</span>
+                {evtName && <span className="text-muted-foreground ml-2 font-mono text-xs">{evt.mac}</span>}
+                {evtIP && <span className="text-muted-foreground ml-2 font-mono text-xs">{evtIP}</span>}
                 {evt.event === "roam" && (
                   <span className="text-muted-foreground ml-2">
                     {evt.prev_ap} <ArrowRight className="inline h-3 w-3" /> {evt.ap}
@@ -419,7 +438,8 @@ export default function WifiPage() {
               {evt.signal && <span className={`font-mono text-xs ${signalColor(evt.signal)}`}>{evt.signal}</span>}
               <span className="text-xs text-muted-foreground shrink-0">{timeAgo(evt.time)}</span>
             </div>
-          ))}
+            );
+          })}
         </div>
       )}
 

@@ -233,9 +233,13 @@ func (s *Server) handleScanClients(w http.ResponseWriter, r *http.Request) {
 					existing.RxRate = reg.RxRate
 					existing.Uptime = reg.Uptime
 					existing.Source = "wifi"
+					if existing.IP == "" && reg.LastIP != "" {
+						existing.IP = reg.LastIP
+					}
 				} else {
 					clientMap[mac] = &networkClient{
 						MAC:        mac,
+						IP:         reg.LastIP,
 						Interface:  reg.Interface,
 						Source:     "wifi",
 						DeviceID:   dev.ID,

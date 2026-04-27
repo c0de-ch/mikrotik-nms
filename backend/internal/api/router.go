@@ -119,6 +119,10 @@ func NewRouter(db *sql.DB, hub *ws.Hub, cfg *config.Config, pool *routeros.Pool)
 				r.Delete("/dns/{id}", s.handleDeleteDNSServer)
 			})
 
+			// Network health (bridge / STP / loop detection)
+			r.Get("/network-health", s.handleNetworkHealth)
+			r.Get("/network-health/events", s.handleNetworkHealthEvents)
+
 			// App settings
 			r.Get("/settings", s.handleGetSettings)
 			r.Group(func(r chi.Router) {

@@ -13,6 +13,7 @@ import {
   Monitor,
   Settings,
   FileOutput,
+  ShieldAlert,
 } from "lucide-react";
 import {
   Sidebar,
@@ -37,6 +38,7 @@ const navItems = [
   { title: "Clients", href: "/clients", icon: Monitor },
   { title: "WiFi", href: "/wifi", icon: WifiIcon },
   { title: "Traffic", href: "/traffic", icon: Activity },
+  { title: "Network Health", href: "/network-health", icon: ShieldAlert },
   { title: "Firmware", href: "/firmware", icon: Download },
 ];
 

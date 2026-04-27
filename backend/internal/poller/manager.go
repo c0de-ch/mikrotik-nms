@@ -49,6 +49,9 @@ func (m *Manager) Start() {
 	clientDisc := NewClientDiscoveryPoller(m.db, m.pool, resolver.New(m.db), 15*time.Minute)
 	go clientDisc.Run(ctx)
 
+	netHealth := NewNetworkHealthPoller(m.db, m.pool, m.hub, m.cfg.NetworkHealthInterval)
+	go netHealth.Run(ctx)
+
 	log.Println("poller: started all pollers")
 }
 
@@ -390,6 +393,12 @@ func (m *Manager) retentionLoop(ctx context.Context) {
 				log.Printf("poller retention: client history: %v", err)
 			} else if n > 0 {
 				log.Printf("poller retention: deleted %d old client history entries", n)
+			}
+
+			if n, err := queries.DeleteOldLoopEvents(m.db, wifiCutoff); err != nil {
+				log.Printf("poller retention: loop events: %v", err)
+			} else if n > 0 {
+				log.Printf("poller retention: deleted %d old loop events", n)
 			}
 		}
 	}

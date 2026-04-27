@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import { Plus, Trash2, Power, PowerOff, Save, Moon, Sun } from "lucide-react";
+import { Plus, Trash2, Power, PowerOff, Save, Moon, Sun, Pencil } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -19,19 +19,12 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
-  DialogTrigger,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useAuth } from "@/context/auth";
 import { api, type DNSServer } from "@/lib/api";
 import { toast } from "sonner";
-
-function formatInterval(seconds: number): string {
-  if (seconds >= 3600) return `${seconds / 3600}h`;
-  if (seconds >= 60) return `${seconds / 60}m`;
-  return `${seconds}s`;
-}
 
 const intervalOptions = [
   { label: "10s", value: "10" },
@@ -70,6 +63,7 @@ const intervalSettings: IntervalSetting[] = [
   { key: "topology_interval", label: "Topology Discovery", description: "How often to discover neighbors and rebuild topology" },
   { key: "wifi_interval", label: "WiFi Tracking", description: "How often to poll CAPsMAN for client positions" },
   { key: "client_discovery_interval", label: "Client Discovery", description: "How often to scan ARP/DHCP and update MAC cache" },
+  { key: "network_health_interval", label: "Network Health", description: "How often to poll bridge / STP state and check for loops" },
   { key: "firmware_interval", label: "Firmware Check", description: "How often to check for RouterOS updates" },
 ];
 
@@ -82,6 +76,7 @@ export default function SettingsPage() {
   // DNS state
   const [dnsServers, setDnsServers] = useState<DNSServer[]>([]);
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [editingDNS, setEditingDNS] = useState<DNSServer | null>(null);
   const [form, setForm] = useState({ name: "", address: "", port: "53" });
   const [testIP, setTestIP] = useState("");
   const [testResult, setTestResult] = useState<string | null>(null);
@@ -137,13 +132,31 @@ export default function SettingsPage() {
   };
 
   // DNS handlers
-  const handleAddDNS = async (e: React.FormEvent) => {
+  const openEditDNS = (srv: DNSServer) => {
+    setEditingDNS(srv);
+    setForm({ name: srv.name, address: srv.address, port: String(srv.port) });
+    setDialogOpen(true);
+  };
+
+  const openAddDNS = () => {
+    setEditingDNS(null);
+    setForm({ name: "", address: "", port: "53" });
+    setDialogOpen(true);
+  };
+
+  const handleSubmitDNS = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!token) return;
     try {
-      await api.dns.create(token, { name: form.name, address: form.address, port: parseInt(form.port) || 53 });
-      toast.success("DNS server added");
+      if (editingDNS) {
+        await api.dns.update(token, editingDNS.id, { name: form.name, address: form.address, port: parseInt(form.port) || 53, enabled: editingDNS.enabled });
+        toast.success("DNS server updated");
+      } else {
+        await api.dns.create(token, { name: form.name, address: form.address, port: parseInt(form.port) || 53 });
+        toast.success("DNS server added");
+      }
       setDialogOpen(false);
+      setEditingDNS(null);
       setForm({ name: "", address: "", port: "53" });
       loadDNS();
     } catch (err) {
@@ -258,20 +271,45 @@ export default function SettingsPage() {
         </CardContent>
       </Card>
 
+      {/* Kea DHCP */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Kea DHCP</CardTitle>
+          <p className="text-xs text-muted-foreground">
+            Connect to a Kea DHCP Control Agent to resolve WiFi client MACs to IP addresses and hostnames.
+          </p>
+        </CardHeader>
+        <CardContent>
+          <div className="flex items-center gap-3">
+            <div className="flex-1 space-y-2">
+              <Label>Control Agent URL</Label>
+              <Input
+                value={settings.kea_url || ""}
+                onChange={(e) => updateSetting("kea_url", e.target.value)}
+                placeholder="http://192.0.2.81:8000"
+              />
+            </div>
+          </div>
+          <p className="text-xs text-muted-foreground mt-2">
+            Leave empty to disable. The client discovery poller queries Kea every 15 minutes.
+          </p>
+        </CardContent>
+      </Card>
+
       {/* DNS Servers */}
       <Card>
         <CardHeader>
           <div className="flex items-center justify-between">
             <CardTitle className="text-base">DNS Servers</CardTitle>
-            <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-              <DialogTrigger render={<Button size="sm" />}>
-                <Plus className="mr-2 h-3 w-3" />Add Server
-              </DialogTrigger>
+            <Button size="sm" onClick={openAddDNS}>
+              <Plus className="mr-2 h-3 w-3" />Add Server
+            </Button>
+            <Dialog open={dialogOpen} onOpenChange={(open) => { setDialogOpen(open); if (!open) setEditingDNS(null); }}>
               <DialogContent>
                 <DialogHeader>
-                  <DialogTitle>Add DNS Server</DialogTitle>
+                  <DialogTitle>{editingDNS ? "Edit DNS Server" : "Add DNS Server"}</DialogTitle>
                 </DialogHeader>
-                <form onSubmit={handleAddDNS} className="space-y-4">
+                <form onSubmit={handleSubmitDNS} className="space-y-4">
                   <div className="space-y-2">
                     <Label>Name (optional)</Label>
                     <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Pi-hole, AD DNS" />
@@ -286,7 +324,7 @@ export default function SettingsPage() {
                       <Input value={form.port} onChange={(e) => setForm({ ...form, port: e.target.value })} placeholder="53" />
                     </div>
                   </div>
-                  <Button type="submit" className="w-full">Add DNS Server</Button>
+                  <Button type="submit" className="w-full">{editingDNS ? "Save Changes" : "Add DNS Server"}</Button>
                 </form>
               </DialogContent>
             </Dialog>
@@ -320,10 +358,13 @@ export default function SettingsPage() {
                     </TableCell>
                     <TableCell>
                       <div className="flex gap-1">
-                        <Button variant="ghost" size="icon" onClick={() => handleToggleDNS(srv)}>
+                        <Button variant="ghost" size="icon" onClick={() => openEditDNS(srv)} title="Edit">
+                          <Pencil className="h-4 w-4" />
+                        </Button>
+                        <Button variant="ghost" size="icon" onClick={() => handleToggleDNS(srv)} title={srv.enabled ? "Disable" : "Enable"}>
                           {srv.enabled ? <PowerOff className="h-4 w-4" /> : <Power className="h-4 w-4" />}
                         </Button>
-                        <Button variant="ghost" size="icon" onClick={() => handleDeleteDNS(srv.id)}>
+                        <Button variant="ghost" size="icon" onClick={() => handleDeleteDNS(srv.id)} title="Delete">
                           <Trash2 className="h-4 w-4 text-destructive" />
                         </Button>
                       </div>

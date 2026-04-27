@@ -209,6 +209,13 @@ export const api = {
     macLookup: (token: string) => apiFetch<Record<string, unknown>>("/mac-lookup", { token }),
   },
 
+  // Network health (bridges / STP / loop detection)
+  networkHealth: {
+    get: (token: string) => apiFetch<NetworkHealth>("/network-health", { token }),
+    events: (token: string, limit = 200) =>
+      apiFetch<LoopEvent[]>(`/network-health/events?limit=${limit}`, { token }),
+  },
+
   // App settings
   settings: {
     get: (token: string) => apiFetch<Record<string, string>>("/settings", { token }),
@@ -397,6 +404,56 @@ export interface NetworkClient {
   tx_rate?: string;
   rx_rate?: string;
   uptime?: string;
+}
+
+export interface BridgePortStatus {
+  id: string;
+  device_id: string;
+  bridge_name: string;
+  port_interface: string;
+  role: string;
+  status: string;
+  edge: boolean;
+  point_to_point: boolean;
+  path_cost: number;
+  designated_bridge: string;
+  last_polled: string;
+}
+
+export interface BridgeWithPorts {
+  id: string;
+  device_id: string;
+  device_name: string;
+  bridge_name: string;
+  protocol: string;
+  stp_enabled: boolean;
+  bridge_id: string;
+  root_bridge_id: string;
+  root_path_cost: number;
+  root_port: string;
+  topology_changes: number;
+  last_topology_change: string;
+  port_count: number;
+  last_polled: string;
+  ports: BridgePortStatus[];
+}
+
+export interface LoopEvent {
+  id: number;
+  device_id: string;
+  device_name: string;
+  event_type: string;
+  severity: "warn" | "critical";
+  bridge_name: string;
+  port_interface: string;
+  mac_address: string;
+  message: string;
+  recorded_at: string;
+}
+
+export interface NetworkHealth {
+  bridges: BridgeWithPorts[];
+  events: LoopEvent[];
 }
 
 export interface DiscoveredDevice {

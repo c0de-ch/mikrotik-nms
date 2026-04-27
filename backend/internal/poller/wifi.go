@@ -184,6 +184,7 @@ func (wt *WifiTracker) poll(ctx context.Context) {
 					signal:  reg.Signal,
 					txRate:  reg.TxRate,
 					rxRate:  reg.RxRate,
+					lastIP:  reg.LastIP,
 					devID:   dev.ID,
 				}
 			}
@@ -208,6 +209,22 @@ func (wt *WifiTracker) poll(ctx context.Context) {
 		prev.Signal = snap.signal
 		prev.SSID = snap.ssid
 		prev.MissedPolls = 0
+
+		// Update mac_lookup with lastIP from registration table if available.
+		if snap.lastIP != "" {
+			_ = queries.UpsertMACLookup(wt.db, &queries.MACLookup{
+				MACAddress: mac,
+				IPAddress:  snap.lastIP,
+				Source:     "wifi",
+				AP:         snap.ap,
+				SSID:       snap.ssid,
+				Band:       snap.band,
+				Channel:    snap.channel,
+				Signal:     snap.signal,
+				TxRate:     snap.txRate,
+				RxRate:     snap.rxRate,
+			})
+		}
 	}
 
 	// Phase 3.5: resolve deferred leaves. If a client had a log-based
@@ -391,6 +408,9 @@ func (wt *WifiTracker) handleLogEvent(ev *routeros.WirelessLogEvent, devID strin
 
 func (wt *WifiTracker) emitFromSnapshot(snap *wifiSnapshot, event, prevAP string, macLookups map[string]*queries.MACLookup, now time.Time) {
 	hostname, ip := lookupHostnameIP(snap.mac, macLookups)
+	if ip == "" {
+		ip = snap.lastIP
+	}
 	_ = queries.InsertWifiHistory(wt.db, &queries.WifiHistoryEntry{
 		MACAddress:   snap.mac,
 		IPAddress:    ip,
@@ -482,5 +502,5 @@ func (wt *WifiTracker) restoreState() {
 }
 
 type wifiSnapshot struct {
-	mac, ap, ssid, band, channel, signal, txRate, rxRate, devID string
+	mac, ap, ssid, band, channel, signal, txRate, rxRate, lastIP, devID string
 }

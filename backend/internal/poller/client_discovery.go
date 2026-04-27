@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/mikrotik-nms/backend/internal/database/queries"
+	"github.com/mikrotik-nms/backend/internal/kea"
 	"github.com/mikrotik-nms/backend/internal/resolver"
 	"github.com/mikrotik-nms/backend/internal/routeros"
 )
@@ -131,6 +132,35 @@ func (cdp *ClientDiscoveryPoller) poll(ctx context.Context) {
 					clientMap[mac] = &clientEntry{mac: mac, ip: addr, hostname: l.HostName, source: "dhcp", deviceName: devName}
 				}
 			}
+		}()
+	}
+
+	// Kea DHCP: pull active leases if configured
+	if keaURL, err := queries.GetSetting(cdp.db, "kea_url"); err == nil && keaURL != "" {
+		func() {
+			defer func() { recover() }()
+			leases, err := kea.New(keaURL).GetLeases4()
+			if err != nil {
+				log.Printf("client discovery: kea: %v", err)
+				return
+			}
+			for _, l := range leases {
+				mac := strings.ToUpper(l.HWAddress)
+				if mac == "" {
+					continue
+				}
+				if existing, ok := clientMap[mac]; ok {
+					if existing.ip == "" && l.IPAddress != "" {
+						existing.ip = l.IPAddress
+					}
+					if existing.hostname == "" && l.Hostname != "" {
+						existing.hostname = l.Hostname
+					}
+				} else {
+					clientMap[mac] = &clientEntry{mac: mac, ip: l.IPAddress, hostname: l.Hostname, source: "dhcp", deviceName: "kea"}
+				}
+			}
+			log.Printf("client discovery: kea: %d active leases", len(leases))
 		}()
 	}
 

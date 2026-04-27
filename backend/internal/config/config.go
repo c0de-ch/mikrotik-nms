@@ -14,10 +14,11 @@ type Config struct {
 	JWTSecret     string
 
 	// Polling intervals
-	HealthInterval    time.Duration
-	TopologyInterval  time.Duration
-	FirmwareInterval  time.Duration
-	RetentionInterval time.Duration
+	HealthInterval        time.Duration
+	TopologyInterval      time.Duration
+	FirmwareInterval      time.Duration
+	RetentionInterval     time.Duration
+	NetworkHealthInterval time.Duration
 
 	// Data retention
 	RetentionDays int
@@ -35,10 +36,11 @@ func Load() (*Config, error) {
 		DBPath:            envOr("MIKROTIK_NMS_DB_PATH", "mikrotik-nms.db"),
 		EncryptionKey:     os.Getenv("MIKROTIK_NMS_ENCRYPTION_KEY"),
 		JWTSecret:         os.Getenv("MIKROTIK_NMS_JWT_SECRET"),
-		HealthInterval:    envDurationOr("MIKROTIK_NMS_HEALTH_INTERVAL", 30*time.Second),
-		TopologyInterval:  envDurationOr("MIKROTIK_NMS_TOPOLOGY_INTERVAL", 60*time.Second),
-		FirmwareInterval:  envDurationOr("MIKROTIK_NMS_FIRMWARE_INTERVAL", 6*time.Hour),
-		RetentionInterval: envDurationOr("MIKROTIK_NMS_RETENTION_INTERVAL", 1*time.Hour),
+		HealthInterval:        envDurationOr("MIKROTIK_NMS_HEALTH_INTERVAL", 30*time.Second),
+		TopologyInterval:      envDurationOr("MIKROTIK_NMS_TOPOLOGY_INTERVAL", 60*time.Second),
+		FirmwareInterval:      envDurationOr("MIKROTIK_NMS_FIRMWARE_INTERVAL", 6*time.Hour),
+		RetentionInterval:     envDurationOr("MIKROTIK_NMS_RETENTION_INTERVAL", 1*time.Hour),
+		NetworkHealthInterval: envDurationOr("MIKROTIK_NMS_NETWORK_HEALTH_INTERVAL", 60*time.Second),
 		RetentionDays:     envIntOr("MIKROTIK_NMS_RETENTION_DAYS", 7),
 		DefaultROSUser:    envOr("MIKROTIK_NMS_DEFAULT_ROS_USER", "admin"),
 		DefaultROSPass:    os.Getenv("MIKROTIK_NMS_DEFAULT_ROS_PASS"),

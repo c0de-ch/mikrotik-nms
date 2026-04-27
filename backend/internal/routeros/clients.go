@@ -85,6 +85,7 @@ type WifiRegistration struct {
 	Uptime     string `json:"uptime"`
 	Bytes      string `json:"bytes"`
 	PacketRate string `json:"packet_rate"`
+	LastIP     string `json:"last_ip"`
 	Source     string `json:"source"` // "wifi-v2", "capsman", "wireless"
 }
 
@@ -131,6 +132,7 @@ func getWifiRegistrations(client *ros.Client) ([]WifiRegistration, error) {
 			Signal:    formatSignal(m["signal"]),
 			TxRate:    m["tx-rate"],
 			RxRate:    m["rx-rate"],
+			LastIP:    m["last-ip"],
 			Source:    "wifi-v2",
 			Uptime:    m["uptime"],
 			Bytes:     m["bytes"],
@@ -156,6 +158,7 @@ func getLegacyCAPsMANRegistrations(client *ros.Client) ([]WifiRegistration, erro
 			Signal:    formatSignal(m["rx-signal"]),
 			TxRate:    m["tx-rate"],
 			RxRate:    m["rx-rate"],
+			LastIP:    m["last-ip"],
 			Uptime:    m["uptime"],
 			Bytes:     m["bytes"],
 			Source:    "capsman",

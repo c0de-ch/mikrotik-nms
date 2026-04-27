@@ -24,8 +24,22 @@ func (s *Server) enrichWifiEntries(entries []queries.WifiHistoryEntry) []enriche
 		deviceNames[d.ID] = name
 	}
 
+	// Fill empty IP/hostname from mac_lookup (ARP/DHCP data)
+	macLookups, _ := queries.GetAllMACLookups(s.db)
+
 	result := make([]enrichedWifiEntry, len(entries))
 	for i, e := range entries {
+		if lookup, ok := macLookups[e.MACAddress]; ok {
+			if e.IPAddress == "" {
+				e.IPAddress = lookup.IPAddress
+			}
+			if e.HostName == "" {
+				e.HostName = lookup.HostName
+				if e.HostName == "" {
+					e.HostName = lookup.DNSName
+				}
+			}
+		}
 		result[i] = enrichedWifiEntry{
 			WifiHistoryEntry: e,
 			ControllerName:   deviceNames[e.ControllerID],
