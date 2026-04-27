@@ -1,36 +1,52 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# MikroTik NMS — Frontend
 
-## Getting Started
+Next.js 15 (App Router) + React + Tailwind CSS v4 + shadcn/ui (base-ui flavor) UI for the MikroTik NMS backend.
 
-First, run the development server:
+For project overview, install paths (Docker / Kubernetes / native LXC), and configuration, see the [top-level README](../README.md).
+
+## Local development
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm ci
+NEXT_PUBLIC_API_URL=http://localhost:8080 \
+NEXT_PUBLIC_WS_URL=ws://localhost:8080 \
+  npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Dev server runs on http://localhost:3000.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Build
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+npm run build
+```
 
-## Learn More
+Outputs a Next.js standalone bundle to `.next/standalone/`. The K8s and LXC deploys both use this layout.
 
-To learn more about Next.js, take a look at the following resources:
+## Layout
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+- `src/app/(authenticated)/` — protected route group; redirects to `/login` without a token.
+- `src/app/login/`, `src/app/setup/` — public auth flows.
+- `src/lib/api.ts` — typed REST client used by every page.
+- `src/lib/ws.ts` — WebSocket client (auto-reconnect, topic subscription).
+- `src/hooks/use-websocket.ts` — React hook for sharing one WS connection across components.
+- `src/context/auth.tsx` — auth context (login, refresh, logout, current user).
+- `src/components/ui/` — shadcn/ui components. **This project uses base-ui, not Radix** — use `render={<Component />}` for composition rather than `asChild`.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## WebSocket topics
 
-## Deploy on Vercel
+The frontend subscribes to topics published by the backend hub:
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+| Topic | Used by |
+|---|---|
+| `device.health` | dashboard, device list / detail |
+| `topology.update` | topology page |
+| `traffic.<deviceId>.<iface>` | traffic page (on-demand) |
+| `firmware.update` | firmware page |
+| `upgrade.progress.<jobId>` | firmware upgrade progress |
+| `wifi.event` | wifi page (live join / leave / roam) |
+| `network.health`, `network.health.event` | network-health page |
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Build-time env vars
+
+`NEXT_PUBLIC_API_URL` and `NEXT_PUBLIC_WS_URL` are inlined into the JS bundle by Next.js at build time. Changing them in production requires rebuilding the frontend image (Compose / K8s) or re-running the LXC installer.

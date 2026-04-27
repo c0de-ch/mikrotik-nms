@@ -14,6 +14,12 @@ services:
       - MIKROTIK_NMS_ENCRYPTION_KEY=${ENCRYPTION_KEY:-}
       - MIKROTIK_NMS_DEFAULT_ROS_USER=${DEFAULT_ROS_USER:-admin}
       - MIKROTIK_NMS_DEFAULT_ROS_PASS=${DEFAULT_ROS_PASS:-}
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/api/v1/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     restart: unless-stopped
 
   frontend:
@@ -26,7 +32,8 @@ services:
       - NEXT_PUBLIC_API_URL=http://backend:8080
       - NEXT_PUBLIC_WS_URL=ws://backend:8080
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:

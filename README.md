@@ -1,27 +1,30 @@
 # MikroTik NMS
 
-A web-based network management system for MikroTik devices. Provides real-time topology visualization, traffic monitoring, firmware management, and automatic device discovery via the MikroTik Neighbor Discovery Protocol (MNDP).
+A web-based network management system for MikroTik devices. Provides real-time topology visualization, traffic monitoring, firmware management, automatic device discovery via the MikroTik Neighbor Discovery Protocol (MNDP), and L2 loop detection via bridge/STP polling.
 
 ![MikroTik NMS Dashboard](docs/screenshot.png)
 <!-- Replace the path above with an actual screenshot -->
 
 ## Features
 
-- **Topology Map** -- interactive network topology powered by Cytoscape.js
-- **Device Discovery** -- automatic scanning via MNDP (UDP 5678)
-- **Traffic Monitoring** -- real-time interface bandwidth graphs with Recharts
-- **Firmware Management** -- view and upgrade RouterOS across your fleet
-- **WebSocket Updates** -- live device health, topology changes, and traffic data
-- **Role-based Access** -- JWT authentication with admin and viewer roles
-- **First-run Setup** -- guided admin account creation on initial launch
-- **SQLite Storage** -- single-file database in WAL mode, zero external dependencies
+- **Topology Map** — interactive network topology powered by Cytoscape.js
+- **Device Discovery** — automatic scanning via MNDP (UDP 5678)
+- **Traffic Monitoring** — real-time interface bandwidth graphs with Recharts
+- **Firmware Management** — view and upgrade RouterOS across your fleet
+- **Network Health** — bridge/STP poller with L2 loop detection (`stp_disabled`, `tcn_storm`, `loop_detected`, `mac_flap`, `bpdu_on_edge`)
+- **WiFi Tracking** — per-client AP positions, roam history and live join/leave events from CAPsMAN/WiFi logs
+- **Client Discovery** — ARP/DHCP/CAPsMAN scans with optional Kea DHCP Control Agent integration for IP/hostname enrichment
+- **WebSocket Updates** — live device health, topology, traffic, wifi, and `network.health.event` topics
+- **Role-based Access** — JWT authentication with admin and viewer roles
+- **First-run Setup** — guided admin account creation on initial launch
+- **SQLite Storage** — single-file database in WAL mode, zero external dependencies
 
 ## Quick Start with Docker Compose
 
 ```bash
 # Clone the repository
-git clone https://github.com/<owner>/mikrotik-c0de.git
-cd mikrotik-c0de
+git clone https://github.com/c0de-ch/mikrotik-nms.git
+cd mikrotik-nms
 
 # Copy the example environment file and edit it
 cp .env.example .env
@@ -69,18 +72,47 @@ The dev server starts on **http://localhost:3000**.
 
 ## Environment Variables
 
+The backend is configured entirely via `MIKROTIK_NMS_*` environment variables. The Docker Compose file maps a few unprefixed convenience names (`JWT_SECRET`, `ENCRYPTION_KEY`, `DEFAULT_ROS_USER`, `DEFAULT_ROS_PASS`) onto their prefixed equivalents so the `.env` file stays compact — see [`.env.example`](.env.example) and [`docker-compose.yml`](docker-compose.yml).
+
+### Backend
+
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `JWT_SECRET` | Yes | -- | Secret used to sign JWT tokens (32+ chars recommended) |
-| `ENCRYPTION_KEY` | No | -- | AES key for encrypting device passwords at rest |
-| `DEFAULT_ROS_USER` | No | `admin` | Default RouterOS username for discovered devices |
-| `DEFAULT_ROS_PASS` | No | -- | Default RouterOS password for discovered devices |
-| `NEXT_PUBLIC_API_URL` | No | `http://localhost:8080` | Backend API URL seen by the browser |
-| `NEXT_PUBLIC_WS_URL` | No | `ws://localhost:8080` | Backend WebSocket URL seen by the browser |
-| `MIKROTIK_NMS_DB_PATH` | No | `mikrotik-nms.db` | Path to the SQLite database file |
+| `MIKROTIK_NMS_JWT_SECRET` | Yes | — | Secret used to sign JWT tokens (32+ chars recommended) |
 | `MIKROTIK_NMS_LISTEN` | No | `:8080` | Address and port the backend binds to |
+| `MIKROTIK_NMS_DB_PATH` | No | `mikrotik-nms.db` | Path to the SQLite database file |
+| `MIKROTIK_NMS_ENCRYPTION_KEY` | No | — | AES key for encrypting device passwords at rest |
+| `MIKROTIK_NMS_HEALTH_INTERVAL` | No | `30s` | How often to poll `/system/resource` |
+| `MIKROTIK_NMS_TOPOLOGY_INTERVAL` | No | `60s` | How often to poll `/ip/neighbor` and rebuild the link graph |
+| `MIKROTIK_NMS_FIRMWARE_INTERVAL` | No | `6h` | How often to check for RouterOS firmware updates |
+| `MIKROTIK_NMS_NETWORK_HEALTH_INTERVAL` | No | `60s` | How often to poll bridge/STP state and parse bridge logs |
+| `MIKROTIK_NMS_RETENTION_INTERVAL` | No | `1h` | How often to sweep old samples / events |
+| `MIKROTIK_NMS_RETENTION_DAYS` | No | `7` | How long to keep traffic samples, wifi/client history, and loop events |
+| `MIKROTIK_NMS_DEFAULT_ROS_USER` | No | `admin` | Default RouterOS username for discovered devices |
+| `MIKROTIK_NMS_DEFAULT_ROS_PASS` | No | — | Default RouterOS password for discovered devices |
+| `MIKROTIK_NMS_DEFAULT_ROS_PORT` | No | `8728` | Default RouterOS API port |
+| `MIKROTIK_NMS_DEFAULT_ROS_TLS` | No | `false` | Default to TLS (`8729`) for new devices |
 
-See [`.env.example`](.env.example) for a ready-to-copy template.
+WiFi tracking and client discovery intervals, the Kea DHCP Control Agent URL, and DNS resolvers for client lookups are configured via the **Settings** page in the UI (stored in the `app_settings` table) rather than env vars, so they can be changed without a restart.
+
+### Frontend (build-time, baked into the bundle)
+
+| Variable | Default | Description |
+|---|---|---|
+| `NEXT_PUBLIC_API_URL` | `http://localhost:8080` | Backend API URL seen by the browser |
+| `NEXT_PUBLIC_WS_URL` | `ws://localhost:8080` | Backend WebSocket URL seen by the browser |
+
+Because Next.js inlines `NEXT_PUBLIC_*` at build time, changing these values requires rebuilding the frontend image (Compose / K8s) or re-running `install.sh` (LXC).
+
+## Native Linux Install (LXC / VM / bare metal)
+
+For an LXC container or VM running Debian 13 (trixie), `deploy/lxc/install.sh` builds the backend, builds the standalone Next.js frontend, and registers them as systemd units behind a Caddy reverse proxy:
+
+```bash
+sudo ./deploy/lxc/install.sh --hostname nms.example.com
+```
+
+For a one-shot Proxmox API bootstrap that creates the LXC and runs the installer in a single step, see [`deploy/lxc/README.md`](deploy/lxc/README.md).
 
 ## Kubernetes Deployment
 
@@ -104,7 +136,30 @@ kubectl apply -f deploy/k8s/namespace.yaml
 kubectl apply -f deploy/k8s/
 ```
 
-Edit `secret.yaml` to supply your `JWT_SECRET` and any other credentials before applying. Adjust the `Ingress` resource to match your domain and TLS setup.
+Before applying:
+
+- Edit `secret.yaml` to supply your `MIKROTIK_NMS_JWT_SECRET` (and `MIKROTIK_NMS_ENCRYPTION_KEY`, `MIKROTIK_NMS_DEFAULT_ROS_PASS` if used).
+- Adjust `ingress.yaml` to match your domain and TLS setup.
+- The deployment pulls images from `ghcr.io/c0de-ch/mikrotik-nms/{backend,frontend}:latest` (published by the `Build & Push Docker Images` workflow). If you fork, change those references to your fork's GHCR path.
+
+The backend `Deployment` is fixed at `replicas: 1` because SQLite does not support multiple writers. Liveness/readiness probes hit `/api/v1/health` and a 1 GiB PVC backs `/data`.
+
+## Container Images & GitHub Workflow
+
+`.github/workflows/docker.yml` builds multi-arch (`linux/amd64`, `linux/arm64`) images on push to `main`/`master` and on `v*` tags, publishing to GitHub Container Registry:
+
+| Image | Path |
+|---|---|
+| Backend | `ghcr.io/c0de-ch/mikrotik-nms/backend` |
+| Frontend | `ghcr.io/c0de-ch/mikrotik-nms/frontend` |
+
+Tags applied per build:
+
+- `latest` (only on the default branch)
+- `v1.2.3` and `v1.2` (on semver tag pushes)
+- `sha-<short>` (on every push)
+
+The workflow uses Buildx with GitHub Actions cache (`type=gha`) so subsequent builds are incremental.
 
 ## Deploy on MikroTik CHR (Container)
 

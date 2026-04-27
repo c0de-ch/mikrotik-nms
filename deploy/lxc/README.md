@@ -168,7 +168,7 @@ already got a Debian 13 LXC ready.
 
    ```sh
    pct exec <vmid> -- bash -c 'apt-get update && apt-get install -y git'
-   pct exec <vmid> -- git clone https://github.com/c0de-ch/mikrotik-c0de.git /opt/src/mikrotik-c0de
+   pct exec <vmid> -- git clone https://github.com/c0de-ch/mikrotik-nms.git /opt/src/mikrotik-nms
    ```
 
 ### Run the installer
@@ -176,7 +176,7 @@ already got a Debian 13 LXC ready.
 From inside the LXC (as root):
 
 ```sh
-cd /opt/src/mikrotik-c0de
+cd /opt/src/mikrotik-nms
 ./deploy/lxc/install.sh --hostname nms.example.com
 ```
 
@@ -241,7 +241,7 @@ sqlite3 /var/lib/mikrotik-nms/mikrotik-nms.db ".backup '/root/nms-$(date +%F).db
 ## Updating to a new version
 
 ```sh
-cd /opt/src/mikrotik-c0de
+cd /opt/src/mikrotik-nms
 git pull
 ./deploy/lxc/install.sh --skip-deps
 ```

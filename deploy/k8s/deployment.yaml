@@ -20,8 +20,10 @@ spec:
     spec:
       containers:
         - name: backend
-          image: mikrotik-nms-backend:latest
-          imagePullPolicy: IfNotPresent
+          # Published by .github/workflows/docker.yml. Replace the org/repo
+          # path if you fork — this points to the upstream image.
+          image: ghcr.io/c0de-ch/mikrotik-nms/backend:latest
+          imagePullPolicy: Always
           ports:
             - containerPort: 8080
               name: http
@@ -79,8 +81,10 @@ spec:
     spec:
       containers:
         - name: frontend
-          image: mikrotik-nms-frontend:latest
-          imagePullPolicy: IfNotPresent
+          # Published by .github/workflows/docker.yml. Replace the org/repo
+          # path if you fork — this points to the upstream image.
+          image: ghcr.io/c0de-ch/mikrotik-nms/frontend:latest
+          imagePullPolicy: Always
           ports:
             - containerPort: 3000
               name: http
