@@ -91,7 +91,7 @@ LXC_SWAP=${LXC_SWAP:-512}
 LXC_DISK_GB=${LXC_DISK_GB:-8}
 LXC_TEMPLATE_PATTERN=${LXC_TEMPLATE_PATTERN:-debian-13-standard}
 
-NMS_REPO_URL=${NMS_REPO_URL:-https://github.com/c0de-ch/mikrotik-c0de.git}
+NMS_REPO_URL=${NMS_REPO_URL:-https://github.com/c0de-ch/mikrotik-nms.git}
 NMS_REPO_REF=${NMS_REPO_REF:-main}
 NMS_INSTALL_FLAGS=${NMS_INSTALL_FLAGS:---no-tls}
 NMS_SRC_DIR=${NMS_SRC_DIR:-/opt/src/mikrotik-nms}
