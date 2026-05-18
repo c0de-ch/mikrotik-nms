@@ -14,8 +14,14 @@ type bridgeWithPorts struct {
 }
 
 type networkHealthResponse struct {
-	Bridges []bridgeWithPorts   `json:"bridges"`
-	Events  []enrichedLoopEvent `json:"events"`
+	Bridges    []bridgeWithPorts        `json:"bridges"`
+	Events     []enrichedLoopEvent      `json:"events"`
+	PortStates []enrichedInterfaceState `json:"port_states"`
+}
+
+type enrichedInterfaceState struct {
+	queries.InterfaceState
+	DeviceName string `json:"device_name"`
 }
 
 type enrichedLoopEvent struct {
@@ -37,6 +43,11 @@ func (s *Server) handleNetworkHealth(w http.ResponseWriter, r *http.Request) {
 	events, err := queries.ListLoopEvents(s.db, 100)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list loop events")
+		return
+	}
+	portStates, err := queries.ListInterfaceStates(s.db)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list interface states")
 		return
 	}
 
@@ -65,9 +76,18 @@ func (s *Server) handleNetworkHealth(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	enrichedPorts := make([]enrichedInterfaceState, 0, len(portStates))
+	for _, ps := range portStates {
+		enrichedPorts = append(enrichedPorts, enrichedInterfaceState{
+			InterfaceState: ps,
+			DeviceName:     deviceNames[ps.DeviceID],
+		})
+	}
+
 	writeJSON(w, http.StatusOK, networkHealthResponse{
-		Bridges: enrichedBridges,
-		Events:  enrichedEvents,
+		Bridges:    enrichedBridges,
+		Events:     enrichedEvents,
+		PortStates: enrichedPorts,
 	})
 }
 

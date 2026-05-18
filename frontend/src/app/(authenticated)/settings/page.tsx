@@ -271,6 +271,78 @@ export default function SettingsPage() {
         </CardContent>
       </Card>
 
+      {/* Port Monitoring */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Port Monitoring</CardTitle>
+          <p className="text-xs text-muted-foreground">
+            Detect port deactivation, link drops, and link flapping on every monitored device.
+            Events appear on the Network Health page; thresholds and the interface filter take effect on the next poll cycle.
+          </p>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex-1">
+              <p className="font-medium text-sm">Enable port monitoring</p>
+              <p className="text-xs text-muted-foreground">When off, only bridge/STP signals are tracked.</p>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => updateSetting("port_monitor_enabled", settings.port_monitor_enabled === "true" ? "false" : "true")}
+            >
+              {settings.port_monitor_enabled === "false" ? "Off" : "On"}
+            </Button>
+          </div>
+
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex-1">
+              <p className="font-medium text-sm">Interface filter</p>
+              <p className="text-xs text-muted-foreground">
+                Comma-separated type/name prefixes to monitor. Empty or <code>all</code> means every interface.
+                Default: <code>ether,sfp,wlan,bridge,vlan</code>.
+              </p>
+            </div>
+            <Input
+              className="w-64"
+              value={settings.port_monitor_filter ?? ""}
+              onChange={(e) => updateSetting("port_monitor_filter", e.target.value)}
+              placeholder="ether,sfp,wlan,bridge,vlan"
+            />
+          </div>
+
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex-1">
+              <p className="font-medium text-sm">Flap threshold</p>
+              <p className="text-xs text-muted-foreground">Transitions within the window required to fire a critical port-flap event.</p>
+            </div>
+            <Input
+              type="number"
+              min={2}
+              max={50}
+              className="w-24"
+              value={settings.port_flap_threshold ?? "3"}
+              onChange={(e) => updateSetting("port_flap_threshold", e.target.value)}
+            />
+          </div>
+
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex-1">
+              <p className="font-medium text-sm">Flap window</p>
+              <p className="text-xs text-muted-foreground">Sliding window in seconds used to count transitions.</p>
+            </div>
+            <Input
+              type="number"
+              min={30}
+              max={3600}
+              className="w-24"
+              value={settings.port_flap_window_seconds ?? "300"}
+              onChange={(e) => updateSetting("port_flap_window_seconds", e.target.value)}
+            />
+          </div>
+        </CardContent>
+      </Card>
+
       {/* Kea DHCP */}
       <Card>
         <CardHeader>

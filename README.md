@@ -11,7 +11,7 @@ A web-based network management system for MikroTik devices. Provides real-time t
 - **Device Discovery** — automatic scanning via MNDP (UDP 5678)
 - **Traffic Monitoring** — real-time interface bandwidth graphs with Recharts
 - **Firmware Management** — view and upgrade RouterOS across your fleet
-- **Network Health** — bridge/STP poller with L2 loop detection (`stp_disabled`, `tcn_storm`, `loop_detected`, `mac_flap`, `bpdu_on_edge`)
+- **Network Health** — bridge/STP poller with L2 loop detection (`stp_disabled`, `tcn_storm`, `loop_detected`, `mac_flap`, `bpdu_on_edge`) plus per-interface port monitoring (`port_disabled`, `port_link_down`, `port_link_flap`)
 - **WiFi Tracking** — per-client AP positions, roam history and live join/leave events from CAPsMAN/WiFi logs
 - **Client Discovery** — ARP/DHCP/CAPsMAN scans with optional Kea DHCP Control Agent integration for IP/hostname enrichment
 - **WebSocket Updates** — live device health, topology, traffic, wifi, and `network.health.event` topics
@@ -113,6 +113,15 @@ sudo ./deploy/lxc/install.sh --hostname nms.example.com
 ```
 
 For a one-shot Proxmox API bootstrap that creates the LXC and runs the installer in a single step, see [`deploy/lxc/README.md`](deploy/lxc/README.md).
+
+### Continuous deploy from GitHub
+
+Two ship in the box, pick whichever fits:
+
+- **Self-hosted Actions runner** ([`deploy/lxc/runner-install.sh`](deploy/lxc/runner-install.sh)) — registers a private GitHub Actions runner inside the LXC. The provided [`.github/workflows/deploy-lxc.yml`](.github/workflows/deploy-lxc.yml) workflow then auto-deploys on push to `main` (and via `workflow_dispatch`). The runner has a narrow sudoers grant to one validated wrapper and authenticates to GitHub with its own registration token.
+- **HMAC webhook agent** ([`deploy/webhook-agent/`](deploy/webhook-agent/)) — a tiny Go HTTP daemon that verifies signed GitHub push events and runs a configurable deploy command. Smallest possible attack surface; no Actions runtime needed.
+
+Both are documented in [`deploy/lxc/README.md`](deploy/lxc/README.md).
 
 ## Kubernetes Deployment
 

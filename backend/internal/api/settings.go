@@ -32,6 +32,10 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		"retention_days":            true,
 		"dark_mode":                 true,
 		"kea_url":                   true,
+		"port_monitor_enabled":      true,
+		"port_monitor_filter":       true,
+		"port_flap_threshold":       true,
+		"port_flap_window_seconds":  true,
 	}
 
 	for key, value := range req {

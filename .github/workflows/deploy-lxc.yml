@@ -1,0 +1,74 @@
+name: Deploy to LXC
+
+# Triggered by:
+#   - workflow_dispatch  : on-demand from the Actions tab
+#   - push to main       : automatic continuous deploy (set DEPLOY_ON_PUSH
+#                          repo variable to "false" to disable without
+#                          editing this file)
+#
+# Runs on a self-hosted GitHub Actions runner installed inside the target LXC
+# (see deploy/lxc/runner-install.sh). Authenticated via the runner's own
+# registration; no inbound SSH from GitHub is required.
+#
+# Required:
+#   - A self-hosted runner labelled `mikrotik-nms` registered to this repo.
+#   - The runner host has /usr/local/sbin/mikrotik-nms-deploy installed
+#     (runner-install.sh handles this) and the sudoers fragment in place.
+#
+# Recommended:
+#   - Repo Settings → Actions → "Require approval for first-time contributors"
+#     so a malicious PR cannot trigger a deploy on the self-hosted runner.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref to deploy (default: main)"
+        required: false
+        default: "main"
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - "frontend/**"
+      - "deploy/lxc/**"
+      - ".github/workflows/deploy-lxc.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-lxc
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    # Skip the auto-on-push run if the operator opts out via repo variable.
+    # `vars.DEPLOY_ON_PUSH` is read from Settings → Secrets and variables → Actions → Variables.
+    if: ${{ github.event_name == 'workflow_dispatch' || vars.DEPLOY_ON_PUSH != 'false' }}
+    runs-on: [self-hosted, linux, mikrotik-nms]
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          # Make sure the workspace ends up at a path the deploy wrapper trusts;
+          # the runner default of $HOME/_work/<repo>/<repo> already satisfies that.
+          fetch-depth: 1
+
+      - name: Verify deploy wrapper exists
+        run: |
+          if [[ ! -x /usr/local/sbin/mikrotik-nms-deploy ]]; then
+            echo "::error::/usr/local/sbin/mikrotik-nms-deploy missing. Re-run runner-install.sh on the runner host."
+            exit 1
+          fi
+
+      - name: Run deploy
+        run: sudo -n /usr/local/sbin/mikrotik-nms-deploy "$GITHUB_WORKSPACE"
+
+      - name: Show service status
+        if: always()
+        run: |
+          systemctl --no-pager --lines=0 status mikrotik-nms-backend mikrotik-nms-frontend caddy || true

@@ -35,6 +35,8 @@ type NetworkHealthPoller struct {
 	// log fingerprints already processed per device.
 	seenLogs       map[string]map[string]time.Time
 	lastLogPruneAt time.Time
+	// per-device per-interface state for port-deactivation / flap detection.
+	ports *portMonitor
 }
 
 // Below this many topology changes per cycle the bridge is considered stable.
@@ -54,6 +56,7 @@ func NewNetworkHealthPoller(db *sql.DB, pool *routeros.Pool, hub *ws.Hub, interv
 		interval: interval,
 		prevTC:   make(map[string]int),
 		seenLogs: make(map[string]map[string]time.Time),
+		ports:    newPortMonitor(),
 	}
 }
 
@@ -93,6 +96,15 @@ func (n *NetworkHealthPoller) poll(ctx context.Context) {
 	cycleStart := time.Now()
 	totalBridges := 0
 	totalEvents := 0
+	totalPorts := 0
+
+	portSettings := loadPortMonitorSettings(n.db)
+
+	activeDevices := make(map[string]struct{}, len(devices))
+	for _, dev := range devices {
+		activeDevices[dev.ID] = struct{}{}
+	}
+	n.ports.pruneDevices(activeDevices)
 
 	for _, dev := range devices {
 		select {
@@ -196,16 +208,45 @@ func (n *NetworkHealthPoller) poll(ctx context.Context) {
 				added := n.processBridgeLogs(dev.ID, logEvents, cycleStart)
 				evCount += added
 			}
+
+			// Port monitoring: link down / admin disable / flap on every
+			// matching interface. This is independent of bridge state because
+			// it surfaces issues on uplink interfaces and unbridged WAN
+			// ports too.
+			if portSettings.Enabled {
+				ifaces, err := routeros.GetInterfacesDetail(client)
+				if err == nil {
+					n.ports.rememberFirstRun(dev.ID)
+					for _, iface := range ifaces {
+						if !portSettings.includeInterface(iface) {
+							continue
+						}
+						pevents, state := n.ports.processInterface(dev.ID, iface, portSettings, cycleStart)
+						_ = queries.UpsertInterfaceState(n.db, state)
+						for _, pe := range pevents {
+							if n.recordEvent(dev.ID, pe.Kind, pe.Severity, "", pe.Interface, "", pe.Message) {
+								evCount++
+							}
+						}
+						totalPorts++
+					}
+					n.ports.markDeviceProcessed(dev.ID)
+				}
+			}
 		}()
 
 		totalBridges += brCount
 		totalEvents += evCount
 	}
 
-	// Drop rows for bridges that vanished from devices in the last 30min
+	// Drop rows for bridges / interfaces that vanished from devices in the
+	// last 30min so the UI doesn't keep showing ghost ports forever.
 	staleCutoff := time.Now().Add(-30 * time.Minute)
 	if err := queries.DeleteStaleBridgeRows(n.db, staleCutoff); err != nil {
-		log.Printf("network health: stale cleanup: %v", err)
+		log.Printf("network health: stale bridge cleanup: %v", err)
+	}
+	if err := queries.DeleteStaleInterfaceStates(n.db, staleCutoff); err != nil {
+		log.Printf("network health: stale interface cleanup: %v", err)
 	}
 
 	if cycleStart.Sub(n.lastLogPruneAt) > 5*time.Minute {
@@ -217,11 +258,12 @@ func (n *NetworkHealthPoller) poll(ctx context.Context) {
 	since := time.Now().Add(-24 * time.Hour)
 	warn, crit, _ := queries.CountRecentLoopEvents(n.db, since)
 	n.hub.Publish("network.health", map[string]interface{}{
-		"bridges":       totalBridges,
-		"new_events":    totalEvents,
-		"warn_24h":      warn,
-		"critical_24h":  crit,
-		"polled_at":     cycleStart.Format(time.RFC3339),
+		"bridges":      totalBridges,
+		"ports":        totalPorts,
+		"new_events":   totalEvents,
+		"warn_24h":     warn,
+		"critical_24h": crit,
+		"polled_at":    cycleStart.Format(time.RFC3339),
 	})
 
 	if totalEvents > 0 {

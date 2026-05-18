@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { AlertTriangle, ShieldAlert, ShieldCheck, GitBranch, Radio } from "lucide-react";
+import { AlertTriangle, ShieldAlert, ShieldCheck, GitBranch, Radio, Cable } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -13,7 +13,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useAuth } from "@/context/auth";
-import { api, type NetworkHealth, type LoopEvent, type BridgeWithPorts } from "@/lib/api";
+import { api, type NetworkHealth, type LoopEvent, type BridgeWithPorts, type InterfaceState } from "@/lib/api";
 import { useWebSocket } from "@/hooks/use-websocket";
 
 function formatDateTime(dateStr: string): string {
@@ -49,6 +49,9 @@ function eventTypeLabel(t: string): string {
     case "loop_detected": return "Loop detected";
     case "mac_flap": return "MAC flap";
     case "bpdu_on_edge": return "BPDU on edge";
+    case "port_disabled": return "Port disabled";
+    case "port_link_down": return "Link down";
+    case "port_link_flap": return "Port flap";
     default: return t;
   }
 }
@@ -102,9 +105,19 @@ export default function NetworkHealthPage() {
 
   const bridges = data?.bridges ?? [];
   const events = data?.events ?? [];
+  const portStates = data?.port_states ?? [];
   const stpOff = bridges.filter((b) => !b.stp_enabled && b.port_count > 1).length;
   const criticalCount = events.filter((e) => e.severity === "critical").length;
   const warnCount = events.filter((e) => e.severity === "warn").length;
+  const downPorts = portStates.filter((p) => !p.running && !p.disabled).length;
+  const flappingPorts = portStates.filter((p) => p.flap_count_window >= 3).length;
+
+  // Group ports by device for display.
+  const portsByDevice = portStates.reduce<Record<string, InterfaceState[]>>((acc, p) => {
+    const key = p.device_name || p.device_id;
+    (acc[key] ??= []).push(p);
+    return acc;
+  }, {});
 
   // Group bridges by device for display.
   const grouped = bridges.reduce<Record<string, BridgeWithPorts[]>>((acc, b) => {
@@ -122,7 +135,7 @@ export default function NetworkHealthPage() {
         </p>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-4">
+      <div className="grid gap-4 md:grid-cols-4 lg:grid-cols-7">
         <Card>
           <CardHeader className="pb-2"><CardTitle className="text-sm font-medium">Bridges</CardTitle></CardHeader>
           <CardContent className="flex items-center gap-2">
@@ -135,6 +148,27 @@ export default function NetworkHealthPage() {
           <CardContent className="flex items-center gap-2">
             {stpOff > 0 ? <ShieldAlert className="h-5 w-5 text-amber-600" /> : <ShieldCheck className="h-5 w-5 text-green-600" />}
             <div className="text-2xl font-bold">{stpOff}</div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="pb-2"><CardTitle className="text-sm font-medium">Ports tracked</CardTitle></CardHeader>
+          <CardContent className="flex items-center gap-2">
+            <Cable className="h-5 w-5 text-muted-foreground" />
+            <div className="text-2xl font-bold">{portStates.length}</div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="pb-2"><CardTitle className="text-sm font-medium">Down</CardTitle></CardHeader>
+          <CardContent className="flex items-center gap-2">
+            <Cable className={`h-5 w-5 ${downPorts > 0 ? "text-amber-600" : "text-muted-foreground"}`} />
+            <div className="text-2xl font-bold">{downPorts}</div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="pb-2"><CardTitle className="text-sm font-medium">Flapping</CardTitle></CardHeader>
+          <CardContent className="flex items-center gap-2">
+            <AlertTriangle className={`h-5 w-5 ${flappingPorts > 0 ? "text-red-600" : "text-muted-foreground"}`} />
+            <div className="text-2xl font-bold">{flappingPorts}</div>
           </CardContent>
         </Card>
         <Card>
@@ -199,6 +233,54 @@ export default function NetworkHealthPage() {
           )}
         </CardContent>
       </Card>
+
+      {/* Per-device port state */}
+      {Object.keys(portsByDevice).length > 0 && (
+        <div className="space-y-4">
+          <h2 className="text-lg font-semibold">Port State by Device</h2>
+          {Object.entries(portsByDevice).map(([dev, ports]) => (
+            <Card key={`ports-${dev}`}>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm">{dev}</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Interface</TableHead>
+                      <TableHead>Type</TableHead>
+                      <TableHead>State</TableHead>
+                      <TableHead>Last link up</TableHead>
+                      <TableHead>Last link down</TableHead>
+                      <TableHead className="text-right">Recent flaps</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {ports.map((p) => {
+                      let stateBadge;
+                      if (p.disabled) stateBadge = <Badge variant="secondary">disabled</Badge>;
+                      else if (!p.running) stateBadge = <Badge className="bg-red-100 text-red-700">link down</Badge>;
+                      else stateBadge = <Badge className="bg-green-100 text-green-700">up</Badge>;
+                      return (
+                        <TableRow key={p.id}>
+                          <TableCell className="font-mono text-xs">{p.interface_name}</TableCell>
+                          <TableCell className="text-xs text-muted-foreground">{p.interface_type || "—"}</TableCell>
+                          <TableCell>{stateBadge}</TableCell>
+                          <TableCell className="text-xs text-muted-foreground">{p.last_link_up || "—"}</TableCell>
+                          <TableCell className="text-xs text-muted-foreground">{p.last_link_down || "—"}</TableCell>
+                          <TableCell className={`text-right text-xs ${p.flap_count_window >= 3 ? "text-red-600 font-semibold" : ""}`}>
+                            {p.flap_count_window}
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
+                  </TableBody>
+                </Table>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      )}
 
       {/* Per-device bridges */}
       <div className="space-y-4">

@@ -451,9 +451,24 @@ export interface LoopEvent {
   recorded_at: string;
 }
 
+export interface InterfaceState {
+  id: string;
+  device_id: string;
+  device_name: string;
+  interface_name: string;
+  interface_type: string;
+  running: boolean;
+  disabled: boolean;
+  last_link_up: string;
+  last_link_down: string;
+  flap_count_window: number;
+  last_polled: string;
+}
+
 export interface NetworkHealth {
   bridges: BridgeWithPorts[];
   events: LoopEvent[];
+  port_states: InterfaceState[];
 }
 
 export interface DiscoveredDevice {

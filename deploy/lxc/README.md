@@ -246,6 +246,97 @@ git pull
 ./deploy/lxc/install.sh --skip-deps
 ```
 
+## Continuous deploy via a self-hosted GitHub Actions runner
+
+Two options ship in this repo for letting GitHub trigger a deploy:
+
+| Mechanism | Surface | Path |
+|---|---|---|
+| **Webhook agent** (existing) | Tiny Go HTTP daemon, HMAC-verified push events | [`deploy/webhook-agent/`](../webhook-agent/) |
+| **Self-hosted Actions runner** (this section) | Full GitHub Actions executor with workflow steps | [`deploy/lxc/runner-install.sh`](runner-install.sh) + [`.github/workflows/deploy-lxc.yml`](../../.github/workflows/deploy-lxc.yml) |
+
+Pick one — they are independent. The webhook agent is the smallest possible
+attack surface; the self-hosted runner gives you the full GitHub Actions
+context (logs in the Actions tab, `workflow_dispatch` button, ref selection,
+job timeouts, etc.).
+
+### Self-hosted runner setup
+
+1. **Get a registration token** at
+   `https://github.com/<owner>/<repo>/settings/actions/runners/new`. Tokens
+   are one-shot and expire ~1h after issue.
+
+2. **Run the installer inside the LXC** (after the main `install.sh` has
+   already provisioned the NMS — the runner needs the systemd units to
+   exist so the deploy can restart them):
+
+   ```sh
+   sudo /opt/src/mikrotik-nms/deploy/lxc/runner-install.sh \
+       --repo c0de-ch/mikrotik-nms \
+       --token AAA...your-registration-token...
+   ```
+
+   What it does:
+   - Creates user `gh-runner` (system, no shell).
+   - Downloads `actions/runner` v2.319.1 to `/home/gh-runner/runner`.
+   - Registers the runner with labels `self-hosted,linux,mikrotik-nms`.
+   - Installs as a systemd service (`actions.runner.<repo>.<name>.service`).
+   - Drops `runner-deploy.sh` at `/usr/local/sbin/mikrotik-nms-deploy`.
+   - Adds a **narrow** sudoers fragment (`/etc/sudoers.d/mikrotik-nms-runner`)
+     letting `gh-runner` invoke that one wrapper, nothing else.
+
+3. **Verify the runner is online** at
+   `Settings → Actions → Runners`. The workflow `.github/workflows/deploy-lxc.yml`
+   ships in this repo and triggers on push to `main` (path-filtered to
+   `backend/**`, `frontend/**`, `deploy/lxc/**`) plus on-demand via
+   `workflow_dispatch`.
+
+4. **Optional — disable auto-deploy on push** by setting the repo variable
+   `DEPLOY_ON_PUSH=false` (Settings → Secrets and variables → Actions →
+   Variables). The `workflow_dispatch` trigger keeps working.
+
+### What runs during a deploy
+
+The deploy wrapper at `/usr/local/sbin/mikrotik-nms-deploy`:
+
+1. Validates that the workspace path is under an allowed runner root and
+   contains `backend/go.mod`, `frontend/package.json`, and the install
+   script — refusing to run otherwise.
+2. Calls `install.sh --skip-deps --source $WORKSPACE`. The installer
+   rebuilds the backend binary and the Next.js frontend and restarts the
+   systemd services.
+3. Asserts that `mikrotik-nms-backend`, `mikrotik-nms-frontend` and
+   `caddy` are `is-active` and that `GET /api/v1/health` returns 200.
+
+Logs are visible both in the Actions tab and via
+`journalctl -u 'actions.runner.*' -f` on the LXC.
+
+### Hardening notes
+
+- The runner runs as an unprivileged user. The only sudo grant is to
+  `/usr/local/sbin/mikrotik-nms-deploy`, NOPASSWD, with no env passthrough.
+- The deploy wrapper refuses any workspace path outside the runner's
+  expected work tree, so a malicious workflow that tampers with
+  `$GITHUB_WORKSPACE` cannot redirect the installer to an attacker-supplied
+  source.
+- Repo Settings → Actions → "Require approval for first-time contributors"
+  is strongly recommended so a malicious PR from an outside fork cannot
+  trigger the workflow.
+
+### Re-registering or removing the runner
+
+```sh
+# stop + uninstall the systemd service
+sudo /home/gh-runner/runner/svc.sh stop
+sudo /home/gh-runner/runner/svc.sh uninstall
+
+# tell GitHub to forget the runner (requires a fresh removal token)
+sudo -u gh-runner /home/gh-runner/runner/config.sh remove --token AAA...
+
+# remove the sudoers grant + wrapper
+sudo rm -f /etc/sudoers.d/mikrotik-nms-runner /usr/local/sbin/mikrotik-nms-deploy
+```
+
 ## Uninstall
 
 ```sh
