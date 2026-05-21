@@ -269,7 +269,11 @@ chown "$SERVICE_USER":"$SERVICE_USER" "$INSTALL_PREFIX/bin/mikrotik-nms"
 log "building frontend (this can take a few minutes on first run)"
 (
     cd "$SOURCE_DIR/frontend"
-    npm ci --no-audit --no-fund
+    # --include=dev is required because the sourced env file sets
+    # NODE_ENV=production (for the runtime systemd unit), which would
+    # otherwise make npm skip devDependencies — including the
+    # Tailwind v4 PostCSS plugin that the build needs.
+    npm ci --no-audit --no-fund --include=dev
     NEXT_PUBLIC_API_URL="$NEXT_PUBLIC_API_URL" \
     NEXT_PUBLIC_WS_URL="$NEXT_PUBLIC_WS_URL" \
         npm run build
