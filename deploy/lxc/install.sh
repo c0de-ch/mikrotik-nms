@@ -7,7 +7,7 @@
 #
 # Usage:
 #   sudo ./install.sh [--hostname HOST] [--public-url URL] [--source DIR]
-#                     [--no-tls] [--skip-deps]
+#                     [--no-tls] [--tls-internal] [--skip-deps]
 #
 # Examples:
 #   # Internal LAN, plain HTTP on the LXC IP
@@ -16,8 +16,8 @@
 #   # Public hostname with auto Let's Encrypt
 #   sudo ./install.sh --hostname nms.example.com --public-url https://nms.example.com
 #
-#   # Self-signed internal TLS (Caddy "tls internal")
-#   sudo ./install.sh --hostname nms.lan --public-url https://nms.lan
+#   # Internal hostname with self-signed TLS (Caddy "tls internal")
+#   sudo ./install.sh --hostname nms.lan --tls-internal
 #
 # Re-running this script is safe; it will rebuild and restart services.
 
@@ -37,6 +37,7 @@ HOSTNAME_ARG=""
 PUBLIC_URL=""
 SOURCE_DIR=""
 NO_TLS=0
+TLS_INTERNAL=0
 SKIP_DEPS=0
 
 # ---- helpers ----------------------------------------------------------------
@@ -63,14 +64,22 @@ while [[ $# -gt 0 ]]; do
         --hostname)   HOSTNAME_ARG="$2"; shift 2 ;;
         --public-url) PUBLIC_URL="$2";   shift 2 ;;
         --source)     SOURCE_DIR="$2";   shift 2 ;;
-        --no-tls)     NO_TLS=1;          shift   ;;
-        --skip-deps)  SKIP_DEPS=1;       shift   ;;
+        --no-tls)        NO_TLS=1;       shift   ;;
+        --tls-internal)  TLS_INTERNAL=1; shift   ;;
+        --skip-deps)     SKIP_DEPS=1;    shift   ;;
         -h|--help)    usage 0 ;;
         *)            warn "unknown flag: $1"; usage 1 ;;
     esac
 done
 
 require_root
+
+if [[ $TLS_INTERNAL -eq 1 && $NO_TLS -eq 1 ]]; then
+    die "--tls-internal and --no-tls are mutually exclusive"
+fi
+if [[ $TLS_INTERNAL -eq 1 && -z "$HOSTNAME_ARG" ]]; then
+    die "--tls-internal requires --hostname"
+fi
 
 # Determine repo root: explicit --source or the parent of this script.
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
@@ -311,6 +320,13 @@ if [[ -n "$HOSTNAME_ARG" && $NO_TLS -eq 1 ]]; then
 fi
 
 sed "s|@@SITE@@|$caddy_site|g" "$CADDY_TEMPLATE" > /etc/caddy/Caddyfile
+if [[ $TLS_INTERNAL -eq 1 ]]; then
+    # Inject `tls internal` right after the opening brace of the site
+    # block. Caddy will then issue a self-signed cert from its local CA
+    # instead of trying to reach Let's Encrypt for a hostname that has
+    # no public DNS record.
+    sed -i "0,/^${caddy_site//./\\.} {\$/{s||${caddy_site//./\\.} {\n\ttls internal|}" /etc/caddy/Caddyfile
+fi
 chmod 0644 /etc/caddy/Caddyfile
 
 # ---- 11. start everything ---------------------------------------------------
