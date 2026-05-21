@@ -138,11 +138,12 @@ install_go() {
         *)       die "unsupported arch: $(uname -m)" ;;
     esac
 
-    local tmp; tmp="$(mktemp -d)"
-    trap 'rm -rf "$tmp"' RETURN
+    local tmp
+    tmp="$(mktemp -d)"
     curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${arch}.tar.gz" -o "$tmp/go.tgz"
     rm -rf /usr/local/go
     tar -C /usr/local -xzf "$tmp/go.tgz"
+    rm -rf "$tmp"
 }
 
 install_go
