@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { AlertTriangle, ShieldAlert, ShieldCheck, GitBranch, Radio, Cable, ChevronDown, ChevronRight } from "lucide-react";
+import { AlertTriangle, ShieldAlert, ShieldCheck, GitBranch, Radio, Cable, ChevronDown, ChevronRight, Ban } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -53,6 +53,7 @@ function eventTypeLabel(t: string): string {
     case "port_disabled": return "Port disabled";
     case "port_link_down": return "Link down";
     case "port_link_flap": return "Port flap";
+    case "port_loop_protect": return "Loop protect tripped";
     default: return t;
   }
 }
@@ -114,6 +115,11 @@ export default function NetworkHealthPage() {
   const warnCount = events.filter((e) => e.severity === "warn").length;
   const downPorts = portStates.filter((p) => !p.running && !p.disabled).length;
   const flappingPorts = portStates.filter((p) => p.flap_count_window >= 3).length;
+  const disabledPorts = portStates.filter((p) => p.disabled).length;
+  const loopProtectPorts = portStates.filter((p) => {
+    const s = (p.loop_protect_status || "").toLowerCase();
+    return s !== "" && s !== "none";
+  }).length;
 
   // Group ports by device for display.
   const portsByDevice = portStates.reduce<Record<string, InterfaceState[]>>((acc, p) => {
@@ -138,7 +144,7 @@ export default function NetworkHealthPage() {
         </p>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-4 lg:grid-cols-7">
+      <div className="grid gap-4 md:grid-cols-4 lg:grid-cols-9">
         <Card>
           <CardHeader className="pb-2"><CardTitle className="text-sm font-medium">Bridges</CardTitle></CardHeader>
           <CardContent className="flex items-center gap-2">
@@ -165,6 +171,20 @@ export default function NetworkHealthPage() {
           <CardContent className="flex items-center gap-2">
             <Cable className={`h-5 w-5 ${downPorts > 0 ? "text-amber-600" : "text-muted-foreground"}`} />
             <div className="text-2xl font-bold">{downPorts}</div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="pb-2"><CardTitle className="text-sm font-medium">Disabled</CardTitle></CardHeader>
+          <CardContent className="flex items-center gap-2">
+            <Ban className={`h-5 w-5 ${disabledPorts > 0 ? "text-amber-600" : "text-muted-foreground"}`} />
+            <div className="text-2xl font-bold">{disabledPorts}</div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="pb-2"><CardTitle className="text-sm font-medium">Loop-protect</CardTitle></CardHeader>
+          <CardContent className="flex items-center gap-2">
+            <ShieldAlert className={`h-5 w-5 ${loopProtectPorts > 0 ? "text-red-600" : "text-muted-foreground"}`} />
+            <div className="text-2xl font-bold">{loopProtectPorts}</div>
           </CardContent>
         </Card>
         <Card>
@@ -310,6 +330,7 @@ export default function NetworkHealthPage() {
                       <TableHead>Interface</TableHead>
                       <TableHead>Type</TableHead>
                       <TableHead>State</TableHead>
+                      <TableHead>Reason / comment</TableHead>
                       <TableHead>Last link up</TableHead>
                       <TableHead>Last link down</TableHead>
                       <TableHead className="text-right">Recent flaps</TableHead>
@@ -317,15 +338,27 @@ export default function NetworkHealthPage() {
                   </TableHeader>
                   <TableBody>
                     {ports.map((p) => {
+                      const lpStatus = (p.loop_protect_status || "").toLowerCase();
+                      const inLoop = lpStatus !== "" && lpStatus !== "none";
                       let stateBadge;
-                      if (p.disabled) stateBadge = <Badge variant="secondary">disabled</Badge>;
+                      if (inLoop) stateBadge = <Badge className="bg-red-100 text-red-700">loop-protect</Badge>;
+                      else if (p.disabled) stateBadge = <Badge variant="secondary">disabled</Badge>;
                       else if (!p.running) stateBadge = <Badge className="bg-red-100 text-red-700">link down</Badge>;
                       else stateBadge = <Badge className="bg-green-100 text-green-700">up</Badge>;
+
+                      // Reason column: prefer loop-protect status > slave > comment.
+                      const reasonParts: string[] = [];
+                      if (inLoop) reasonParts.push(p.loop_protect_status);
+                      if (p.slave) reasonParts.push("bond/bridge slave");
+                      if (p.comment) reasonParts.push(p.comment);
+                      const reason = reasonParts.join(" · ") || "—";
+
                       return (
                         <TableRow key={p.id}>
                           <TableCell className="font-mono text-xs">{p.interface_name}</TableCell>
                           <TableCell className="text-xs text-muted-foreground">{p.interface_type || "—"}</TableCell>
                           <TableCell>{stateBadge}</TableCell>
+                          <TableCell className="text-xs text-muted-foreground max-w-[260px] truncate" title={reason}>{reason}</TableCell>
                           <TableCell className="text-xs text-muted-foreground">{p.last_link_up || "—"}</TableCell>
                           <TableCell className="text-xs text-muted-foreground">{p.last_link_down || "—"}</TableCell>
                           <TableCell className={`text-right text-xs ${p.flap_count_window >= 3 ? "text-red-600 font-semibold" : ""}`}>

@@ -65,6 +65,14 @@ func (n *NetworkHealthPoller) Run(ctx context.Context) {
 	ticker := time.NewTicker(n.interval)
 	defer ticker.Stop()
 
+	// Seed in-memory port state from the DB so the first poll after a restart
+	// only suppresses transitions for interfaces we've genuinely never seen.
+	// Without this, every existing disabled/down port would stay invisible
+	// until something changed on the device.
+	if err := n.ports.RestoreFromDB(n.db); err != nil {
+		log.Printf("network health: restore port state: %v", err)
+	}
+
 	// Stagger after the topology poller's initial run.
 	time.Sleep(20 * time.Second)
 	n.safePoll(ctx)
