@@ -1,8 +1,12 @@
 package api
 
 import (
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
+	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/mikrotik-nms/backend/internal/database/queries"
@@ -179,6 +183,24 @@ func (s *Server) handleUpgradeRouterboard(w http.ResponseWriter, r *http.Request
 	})
 }
 
+// instanceID is regenerated every time the backend starts. Clients can use
+// it to detect a redeploy by polling /health and comparing the value they
+// saw on first connect — useful for forcing a browser refresh after a
+// frontend rebuild changes the JS chunk hashes.
+var instanceID = func() string {
+	b := make([]byte, 8)
+	if _, err := rand.Read(b); err != nil {
+		// Fall back to a timestamp if the OS RNG is unavailable for some
+		// reason — uniqueness across restarts is the only invariant we
+		// actually rely on.
+		return fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b)
+}()
+
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	writeJSON(w, http.StatusOK, map[string]string{
+		"status":      "ok",
+		"instance_id": instanceID,
+	})
 }
