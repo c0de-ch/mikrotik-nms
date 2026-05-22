@@ -27,9 +27,8 @@ type Lease struct {
 	IPAddress string
 	HWAddress string
 	Hostname  string
-	State     string // "active", "expired", "declined", ...
-	SubnetID  int
-	Type      string // "v4" or "v6"
+	State     int // Kea numeric state: 0=active, 1=declined, 2=expired
+	Type      string
 }
 
 // Client queries OPNsense's Kea lease REST endpoints.
@@ -64,13 +63,13 @@ func New(cfg Config) *Client {
 }
 
 // rawRow models the OPNsense lease row. Field names map to the JSON keys
-// returned by /api/kea/leases{4,6}/search.
+// returned by /api/kea/leases{4,6}/search. Verified against OPNsense 25.x
+// — `state` is a Kea numeric (0=active), `type` is usually "" for v4 rows.
 type rawRow struct {
 	Address  string `json:"address"`
 	HWAddr   string `json:"hwaddr"`
 	Hostname string `json:"hostname"`
-	State    string `json:"state"`
-	SubnetID int    `json:"subnet_id"`
+	State    int    `json:"state"`
 	Type     string `json:"type"`
 }
 
@@ -130,7 +129,8 @@ func (c *Client) fetch(path, leaseType string) ([]Lease, error) {
 
 	out := make([]Lease, 0, len(sr.Rows))
 	for _, r := range sr.Rows {
-		if r.State != "" && r.State != "active" {
+		// Kea state: 0=active, 1=declined, 2=expired. Keep only active.
+		if r.State != 0 {
 			continue
 		}
 		if r.HWAddr == "" || r.Address == "" {
@@ -145,7 +145,6 @@ func (c *Client) fetch(path, leaseType string) ([]Lease, error) {
 			HWAddress: strings.ToUpper(r.HWAddr),
 			Hostname:  r.Hostname,
 			State:     r.State,
-			SubnetID:  r.SubnetID,
 			Type:      t,
 		})
 	}
