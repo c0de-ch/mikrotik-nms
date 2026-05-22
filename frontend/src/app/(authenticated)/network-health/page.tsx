@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { AlertTriangle, ShieldAlert, ShieldCheck, GitBranch, Radio, Cable } from "lucide-react";
+import { AlertTriangle, ShieldAlert, ShieldCheck, GitBranch, Radio, Cable, ChevronDown, ChevronRight } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -15,6 +15,7 @@ import {
 import { useAuth } from "@/context/auth";
 import { api, type NetworkHealth, type LoopEvent, type BridgeWithPorts, type InterfaceState } from "@/lib/api";
 import { useWebSocket } from "@/hooks/use-websocket";
+import { foldEvents, foldOptions, type FoldBucket } from "@/lib/fold";
 
 function formatDateTime(dateStr: string): string {
   const d = new Date(dateStr);
@@ -81,6 +82,8 @@ function statusColor(status: string): string {
 export default function NetworkHealthPage() {
   const { token } = useAuth();
   const [data, setData] = useState<NetworkHealth | null>(null);
+  const [bucket, setBucket] = useState<FoldBucket>("off");
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
   const load = useCallback(() => {
     if (!token) return;
@@ -190,10 +193,26 @@ export default function NetworkHealthPage() {
       {/* Recent events */}
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Recent Loop / Flap Events</CardTitle>
-          <p className="text-xs text-muted-foreground">
-            STP topology changes, loop detections from device logs, and MAC address flapping.
-          </p>
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <CardTitle className="text-base">Recent Loop / Flap Events</CardTitle>
+              <p className="text-xs text-muted-foreground">
+                STP topology changes, loop detections from device logs, and MAC address flapping.
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-muted-foreground">Group</span>
+              <select
+                className="h-8 rounded-md border bg-transparent px-2 text-sm"
+                value={bucket}
+                onChange={(e) => setBucket(e.target.value as FoldBucket)}
+              >
+                {foldOptions.map((o) => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+            </div>
+          </div>
         </CardHeader>
         <CardContent>
           {events.length === 0 ? (
@@ -214,20 +233,61 @@ export default function NetworkHealthPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {events.map((e: LoopEvent) => (
-                  <TableRow key={e.id}>
-                    <TableCell className="text-xs whitespace-nowrap" title={formatDateTime(e.recorded_at)}>{timeAgo(e.recorded_at)}</TableCell>
-                    <TableCell>{severityBadge(e.severity)}</TableCell>
-                    <TableCell className="text-xs">{eventTypeLabel(e.event_type)}</TableCell>
-                    <TableCell className="text-xs">{e.device_name || e.device_id}</TableCell>
-                    <TableCell className="text-xs font-mono">
-                      {e.bridge_name && <span>{e.bridge_name}</span>}
-                      {e.port_interface && <span className="ml-1 text-muted-foreground">/ {e.port_interface}</span>}
-                    </TableCell>
-                    <TableCell className="text-xs font-mono">{e.mac_address || "—"}</TableCell>
-                    <TableCell className="text-xs text-muted-foreground max-w-[300px] truncate" title={e.message}>{e.message}</TableCell>
-                  </TableRow>
-                ))}
+                {bucket === "off"
+                  ? events.map((e: LoopEvent) => (
+                      <TableRow key={e.id}>
+                        <TableCell className="text-xs whitespace-nowrap" title={formatDateTime(e.recorded_at)}>{timeAgo(e.recorded_at)}</TableCell>
+                        <TableCell>{severityBadge(e.severity)}</TableCell>
+                        <TableCell className="text-xs">{eventTypeLabel(e.event_type)}</TableCell>
+                        <TableCell className="text-xs">{e.device_name || e.device_id}</TableCell>
+                        <TableCell className="text-xs font-mono">
+                          {e.bridge_name && <span>{e.bridge_name}</span>}
+                          {e.port_interface && <span className="ml-1 text-muted-foreground">/ {e.port_interface}</span>}
+                        </TableCell>
+                        <TableCell className="text-xs font-mono">{e.mac_address || "—"}</TableCell>
+                        <TableCell className="text-xs text-muted-foreground max-w-[300px] truncate" title={e.message}>{e.message}</TableCell>
+                      </TableRow>
+                    ))
+                  : foldEvents(events, bucket).flatMap((g) => {
+                      const open = expanded[g.key] ?? false;
+                      const critical = g.items.filter((i) => i.severity === "critical").length;
+                      const warn = g.items.filter((i) => i.severity === "warn").length;
+                      const header = (
+                        <TableRow
+                          key={`hdr-${g.key}`}
+                          className="bg-muted/40 cursor-pointer hover:bg-muted"
+                          onClick={() => setExpanded((s) => ({ ...s, [g.key]: !open }))}
+                        >
+                          <TableCell colSpan={7} className="text-xs">
+                            <span className="inline-flex items-center gap-2">
+                              {open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+                              <span className="font-medium">{g.key}</span>
+                              <span className="text-muted-foreground">— {g.count} event{g.count === 1 ? "" : "s"}</span>
+                              {critical > 0 && <Badge className="bg-red-100 text-red-700">{critical} critical</Badge>}
+                              {warn > 0 && <Badge className="bg-amber-100 text-amber-700">{warn} warn</Badge>}
+                            </span>
+                          </TableCell>
+                        </TableRow>
+                      );
+                      if (!open) return [header];
+                      return [
+                        header,
+                        ...g.items.map((e) => (
+                          <TableRow key={e.id}>
+                            <TableCell className="text-xs whitespace-nowrap pl-8" title={formatDateTime(e.recorded_at)}>{timeAgo(e.recorded_at)}</TableCell>
+                            <TableCell>{severityBadge(e.severity)}</TableCell>
+                            <TableCell className="text-xs">{eventTypeLabel(e.event_type)}</TableCell>
+                            <TableCell className="text-xs">{e.device_name || e.device_id}</TableCell>
+                            <TableCell className="text-xs font-mono">
+                              {e.bridge_name && <span>{e.bridge_name}</span>}
+                              {e.port_interface && <span className="ml-1 text-muted-foreground">/ {e.port_interface}</span>}
+                            </TableCell>
+                            <TableCell className="text-xs font-mono">{e.mac_address || "—"}</TableCell>
+                            <TableCell className="text-xs text-muted-foreground max-w-[300px] truncate" title={e.message}>{e.message}</TableCell>
+                          </TableRow>
+                        )),
+                      ];
+                    })}
               </TableBody>
             </Table>
           )}

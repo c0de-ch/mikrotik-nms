@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import { Plus, Trash2, Power, PowerOff, Save, Moon, Sun, Pencil, Eraser } from "lucide-react";
+import { Plus, Trash2, Power, PowerOff, Save, Moon, Sun, Pencil, Eraser, Download, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -92,6 +92,72 @@ export default function SettingsPage() {
   const [purgeConfirmOpen, setPurgeConfirmOpen] = useState(false);
   const [purging, setPurging] = useState(false);
   const purgeAny = Object.values(purgeTargets).some(Boolean);
+
+  // Backup/restore
+  const [restoring, setRestoring] = useState(false);
+  const [backing, setBacking] = useState(false);
+
+  const downloadBlob = (blob: Blob, suggestedName: string) => {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = suggestedName;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleDownloadTable = async (table: string) => {
+    if (!token) return;
+    try {
+      const blob = await api.admin.downloadExport(token, table);
+      downloadBlob(blob, `${table}-${new Date().toISOString().slice(0, 10)}.json`);
+      toast.success(`Downloaded ${table}`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Export failed");
+    }
+  };
+
+  const handleDownloadFullBackup = async () => {
+    if (!token) return;
+    setBacking(true);
+    try {
+      const blob = await api.admin.downloadFullBackup(token);
+      downloadBlob(blob, `mikrotik-nms-backup-${new Date().toISOString().slice(0, 19).replace(/:/g, "")}.json`);
+      toast.success("Full backup downloaded");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Backup failed");
+    } finally {
+      setBacking(false);
+    }
+  };
+
+  const handleImportTable = async (table: string, file: File) => {
+    if (!token) return;
+    try {
+      const res = await api.admin.importTable(token, table, file);
+      toast.success(`${table}: ${res.inserted} inserted, ${res.skipped} skipped`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Import failed");
+    }
+  };
+
+  const handleRestoreFullBackup = async (file: File) => {
+    if (!token) return;
+    setRestoring(true);
+    try {
+      const res = await api.admin.restoreFullBackup(token, file);
+      const total = Object.entries(res.tables)
+        .map(([t, n]) => `${t}: ${n.inserted}/${n.inserted + n.skipped}`)
+        .join(", ");
+      toast.success(`Restored — ${total}`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Restore failed");
+    } finally {
+      setRestoring(false);
+    }
+  };
 
   const handlePurge = async () => {
     if (!token || !purgeAny) return;
@@ -635,6 +701,93 @@ export default function SettingsPage() {
             <Eraser className="h-4 w-4" />
             {purging ? "Purging…" : "Purge selected"}
           </Button>
+        </CardContent>
+      </Card>
+
+      {/* Backup & Restore */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Backup &amp; Restore</CardTitle>
+          <p className="text-xs text-muted-foreground">
+            Full JSON backup of the whole database (config + history), or per-table export/import.
+            Imports use <code>INSERT OR IGNORE</code> — rows with an existing primary key are skipped silently.
+          </p>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="rounded-md border p-3 space-y-2">
+            <p className="text-sm font-medium">Full backup</p>
+            <p className="text-xs text-muted-foreground">
+              Devices, users, settings, DNS servers, all history. One JSON file you can stash anywhere.
+            </p>
+            <div className="flex gap-2 items-center flex-wrap">
+              <Button onClick={handleDownloadFullBackup} disabled={backing} className="gap-2">
+                <Download className="h-4 w-4" />
+                {backing ? "Backing up…" : "Download backup"}
+              </Button>
+              <label className="inline-flex">
+                <input
+                  type="file"
+                  accept="application/json,.json"
+                  className="hidden"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (f) {
+                      handleRestoreFullBackup(f);
+                      e.target.value = "";
+                    }
+                  }}
+                />
+                <span className={`inline-flex items-center gap-2 px-3 h-9 rounded-md border text-sm cursor-pointer hover:bg-muted ${restoring ? "opacity-50 pointer-events-none" : ""}`}>
+                  <Upload className="h-4 w-4" />
+                  {restoring ? "Restoring…" : "Restore from file"}
+                </span>
+              </label>
+            </div>
+          </div>
+
+          <div>
+            <p className="text-sm font-medium mb-2">Per-table</p>
+            <div className="space-y-2">
+              {[
+                { table: "wifi_history", label: "WiFi events" },
+                { table: "client_history", label: "Client history" },
+                { table: "loop_events", label: "Network health events" },
+                { table: "traffic_samples", label: "Traffic samples" },
+                { table: "devices", label: "Devices (config)" },
+                { table: "app_settings", label: "App settings (config)" },
+                { table: "dns_servers", label: "DNS servers (config)" },
+              ].map((row) => (
+                <div key={row.table} className="flex items-center justify-between gap-3 text-sm">
+                  <div className="flex-1">
+                    <span className="font-medium">{row.label}</span>
+                    <span className="ml-2 font-mono text-xs text-muted-foreground">{row.table}</span>
+                  </div>
+                  <Button variant="outline" size="sm" onClick={() => handleDownloadTable(row.table)} className="gap-1">
+                    <Download className="h-3.5 w-3.5" />
+                    Export
+                  </Button>
+                  <label className="inline-flex">
+                    <input
+                      type="file"
+                      accept="application/json,.json"
+                      className="hidden"
+                      onChange={(e) => {
+                        const f = e.target.files?.[0];
+                        if (f) {
+                          handleImportTable(row.table, f);
+                          e.target.value = "";
+                        }
+                      }}
+                    />
+                    <span className="inline-flex items-center gap-1 h-8 px-2.5 rounded-md border text-xs cursor-pointer hover:bg-muted">
+                      <Upload className="h-3.5 w-3.5" />
+                      Import
+                    </span>
+                  </label>
+                </div>
+              ))}
+            </div>
+          </div>
         </CardContent>
       </Card>
 

@@ -24,6 +24,7 @@ import {
 import { useAuth } from "@/context/auth";
 import { api } from "@/lib/api";
 import { useWebSocket } from "@/hooks/use-websocket";
+import { foldEvents, foldOptions, type FoldBucket } from "@/lib/fold";
 import { toast } from "sonner";
 
 interface WifiEntry {
@@ -165,6 +166,8 @@ export default function WifiPage() {
   const [clientHistory, setClientHistory] = useState<WifiEntry[]>([]);
   const [search, setSearch] = useState("");
   const [macLookups, setMacLookups] = useState<MACLookupMap>({});
+  const [timelineBucket, setTimelineBucket] = useState<FoldBucket>("off");
+  const [timelineExpanded, setTimelineExpanded] = useState<Record<string, boolean>>({});
 
   const loadCurrent = useCallback(() => {
     if (!token) return;
@@ -359,9 +362,23 @@ export default function WifiPage() {
       {/* Timeline view */}
       {tab === "timeline" && (
         <div className="space-y-3">
-          <div className="relative w-64">
-            <Search className="absolute left-2.5 top-2 h-4 w-4 text-muted-foreground" />
-            <Input placeholder="Filter by MAC, name, AP..." value={search} onChange={(e) => setSearch(e.target.value)} className="pl-8" />
+          <div className="flex items-center gap-3 flex-wrap">
+            <div className="relative w-64">
+              <Search className="absolute left-2.5 top-2 h-4 w-4 text-muted-foreground" />
+              <Input placeholder="Filter by MAC, name, AP..." value={search} onChange={(e) => setSearch(e.target.value)} className="pl-8" />
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-muted-foreground">Group</span>
+              <select
+                className="h-8 rounded-md border bg-transparent px-2 text-sm"
+                value={timelineBucket}
+                onChange={(e) => setTimelineBucket(e.target.value as FoldBucket)}
+              >
+                {foldOptions.map((o) => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+            </div>
           </div>
           <Table>
             <TableHeader>
@@ -376,25 +393,77 @@ export default function WifiPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {filteredHistory.slice(0, 200).map((e) => (
-                <TableRow key={e.id} className="cursor-pointer hover:bg-muted/50" onClick={() => openClientHistory(e.mac_address)}>
-                  <TableCell className="text-xs text-muted-foreground whitespace-nowrap">{timeAgo(e.recorded_at)}</TableCell>
-                  <TableCell>{eventBadge(e.event)}</TableCell>
-                  <TableCell>
-                    <div>
-                      <span className="font-medium text-sm">{resolveName(e.mac_address, e.host_name) || e.mac_address}</span>
-                      {resolveName(e.mac_address, e.host_name) && <span className="text-xs text-muted-foreground ml-1 font-mono">{e.mac_address}</span>}
-                    </div>
-                    {resolveIP(e.mac_address, e.ip_address) && (
-                      <span className="text-xs text-muted-foreground font-mono">{resolveIP(e.mac_address, e.ip_address)}</span>
-                    )}
-                  </TableCell>
-                  <TableCell className="text-sm">{e.ap_name || "—"}</TableCell>
-                  <TableCell className="text-xs">{e.ssid} {e.band && `· ${e.band}`}</TableCell>
-                  <TableCell className={`text-xs font-mono ${e.signal ? signalColor(e.signal) : ""}`}>{e.signal || "—"}</TableCell>
-                  <TableCell className="text-xs text-muted-foreground">{e.controller_name || "—"}</TableCell>
-                </TableRow>
-              ))}
+              {(() => {
+                const rows = filteredHistory.slice(0, 1000);
+                if (timelineBucket === "off") {
+                  return rows.slice(0, 200).map((e) => (
+                    <TableRow key={e.id} className="cursor-pointer hover:bg-muted/50" onClick={() => openClientHistory(e.mac_address)}>
+                      <TableCell className="text-xs text-muted-foreground whitespace-nowrap">{timeAgo(e.recorded_at)}</TableCell>
+                      <TableCell>{eventBadge(e.event)}</TableCell>
+                      <TableCell>
+                        <div>
+                          <span className="font-medium text-sm">{resolveName(e.mac_address, e.host_name) || e.mac_address}</span>
+                          {resolveName(e.mac_address, e.host_name) && <span className="text-xs text-muted-foreground ml-1 font-mono">{e.mac_address}</span>}
+                        </div>
+                        {resolveIP(e.mac_address, e.ip_address) && (
+                          <span className="text-xs text-muted-foreground font-mono">{resolveIP(e.mac_address, e.ip_address)}</span>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-sm">{e.ap_name || "—"}</TableCell>
+                      <TableCell className="text-xs">{e.ssid} {e.band && `· ${e.band}`}</TableCell>
+                      <TableCell className={`text-xs font-mono ${e.signal ? signalColor(e.signal) : ""}`}>{e.signal || "—"}</TableCell>
+                      <TableCell className="text-xs text-muted-foreground">{e.controller_name || "—"}</TableCell>
+                    </TableRow>
+                  ));
+                }
+                return foldEvents(rows, timelineBucket).flatMap((g) => {
+                  const open = timelineExpanded[g.key] ?? false;
+                  const roams = g.items.filter((i) => i.event === "roam").length;
+                  const joins = g.items.filter((i) => i.event === "join").length;
+                  const leaves = g.items.filter((i) => i.event === "leave").length;
+                  const header = (
+                    <TableRow
+                      key={`hdr-${g.key}`}
+                      className="bg-muted/40 cursor-pointer hover:bg-muted"
+                      onClick={() => setTimelineExpanded((s) => ({ ...s, [g.key]: !open }))}
+                    >
+                      <TableCell colSpan={7} className="text-xs">
+                        <span className="inline-flex items-center gap-2">
+                          {open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+                          <span className="font-medium">{g.key}</span>
+                          <span className="text-muted-foreground">— {g.count} event{g.count === 1 ? "" : "s"}</span>
+                          {joins > 0 && <Badge className="bg-green-100 text-green-700">{joins} join</Badge>}
+                          {roams > 0 && <Badge className="bg-blue-100 text-blue-700">{roams} roam</Badge>}
+                          {leaves > 0 && <Badge className="bg-red-100 text-red-700">{leaves} leave</Badge>}
+                        </span>
+                      </TableCell>
+                    </TableRow>
+                  );
+                  if (!open) return [header];
+                  return [
+                    header,
+                    ...g.items.slice(0, 200).map((e) => (
+                      <TableRow key={e.id} className="cursor-pointer hover:bg-muted/50" onClick={() => openClientHistory(e.mac_address)}>
+                        <TableCell className="text-xs text-muted-foreground whitespace-nowrap pl-8">{timeAgo(e.recorded_at)}</TableCell>
+                        <TableCell>{eventBadge(e.event)}</TableCell>
+                        <TableCell>
+                          <div>
+                            <span className="font-medium text-sm">{resolveName(e.mac_address, e.host_name) || e.mac_address}</span>
+                            {resolveName(e.mac_address, e.host_name) && <span className="text-xs text-muted-foreground ml-1 font-mono">{e.mac_address}</span>}
+                          </div>
+                          {resolveIP(e.mac_address, e.ip_address) && (
+                            <span className="text-xs text-muted-foreground font-mono">{resolveIP(e.mac_address, e.ip_address)}</span>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-sm">{e.ap_name || "—"}</TableCell>
+                        <TableCell className="text-xs">{e.ssid} {e.band && `· ${e.band}`}</TableCell>
+                        <TableCell className={`text-xs font-mono ${e.signal ? signalColor(e.signal) : ""}`}>{e.signal || "—"}</TableCell>
+                        <TableCell className="text-xs text-muted-foreground">{e.controller_name || "—"}</TableCell>
+                      </TableRow>
+                    )),
+                  ];
+                });
+              })()}
               {filteredHistory.length === 0 && (
                 <TableRow>
                   <TableCell colSpan={7} className="py-8 text-center text-muted-foreground">No history yet</TableCell>

@@ -129,6 +129,10 @@ func NewRouter(db *sql.DB, hub *ws.Hub, cfg *config.Config, pool *routeros.Pool)
 				r.Use(auth.RequireRole("admin"))
 				r.Put("/settings", s.handleUpdateSettings)
 				r.Post("/admin/purge-history", s.handlePurgeHistory)
+				r.Get("/admin/export/{table}", s.handleExportTable)
+				r.Post("/admin/import/{table}", s.handleImportTable)
+				r.Get("/admin/backup", s.handleFullBackup)
+				r.Post("/admin/restore", s.handleFullRestore)
 			})
 
 			// WebSocket
