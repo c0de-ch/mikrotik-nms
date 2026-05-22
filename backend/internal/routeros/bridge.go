@@ -110,10 +110,21 @@ func GetBridgePorts(client *ros.Client) ([]BridgePortInfo, error) {
 	ports := make([]BridgePortInfo, 0, len(reply.Re))
 	for _, re := range reply.Re {
 		m := GetSentenceMap(re)
+		bridge := m["bridge"]
+		iface := m["interface"]
+		// Some firmware versions return phantom rows from
+		// /interface/bridge/port/print with an empty bridge or interface
+		// field — orphans from removed bridges, dynamic entries that
+		// haven't fully materialised, or interfaces that aren't actual
+		// bridge ports. They show up grouped under an empty bridge name
+		// and falsely fire the stp_disabled detector. Drop them.
+		if bridge == "" || iface == "" || strings.Contains(iface, ",") {
+			continue
+		}
 		p := BridgePortInfo{
 			ID:           m[".id"],
-			Bridge:       m["bridge"],
-			Interface:    m["interface"],
+			Bridge:       bridge,
+			Interface:    iface,
 			Edge:         m["edge"] == "yes" || m["edge"] == "true",
 			PointToPoint: m["point-to-point"] == "yes" || m["point-to-point"] == "true",
 		}
