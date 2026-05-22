@@ -9,6 +9,7 @@ import (
 
 	"github.com/mikrotik-nms/backend/internal/database/queries"
 	"github.com/mikrotik-nms/backend/internal/kea"
+	"github.com/mikrotik-nms/backend/internal/opnsense"
 	"github.com/mikrotik-nms/backend/internal/resolver"
 	"github.com/mikrotik-nms/backend/internal/routeros"
 )
@@ -161,6 +162,43 @@ func (cdp *ClientDiscoveryPoller) poll(ctx context.Context) {
 				}
 			}
 			log.Printf("client discovery: kea: %d active leases", len(leases))
+		}()
+	}
+
+	// OPNsense Kea via the OPNsense REST API. Lets us pick up DHCP leases
+	// for subnets where the MikroTik routers don't see the clients in ARP.
+	opURL, _ := queries.GetSetting(cdp.db, "opnsense_url")
+	opKey, _ := queries.GetSetting(cdp.db, "opnsense_api_key")
+	opSecret, _ := queries.GetSetting(cdp.db, "opnsense_api_secret")
+	if opURL != "" && opKey != "" && opSecret != "" {
+		opVerify, _ := queries.GetSetting(cdp.db, "opnsense_verify_tls")
+		client := opnsense.New(opnsense.Config{
+			URL: opURL, APIKey: opKey, APISecret: opSecret,
+			VerifyTLS: opVerify == "true" || opVerify == "1",
+		})
+		func() {
+			defer func() { recover() }()
+			leases, err := client.GetLeases()
+			if err != nil {
+				log.Printf("client discovery: opnsense: %v", err)
+			}
+			for _, l := range leases {
+				mac := strings.ToUpper(l.HWAddress)
+				if mac == "" {
+					continue
+				}
+				if existing, ok := clientMap[mac]; ok {
+					if existing.ip == "" && l.IPAddress != "" {
+						existing.ip = l.IPAddress
+					}
+					if existing.hostname == "" && l.Hostname != "" {
+						existing.hostname = l.Hostname
+					}
+				} else {
+					clientMap[mac] = &clientEntry{mac: mac, ip: l.IPAddress, hostname: l.Hostname, source: "dhcp", deviceName: "opnsense"}
+				}
+			}
+			log.Printf("client discovery: opnsense: %d active leases", len(leases))
 		}()
 	}
 
