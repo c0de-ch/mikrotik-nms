@@ -244,14 +244,25 @@ func (m *portMonitor) processInterface(
 	return events, state
 }
 
-// isInLoop returns true when RouterOS reports a port currently in the
-// loop-protect blocked state. Phrasing varies across firmwares
-// ("in-loop", "on-loop"); anything non-empty and non-"none" counts.
+// isInLoop returns true ONLY when RouterOS reports the port is currently
+// blocked because loop-protect detected a loop. Real values RouterOS uses:
+//
+//	""        — field not exposed (non-ethernet, older firmware)
+//	"none"    — older firmware: not-in-loop
+//	"off"     — loop-protect feature DISABLED on this port (healthy!)
+//	"on"      — loop-protect enabled, no loop detected (healthy)
+//	"on-loop" — RouterOS 7.x: a loop is currently detected on this port
+//	"in-loop" — older phrasing for the same condition
+//
+// The first version of this code treated anything that wasn't "" or "none"
+// as in-loop, which fired false-positive critical events on every port that
+// simply had loop-protect *disabled*.
 func isInLoop(status string) bool {
-	if status == "" || status == "none" {
-		return false
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "on-loop", "in-loop":
+		return true
 	}
-	return true
+	return false
 }
 
 // RestoreFromDB seeds the in-memory state from interface_state rows. Called
