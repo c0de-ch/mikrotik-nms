@@ -331,10 +331,14 @@ chmod 0644 /etc/caddy/Caddyfile
 
 # ---- 11. start everything ---------------------------------------------------
 
-log "reloading systemd and starting services"
+log "reloading systemd and (re)starting services"
 systemctl daemon-reload
-systemctl enable --now mikrotik-nms-backend.service
-systemctl enable --now mikrotik-nms-frontend.service
+systemctl enable mikrotik-nms-backend.service mikrotik-nms-frontend.service
+# Use `restart` so re-runs of install.sh actually pick up the rebuilt
+# binary / frontend bundle. `enable --now` is a no-op when the unit is
+# already active and would silently keep the old process alive.
+systemctl restart mikrotik-nms-backend.service
+systemctl restart mikrotik-nms-frontend.service
 systemctl restart caddy.service || systemctl enable --now caddy.service
 
 sleep 1
