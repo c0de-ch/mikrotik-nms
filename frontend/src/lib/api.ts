@@ -240,6 +240,39 @@ export const api = {
         token,
         body: JSON.stringify(data),
       }),
+
+    // Export/backup endpoints return raw blobs (the server sets a download
+    // filename via Content-Disposition). We don't go through apiFetch because
+    // that always parses JSON.
+    downloadExport: async (token: string, table: string) => {
+      const res = await fetch(`${getApiBase()}/api/v1/admin/export/${encodeURIComponent(table)}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new ApiError(res.status, await res.text());
+      return res.blob();
+    },
+    downloadFullBackup: async (token: string) => {
+      const res = await fetch(`${getApiBase()}/api/v1/admin/backup`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new ApiError(res.status, await res.text());
+      return res.blob();
+    },
+
+    importTable: async (token: string, table: string, file: File) => {
+      const body = await file.text();
+      return apiFetch<{ inserted: number; skipped: number }>(
+        `/admin/import/${encodeURIComponent(table)}`,
+        { method: "POST", token, body },
+      );
+    },
+    restoreFullBackup: async (token: string, file: File) => {
+      const body = await file.text();
+      return apiFetch<{ tables: Record<string, { inserted: number; skipped: number }> }>(
+        "/admin/restore",
+        { method: "POST", token, body },
+      );
+    },
   },
 
   // DNS
