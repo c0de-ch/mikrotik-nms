@@ -315,6 +315,16 @@ func (wt *WifiTracker) handleLogEvent(ev *routeros.WirelessLogEvent, devID strin
 			return
 		}
 
+		// Redundant connect on the AP we already know about. A roaming client
+		// can emit many such log lines per second during a single transition;
+		// recording each one fills the history with phantom events. Refresh
+		// signal but don't write a new row.
+		if prev != nil && prev.PendingLeave == nil && prev.AP == ev.AP && prev.AP != "" {
+			prev.Signal = ev.Signal
+			prev.SSID = ev.SSID
+			return
+		}
+
 		// If there is a pending leave to a *different* AP, flush it before
 		// recording the join on the new AP.
 		prevAP := ""
@@ -384,6 +394,15 @@ func (wt *WifiTracker) handleLogEvent(ev *routeros.WirelessLogEvent, devID strin
 		prevAP := ""
 		if prev != nil {
 			prevAP = prev.AP
+			// Redundant roam to an AP we already think the client is on.
+			// RouterOS sometimes emits many such lines for a single physical
+			// roam transition (especially under 802.11k/v steering or with
+			// chatty CAPsMAN logging). Refresh signal but don't write a row.
+			if prev.AP == ev.ToAP && prev.AP != "" {
+				prev.Signal = ev.Signal
+				prev.SSID = ev.ToSSID
+				return
+			}
 		}
 		wt.clients[ev.MAC] = &clientState{
 			AP: ev.ToAP, SSID: ev.ToSSID, Signal: ev.Signal,
