@@ -223,6 +223,25 @@ export const api = {
       apiFetch<Record<string, string>>("/settings", { method: "PUT", token, body: JSON.stringify(data) }),
   },
 
+  // Admin actions
+  admin: {
+    purgeHistory: (
+      token: string,
+      data: {
+        wifi: boolean;
+        clients: boolean;
+        network_health: boolean;
+        traffic: boolean;
+        older_than_days: number;
+      },
+    ) =>
+      apiFetch<{ deleted: Record<string, number> }>("/admin/purge-history", {
+        method: "POST",
+        token,
+        body: JSON.stringify(data),
+      }),
+  },
+
   // DNS
   dns: {
     list: (token: string) => apiFetch<DNSServer[]>("/dns", { token }),

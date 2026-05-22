@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import { Plus, Trash2, Power, PowerOff, Save, Moon, Sun, Pencil } from "lucide-react";
+import { Plus, Trash2, Power, PowerOff, Save, Moon, Sun, Pencil, Eraser } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -80,6 +80,39 @@ export default function SettingsPage() {
   const [form, setForm] = useState({ name: "", address: "", port: "53" });
   const [testIP, setTestIP] = useState("");
   const [testResult, setTestResult] = useState<string | null>(null);
+
+  // History purge state
+  const [purgeTargets, setPurgeTargets] = useState({
+    wifi: false,
+    clients: false,
+    network_health: false,
+    traffic: false,
+  });
+  const [purgeAgeDays, setPurgeAgeDays] = useState("0");
+  const [purgeConfirmOpen, setPurgeConfirmOpen] = useState(false);
+  const [purging, setPurging] = useState(false);
+  const purgeAny = Object.values(purgeTargets).some(Boolean);
+
+  const handlePurge = async () => {
+    if (!token || !purgeAny) return;
+    setPurging(true);
+    try {
+      const res = await api.admin.purgeHistory(token, {
+        ...purgeTargets,
+        older_than_days: parseInt(purgeAgeDays, 10) || 0,
+      });
+      const totals = Object.entries(res.deleted)
+        .map(([t, n]) => `${t}: ${n}`)
+        .join(", ");
+      toast.success(`Purged — ${totals || "nothing matched"}`);
+      setPurgeConfirmOpen(false);
+      setPurgeTargets({ wifi: false, clients: false, network_health: false, traffic: false });
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Purge failed");
+    } finally {
+      setPurging(false);
+    }
+  };
 
   const loadSettings = useCallback(() => {
     if (!token) return;
@@ -531,6 +564,107 @@ export default function SettingsPage() {
           )}
         </CardContent>
       </Card>
+
+      {/* Purge History */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Purge History</CardTitle>
+          <p className="text-xs text-muted-foreground">
+            Delete historical records from the database. Current-state tables (devices, interfaces,
+            mac_lookup, bridges, port-state, settings) are <strong>never</strong> touched — they
+            re-populate on the next poll cycle.
+          </p>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid grid-cols-2 gap-3">
+            {[
+              { key: "wifi", label: "WiFi events", desc: "wifi_history — join / leave / roam" },
+              { key: "clients", label: "Client history", desc: "client_history — DHCP / ARP snapshots" },
+              { key: "network_health", label: "Network health events", desc: "loop_events — STP / loop / port-flap" },
+              { key: "traffic", label: "Traffic samples", desc: "traffic_samples — interface bps" },
+            ].map((t) => {
+              const k = t.key as keyof typeof purgeTargets;
+              const checked = purgeTargets[k];
+              return (
+                <label
+                  key={t.key}
+                  className={`flex flex-col gap-1 rounded-md border p-3 cursor-pointer hover:bg-muted/50 ${checked ? "border-foreground" : ""}`}
+                >
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={(e) => setPurgeTargets((s) => ({ ...s, [k]: e.target.checked }))}
+                    />
+                    <span className="text-sm font-medium">{t.label}</span>
+                  </div>
+                  <span className="text-xs text-muted-foreground font-mono">{t.desc}</span>
+                </label>
+              );
+            })}
+          </div>
+
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex-1">
+              <p className="font-medium text-sm">Older than</p>
+              <p className="text-xs text-muted-foreground">
+                <code>0</code> = delete <strong>everything</strong> from the chosen tables. Any other value
+                keeps rows newer than that many days.
+              </p>
+            </div>
+            <select
+              className="flex h-8 w-32 rounded-md border bg-transparent px-2 text-sm"
+              value={purgeAgeDays}
+              onChange={(e) => setPurgeAgeDays(e.target.value)}
+            >
+              <option value="0">all rows</option>
+              <option value="1">&gt; 1 day</option>
+              <option value="3">&gt; 3 days</option>
+              <option value="7">&gt; 7 days</option>
+              <option value="30">&gt; 30 days</option>
+              <option value="90">&gt; 90 days</option>
+            </select>
+          </div>
+
+          <Button
+            variant="destructive"
+            disabled={!purgeAny || purging}
+            onClick={() => setPurgeConfirmOpen(true)}
+            className="gap-2"
+          >
+            <Eraser className="h-4 w-4" />
+            {purging ? "Purging…" : "Purge selected"}
+          </Button>
+        </CardContent>
+      </Card>
+
+      <Dialog open={purgeConfirmOpen} onOpenChange={setPurgeConfirmOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Purge history?</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-2 text-sm">
+            <p>This will delete records from:</p>
+            <ul className="ml-4 list-disc font-mono text-xs">
+              {purgeTargets.wifi && <li>wifi_history</li>}
+              {purgeTargets.clients && <li>client_history</li>}
+              {purgeTargets.network_health && <li>loop_events</li>}
+              {purgeTargets.traffic && <li>traffic_samples</li>}
+            </ul>
+            <p>
+              {purgeAgeDays === "0"
+                ? "Deletes ALL rows from the tables above (cannot be undone)."
+                : `Deletes rows older than ${purgeAgeDays} day${purgeAgeDays === "1" ? "" : "s"} from the tables above.`}
+            </p>
+          </div>
+          <div className="flex gap-2 justify-end mt-4">
+            <Button variant="outline" onClick={() => setPurgeConfirmOpen(false)}>Cancel</Button>
+            <Button variant="destructive" onClick={handlePurge} disabled={purging}>
+              {purging ? "Purging…" : "Yes, purge"}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
