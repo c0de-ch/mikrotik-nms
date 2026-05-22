@@ -14,9 +14,24 @@
 		reverse_proxy 127.0.0.1:8080
 	}
 
-	# Everything else: Next.js frontend
+	# Next.js _next/static/* assets are content-hashed; keep the long
+	# immutable cache that the upstream sets so repeat loads are instant.
+	handle /_next/static/* {
+		reverse_proxy 127.0.0.1:3000
+	}
+
+	# All other Next.js responses (HTML, RSC payloads, API-route stubs)
+	# upstream sets `cache-control: s-maxage=31536000` which makes shared
+	# caches (and some browsers) keep stale HTML across deploys. After a
+	# rebuild the bundle hash changes; a cached HTML referencing the old
+	# hash 404s on every chunk → blank tab that never recovers. Force a
+	# revalidate-every-time policy on the entrypoint while leaving
+	# /_next/static/* free to cache forever.
 	handle {
 		reverse_proxy 127.0.0.1:3000
+		header Cache-Control "no-store, must-revalidate"
+		header -Pragma
+		header -Expires
 	}
 
 	# Reasonable security headers (frontend is same-origin via this proxy).
