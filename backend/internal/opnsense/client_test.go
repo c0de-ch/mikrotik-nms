@@ -18,14 +18,14 @@ func TestGetLeases_MergesV4AndV6_FiltersInactive_UppercasesMAC(t *testing.T) {
 			t.Errorf("unexpected auth header: %q", got)
 		}
 		_, _ = w.Write([]byte(`{"total":2,"rows":[
-			{"address":"192.0.2.10","hwaddr":"aa:bb:cc:dd:ee:01","hostname":"a","state":"active","subnet_id":1,"type":"v4"},
-			{"address":"192.0.2.11","hwaddr":"aa:bb:cc:dd:ee:02","hostname":"expired","state":"expired","subnet_id":1,"type":"v4"}
+			{"address":"192.0.2.10","hwaddr":"aa:bb:cc:dd:ee:01","hostname":"a","state":0,"type":""},
+			{"address":"192.0.2.11","hwaddr":"aa:bb:cc:dd:ee:02","hostname":"expired","state":2,"type":""}
 		]}`))
 	})
 	mux.HandleFunc("/api/kea/leases6/search", func(w http.ResponseWriter, r *http.Request) {
 		gotPaths[r.URL.Path] = true
 		_, _ = w.Write([]byte(`{"total":1,"rows":[
-			{"address":"2001:db8::1","hwaddr":"aa:bb:cc:dd:ee:03","hostname":"v6host","state":"active","subnet_id":2,"type":"v6"}
+			{"address":"2001:db8::1","hwaddr":"aa:bb:cc:dd:ee:03","hostname":"v6host","state":0,"type":""}
 		]}`))
 	})
 
@@ -72,7 +72,7 @@ func TestGetLeases_PartialFailureReturnsWhatWeGot(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/kea/leases4/search", func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"total":1,"rows":[
-			{"address":"192.0.2.10","hwaddr":"AA:BB:CC:DD:EE:01","hostname":"a","state":"active","type":"v4"}
+			{"address":"192.0.2.10","hwaddr":"AA:BB:CC:DD:EE:01","hostname":"a","state":0,"type":""}
 		]}`))
 	})
 	mux.HandleFunc("/api/kea/leases6/search", func(w http.ResponseWriter, r *http.Request) {
