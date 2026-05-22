@@ -29,9 +29,11 @@
 	# /_next/static/* free to cache forever.
 	handle {
 		reverse_proxy 127.0.0.1:3000
-		header Cache-Control "no-store, must-revalidate"
-		header -Pragma
-		header -Expires
+		# `>` defers the directive so it runs AFTER reverse_proxy and
+		# overwrites the upstream's Cache-Control instead of duplicating it.
+		header >Cache-Control "no-store, must-revalidate"
+		header >-Pragma
+		header >-Expires
 	}
 
 	# Reasonable security headers (frontend is same-origin via this proxy).
