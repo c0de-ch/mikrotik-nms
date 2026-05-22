@@ -1,8 +1,3 @@
-{
-	# Disable the admin API; we manage Caddy via systemd.
-	admin off
-}
-
 # The site address is rewritten by install.sh.
 # Examples after substitution:
 #   nms.example.com           → auto Let's Encrypt
@@ -12,13 +7,11 @@
 @@SITE@@ {
 	encode gzip zstd
 
-	# Backend: REST API + WebSocket (chi router serves both under /api/v1/*)
+	# Backend: REST API + WebSocket (chi router serves both under /api/v1/*).
+	# X-Forwarded-Proto / X-Forwarded-Host / X-Forwarded-For are added by
+	# Caddy's reverse_proxy by default; no header_up directives needed.
 	handle /api/* {
-		reverse_proxy 127.0.0.1:8080 {
-			# Forward original host/scheme so the backend can build correct links.
-			header_up X-Forwarded-Proto {scheme}
-			header_up X-Forwarded-Host  {host}
-		}
+		reverse_proxy 127.0.0.1:8080
 	}
 
 	# Everything else: Next.js frontend
