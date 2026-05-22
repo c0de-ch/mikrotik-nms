@@ -368,6 +368,66 @@ export default function SettingsPage() {
         </CardContent>
       </Card>
 
+      {/* OPNsense Kea */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">OPNsense Kea DHCP</CardTitle>
+          <p className="text-xs text-muted-foreground">
+            Pull DHCP leases from OPNsense&apos;s Kea REST API so WiFi clients on subnets where MikroTik
+            isn&apos;t the DHCP server still get IP / hostname enrichment. Generate an API key+secret in
+            OPNsense at <code>System &rarr; Access &rarr; Users &rarr; &lt;you&gt; &rarr; API keys</code>.
+          </p>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="space-y-1">
+            <Label>Base URL</Label>
+            <Input
+              value={settings.opnsense_url || ""}
+              onChange={(e) => updateSetting("opnsense_url", e.target.value)}
+              placeholder="https://opnsense.lan:1443"
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1">
+              <Label>API Key</Label>
+              <Input
+                value={settings.opnsense_api_key || ""}
+                onChange={(e) => updateSetting("opnsense_api_key", e.target.value)}
+                placeholder="key"
+              />
+            </div>
+            <div className="space-y-1">
+              <Label>API Secret</Label>
+              <Input
+                type="password"
+                value={settings.opnsense_api_secret || ""}
+                onChange={(e) => updateSetting("opnsense_api_secret", e.target.value)}
+                placeholder="secret"
+              />
+            </div>
+          </div>
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex-1">
+              <p className="font-medium text-sm">Verify TLS certificate</p>
+              <p className="text-xs text-muted-foreground">
+                Disable for OPNsense&apos;s default self-signed cert. Enable once you&apos;ve installed a trusted cert.
+              </p>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => updateSetting("opnsense_verify_tls", settings.opnsense_verify_tls === "true" ? "false" : "true")}
+            >
+              {settings.opnsense_verify_tls === "true" ? "On" : "Off"}
+            </Button>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            The client-discovery poller queries OPNsense every <code>client_discovery_interval</code> (default 15 minutes).
+            Leave any field empty to disable the integration.
+          </p>
+        </CardContent>
+      </Card>
+
       {/* DNS Servers */}
       <Card>
         <CardHeader>
