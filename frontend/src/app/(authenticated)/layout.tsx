@@ -6,6 +6,7 @@ import { useAuth } from "@/context/auth";
 import { AppSidebar } from "@/components/layout/app-sidebar";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { api } from "@/lib/api";
+import { useVersionWatchdog } from "@/hooks/use-version-watchdog";
 
 export default function AuthenticatedLayout({
   children,
@@ -14,6 +15,11 @@ export default function AuthenticatedLayout({
 }) {
   const { token, loading } = useAuth();
   const router = useRouter();
+
+  // Watchdog: poll /health periodically and reload the page if the backend
+  // instance_id changes, so the tab self-heals after a deploy without the
+  // user having to hit Cmd+Shift+R.
+  useVersionWatchdog();
 
   useEffect(() => {
     if (!loading && !token) {
