@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -125,7 +126,7 @@ func (n *NetworkHealthPoller) poll(ctx context.Context) {
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
-					log.Printf("network health: panic on %s: %v", dev.Identity, r)
+					log.Printf("network health: panic on %s: %v\n%s", dev.Identity, r, debug.Stack())
 				}
 			}()
 

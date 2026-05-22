@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"log"
+	"runtime/debug"
 	"time"
 
 	"github.com/mikrotik-nms/backend/internal/config"
@@ -99,7 +100,7 @@ func (m *Manager) pollAllDevices(ctx context.Context) {
 func (m *Manager) safePollDevice(dev queries.Device) {
 	defer func() {
 		if r := recover(); r != nil {
-			log.Printf("poller: panic polling %s (%s): %v", dev.Identity, dev.Address, r)
+			log.Printf("poller: panic polling %s (%s): %v\n%s", dev.Identity, dev.Address, r, debug.Stack())
 			m.pool.Close(dev.ID)
 		}
 	}()
