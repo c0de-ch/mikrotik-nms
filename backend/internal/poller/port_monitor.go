@@ -91,12 +91,13 @@ func (s *PortMonitorSettings) includeInterface(iface routeros.InterfaceDetail) b
 // `lastUp` / `lastDown` / `flapWindow size` for the UI. The rest is needed
 // only across cycles to detect transitions.
 type portState struct {
-	running       bool
-	disabled      bool
-	lastUp        string
-	lastDown      string
-	transitions   []time.Time // running-state transitions within the flap window
-	flappedFiring bool        // true while the interface is over the flap threshold (suppress duplicate critical events)
+	running           bool
+	disabled          bool
+	lastUp            string
+	lastDown          string
+	loopProtectStatus string      // "" / "none" / "on-loop" / "in-loop"
+	transitions       []time.Time // running-state transitions within the flap window
+	flappedFiring     bool        // true while the interface is over the flap threshold (suppress duplicate critical events)
 }
 
 // portMonitor keeps per-device per-interface state across poll cycles.
@@ -183,6 +184,21 @@ func (m *portMonitor) processInterface(
 		}
 	}
 
+	// loop-protect transition: any value → "on-loop" / "in-loop"
+	if hadPrev && !first {
+		wasInLoop := isInLoop(prev.loopProtectStatus)
+		isInLoopNow := isInLoop(iface.LoopProtectStatus)
+		if !wasInLoop && isInLoopNow {
+			events = append(events, portEvent{
+				Kind:      "port_loop_protect",
+				Severity:  "critical",
+				Interface: iface.Name,
+				Message: fmt.Sprintf("interface %q tripped loop-protect (status=%s)",
+					iface.Name, iface.LoopProtectStatus),
+			})
+		}
+	}
+
 	// flap detection on running-state transition
 	if hadPrev && prev.running != iface.Running {
 		count := trackTransition(prev, now, settings.FlapWindow)
@@ -209,19 +225,60 @@ func (m *portMonitor) processInterface(
 	prev.disabled = iface.Disabled
 	prev.lastUp = iface.LastLinkUp
 	prev.lastDown = iface.LastLinkDown
+	prev.loopProtectStatus = iface.LoopProtectStatus
 
 	state = &queries.InterfaceState{
-		ID:              devID + ":" + iface.Name,
-		DeviceID:        devID,
-		InterfaceName:   iface.Name,
-		InterfaceType:   iface.Type,
-		Running:         iface.Running,
-		Disabled:        iface.Disabled,
-		LastLinkUp:      iface.LastLinkUp,
-		LastLinkDown:    iface.LastLinkDown,
-		FlapCountWindow: len(prev.transitions),
+		ID:                devID + ":" + iface.Name,
+		DeviceID:          devID,
+		InterfaceName:     iface.Name,
+		InterfaceType:     iface.Type,
+		Running:           iface.Running,
+		Disabled:          iface.Disabled,
+		Slave:             iface.Slave,
+		LastLinkUp:        iface.LastLinkUp,
+		LastLinkDown:      iface.LastLinkDown,
+		FlapCountWindow:   len(prev.transitions),
+		LoopProtectStatus: iface.LoopProtectStatus,
+		Comment:           iface.Comment,
 	}
 	return events, state
+}
+
+// isInLoop returns true when RouterOS reports a port currently in the
+// loop-protect blocked state. Phrasing varies across firmwares
+// ("in-loop", "on-loop"); anything non-empty and non-"none" counts.
+func isInLoop(status string) bool {
+	if status == "" || status == "none" {
+		return false
+	}
+	return true
+}
+
+// RestoreFromDB seeds the in-memory state from interface_state rows. Called
+// once on startup so the first poll after a restart doesn't blanket-suppress
+// every transition (the first-run guard treats any device with no in-memory
+// state as brand-new). Without this, ports that were already disabled at
+// boot remain invisible in the events feed until they transition again.
+func (m *portMonitor) RestoreFromDB(db *sql.DB) error {
+	rows, err := queries.ListInterfaceStates(db)
+	if err != nil {
+		return err
+	}
+	for _, r := range rows {
+		dev, ok := m.prev[r.DeviceID]
+		if !ok {
+			dev = make(map[string]*portState)
+			m.prev[r.DeviceID] = dev
+		}
+		dev[r.InterfaceName] = &portState{
+			running:           r.Running,
+			disabled:          r.Disabled,
+			lastUp:            r.LastLinkUp,
+			lastDown:          r.LastLinkDown,
+			loopProtectStatus: r.LoopProtectStatus,
+		}
+	}
+	return nil
 }
 
 // markDeviceProcessed flips the firstRun guard off for this device so that
