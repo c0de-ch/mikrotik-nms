@@ -1,10 +1,16 @@
 package routeros
 
 import (
+	"errors"
 	"strconv"
 
 	ros "github.com/go-routeros/routeros"
 )
+
+// ErrEmptyReply is returned when a RouterOS command succeeded but
+// produced no sentences (e.g. a device variant that doesn't expose
+// the requested resource).
+var ErrEmptyReply = errors.New("routeros: empty reply")
 
 type SystemResource struct {
 	Platform     string
@@ -24,7 +30,7 @@ func GetSystemResource(client *ros.Client) (*SystemResource, error) {
 	}
 
 	if len(reply.Re) == 0 {
-		return nil, err
+		return nil, ErrEmptyReply
 	}
 
 	m := GetSentenceMap(reply.Re[0])
