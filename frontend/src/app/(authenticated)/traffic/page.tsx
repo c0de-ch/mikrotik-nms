@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar } from "recharts";
+import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -44,6 +44,49 @@ function classifyInterface(name: string, type: string): string {
 
 type ViewLevel = "overview" | "device" | "interface";
 
+// PortSparkline subscribes to one interface's traffic stream and renders a
+// compact RX/TX area chart. Used in the device view so each port shows its
+// own live throughput at a glance — clicking the row still drills into the
+// full-size chart at viewLevel="interface".
+//
+// The buffer is intentionally short (60 samples ≈ 1 minute at 1s cadence)
+// so the spark line stays readable and we don't hold many MB of points
+// across a 24-port switch.
+const SPARK_MAX_POINTS = 60;
+function PortSparkline({ deviceId, ifaceName }: { deviceId: string; ifaceName: string }) {
+  const [points, setPoints] = useState<ChartPoint[]>([]);
+  const topic = `traffic.${deviceId}.${ifaceName}`;
+  useWebSocket(topic, useCallback((data: unknown) => {
+    const d = data as { rx_bps: number; tx_bps: number };
+    setPoints((prev) => {
+      const next = [...prev, { time: "", rx: d.rx_bps, tx: d.tx_bps }];
+      return next.slice(-SPARK_MAX_POINTS);
+    });
+  }, []));
+
+  const latest = points[points.length - 1];
+  return (
+    <div className="flex items-center gap-3 w-full">
+      <div className="h-8 w-32 sm:w-44 shrink-0">
+        {points.length > 1 ? (
+          <ResponsiveContainer width="100%" height="100%">
+            <AreaChart data={points} margin={{ top: 2, right: 0, bottom: 0, left: 0 }}>
+              <Area type="monotone" dataKey="rx" stroke="#5A9CB5" fill="#5A9CB5" fillOpacity={0.25} isAnimationActive={false} />
+              <Area type="monotone" dataKey="tx" stroke="#FAAC68" fill="#FAAC68" fillOpacity={0.25} isAnimationActive={false} />
+            </AreaChart>
+          </ResponsiveContainer>
+        ) : (
+          <div className="h-full flex items-center text-[10px] text-muted-foreground">awaiting…</div>
+        )}
+      </div>
+      <div className="flex flex-col items-end shrink-0 text-[11px] font-mono tabular-nums">
+        <span style={{ color: "#5A9CB5" }} title="RX">↓ {formatBps(latest?.rx ?? 0)}</span>
+        <span style={{ color: "#FAAC68" }} title="TX">↑ {formatBps(latest?.tx ?? 0)}</span>
+      </div>
+    </div>
+  );
+}
+
 export default function TrafficPage() {
   const { token } = useAuth();
   const [devices, setDevices] = useState<Device[]>([]);
@@ -57,6 +100,7 @@ export default function TrafficPage() {
 
   const [trafficSummary, setTrafficSummary] = useState<Map<string, { rx: number; tx: number }>>(new Map());
   const [loadingTraffic, setLoadingTraffic] = useState(false);
+  const [showSparklines, setShowSparklines] = useState(true);
 
   useEffect(() => {
     if (!token) return;
@@ -283,6 +327,16 @@ export default function TrafficPage() {
       {/* LEVEL 2: Device interfaces grouped by type */}
       {viewLevel === "device" && selectedDevice && (
         <div className="space-y-2">
+          <div className="flex items-center justify-end gap-2 text-xs">
+            <label className="inline-flex items-center gap-1.5 cursor-pointer text-muted-foreground">
+              <input
+                type="checkbox"
+                checked={showSparklines}
+                onChange={(e) => setShowSparklines(e.target.checked)}
+              />
+              <span>Live per-port graphs</span>
+            </label>
+          </div>
           {groupOrder.filter((g) => groupedInterfaces[g]?.length).map((group) => {
             const ifaces = groupedInterfaces[group];
             const isExpanded = expandedGroups.has(group);
@@ -305,18 +359,21 @@ export default function TrafficPage() {
                         <button
                           key={iface.name}
                           onClick={() => navigateToInterface(iface.name)}
-                          className="flex items-center justify-between px-3 py-2 rounded-md text-sm hover:bg-muted/70 transition-colors text-left"
+                          className="flex items-center justify-between gap-3 px-3 py-2 rounded-md text-sm hover:bg-muted/70 transition-colors text-left"
                         >
-                          <div className="flex items-center gap-3">
-                            <span className="font-medium">{iface.name}</span>
+                          <div className="flex items-center gap-3 min-w-0 flex-1">
+                            <span className="font-medium truncate" title={iface.name}>{iface.name}</span>
                             {iface.mac_address && (
-                              <span className="font-mono text-xs text-muted-foreground">{iface.mac_address}</span>
+                              <span className="font-mono text-xs text-muted-foreground hidden md:inline">{iface.mac_address}</span>
                             )}
                             {iface.comment && (
-                              <span className="text-xs text-muted-foreground">({iface.comment})</span>
+                              <span className="text-xs text-muted-foreground truncate hidden lg:inline">({iface.comment})</span>
                             )}
                           </div>
-                          <div className="flex items-center gap-2">
+                          <div className="flex items-center gap-3 shrink-0">
+                            {showSparklines && iface.running && selectedDevice && (
+                              <PortSparkline deviceId={selectedDevice.id} ifaceName={iface.name} />
+                            )}
                             <Badge variant={iface.running ? "default" : "secondary"} className="text-xs">
                               {iface.running ? "up" : "down"}
                             </Badge>
