@@ -20,6 +20,10 @@ frontend/node_modules/
 frontend/.next/
 frontend/out/
 
+# Stray Next.js artifacts (created if `next build` runs from the wrong cwd —
+# never belong in any non-frontend directory).
+.next/
+
 # IDE
 .idea/
 .vscode/
