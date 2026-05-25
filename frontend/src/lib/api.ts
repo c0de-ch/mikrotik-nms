@@ -193,6 +193,12 @@ export const api = {
         token,
         body: JSON.stringify({ device_ids: deviceIds, reboot }),
       }),
+    reboot: (token: string, deviceIds: string[]) =>
+      apiFetch<{ rebooted: number; errors: string[] }>("/firmware/reboot", {
+        method: "POST",
+        token,
+        body: JSON.stringify({ device_ids: deviceIds }),
+      }),
   },
 
   // WiFi

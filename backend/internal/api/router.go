@@ -103,6 +103,7 @@ func NewRouter(db *sql.DB, hub *ws.Hub, cfg *config.Config, pool *routeros.Pool)
 				r.Post("/firmware/upgrade", s.handleUpgradeFirmware)
 				r.Post("/firmware/channel", s.handleSetChannel)
 				r.Post("/firmware/routerboard", s.handleUpgradeRouterboard)
+				r.Post("/firmware/reboot", s.handleRebootDevices)
 			})
 
 			// NetBox export

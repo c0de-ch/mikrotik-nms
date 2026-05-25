@@ -183,6 +183,40 @@ func (s *Server) handleUpgradeRouterboard(w http.ResponseWriter, r *http.Request
 	})
 }
 
+func (s *Server) handleRebootDevices(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		DeviceIDs []string `json:"device_ids"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if len(req.DeviceIDs) == 0 {
+		writeError(w, http.StatusBadRequest, "device_ids required")
+		return
+	}
+
+	var rebooted int
+	var errors []string
+	for _, deviceID := range req.DeviceIDs {
+		client := s.pool.Get(deviceID)
+		if client == nil {
+			errors = append(errors, deviceID+": not connected")
+			continue
+		}
+		if err := routeros.TriggerReboot(client); err != nil {
+			errors = append(errors, deviceID+": "+err.Error())
+			continue
+		}
+		rebooted++
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"rebooted": rebooted,
+		"errors":   errors,
+	})
+}
+
 // instanceID is regenerated every time the backend starts. Clients can use
 // it to detect a redeploy by polling /health and comparing the value they
 // saw on first connect — useful for forcing a browser refresh after a

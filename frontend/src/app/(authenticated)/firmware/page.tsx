@@ -1,13 +1,20 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import { RefreshCw, Download, Cpu, ArrowRightLeft } from "lucide-react";
+import { RefreshCw, Download, Cpu, ArrowRightLeft, Power, AlertTriangle } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuTrigger,
   DropdownMenuContent,
   DropdownMenuItem,
 } from "@/components/ui/dropdown-menu";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -37,6 +44,8 @@ export default function FirmwarePage() {
   const [checking, setChecking] = useState(false);
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
   const [upgradeProgress, setUpgradeProgress] = useState<Map<string, UpgradeProgress>>(new Map());
+  const [rebootDialogOpen, setRebootDialogOpen] = useState(false);
+  const [rebooting, setRebooting] = useState(false);
 
   const load = useCallback(() => {
     if (!token) return;
@@ -97,6 +106,24 @@ export default function FirmwarePage() {
       setTimeout(load, 2000);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed");
+    }
+  };
+
+  const handleReboot = async () => {
+    if (!token || selected.size === 0) return;
+    setRebooting(true);
+    try {
+      const result = await api.firmware.reboot(token, Array.from(selected));
+      toast.success(`Reboot triggered on ${result.rebooted} device(s) — they will be unreachable for ~30s`);
+      if (result.errors?.length) toast.error(`Errors: ${result.errors.join(", ")}`, { duration: 8000 });
+      setSelected(new Set());
+      setRebootDialogOpen(false);
+      // give devices a chance to come back before the next refresh
+      setTimeout(load, 60_000);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed");
+    } finally {
+      setRebooting(false);
     }
   };
 
@@ -165,6 +192,16 @@ export default function FirmwarePage() {
                 RouterBoard FW ({selected.size})
               </Button>
 
+              <Button
+                variant="outline"
+                onClick={() => setRebootDialogOpen(true)}
+                disabled={selected.size === 0 || !!activeJobId}
+                className="text-destructive hover:text-destructive"
+              >
+                <Power className="mr-2 h-4 w-4" />
+                Reboot ({selected.size})
+              </Button>
+
               <Button onClick={handleUpgrade} disabled={selected.size === 0 || !!activeJobId}>
                 <Download className="mr-2 h-4 w-4" />
                 {activeJobId ? "Upgrading..." : `Upgrade RouterOS (${selected.size})`}
@@ -173,6 +210,45 @@ export default function FirmwarePage() {
           )}
         </div>
       </div>
+
+      <Dialog open={rebootDialogOpen} onOpenChange={setRebootDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <AlertTriangle className="h-5 w-5 text-destructive" />
+              Reboot {selected.size} device{selected.size === 1 ? "" : "s"}?
+            </DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            The selected devices will reboot immediately and be unreachable for roughly 30
+            seconds. Any clients connected through them will lose connectivity during the reboot.
+          </p>
+          <div className="max-h-48 overflow-y-auto rounded-md border bg-muted/30 p-2">
+            <ul className="space-y-1 text-sm">
+              {Array.from(selected).map((id) => {
+                const d = deviceMap.get(id);
+                return (
+                  <li key={id} className="font-mono text-xs">
+                    {d?.identity || d?.address || id}
+                    {d?.address && d?.identity && (
+                      <span className="ml-2 text-muted-foreground">{d.address}</span>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setRebootDialogOpen(false)} disabled={rebooting}>
+              Cancel
+            </Button>
+            <Button variant="destructive" onClick={handleReboot} disabled={rebooting}>
+              <Power className="mr-2 h-4 w-4" />
+              {rebooting ? "Rebooting..." : "Reboot now"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Table>
         <TableHeader>
