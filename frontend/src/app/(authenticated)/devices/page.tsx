@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState, useMemo } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useEffect, useState, useMemo } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Plus, ExternalLink, Trash2, Radar, Loader2, Check, ArrowUpDown, AlertTriangle, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -26,8 +26,35 @@ import { useAuth } from "@/context/auth";
 import { api, type Device, type DiscoveredDevice } from "@/lib/api";
 import { toast } from "sonner";
 
+// timeAgo formats an absolute timestamp as "5m ago" / "2h 14m ago" / "3d ago".
+function timeAgo(dateStr: string): string {
+  const diff = Date.now() - new Date(dateStr).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ${mins % 60}m ago`;
+  return `${Math.floor(hrs / 24)}d ago`;
+}
+
+type StatusFilter = "online" | "offline" | "unknown";
+function isStatusFilter(v: string | null): v is StatusFilter {
+  return v === "online" || v === "offline" || v === "unknown";
+}
+
 export default function DevicesPage() {
+  return (
+    <Suspense fallback={null}>
+      <DevicesPageInner />
+    </Suspense>
+  );
+}
+
+function DevicesPageInner() {
   const { token, user } = useAuth();
+  const searchParams = useSearchParams();
+  const statusParam = searchParams.get("status");
+  const statusFilter: StatusFilter | null = isStatusFilter(statusParam) ? statusParam : null;
   const [devices, setDevices] = useState<Device[]>([]);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [discoveryOpen, setDiscoveryOpen] = useState(false);
@@ -199,6 +226,11 @@ export default function DevicesPage() {
   };
 
   const isAdmin = user?.role === "admin";
+
+  const visibleDevices = useMemo(
+    () => (statusFilter ? devices.filter((d) => d.status === statusFilter) : devices),
+    [devices, statusFilter],
+  );
 
   return (
     <div className="space-y-4">
@@ -373,6 +405,25 @@ export default function DevicesPage() {
         )}
       </div>
 
+      {statusFilter && (
+        <div className="flex items-center gap-2">
+          <span className="text-sm text-muted-foreground">Filter:</span>
+          <Badge variant="secondary" className="gap-1.5">
+            status: {statusFilter}
+            <button
+              onClick={() => router.push("/devices")}
+              className="ml-1 rounded-sm hover:bg-foreground/10"
+              title="Clear filter"
+            >
+              <X className="h-3 w-3" />
+            </button>
+          </Badge>
+          <span className="text-sm text-muted-foreground">
+            {visibleDevices.length} of {devices.length}
+          </span>
+        </div>
+      )}
+
       <Table>
         <TableHeader>
           <TableRow>
@@ -383,11 +434,12 @@ export default function DevicesPage() {
             <TableHead>Version</TableHead>
             <TableHead>CPU</TableHead>
             <TableHead>Uptime</TableHead>
+            <TableHead>Last seen</TableHead>
             <TableHead className="w-[100px]">Actions</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
-          {devices.map((device) => (
+          {visibleDevices.map((device) => (
             <TableRow key={device.id} className="cursor-pointer" onClick={() => router.push(`/devices/${device.id}`)}>
               <TableCell>
                 <Badge variant={device.status === "online" ? "default" : device.status === "offline" ? "destructive" : "secondary"}>
@@ -400,6 +452,12 @@ export default function DevicesPage() {
               <TableCell className="text-sm">{device.ros_version || "—"}</TableCell>
               <TableCell className="text-sm">{device.cpu_load != null ? `${device.cpu_load}%` : "—"}</TableCell>
               <TableCell className="text-sm">{device.uptime || "—"}</TableCell>
+              <TableCell
+                className="text-sm text-muted-foreground"
+                title={device.last_seen ? new Date(device.last_seen).toLocaleString() : ""}
+              >
+                {device.last_seen ? timeAgo(device.last_seen) : "—"}
+              </TableCell>
               <TableCell>
                 <div className="flex gap-1" onClick={(e) => e.stopPropagation()}>
                   <Button variant="ghost" size="icon" render={<a href={`http://${device.address}`} target="_blank" rel="noopener" title="Open WebFig" />}>
@@ -414,10 +472,12 @@ export default function DevicesPage() {
               </TableCell>
             </TableRow>
           ))}
-          {devices.length === 0 && (
+          {visibleDevices.length === 0 && (
             <TableRow>
-              <TableCell colSpan={8} className="text-center py-8 text-muted-foreground">
-                No devices configured — use Discover to scan the network
+              <TableCell colSpan={9} className="text-center py-8 text-muted-foreground">
+                {devices.length === 0
+                  ? "No devices configured — use Discover to scan the network"
+                  : `No devices with status "${statusFilter}"`}
               </TableCell>
             </TableRow>
           )}

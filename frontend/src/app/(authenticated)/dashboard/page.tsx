@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Server, Wifi, WifiOff, Cpu, Download } from "lucide-react";
@@ -30,6 +31,7 @@ export default function DashboardPage() {
 
   const online = devices.filter((d) => d.status === "online").length;
   const offline = devices.filter((d) => d.status === "offline").length;
+  const unknown = devices.filter((d) => d.status === "unknown").length;
   const avgCpu = devices.filter((d) => d.cpu_load != null).reduce((sum, d) => sum + (d.cpu_load ?? 0), 0) /
     Math.max(devices.filter((d) => d.cpu_load != null).length, 1);
 
@@ -38,33 +40,42 @@ export default function DashboardPage() {
       <h1 className="text-2xl font-bold">Dashboard</h1>
 
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Total Devices</CardTitle>
-            <Server className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{devices.length}</div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Online</CardTitle>
-            <Wifi className="h-4 w-4 text-green-500" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-green-600">{online}</div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Offline</CardTitle>
-            <WifiOff className="h-4 w-4 text-red-500" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-red-600">{offline}</div>
-          </CardContent>
-        </Card>
+        <Link href="/devices" className="block transition-transform hover:scale-[1.01]">
+          <Card className="cursor-pointer hover:border-foreground/30">
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+              <CardTitle className="text-sm font-medium">Total Devices</CardTitle>
+              <Server className="h-4 w-4 text-muted-foreground" />
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold">{devices.length}</div>
+            </CardContent>
+          </Card>
+        </Link>
+        <Link href="/devices?status=online" className="block transition-transform hover:scale-[1.01]">
+          <Card className="cursor-pointer hover:border-foreground/30">
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+              <CardTitle className="text-sm font-medium">Online</CardTitle>
+              <Wifi className="h-4 w-4 text-green-500" />
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold text-green-600">{online}</div>
+            </CardContent>
+          </Card>
+        </Link>
+        <Link href="/devices?status=offline" className="block transition-transform hover:scale-[1.01]">
+          <Card className="cursor-pointer hover:border-foreground/30">
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+              <CardTitle className="text-sm font-medium">Offline</CardTitle>
+              <WifiOff className="h-4 w-4 text-red-500" />
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold text-red-600">{offline}</div>
+              {unknown > 0 && (
+                <p className="mt-1 text-xs text-muted-foreground">+{unknown} unknown</p>
+              )}
+            </CardContent>
+          </Card>
+        </Link>
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Avg CPU Load</CardTitle>
