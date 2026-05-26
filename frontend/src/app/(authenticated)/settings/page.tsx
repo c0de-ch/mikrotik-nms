@@ -64,6 +64,15 @@ const infoIntervalOptions = [
   { label: "24h", value: "86400" },
 ];
 
+const tcnStormThresholdOptions = [
+  { label: "10", value: "10" },
+  { label: "20", value: "20" },
+  { label: "30", value: "30" },
+  { label: "50", value: "50" },
+  { label: "100", value: "100" },
+  { label: "200", value: "200" },
+];
+
 const retentionOptions = [
   { label: "1 day", value: "1" },
   { label: "3 days", value: "3" },
@@ -513,6 +522,37 @@ export default function SettingsPage() {
               value={settings.port_flap_window_seconds ?? "300"}
               onChange={(e) => updateSetting("port_flap_window_seconds", e.target.value)}
             />
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Network Health */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Network Health</CardTitle>
+          <p className="text-xs text-muted-foreground">
+            Loop / storm detection tuning. Higher thresholds reduce false positives from routine STP
+            topology changes. Takes effect on the next network-health poll cycle — no restart needed.
+          </p>
+        </CardHeader>
+        <CardContent>
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex-1">
+              <p className="font-medium text-sm">TCN storm threshold</p>
+              <p className="text-xs text-muted-foreground">
+                Topology-change increase within a single poll required to raise a TCN-storm event.
+                Deltas at or above 100 are escalated to critical regardless of this setting.
+              </p>
+            </div>
+            <select
+              className="flex h-8 w-28 rounded-md border bg-transparent px-2 text-sm"
+              value={settings.tcn_storm_threshold || "30"}
+              onChange={(e) => updateSetting("tcn_storm_threshold", e.target.value)}
+            >
+              {tcnStormThresholdOptions.map((opt) => (
+                <option key={opt.value} value={opt.value}>{opt.label}</option>
+              ))}
+            </select>
           </div>
         </CardContent>
       </Card>

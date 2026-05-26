@@ -1,14 +1,37 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
+import { toast } from "sonner";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Server, Wifi, WifiOff, Cpu, Download } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Server, Wifi, WifiOff, Cpu, Download, AlertTriangle, X } from "lucide-react";
 import { useAuth } from "@/context/auth";
-import { api, type Device } from "@/lib/api";
+import { api, type Device, type LoopEvent } from "@/lib/api";
 import { useWebSocket } from "@/hooks/use-websocket";
 import { deviceStatusBadgeClass, deviceStatusColor, deviceStatusLabel } from "@/lib/status";
+
+const ALERT_WINDOW_MS = 60 * 60 * 1000; // last 60 minutes
+
+function isRecent(recordedAt: string): boolean {
+  return Date.now() - new Date(recordedAt).getTime() <= ALERT_WINDOW_MS;
+}
+
+function eventTypeLabel(t: string): string {
+  switch (t) {
+    case "stp_disabled": return "STP disabled";
+    case "tcn_storm": return "TCN storm";
+    case "loop_detected": return "Loop detected";
+    case "mac_flap": return "MAC flap";
+    case "bpdu_on_edge": return "BPDU on edge";
+    case "port_disabled": return "Port disabled";
+    case "port_link_down": return "Link down";
+    case "port_link_flap": return "Port flap";
+    case "port_loop_protect": return "Loop protect tripped";
+    default: return t;
+  }
+}
 
 // timeAgo formats an absolute timestamp as "5m ago" / "2h 14m ago" / "3d ago".
 function timeAgo(dateStr: string): string {
@@ -24,11 +47,49 @@ function timeAgo(dateStr: string): string {
 export default function DashboardPage() {
   const { token } = useAuth();
   const [devices, setDevices] = useState<Device[]>([]);
+  // Recent loop/STP events (last 60 min) driving the alert banner.
+  const [alertEvents, setAlertEvents] = useState<LoopEvent[]>([]);
+  const [bannerDismissed, setBannerDismissed] = useState(false);
 
   useEffect(() => {
     if (!token) return;
     api.devices.list(token).then(setDevices).catch(console.error);
+    api.networkHealth
+      .events(token, 200)
+      .then((events) => setAlertEvents(events.filter((e) => isRecent(e.recorded_at))))
+      .catch(console.error);
   }, [token]);
+
+  // Live loop/STP events. New events repopulate the banner (clearing any prior
+  // dismissal) and a critical one also fires a toast.
+  useWebSocket(
+    "network.health.event",
+    useCallback((data: unknown) => {
+      const ev = data as LoopEvent;
+      if (!ev || !ev.event_type) return;
+      setAlertEvents((prev) => [ev, ...prev].filter((e) => isRecent(e.recorded_at)));
+      setBannerDismissed(false);
+      if (ev.severity === "critical") {
+        toast.error(
+          `${eventTypeLabel(ev.event_type)}${ev.bridge_name ? ` on ${ev.bridge_name}` : ""} — ${ev.message}`,
+        );
+      }
+    }, []),
+  );
+
+  // Drop events that have aged out of the 60-minute window once a minute so the
+  // banner counts stay accurate without a reload.
+  useEffect(() => {
+    const t = setInterval(() => {
+      setAlertEvents((prev) => prev.filter((e) => isRecent(e.recorded_at)));
+    }, 60_000);
+    return () => clearInterval(t);
+  }, []);
+
+  const recentEvents = alertEvents.filter((e) => isRecent(e.recorded_at));
+  const criticalCount = recentEvents.filter((e) => e.severity === "critical").length;
+  const warnCount = recentEvents.filter((e) => e.severity === "warn").length;
+  const showBanner = recentEvents.length > 0 && !bannerDismissed;
 
   useWebSocket("device.health", (data) => {
     const update = data as {
@@ -66,6 +127,42 @@ export default function DashboardPage() {
   return (
     <div className="space-y-6">
       <h1 className="text-2xl font-bold">Dashboard</h1>
+
+      {showBanner && (
+        <div
+          className={`flex items-start gap-3 rounded-lg border p-4 ${
+            criticalCount > 0
+              ? "border-red-500/50 bg-red-50 text-red-800 dark:bg-red-950/40 dark:text-red-200"
+              : "border-amber-500/50 bg-amber-50 text-amber-800 dark:bg-amber-950/40 dark:text-amber-200"
+          }`}
+          role="alert"
+        >
+          <AlertTriangle className={`mt-0.5 h-5 w-5 shrink-0 ${criticalCount > 0 ? "text-red-600" : "text-amber-600"}`} />
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-semibold">
+              {[
+                criticalCount > 0 ? `${criticalCount} critical` : null,
+                warnCount > 0 ? `${warnCount} warning${warnCount === 1 ? "" : "s"}` : null,
+              ]
+                .filter(Boolean)
+                .join(", ")}{" "}
+              in the last hour — loop / STP activity detected
+            </p>
+            <Link href="/network-health" className="text-sm font-medium underline underline-offset-2">
+              View details
+            </Link>
+          </div>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7 shrink-0 text-current hover:bg-black/5 dark:hover:bg-white/10"
+            onClick={() => setBannerDismissed(true)}
+            aria-label="Dismiss alert"
+          >
+            <X className="h-4 w-4" />
+          </Button>
+        </div>
+      )}
 
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
         <Link href="/devices" className="block transition-transform hover:scale-[1.01]">
