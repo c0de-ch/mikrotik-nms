@@ -56,7 +56,7 @@ export default function DashboardPage() {
     api.devices.list(token).then(setDevices).catch(console.error);
     api.networkHealth
       .events(token, 200)
-      .then((events) => setAlertEvents(events.filter((e) => isRecent(e.recorded_at))))
+      .then((events) => setAlertEvents(events.filter((e) => isRecent(e.recorded_at) && !e.acknowledged)))
       .catch(console.error);
   }, [token]);
 
@@ -86,7 +86,7 @@ export default function DashboardPage() {
     return () => clearInterval(t);
   }, []);
 
-  const recentEvents = alertEvents.filter((e) => isRecent(e.recorded_at));
+  const recentEvents = alertEvents.filter((e) => isRecent(e.recorded_at) && !e.acknowledged);
   const criticalCount = recentEvents.filter((e) => e.severity === "critical").length;
   const warnCount = recentEvents.filter((e) => e.severity === "warn").length;
   const showBanner = recentEvents.length > 0 && !bannerDismissed;

@@ -112,6 +112,28 @@ func (s *Server) handleNetworkHealthEvents(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusOK, out)
 }
 
+func (s *Server) handleAckNetworkHealthEvent(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid event id")
+		return
+	}
+	if err := queries.AckLoopEvent(s.db, id); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to acknowledge event")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"acknowledged": true})
+}
+
+func (s *Server) handleAckAllNetworkHealthEvents(w http.ResponseWriter, r *http.Request) {
+	n, err := queries.AckAllLoopEvents(s.db)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to acknowledge events")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"acknowledged": n})
+}
+
 func (s *Server) deviceNameMap() map[string]string {
 	devices, _ := queries.ListDevices(s.db)
 	names := make(map[string]string, len(devices))

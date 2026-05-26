@@ -122,6 +122,8 @@ func NewRouter(db *sql.DB, hub *ws.Hub, cfg *config.Config, pool *routeros.Pool)
 			// Network health (bridge / STP / loop detection)
 			r.Get("/network-health", s.handleNetworkHealth)
 			r.Get("/network-health/events", s.handleNetworkHealthEvents)
+			r.Post("/network-health/events/{id}/ack", s.handleAckNetworkHealthEvent)
+			r.Post("/network-health/events/ack-all", s.handleAckAllNetworkHealthEvents)
 
 			// VLANs (bridge VLAN table + user-editable labels)
 			r.Get("/vlans", s.handleListVLANs)

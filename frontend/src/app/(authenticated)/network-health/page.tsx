@@ -1,9 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-import { AlertTriangle, ShieldAlert, ShieldCheck, GitBranch, Radio, Cable, ChevronDown, ChevronRight, Ban } from "lucide-react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { AlertTriangle, ShieldAlert, ShieldCheck, GitBranch, Radio, Cable, ChevronDown, ChevronRight, Ban, X } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   Table,
   TableBody,
@@ -80,16 +81,107 @@ function statusColor(status: string): string {
   }
 }
 
+type FilterKey =
+  | "none"
+  | "bridges"
+  | "stp_disabled"
+  | "ports"
+  | "down"
+  | "disabled"
+  | "loop_protect"
+  | "flapping"
+  | "critical"
+  | "warn";
+
+const filterLabels: Record<Exclude<FilterKey, "none">, string> = {
+  bridges: "Bridges",
+  stp_disabled: "STP Disabled",
+  ports: "Ports tracked",
+  down: "Down ports",
+  disabled: "Disabled ports",
+  loop_protect: "Loop-protect ports",
+  flapping: "Flapping ports",
+  critical: "Critical events",
+  warn: "Warnings",
+};
+
+// Shared port predicates — kept in one place so the stat counts and the
+// filtered table stay in sync.
+function isDownPort(p: InterfaceState): boolean {
+  return !p.running && !p.disabled;
+}
+function isFlappingPort(p: InterfaceState): boolean {
+  return p.flap_count_window >= 3;
+}
+function isDisabledPort(p: InterfaceState): boolean {
+  return p.disabled;
+}
+function isLoopProtectPort(p: InterfaceState): boolean {
+  const s = (p.loop_protect_status || "").toLowerCase();
+  return s !== "" && s !== "none";
+}
+
+function StatCard({
+  title,
+  value,
+  icon,
+  active,
+  onClick,
+}: {
+  title: string;
+  value: number;
+  icon: ReactNode;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button type="button" onClick={onClick} className="text-left" aria-pressed={active}>
+      <Card
+        className={`cursor-pointer transition-colors hover:border-foreground/30 ${
+          active ? "border-primary ring-2 ring-primary/40" : ""
+        }`}
+      >
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm font-medium">{title}</CardTitle>
+        </CardHeader>
+        <CardContent className="flex items-center gap-2">
+          {icon}
+          <div className="text-2xl font-bold">{value}</div>
+        </CardContent>
+      </Card>
+    </button>
+  );
+}
+
 export default function NetworkHealthPage() {
   const { token } = useAuth();
   const [data, setData] = useState<NetworkHealth | null>(null);
   const [bucket, setBucket] = useState<FoldBucket>("off");
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [filter, setFilter] = useState<FilterKey>("none");
+  const [showAcked, setShowAcked] = useState(false);
 
   const load = useCallback(() => {
     if (!token) return;
     api.networkHealth.get(token).then(setData).catch(console.error);
   }, [token]);
+
+  const toggleFilter = useCallback((key: Exclude<FilterKey, "none">) => {
+    setFilter((cur) => (cur === key ? "none" : key));
+  }, []);
+
+  const ackEvent = useCallback(
+    (id: number) => {
+      if (!token) return;
+      api.networkHealth.ackEvent(token, id).then(load).catch(console.error);
+    },
+    [token, load],
+  );
+
+  const ackAll = useCallback(() => {
+    if (!token) return;
+    api.networkHealth.ackAll(token).then(load).catch(console.error);
+  }, [token, load]);
 
   useEffect(() => {
     load();
@@ -110,30 +202,90 @@ export default function NetworkHealthPage() {
   const bridges = data?.bridges ?? [];
   const events = data?.events ?? [];
   const portStates = data?.port_states ?? [];
+
+  // Active-alert counts ignore acknowledged events.
+  const activeEvents = events.filter((e) => !e.acknowledged);
   const stpOff = bridges.filter((b) => !b.stp_enabled && b.port_count > 1).length;
-  const criticalCount = events.filter((e) => e.severity === "critical").length;
-  const warnCount = events.filter((e) => e.severity === "warn").length;
-  const downPorts = portStates.filter((p) => !p.running && !p.disabled).length;
-  const flappingPorts = portStates.filter((p) => p.flap_count_window >= 3).length;
-  const disabledPorts = portStates.filter((p) => p.disabled).length;
-  const loopProtectPorts = portStates.filter((p) => {
-    const s = (p.loop_protect_status || "").toLowerCase();
-    return s !== "" && s !== "none";
-  }).length;
+  const criticalCount = activeEvents.filter((e) => e.severity === "critical").length;
+  const warnCount = activeEvents.filter((e) => e.severity === "warn").length;
+  const downPorts = portStates.filter(isDownPort).length;
+  const flappingPorts = portStates.filter(isFlappingPort).length;
+  const disabledPorts = portStates.filter(isDisabledPort).length;
+  const loopProtectPorts = portStates.filter(isLoopProtectPort).length;
+
+  // Which top-level section a filter targets.
+  const showBridgesSection = filter === "none" || filter === "bridges" || filter === "stp_disabled";
+  const showPortsSection =
+    filter === "none" ||
+    filter === "ports" ||
+    filter === "down" ||
+    filter === "disabled" ||
+    filter === "loop_protect" ||
+    filter === "flapping";
+  const showEventsSection = filter === "none" || filter === "critical" || filter === "warn";
+
+  // Apply the active filter's predicates to the raw lists.
+  const filteredBridges =
+    filter === "stp_disabled"
+      ? bridges.filter((b) => !b.stp_enabled && b.port_count > 1)
+      : bridges;
+
+  const filteredPorts = portStates.filter((p) => {
+    switch (filter) {
+      case "down": return isDownPort(p);
+      case "disabled": return isDisabledPort(p);
+      case "loop_protect": return isLoopProtectPort(p);
+      case "flapping": return isFlappingPort(p);
+      default: return true; // "none" | "ports"
+    }
+  });
+
+  // Events table: severity filter + acknowledged visibility toggle.
+  const tableEvents = events.filter((e) => {
+    if (!showAcked && e.acknowledged) return false;
+    if (filter === "critical") return e.severity === "critical";
+    if (filter === "warn") return e.severity === "warn";
+    return true;
+  });
+  const hasUnackedEvents = events.some((e) => !e.acknowledged);
 
   // Group ports by device for display.
-  const portsByDevice = portStates.reduce<Record<string, InterfaceState[]>>((acc, p) => {
+  const portsByDevice = filteredPorts.reduce<Record<string, InterfaceState[]>>((acc, p) => {
     const key = p.device_name || p.device_id;
     (acc[key] ??= []).push(p);
     return acc;
   }, {});
 
   // Group bridges by device for display.
-  const grouped = bridges.reduce<Record<string, BridgeWithPorts[]>>((acc, b) => {
+  const grouped = filteredBridges.reduce<Record<string, BridgeWithPorts[]>>((acc, b) => {
     const key = b.device_name || b.device_id;
     (acc[key] ??= []).push(b);
     return acc;
   }, {});
+
+  const renderEventRow = (e: LoopEvent, nested = false) => (
+    <TableRow key={e.id} className={e.acknowledged ? "opacity-50" : ""}>
+      <TableCell className={`text-xs whitespace-nowrap${nested ? " pl-8" : ""}`} title={formatDateTime(e.recorded_at)}>{timeAgo(e.recorded_at)}</TableCell>
+      <TableCell>{severityBadge(e.severity)}</TableCell>
+      <TableCell className="text-xs">{eventTypeLabel(e.event_type)}</TableCell>
+      <TableCell className="text-xs">{e.device_name || e.device_id}</TableCell>
+      <TableCell className="text-xs font-mono">
+        {e.bridge_name && <span>{e.bridge_name}</span>}
+        {e.port_interface && <span className="ml-1 text-muted-foreground">/ {e.port_interface}</span>}
+      </TableCell>
+      <TableCell className="text-xs font-mono">{e.mac_address || "—"}</TableCell>
+      <TableCell className="text-xs text-muted-foreground max-w-[300px] truncate" title={e.message}>{e.message}</TableCell>
+      <TableCell className="text-right">
+        {e.acknowledged ? (
+          <Badge variant="secondary">acked</Badge>
+        ) : (
+          <Button variant="outline" size="xs" onClick={() => ackEvent(e.id)}>
+            Ack
+          </Button>
+        )}
+      </TableCell>
+    </TableRow>
+  );
 
   return (
     <div className="space-y-4">
@@ -145,82 +297,102 @@ export default function NetworkHealthPage() {
       </div>
 
       <div className="grid gap-4 md:grid-cols-4 lg:grid-cols-9">
-        <Card>
-          <CardHeader className="pb-2"><CardTitle className="text-sm font-medium">Bridges</CardTitle></CardHeader>
-          <CardContent className="flex items-center gap-2">
-            <GitBranch className="h-5 w-5 text-muted-foreground" />
-            <div className="text-2xl font-bold">{bridges.length}</div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="pb-2"><CardTitle className="text-sm font-medium">STP Disabled</CardTitle></CardHeader>
-          <CardContent className="flex items-center gap-2">
-            {stpOff > 0 ? <ShieldAlert className="h-5 w-5 text-amber-600" /> : <ShieldCheck className="h-5 w-5 text-green-600" />}
-            <div className="text-2xl font-bold">{stpOff}</div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="pb-2"><CardTitle className="text-sm font-medium">Ports tracked</CardTitle></CardHeader>
-          <CardContent className="flex items-center gap-2">
-            <Cable className="h-5 w-5 text-muted-foreground" />
-            <div className="text-2xl font-bold">{portStates.length}</div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="pb-2"><CardTitle className="text-sm font-medium">Down</CardTitle></CardHeader>
-          <CardContent className="flex items-center gap-2">
-            <Cable className={`h-5 w-5 ${downPorts > 0 ? "text-amber-600" : "text-muted-foreground"}`} />
-            <div className="text-2xl font-bold">{downPorts}</div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="pb-2"><CardTitle className="text-sm font-medium">Disabled</CardTitle></CardHeader>
-          <CardContent className="flex items-center gap-2">
-            <Ban className={`h-5 w-5 ${disabledPorts > 0 ? "text-amber-600" : "text-muted-foreground"}`} />
-            <div className="text-2xl font-bold">{disabledPorts}</div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="pb-2"><CardTitle className="text-sm font-medium">Loop-protect</CardTitle></CardHeader>
-          <CardContent className="flex items-center gap-2">
-            <ShieldAlert className={`h-5 w-5 ${loopProtectPorts > 0 ? "text-red-600" : "text-muted-foreground"}`} />
-            <div className="text-2xl font-bold">{loopProtectPorts}</div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="pb-2"><CardTitle className="text-sm font-medium">Flapping</CardTitle></CardHeader>
-          <CardContent className="flex items-center gap-2">
-            <AlertTriangle className={`h-5 w-5 ${flappingPorts > 0 ? "text-red-600" : "text-muted-foreground"}`} />
-            <div className="text-2xl font-bold">{flappingPorts}</div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="pb-2"><CardTitle className="text-sm font-medium">Critical Events</CardTitle></CardHeader>
-          <CardContent className="flex items-center gap-2">
-            <AlertTriangle className={`h-5 w-5 ${criticalCount > 0 ? "text-red-600" : "text-muted-foreground"}`} />
-            <div className="text-2xl font-bold">{criticalCount}</div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="pb-2"><CardTitle className="text-sm font-medium">Warnings</CardTitle></CardHeader>
-          <CardContent className="flex items-center gap-2">
-            <Radio className={`h-5 w-5 ${warnCount > 0 ? "text-amber-600" : "text-muted-foreground"}`} />
-            <div className="text-2xl font-bold">{warnCount}</div>
-          </CardContent>
-        </Card>
+        <StatCard
+          title="Bridges"
+          value={bridges.length}
+          icon={<GitBranch className="h-5 w-5 text-muted-foreground" />}
+          active={filter === "bridges"}
+          onClick={() => toggleFilter("bridges")}
+        />
+        <StatCard
+          title="STP Disabled"
+          value={stpOff}
+          icon={stpOff > 0 ? <ShieldAlert className="h-5 w-5 text-amber-600" /> : <ShieldCheck className="h-5 w-5 text-green-600" />}
+          active={filter === "stp_disabled"}
+          onClick={() => toggleFilter("stp_disabled")}
+        />
+        <StatCard
+          title="Ports tracked"
+          value={portStates.length}
+          icon={<Cable className="h-5 w-5 text-muted-foreground" />}
+          active={filter === "ports"}
+          onClick={() => toggleFilter("ports")}
+        />
+        <StatCard
+          title="Down"
+          value={downPorts}
+          icon={<Cable className={`h-5 w-5 ${downPorts > 0 ? "text-amber-600" : "text-muted-foreground"}`} />}
+          active={filter === "down"}
+          onClick={() => toggleFilter("down")}
+        />
+        <StatCard
+          title="Disabled"
+          value={disabledPorts}
+          icon={<Ban className={`h-5 w-5 ${disabledPorts > 0 ? "text-amber-600" : "text-muted-foreground"}`} />}
+          active={filter === "disabled"}
+          onClick={() => toggleFilter("disabled")}
+        />
+        <StatCard
+          title="Loop-protect"
+          value={loopProtectPorts}
+          icon={<ShieldAlert className={`h-5 w-5 ${loopProtectPorts > 0 ? "text-red-600" : "text-muted-foreground"}`} />}
+          active={filter === "loop_protect"}
+          onClick={() => toggleFilter("loop_protect")}
+        />
+        <StatCard
+          title="Flapping"
+          value={flappingPorts}
+          icon={<AlertTriangle className={`h-5 w-5 ${flappingPorts > 0 ? "text-red-600" : "text-muted-foreground"}`} />}
+          active={filter === "flapping"}
+          onClick={() => toggleFilter("flapping")}
+        />
+        <StatCard
+          title="Critical Events"
+          value={criticalCount}
+          icon={<AlertTriangle className={`h-5 w-5 ${criticalCount > 0 ? "text-red-600" : "text-muted-foreground"}`} />}
+          active={filter === "critical"}
+          onClick={() => toggleFilter("critical")}
+        />
+        <StatCard
+          title="Warnings"
+          value={warnCount}
+          icon={<Radio className={`h-5 w-5 ${warnCount > 0 ? "text-amber-600" : "text-muted-foreground"}`} />}
+          active={filter === "warn"}
+          onClick={() => toggleFilter("warn")}
+        />
       </div>
 
+      {filter !== "none" && (
+        <div className="flex items-center gap-2">
+          <Badge variant="secondary" className="gap-1">
+            Filtered: {filterLabels[filter]}
+          </Badge>
+          <Button variant="ghost" size="sm" onClick={() => setFilter("none")}>
+            <X className="h-3.5 w-3.5" /> Clear
+          </Button>
+        </div>
+      )}
+
       {/* Recent events */}
+      {showEventsSection && (
       <Card>
         <CardHeader>
-          <div className="flex items-center justify-between gap-3">
+          <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <CardTitle className="text-base">Recent Loop / Flap Events</CardTitle>
               <p className="text-xs text-muted-foreground">
                 STP topology changes, loop detections from device logs, and MAC address flapping.
               </p>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                <input
+                  type="checkbox"
+                  checked={showAcked}
+                  onChange={(e) => setShowAcked(e.target.checked)}
+                />
+                Show acknowledged
+              </label>
               <span className="text-xs text-muted-foreground">Group</span>
               <select
                 className="h-8 rounded-md border bg-transparent px-2 text-sm"
@@ -231,11 +403,14 @@ export default function NetworkHealthPage() {
                   <option key={o.value} value={o.value}>{o.label}</option>
                 ))}
               </select>
+              <Button variant="outline" size="sm" onClick={ackAll} disabled={!hasUnackedEvents}>
+                Ack all
+              </Button>
             </div>
           </div>
         </CardHeader>
         <CardContent>
-          {events.length === 0 ? (
+          {tableEvents.length === 0 ? (
             <p className="py-6 text-center text-sm text-muted-foreground">
               No anomalies recorded. STP is doing its job — or you have only single-bridge devices.
             </p>
@@ -250,25 +425,13 @@ export default function NetworkHealthPage() {
                   <TableHead>Bridge / Port</TableHead>
                   <TableHead>MAC</TableHead>
                   <TableHead>Detail</TableHead>
+                  <TableHead className="text-right">Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {bucket === "off"
-                  ? events.map((e: LoopEvent) => (
-                      <TableRow key={e.id}>
-                        <TableCell className="text-xs whitespace-nowrap" title={formatDateTime(e.recorded_at)}>{timeAgo(e.recorded_at)}</TableCell>
-                        <TableCell>{severityBadge(e.severity)}</TableCell>
-                        <TableCell className="text-xs">{eventTypeLabel(e.event_type)}</TableCell>
-                        <TableCell className="text-xs">{e.device_name || e.device_id}</TableCell>
-                        <TableCell className="text-xs font-mono">
-                          {e.bridge_name && <span>{e.bridge_name}</span>}
-                          {e.port_interface && <span className="ml-1 text-muted-foreground">/ {e.port_interface}</span>}
-                        </TableCell>
-                        <TableCell className="text-xs font-mono">{e.mac_address || "—"}</TableCell>
-                        <TableCell className="text-xs text-muted-foreground max-w-[300px] truncate" title={e.message}>{e.message}</TableCell>
-                      </TableRow>
-                    ))
-                  : foldEvents(events, bucket).flatMap((g) => {
+                  ? tableEvents.map((e: LoopEvent) => renderEventRow(e))
+                  : foldEvents(tableEvents, bucket).flatMap((g) => {
                       const open = expanded[g.key] ?? false;
                       const critical = g.items.filter((i) => i.severity === "critical").length;
                       const warn = g.items.filter((i) => i.severity === "warn").length;
@@ -278,7 +441,7 @@ export default function NetworkHealthPage() {
                           className="bg-muted/40 cursor-pointer hover:bg-muted"
                           onClick={() => setExpanded((s) => ({ ...s, [g.key]: !open }))}
                         >
-                          <TableCell colSpan={7} className="text-xs">
+                          <TableCell colSpan={8} className="text-xs">
                             <span className="inline-flex items-center gap-2">
                               {open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
                               <span className="font-medium">{g.key}</span>
@@ -290,32 +453,17 @@ export default function NetworkHealthPage() {
                         </TableRow>
                       );
                       if (!open) return [header];
-                      return [
-                        header,
-                        ...g.items.map((e) => (
-                          <TableRow key={e.id}>
-                            <TableCell className="text-xs whitespace-nowrap pl-8" title={formatDateTime(e.recorded_at)}>{timeAgo(e.recorded_at)}</TableCell>
-                            <TableCell>{severityBadge(e.severity)}</TableCell>
-                            <TableCell className="text-xs">{eventTypeLabel(e.event_type)}</TableCell>
-                            <TableCell className="text-xs">{e.device_name || e.device_id}</TableCell>
-                            <TableCell className="text-xs font-mono">
-                              {e.bridge_name && <span>{e.bridge_name}</span>}
-                              {e.port_interface && <span className="ml-1 text-muted-foreground">/ {e.port_interface}</span>}
-                            </TableCell>
-                            <TableCell className="text-xs font-mono">{e.mac_address || "—"}</TableCell>
-                            <TableCell className="text-xs text-muted-foreground max-w-[300px] truncate" title={e.message}>{e.message}</TableCell>
-                          </TableRow>
-                        )),
-                      ];
+                      return [header, ...g.items.map((e) => renderEventRow(e, true))];
                     })}
               </TableBody>
             </Table>
           )}
         </CardContent>
       </Card>
+      )}
 
       {/* Per-device port state */}
-      {Object.keys(portsByDevice).length > 0 && (
+      {showPortsSection && Object.keys(portsByDevice).length > 0 && (
         <div className="space-y-4">
           <h2 className="text-lg font-semibold">Port State by Device</h2>
           {Object.entries(portsByDevice).map(([dev, ports]) => (
@@ -376,12 +524,15 @@ export default function NetworkHealthPage() {
       )}
 
       {/* Per-device bridges */}
+      {showBridgesSection && (
       <div className="space-y-4">
         <h2 className="text-lg font-semibold">Bridges by Device</h2>
         {Object.keys(grouped).length === 0 && (
           <Card>
             <CardContent className="py-12 text-center text-sm text-muted-foreground">
-              No bridges discovered yet. Data appears after the first network-health poll cycle (60s).
+              {filter === "stp_disabled"
+                ? "No bridges with STP disabled — all multi-port bridges have spanning tree enabled."
+                : "No bridges discovered yet. Data appears after the first network-health poll cycle (60s)."}
             </CardContent>
           </Card>
         )}
@@ -445,6 +596,7 @@ export default function NetworkHealthPage() {
           </Card>
         ))}
       </div>
+      )}
     </div>
   );
 }

@@ -36,15 +36,17 @@ type BridgePortStatus struct {
 }
 
 type LoopEvent struct {
-	ID            int64     `json:"id"`
-	DeviceID      string    `json:"device_id"`
-	EventType     string    `json:"event_type"`
-	Severity      string    `json:"severity"`
-	BridgeName    string    `json:"bridge_name"`
-	PortInterface string    `json:"port_interface"`
-	MACAddress    string    `json:"mac_address"`
-	Message       string    `json:"message"`
-	RecordedAt    time.Time `json:"recorded_at"`
+	ID             int64      `json:"id"`
+	DeviceID       string     `json:"device_id"`
+	EventType      string     `json:"event_type"`
+	Severity       string     `json:"severity"`
+	BridgeName     string     `json:"bridge_name"`
+	PortInterface  string     `json:"port_interface"`
+	MACAddress     string     `json:"mac_address"`
+	Message        string     `json:"message"`
+	RecordedAt     time.Time  `json:"recorded_at"`
+	Acknowledged   bool       `json:"acknowledged"`
+	AcknowledgedAt *time.Time `json:"acknowledged_at"`
 }
 
 func UpsertBridgeStatus(db *sql.DB, b *BridgeStatus) error {
@@ -183,7 +185,7 @@ func ListLoopEvents(db *sql.DB, limit int) ([]LoopEvent, error) {
 		limit = 200
 	}
 	rows, err := db.Query(
-		`SELECT id, device_id, event_type, severity, bridge_name, port_interface, mac_address, message, recorded_at
+		`SELECT id, device_id, event_type, severity, bridge_name, port_interface, mac_address, message, recorded_at, acknowledged, acknowledged_at
 		 FROM loop_events ORDER BY recorded_at DESC LIMIT ?`, limit,
 	)
 	if err != nil {
@@ -194,13 +196,36 @@ func ListLoopEvents(db *sql.DB, limit int) ([]LoopEvent, error) {
 	var out []LoopEvent
 	for rows.Next() {
 		var e LoopEvent
+		var ack int
 		if err := rows.Scan(&e.ID, &e.DeviceID, &e.EventType, &e.Severity, &e.BridgeName,
-			&e.PortInterface, &e.MACAddress, &e.Message, &e.RecordedAt); err != nil {
+			&e.PortInterface, &e.MACAddress, &e.Message, &e.RecordedAt, &ack, &e.AcknowledgedAt); err != nil {
 			return nil, err
 		}
+		e.Acknowledged = ack == 1
 		out = append(out, e)
 	}
 	return out, rows.Err()
+}
+
+// AckLoopEvent marks a single loop event as acknowledged.
+func AckLoopEvent(db *sql.DB, id int64) error {
+	_, err := db.Exec(
+		`UPDATE loop_events SET acknowledged = 1, acknowledged_at = CURRENT_TIMESTAMP WHERE id = ?`,
+		id,
+	)
+	return err
+}
+
+// AckAllLoopEvents acknowledges every currently-unacknowledged loop event and
+// returns the number of rows affected.
+func AckAllLoopEvents(db *sql.DB) (int64, error) {
+	res, err := db.Exec(
+		`UPDATE loop_events SET acknowledged = 1, acknowledged_at = CURRENT_TIMESTAMP WHERE acknowledged = 0`,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 func DeleteOldLoopEvents(db *sql.DB, cutoff time.Time) (int64, error) {
@@ -215,7 +240,7 @@ func DeleteOldLoopEvents(db *sql.DB, cutoff time.Time) (int64, error) {
 // since the cutoff. Used for the network health summary.
 func CountRecentLoopEvents(db *sql.DB, cutoff time.Time) (warn, critical int, err error) {
 	rows, err := db.Query(
-		`SELECT severity, COUNT(*) FROM loop_events WHERE recorded_at >= ? GROUP BY severity`,
+		`SELECT severity, COUNT(*) FROM loop_events WHERE recorded_at >= ? AND acknowledged = 0 GROUP BY severity`,
 		cutoff,
 	)
 	if err != nil {

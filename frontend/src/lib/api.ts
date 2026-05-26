@@ -214,6 +214,10 @@ export const api = {
     get: (token: string) => apiFetch<NetworkHealth>("/network-health", { token }),
     events: (token: string, limit = 200) =>
       apiFetch<LoopEvent[]>(`/network-health/events?limit=${limit}`, { token }),
+    ackEvent: (token: string, id: number) =>
+      apiFetch<{ acknowledged: boolean }>(`/network-health/events/${id}/ack`, { method: "POST", token }),
+    ackAll: (token: string) =>
+      apiFetch<{ acknowledged: number }>("/network-health/events/ack-all", { method: "POST", token }),
   },
 
   // VLANs (bridge VLAN table + user-editable labels)
@@ -509,6 +513,8 @@ export interface LoopEvent {
   mac_address: string;
   message: string;
   recorded_at: string;
+  acknowledged: boolean;
+  acknowledged_at?: string | null;
 }
 
 export interface InterfaceState {
