@@ -9,6 +9,23 @@ import { useAuth } from "@/context/auth";
 import { api, type Device } from "@/lib/api";
 import { useWebSocket } from "@/hooks/use-websocket";
 
+// timeAgo formats an absolute timestamp as "5m ago" / "2h 14m ago" / "3d ago".
+function timeAgo(dateStr: string): string {
+  const diff = Date.now() - new Date(dateStr).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ${mins % 60}m ago`;
+  return `${Math.floor(hrs / 24)}d ago`;
+}
+
+function statusBadgeClass(status: string): string {
+  if (status === "online") return "border-transparent bg-green-500/15 text-green-600 dark:text-green-400";
+  if (status === "offline") return "border-transparent bg-red-500/15 text-red-600 dark:text-red-400";
+  return "border-transparent bg-amber-500/15 text-amber-700 dark:text-amber-400";
+}
+
 export default function DashboardPage() {
   const { token } = useAuth();
   const [devices, setDevices] = useState<Device[]>([]);
@@ -19,11 +36,24 @@ export default function DashboardPage() {
   }, [token]);
 
   useWebSocket("device.health", (data) => {
-    const update = data as { device_id: string; status: string; cpu_load?: number; memory_pct?: number };
+    const update = data as {
+      device_id: string;
+      status: string;
+      cpu_load?: number;
+      memory_pct?: number;
+      last_seen?: string;
+      error?: string;
+    };
     setDevices((prev) =>
       prev.map((d) =>
         d.id === update.device_id
-          ? { ...d, status: update.status as Device["status"], cpu_load: update.cpu_load ?? d.cpu_load }
+          ? {
+              ...d,
+              status: update.status as Device["status"],
+              cpu_load: update.cpu_load ?? d.cpu_load,
+              last_seen: update.last_seen ?? d.last_seen,
+              last_error: update.status === "online" ? null : update.error ?? d.last_error,
+            }
           : d,
       ),
     );
@@ -91,32 +121,47 @@ export default function DashboardPage() {
         <h2 className="mb-4 text-lg font-semibold">Device Status</h2>
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
           {devices.map((device) => (
-            <Card key={device.id} className="relative">
-              <CardContent className="pt-4">
-                <div className="flex items-start justify-between">
-                  <div className="min-w-0">
-                    <p className="truncate font-medium">{device.identity || device.address}</p>
-                    <p className="text-xs text-muted-foreground">{device.address}</p>
-                  </div>
-                  <Badge variant={device.status === "online" ? "default" : "destructive"}>
-                    {device.status}
-                  </Badge>
-                </div>
-                {device.status === "online" && (
-                  <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-muted-foreground">
-                    <div>CPU: {device.cpu_load ?? "—"}%</div>
-                    <div>
-                      Mem:{" "}
-                      {device.memory_used && device.memory_total
-                        ? Math.round((device.memory_used / device.memory_total) * 100)
-                        : "—"}
-                      %
+            <Link
+              key={device.id}
+              href={`/devices/${device.id}`}
+              className="block transition-transform hover:scale-[1.01]"
+            >
+              <Card className="relative h-full cursor-pointer hover:border-foreground/30">
+                <CardContent className="pt-4">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="truncate font-medium">{device.identity || device.address}</p>
+                      <p className="text-xs text-muted-foreground">{device.address}</p>
                     </div>
-                    <div className="col-span-2">v{device.ros_version || "—"} • {device.board || "—"}</div>
+                    <Badge variant="outline" className={statusBadgeClass(device.status)}>
+                      {device.status}
+                    </Badge>
                   </div>
-                )}
-              </CardContent>
-            </Card>
+                  {device.status === "online" ? (
+                    <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-muted-foreground">
+                      <div>CPU: {device.cpu_load ?? "—"}%</div>
+                      <div>
+                        Mem:{" "}
+                        {device.memory_used && device.memory_total
+                          ? Math.round((device.memory_used / device.memory_total) * 100)
+                          : "—"}
+                        %
+                      </div>
+                      <div className="col-span-2">v{device.ros_version || "—"} • {device.board || "—"}</div>
+                    </div>
+                  ) : (
+                    <div className="mt-3 space-y-1 text-xs text-muted-foreground">
+                      <div>Last seen: {device.last_seen ? timeAgo(device.last_seen) : "never"}</div>
+                      {device.last_error && (
+                        <div className="truncate text-red-600/80 dark:text-red-400/80" title={device.last_error}>
+                          {device.last_error}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            </Link>
           ))}
           {devices.length === 0 && (
             <Card className="col-span-full">
