@@ -79,12 +79,13 @@ func NewRouter(db *sql.DB, hub *ws.Hub, cfg *config.Config, pool *routeros.Pool)
 			r.Get("/devices/{id}/interfaces", s.handleListInterfaces)
 			r.Get("/devices/{id}/neighbors", s.handleListNeighbors)
 
-			// Device write operations (admin only)
+			// Device write operations + deep discovery (admin only)
 			r.Group(func(r chi.Router) {
 				r.Use(auth.RequireRole("admin"))
 				r.Post("/devices", s.handleCreateDevice)
 				r.Put("/devices/{id}", s.handleUpdateDevice)
 				r.Delete("/devices/{id}", s.handleDeleteDevice)
+				r.Get("/discovery/deep", s.handleDeepScan)
 			})
 
 			// Topology
