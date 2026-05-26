@@ -442,7 +442,18 @@ func (m *Manager) safeCheckFirmware(ctx context.Context) {
 }
 
 func (m *Manager) checkFirmware(ctx context.Context) {
-	devices, err := queries.ListDevices(m.db)
+	RunFirmwareCheck(ctx, m.db, m.pool, m.hub)
+}
+
+// RunFirmwareCheck polls every online device for RouterOS update availability
+// and upserts firmware_status. Shared by the periodic firmware poller and the
+// on-demand "Check All" API endpoint — both use the same connection pool.
+//
+// A device whose check doesn't return a latest-version (async fetch still
+// pending, or it can't reach MikroTik's update servers) is left as-is:
+// UpsertFirmwareStatus preserves the last-known version rather than blanking it.
+func RunFirmwareCheck(ctx context.Context, db *sql.DB, pool *routeros.Pool, hub *ws.Hub) {
+	devices, err := queries.ListDevices(db)
 	if err != nil {
 		return
 	}
@@ -458,7 +469,7 @@ func (m *Manager) checkFirmware(ctx context.Context) {
 			continue
 		}
 
-		client := m.pool.Get(dev.ID)
+		client := pool.Get(dev.ID)
 		if client == nil {
 			continue
 		}
@@ -469,7 +480,7 @@ func (m *Manager) checkFirmware(ctx context.Context) {
 			defer func() {
 				if r := recover(); r != nil {
 					log.Printf("poller firmware: panic checking %s: %v", dev.Identity, r)
-					m.pool.Close(dev.ID)
+					pool.Close(dev.ID)
 				}
 			}()
 			var err error
@@ -499,13 +510,13 @@ func (m *Manager) checkFirmware(ctx context.Context) {
 			fws.RouterboardUpgrade = &rb.UpgradeFirmware
 		}
 
-		_ = queries.UpsertFirmwareStatus(m.db, fws)
+		_ = queries.UpsertFirmwareStatus(db, fws)
 
 		if fw.UpdateAvailable {
-			m.hub.Publish("firmware.update", map[string]interface{}{
-				"device_id":     dev.ID,
-				"installed":     fw.InstalledVersion,
-				"latest":        fw.LatestVersion,
+			hub.Publish("firmware.update", map[string]interface{}{
+				"device_id":        dev.ID,
+				"installed":        fw.InstalledVersion,
+				"latest":           fw.LatestVersion,
 				"update_available": true,
 			})
 		}
