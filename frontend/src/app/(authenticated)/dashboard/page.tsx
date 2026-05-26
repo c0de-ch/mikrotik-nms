@@ -8,6 +8,7 @@ import { Server, Wifi, WifiOff, Cpu, Download } from "lucide-react";
 import { useAuth } from "@/context/auth";
 import { api, type Device } from "@/lib/api";
 import { useWebSocket } from "@/hooks/use-websocket";
+import { deviceStatusBadgeClass, deviceStatusColor, deviceStatusLabel } from "@/lib/status";
 
 // timeAgo formats an absolute timestamp as "5m ago" / "2h 14m ago" / "3d ago".
 function timeAgo(dateStr: string): string {
@@ -18,12 +19,6 @@ function timeAgo(dateStr: string): string {
   const hrs = Math.floor(mins / 60);
   if (hrs < 24) return `${hrs}h ${mins % 60}m ago`;
   return `${Math.floor(hrs / 24)}d ago`;
-}
-
-function statusBadgeClass(status: string): string {
-  if (status === "online") return "border-transparent bg-green-500/15 text-green-600 dark:text-green-400";
-  if (status === "offline") return "border-transparent bg-red-500/15 text-red-600 dark:text-red-400";
-  return "border-transparent bg-amber-500/15 text-amber-700 dark:text-amber-400";
 }
 
 export default function DashboardPage() {
@@ -59,9 +54,12 @@ export default function DashboardPage() {
     );
   });
 
+  const total = devices.length;
   const online = devices.filter((d) => d.status === "online").length;
   const offline = devices.filter((d) => d.status === "offline").length;
-  const unknown = devices.filter((d) => d.status === "unknown").length;
+  // Anything that isn't a confirmed online/offline is "not responding" (gray):
+  // never-polled devices and those missing polls within the offline grace window.
+  const notResponding = total - online - offline;
   const avgCpu = devices.filter((d) => d.cpu_load != null).reduce((sum, d) => sum + (d.cpu_load ?? 0), 0) /
     Math.max(devices.filter((d) => d.cpu_load != null).length, 1);
 
@@ -100,8 +98,8 @@ export default function DashboardPage() {
             </CardHeader>
             <CardContent>
               <div className="text-2xl font-bold text-red-600">{offline}</div>
-              {unknown > 0 && (
-                <p className="mt-1 text-xs text-muted-foreground">+{unknown} unknown</p>
+              {notResponding > 0 && (
+                <p className="mt-1 text-xs text-muted-foreground">+{notResponding} not responding</p>
               )}
             </CardContent>
           </Card>
@@ -116,6 +114,50 @@ export default function DashboardPage() {
           </CardContent>
         </Card>
       </div>
+
+      {total > 0 && (
+        <Card>
+          <CardContent className="space-y-2 pt-4">
+            <div className="flex h-3 w-full overflow-hidden rounded-full bg-muted">
+              {online > 0 && (
+                <div
+                  className={`${deviceStatusColor("online")} transition-all`}
+                  style={{ width: `${(online / total) * 100}%` }}
+                  title={`${online} online`}
+                />
+              )}
+              {notResponding > 0 && (
+                <div
+                  className={`${deviceStatusColor("unknown")} transition-all`}
+                  style={{ width: `${(notResponding / total) * 100}%` }}
+                  title={`${notResponding} not responding`}
+                />
+              )}
+              {offline > 0 && (
+                <div
+                  className={`${deviceStatusColor("offline")} transition-all`}
+                  style={{ width: `${(offline / total) * 100}%` }}
+                  title={`${offline} offline`}
+                />
+              )}
+            </div>
+            <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+              <span className="flex items-center gap-1.5">
+                <span className={`h-2 w-2 rounded-full ${deviceStatusColor("online")}`} />
+                {online} online
+              </span>
+              <span className="flex items-center gap-1.5">
+                <span className={`h-2 w-2 rounded-full ${deviceStatusColor("unknown")}`} />
+                {notResponding} not responding
+              </span>
+              <span className="flex items-center gap-1.5">
+                <span className={`h-2 w-2 rounded-full ${deviceStatusColor("offline")}`} />
+                {offline} offline
+              </span>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       <div>
         <h2 className="mb-4 text-lg font-semibold">Device Status</h2>
@@ -133,8 +175,8 @@ export default function DashboardPage() {
                       <p className="truncate font-medium">{device.identity || device.address}</p>
                       <p className="text-xs text-muted-foreground">{device.address}</p>
                     </div>
-                    <Badge variant="outline" className={statusBadgeClass(device.status)}>
-                      {device.status}
+                    <Badge variant="outline" className={deviceStatusBadgeClass(device.status)}>
+                      {deviceStatusLabel(device.status)}
                     </Badge>
                   </div>
                   {device.status === "online" ? (

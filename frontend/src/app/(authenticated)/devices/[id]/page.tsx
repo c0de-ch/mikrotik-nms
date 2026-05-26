@@ -18,6 +18,7 @@ import {
 } from "@/components/ui/table";
 import { useAuth } from "@/context/auth";
 import { api, type Device, type DeviceInterface, type Neighbor } from "@/lib/api";
+import { deviceStatusBadgeClass, deviceStatusLabel } from "@/lib/status";
 import { useWebSocket } from "@/hooks/use-websocket";
 
 export default function DeviceDetailPage() {
@@ -61,8 +62,8 @@ export default function DeviceDetailPage() {
           <h1 className="text-2xl font-bold">{device.identity || device.address}</h1>
           <p className="text-sm text-muted-foreground">{device.address}</p>
         </div>
-        <Badge variant={device.status === "online" ? "default" : "destructive"} className="text-sm">
-          {device.status}
+        <Badge variant="outline" className={`text-sm ${deviceStatusBadgeClass(device.status)}`}>
+          {deviceStatusLabel(device.status)}
         </Badge>
         <Button variant="outline" render={<a href={`http://${device.address}`} target="_blank" rel="noopener" />}>
           <ExternalLink className="mr-2 h-4 w-4" />

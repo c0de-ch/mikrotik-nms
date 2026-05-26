@@ -19,7 +19,7 @@ func TestStatusAfterFailedPoll(t *testing.T) {
 		want     string
 	}{
 		{"never seen", nil, "offline"},
-		{"seen recently stays online within grace", &recent, "online"},
+		{"seen recently reports unknown within grace", &recent, "unknown"},
 		{"unreachable past threshold goes offline", &stale, "offline"},
 		{"exactly at threshold goes offline", &atBoundary, "offline"},
 	}

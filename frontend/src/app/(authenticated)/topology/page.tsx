@@ -23,6 +23,7 @@ import {
 import { toast } from "sonner";
 import { useAuth } from "@/context/auth";
 import { api, type TopologyData, type TopologyNode, type Device } from "@/lib/api";
+import { deviceStatusColor } from "@/lib/status";
 import { useWebSocket } from "@/hooks/use-websocket";
 
 interface PortConnection {
@@ -56,11 +57,7 @@ function DeviceIcon({ type }: { type: string }) {
   return <Server className="h-5 w-5" />;
 }
 
-function statusDotColor(status: string) {
-  if (status === "online") return "bg-green-500";
-  if (status === "offline") return "bg-red-500";
-  return "bg-gray-400";
-}
+const statusDotColor = deviceStatusColor;
 
 // Heat-aware text color for a load percentage (0..100).
 function loadColor(n: number | null | undefined) {

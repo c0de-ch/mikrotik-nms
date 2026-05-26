@@ -185,12 +185,13 @@ func (m *Manager) offlineThreshold() time.Duration {
 }
 
 // statusAfterFailedPoll decides what status to record for a device whose poll
-// just failed. It stays "online" while still within the grace period measured
-// from its last successful contact, and flips to "offline" once that elapses
-// (or if the device has never been reached).
+// just failed. While still within the grace period (measured from its last
+// successful contact) it reports "unknown" — surfaced in the UI as the gray
+// "not responding" state — and only flips to "offline" once the grace period
+// elapses (or if the device has never been reached).
 func statusAfterFailedPoll(lastSeen *time.Time, threshold time.Duration, now time.Time) string {
 	if lastSeen != nil && now.Sub(*lastSeen) < threshold {
-		return "online"
+		return "unknown"
 	}
 	return "offline"
 }
@@ -198,7 +199,7 @@ func statusAfterFailedPoll(lastSeen *time.Time, threshold time.Duration, now tim
 // markUnreachable records a failed poll. To avoid flapping a device to offline
 // on a single missed poll, it's only reported "offline" once it has been out of
 // contact (last_seen) for longer than the configured grace period. Within that
-// window it keeps its last-known "online" status.
+// window it's reported "unknown" ("not responding" in the UI).
 func (m *Manager) markUnreachable(dev queries.Device, pollErr error) {
 	errStr := pollErr.Error()
 	status := statusAfterFailedPoll(dev.LastSeen, m.offlineThreshold(), time.Now())
