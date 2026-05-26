@@ -216,6 +216,14 @@ export const api = {
       apiFetch<LoopEvent[]>(`/network-health/events?limit=${limit}`, { token }),
   },
 
+  // VLANs (bridge VLAN table + user-editable labels)
+  vlans: {
+    list: (token: string) => apiFetch<BridgeVLAN[]>("/vlans", { token }),
+    labels: (token: string) => apiFetch<VLANLabel[]>("/vlan-labels", { token }),
+    updateLabel: (token: string, data: { vlan_id: number; name: string; purpose: string; color: string }) =>
+      apiFetch<VLANLabel>("/vlan-labels", { method: "PUT", token, body: JSON.stringify(data) }),
+  },
+
   // App settings
   settings: {
     get: (token: string) => apiFetch<Record<string, string>>("/settings", { token }),
@@ -524,6 +532,28 @@ export interface NetworkHealth {
   bridges: BridgeWithPorts[];
   events: LoopEvent[];
   port_states: InterfaceState[];
+}
+
+export interface BridgeVLAN {
+  id: string;
+  device_id: string;
+  device_name: string;
+  bridge_name: string;
+  vlan_ids: string;
+  tagged: string;
+  untagged: string;
+  current_tagged: string;
+  current_untagged: string;
+  comment: string;
+  last_polled: string;
+}
+
+export interface VLANLabel {
+  vlan_id: number;
+  name: string;
+  purpose: string;
+  color: string;
+  updated_at: string;
 }
 
 export interface DiscoveredDevice {

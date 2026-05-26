@@ -123,6 +123,14 @@ func NewRouter(db *sql.DB, hub *ws.Hub, cfg *config.Config, pool *routeros.Pool)
 			r.Get("/network-health", s.handleNetworkHealth)
 			r.Get("/network-health/events", s.handleNetworkHealthEvents)
 
+			// VLANs (bridge VLAN table + user-editable labels)
+			r.Get("/vlans", s.handleListVLANs)
+			r.Get("/vlan-labels", s.handleListVLANLabels)
+			r.Group(func(r chi.Router) {
+				r.Use(auth.RequireRole("admin"))
+				r.Put("/vlan-labels", s.handleUpdateVLANLabel)
+			})
+
 			// App settings
 			r.Get("/settings", s.handleGetSettings)
 			r.Group(func(r chi.Router) {
