@@ -112,6 +112,19 @@ func UpdateDeviceHealth(db *sql.DB, id string, status string, cpuLoad *int, memU
 	return err
 }
 
+// MarkDeviceUnreachable records the outcome of a failed poll WITHOUT touching
+// last_seen, so last_seen keeps meaning "last successful contact". The health
+// poller decides whether status should be "offline" (grace period elapsed) or
+// stay "online" (still within the grace window).
+func MarkDeviceUnreachable(db *sql.DB, id, status string, lastError *string) error {
+	_, err := db.Exec(
+		`UPDATE devices SET status=?, last_error=?, updated_at=CURRENT_TIMESTAMP
+		 WHERE id=?`,
+		status, lastError, id,
+	)
+	return err
+}
+
 func UpdateDeviceInfo(db *sql.DB, id, platform, board, rosVersion, fwVersion, arch string) error {
 	_, err := db.Exec(
 		`UPDATE devices SET platform=?, board=?, ros_version=?, firmware_version=?, architecture=?,

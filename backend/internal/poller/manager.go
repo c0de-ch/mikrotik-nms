@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"log"
 	"runtime/debug"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/mikrotik-nms/backend/internal/config"
@@ -112,20 +114,13 @@ func (m *Manager) pollDevice(dev queries.Device) {
 		dev.ID, dev.Address, dev.APIPort, dev.Username, dev.PasswordEnc, dev.UseTLS,
 	)
 	if err != nil {
-		errStr := err.Error()
-		_ = queries.UpdateDeviceHealth(m.db, dev.ID, "offline", nil, nil, nil, nil, &errStr)
-		m.hub.Publish("device.health", map[string]interface{}{
-			"device_id": dev.ID,
-			"status":    "offline",
-			"error":     errStr,
-		})
+		m.markUnreachable(dev, err)
 		return
 	}
 
 	res, err := routeros.GetSystemResource(client)
 	if err != nil {
-		errStr := err.Error()
-		_ = queries.UpdateDeviceHealth(m.db, dev.ID, "offline", nil, nil, nil, nil, &errStr)
+		m.markUnreachable(dev, err)
 		m.pool.Close(dev.ID)
 		return
 	}
@@ -166,7 +161,58 @@ func (m *Manager) pollDevice(dev queries.Device) {
 		"cpu_load":   res.CPULoad,
 		"memory_pct": memPct,
 		"uptime":     res.Uptime,
+		"last_seen":  time.Now().UTC().Format(time.RFC3339),
 	})
+}
+
+// defaultOfflineThreshold is how long a device may stay unreachable before it's
+// reported offline, when the admin hasn't configured offline_threshold_seconds.
+const defaultOfflineThreshold = 120 * time.Second
+
+// offlineThreshold reads the runtime-tunable grace period from app_settings,
+// falling back to the default. Read each failed poll so Settings changes apply
+// without a backend restart.
+func (m *Manager) offlineThreshold() time.Duration {
+	v, err := queries.GetSetting(m.db, "offline_threshold_seconds")
+	if err != nil {
+		return defaultOfflineThreshold
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil || n <= 0 {
+		return defaultOfflineThreshold
+	}
+	return time.Duration(n) * time.Second
+}
+
+// statusAfterFailedPoll decides what status to record for a device whose poll
+// just failed. It stays "online" while still within the grace period measured
+// from its last successful contact, and flips to "offline" once that elapses
+// (or if the device has never been reached).
+func statusAfterFailedPoll(lastSeen *time.Time, threshold time.Duration, now time.Time) string {
+	if lastSeen != nil && now.Sub(*lastSeen) < threshold {
+		return "online"
+	}
+	return "offline"
+}
+
+// markUnreachable records a failed poll. To avoid flapping a device to offline
+// on a single missed poll, it's only reported "offline" once it has been out of
+// contact (last_seen) for longer than the configured grace period. Within that
+// window it keeps its last-known "online" status.
+func (m *Manager) markUnreachable(dev queries.Device, pollErr error) {
+	errStr := pollErr.Error()
+	status := statusAfterFailedPoll(dev.LastSeen, m.offlineThreshold(), time.Now())
+	_ = queries.MarkDeviceUnreachable(m.db, dev.ID, status, &errStr)
+
+	payload := map[string]interface{}{
+		"device_id": dev.ID,
+		"status":    status,
+		"error":     errStr,
+	}
+	if dev.LastSeen != nil {
+		payload["last_seen"] = dev.LastSeen.UTC().Format(time.RFC3339)
+	}
+	m.hub.Publish("device.health", payload)
 }
 
 func (m *Manager) topologyLoop(ctx context.Context) {

@@ -43,6 +43,16 @@ const intervalOptions = [
   { label: "24h", value: "86400" },
 ];
 
+const offlineThresholdOptions = [
+  { label: "30s", value: "30" },
+  { label: "1m", value: "60" },
+  { label: "2m", value: "120" },
+  { label: "3m", value: "180" },
+  { label: "5m", value: "300" },
+  { label: "10m", value: "600" },
+  { label: "15m", value: "900" },
+];
+
 const retentionOptions = [
   { label: "1 day", value: "1" },
   { label: "3 days", value: "3" },
@@ -363,6 +373,37 @@ export default function SettingsPage() {
               onChange={(e) => updateSetting("retention_days", e.target.value)}
             >
               {retentionOptions.map((opt) => (
+                <option key={opt.value} value={opt.value}>{opt.label}</option>
+              ))}
+            </select>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Device Status */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Device Status</CardTitle>
+          <p className="text-xs text-muted-foreground">
+            How long a device may stay unreachable before it&apos;s reported offline. Shorter values
+            react faster; longer values avoid flapping on a single missed poll. Takes effect on the
+            next health poll — no restart needed.
+          </p>
+        </CardHeader>
+        <CardContent>
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex-1">
+              <p className="font-medium text-sm">Offline threshold</p>
+              <p className="text-xs text-muted-foreground">
+                A device stays marked online until it has missed polls for this long, then turns offline.
+              </p>
+            </div>
+            <select
+              className="flex h-8 w-28 rounded-md border bg-transparent px-2 text-sm"
+              value={settings.offline_threshold_seconds || "120"}
+              onChange={(e) => updateSetting("offline_threshold_seconds", e.target.value)}
+            >
+              {offlineThresholdOptions.map((opt) => (
                 <option key={opt.value} value={opt.value}>{opt.label}</option>
               ))}
             </select>
