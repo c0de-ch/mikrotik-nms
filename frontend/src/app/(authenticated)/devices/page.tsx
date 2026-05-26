@@ -24,6 +24,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useAuth } from "@/context/auth";
 import { api, type Device, type DiscoveredDevice } from "@/lib/api";
+import { deviceStatusBadgeClass, deviceStatusLabel } from "@/lib/status";
 import { toast } from "sonner";
 
 // timeAgo formats an absolute timestamp as "5m ago" / "2h 14m ago" / "3d ago".
@@ -409,7 +410,7 @@ function DevicesPageInner() {
         <div className="flex items-center gap-2">
           <span className="text-sm text-muted-foreground">Filter:</span>
           <Badge variant="secondary" className="gap-1.5">
-            status: {statusFilter}
+            status: {deviceStatusLabel(statusFilter)}
             <button
               onClick={() => router.push("/devices")}
               className="ml-1 rounded-sm hover:bg-foreground/10"
@@ -442,8 +443,8 @@ function DevicesPageInner() {
           {visibleDevices.map((device) => (
             <TableRow key={device.id} className="cursor-pointer" onClick={() => router.push(`/devices/${device.id}`)}>
               <TableCell>
-                <Badge variant={device.status === "online" ? "default" : device.status === "offline" ? "destructive" : "secondary"}>
-                  {device.status}
+                <Badge variant="outline" className={deviceStatusBadgeClass(device.status)}>
+                  {deviceStatusLabel(device.status)}
                 </Badge>
               </TableCell>
               <TableCell className="font-medium">{device.identity || "—"}</TableCell>
@@ -477,7 +478,7 @@ function DevicesPageInner() {
               <TableCell colSpan={9} className="text-center py-8 text-muted-foreground">
                 {devices.length === 0
                   ? "No devices configured — use Discover to scan the network"
-                  : `No devices with status "${statusFilter}"`}
+                  : `No devices with status "${statusFilter ? deviceStatusLabel(statusFilter) : ""}"`}
               </TableCell>
             </TableRow>
           )}

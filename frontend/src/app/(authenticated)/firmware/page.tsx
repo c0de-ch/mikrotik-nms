@@ -20,6 +20,7 @@ import {
 } from "@/components/ui/table";
 import { useAuth } from "@/context/auth";
 import { api, type FirmwareStatus, type Device } from "@/lib/api";
+import { deviceStatusBadgeClass, deviceStatusLabel } from "@/lib/status";
 import { useWebSocket } from "@/hooks/use-websocket";
 import { toast } from "sonner";
 
@@ -216,7 +217,9 @@ export default function FirmwarePage() {
                       {progress.status}
                     </Badge>
                   ) : device.status !== "online" ? (
-                    <Badge variant="secondary">offline</Badge>
+                    <Badge variant="outline" className={deviceStatusBadgeClass(device.status)}>
+                      {deviceStatusLabel(device.status)}
+                    </Badge>
                   ) : fw?.update_available ? (
                     <Badge variant="default">Update Available</Badge>
                   ) : fw ? (
