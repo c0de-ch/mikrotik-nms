@@ -117,8 +117,11 @@ function isDisabledPort(p: InterfaceState): boolean {
   return p.disabled;
 }
 function isLoopProtectPort(p: InterfaceState): boolean {
+  // Only "on" means loop-protect is actually enabled on the port. RouterOS
+  // reports "off" (or empty) when it isn't in use — those are NOT alerts.
+  // An actual loop-protect *trip* surfaces as a port_loop_protect event.
   const s = (p.loop_protect_status || "").toLowerCase();
-  return s !== "" && s !== "none";
+  return s === "on";
 }
 
 function StatCard({
@@ -335,7 +338,7 @@ export default function NetworkHealthPage() {
         <StatCard
           title="Loop-protect"
           value={loopProtectPorts}
-          icon={<ShieldAlert className={`h-5 w-5 ${loopProtectPorts > 0 ? "text-red-600" : "text-muted-foreground"}`} />}
+          icon={<ShieldAlert className={`h-5 w-5 ${loopProtectPorts > 0 ? "text-blue-600" : "text-muted-foreground"}`} />}
           active={filter === "loop_protect"}
           onClick={() => toggleFilter("loop_protect")}
         />
@@ -486,17 +489,16 @@ export default function NetworkHealthPage() {
                   </TableHeader>
                   <TableBody>
                     {ports.map((p) => {
-                      const lpStatus = (p.loop_protect_status || "").toLowerCase();
-                      const inLoop = lpStatus !== "" && lpStatus !== "none";
+                      const lpOn = (p.loop_protect_status || "").toLowerCase() === "on";
                       let stateBadge;
-                      if (inLoop) stateBadge = <Badge className="bg-red-100 text-red-700">loop-protect</Badge>;
-                      else if (p.disabled) stateBadge = <Badge variant="secondary">disabled</Badge>;
+                      if (p.disabled) stateBadge = <Badge variant="secondary">disabled</Badge>;
                       else if (!p.running) stateBadge = <Badge className="bg-red-100 text-red-700">link down</Badge>;
+                      else if (lpOn) stateBadge = <Badge className="bg-blue-100 text-blue-700">loop-protect on</Badge>;
                       else stateBadge = <Badge className="bg-green-100 text-green-700">up</Badge>;
 
-                      // Reason column: prefer loop-protect status > slave > comment.
+                      // Reason column: loop-protect (enabled) > slave > comment.
                       const reasonParts: string[] = [];
-                      if (inLoop) reasonParts.push(p.loop_protect_status);
+                      if (lpOn) reasonParts.push("loop-protect enabled");
                       if (p.slave) reasonParts.push("bond/bridge slave");
                       if (p.comment) reasonParts.push(p.comment);
                       const reason = reasonParts.join(" · ") || "—";
