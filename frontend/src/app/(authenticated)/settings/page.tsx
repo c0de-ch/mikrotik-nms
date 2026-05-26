@@ -53,6 +53,17 @@ const offlineThresholdOptions = [
   { label: "15m", value: "900" },
 ];
 
+const infoIntervalOptions = [
+  { label: "5m", value: "300" },
+  { label: "15m", value: "900" },
+  { label: "30m", value: "1800" },
+  { label: "1h", value: "3600" },
+  { label: "3h", value: "10800" },
+  { label: "6h", value: "21600" },
+  { label: "12h", value: "43200" },
+  { label: "24h", value: "86400" },
+];
+
 const retentionOptions = [
   { label: "1 day", value: "1" },
   { label: "3 days", value: "3" },
@@ -395,7 +406,8 @@ export default function SettingsPage() {
             <div className="flex-1">
               <p className="font-medium text-sm">Offline threshold</p>
               <p className="text-xs text-muted-foreground">
-                A device stays marked online until it has missed polls for this long, then turns offline.
+                After a device stops responding to the liveness ping it shows as &quot;not responding&quot;,
+                then flips to offline once it&apos;s been unreachable this long.
               </p>
             </div>
             <select
@@ -404,6 +416,28 @@ export default function SettingsPage() {
               onChange={(e) => updateSetting("offline_threshold_seconds", e.target.value)}
             >
               {offlineThresholdOptions.map((opt) => (
+                <option key={opt.value} value={opt.value}>{opt.label}</option>
+              ))}
+            </select>
+          </div>
+
+          <Separator />
+
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex-1">
+              <p className="font-medium text-sm">Info refresh interval</p>
+              <p className="text-xs text-muted-foreground">
+                How often to refresh full device details (CPU, memory, uptime, version, board, interfaces).
+                Online/offline status is checked far more often with a lightweight ping; this heavier refresh
+                runs rarely since most details rarely change. Cached values are shown between refreshes.
+              </p>
+            </div>
+            <select
+              className="flex h-8 w-28 rounded-md border bg-transparent px-2 text-sm"
+              value={settings.info_interval || "3600"}
+              onChange={(e) => updateSetting("info_interval", e.target.value)}
+            >
+              {infoIntervalOptions.map((opt) => (
                 <option key={opt.value} value={opt.value}>{opt.label}</option>
               ))}
             </select>

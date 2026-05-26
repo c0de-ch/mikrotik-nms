@@ -112,6 +112,21 @@ func UpdateDeviceHealth(db *sql.DB, id string, status string, cpuLoad *int, memU
 	return err
 }
 
+// MarkDeviceOnline records a successful liveness check (a reachable "ping")
+// without touching the cached cpu/memory/uptime/version fields. The frequent
+// liveness poll only proves the device is up; the heavier info poll refreshes
+// the stats on its own (longer) cycle, so this keeps the last-known values
+// intact instead of blanking them every health tick.
+func MarkDeviceOnline(db *sql.DB, id string) error {
+	_, err := db.Exec(
+		`UPDATE devices SET status='online', last_seen=CURRENT_TIMESTAMP,
+		        last_error=NULL, updated_at=CURRENT_TIMESTAMP
+		 WHERE id=?`,
+		id,
+	)
+	return err
+}
+
 // MarkDeviceUnreachable records the outcome of a failed poll WITHOUT touching
 // last_seen, so last_seen keeps meaning "last successful contact". The health
 // poller decides whether status should be "offline" (grace period elapsed) or
