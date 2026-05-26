@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,8 +23,8 @@ import (
 //   3. /log/print filtered to bridge,info → loop / mac flap events
 //
 // Anomaly detection writes rows to loop_events:
-//   - stp_disabled: bridge has STP off and >1 forwarding port
-//   - tcn_storm:    topology-changes counter rose by >tcnStormDelta in one cycle
+//   - stp_disabled: bridge has STP off and >1 non-edge port
+//   - tcn_storm:    topology-changes counter rose by >= tcn_storm_threshold in one cycle
 //   - loop_detected / mac_flap / bpdu_on_edge: directly from parsed bridge log
 type NetworkHealthPoller struct {
 	db       *sql.DB
@@ -40,9 +41,16 @@ type NetworkHealthPoller struct {
 	ports *portMonitor
 }
 
-// Below this many topology changes per cycle the bridge is considered stable.
-// Anything above suggests an unstable L2 — e.g. a flapping link or active loop.
-const tcnStormDelta = 5
+// defaultTCNStormThreshold is the topology-changes-per-cycle delta above which a
+// bridge is considered to be in a TCN storm (unstable L2 — a flapping link or
+// active loop) when the admin hasn't configured tcn_storm_threshold. The default
+// is deliberately high: STP normally emits a handful of topology changes during
+// routine port up/down, so a low threshold produced a lot of false positives.
+const defaultTCNStormThreshold = 30
+
+// tcnStormCriticalDelta is the per-cycle topology-changes delta at or above which
+// a tcn_storm event is escalated from "warn" to "critical".
+const tcnStormCriticalDelta = 100
 
 const bridgeLogFingerprintTTL = 30 * time.Minute
 
@@ -108,6 +116,7 @@ func (n *NetworkHealthPoller) poll(ctx context.Context) {
 	totalPorts := 0
 
 	portSettings := loadPortMonitorSettings(n.db)
+	tcnThreshold := n.tcnStormThreshold()
 
 	activeDevices := make(map[string]struct{}, len(devices))
 	for _, dev := range devices {
@@ -175,22 +184,43 @@ func (n *NetworkHealthPoller) poll(ctx context.Context) {
 				prev, hadPrev := n.prevTC[key]
 				n.prevTC[key] = b.TopologyChanges
 
-				// stp_disabled: bridge has multiple ports but no STP. Any
-				// untrusted second port could form a loop.
-				if !b.STPEnabled() && len(portsByBridge[b.Name]) > 1 {
-					if n.recordEvent(dev.ID, "stp_disabled", "warn", b.Name, "", "",
-						fmt.Sprintf("bridge %q runs %d ports with STP disabled (protocol=%s)",
-							b.Name, len(portsByBridge[b.Name]), nonempty(b.ProtocolMode, "none"))) {
-						evCount++
+				// stp_disabled: bridge has multiple *non-edge* ports but no STP.
+				// A loop needs at least two non-edge ports to physically form, so
+				// counting only non-edge ports stops access-only bridges (all
+				// edge ports) and single-uplink bridges from false-firing. Loopback
+				// bridges never carry external traffic, so skip them entirely.
+				lowerName := strings.ToLower(b.Name)
+				if !b.STPEnabled() && lowerName != "lo" && lowerName != "loopback" {
+					nonEdgeCount := 0
+					for _, p := range portsByBridge[b.Name] {
+						if !p.Edge {
+							nonEdgeCount++
+						}
+					}
+					if nonEdgeCount > 1 {
+						if n.recordEvent(dev.ID, "stp_disabled", "warn", b.Name, "", "",
+							fmt.Sprintf("bridge %q runs %d non-edge ports with STP disabled (protocol=%s)",
+								b.Name, nonEdgeCount, nonempty(b.ProtocolMode, "none"))) {
+							evCount++
+						}
 					}
 				}
 
-				// tcn_storm: topology changes rising fast within one cycle.
-				if hadPrev && b.TopologyChanges-prev >= tcnStormDelta {
-					if n.recordEvent(dev.ID, "tcn_storm", "warn", b.Name, "", "",
-						fmt.Sprintf("bridge %q topology-changes rose by %d in last poll (now %d)",
-							b.Name, b.TopologyChanges-prev, b.TopologyChanges)) {
-						evCount++
+				// tcn_storm: topology changes rising fast within one cycle. The
+				// threshold is runtime-tunable; escalate to critical past a hard
+				// ceiling regardless of the configured warn threshold.
+				if hadPrev {
+					delta := b.TopologyChanges - prev
+					if delta >= tcnThreshold {
+						severity := "warn"
+						if delta >= tcnStormCriticalDelta {
+							severity = "critical"
+						}
+						if n.recordEvent(dev.ID, "tcn_storm", severity, b.Name, "", "",
+							fmt.Sprintf("bridge %q topology-changes rose by %d in last poll (now %d)",
+								b.Name, delta, b.TopologyChanges)) {
+							evCount++
+						}
 					}
 				}
 			}
@@ -368,6 +398,21 @@ func (n *NetworkHealthPoller) pruneLogFingerprints(now time.Time) {
 			delete(n.seenLogs, devID)
 		}
 	}
+}
+
+// tcnStormThreshold reads the runtime-tunable TCN-storm delta from app_settings,
+// falling back to the default. Read each poll so Settings changes apply without a
+// backend restart.
+func (n *NetworkHealthPoller) tcnStormThreshold() int {
+	v, err := queries.GetSetting(n.db, "tcn_storm_threshold")
+	if err != nil {
+		return defaultTCNStormThreshold
+	}
+	t, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil || t <= 0 {
+		return defaultTCNStormThreshold
+	}
+	return t
 }
 
 func nonempty(s, fallback string) string {
