@@ -22,8 +22,9 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { useAuth } from "@/context/auth";
-import { api, type Device, type DiscoveredDevice } from "@/lib/api";
+import { api, type Device, type DiscoveredDevice, type DeepDiscoveredDevice } from "@/lib/api";
 import { deviceStatusBadgeClass, deviceStatusLabel } from "@/lib/status";
 import { toast } from "sonner";
 
@@ -66,6 +67,10 @@ function DevicesPageInner() {
   const [discoveryCredentials, setDiscoveryCredentials] = useState({ username: "admin", password: "", api_port: "8728" });
   const [addingSelected, setAddingSelected] = useState(false);
   const [discoveryError, setDiscoveryError] = useState<string | null>(null);
+  const [deepCidr, setDeepCidr] = useState("");
+  const [deepScanning, setDeepScanning] = useState(false);
+  const [deepResults, setDeepResults] = useState<DeepDiscoveredDevice[]>([]);
+  const [deepError, setDeepError] = useState<string | null>(null);
   const [form, setForm] = useState({ address: "", identity: "", username: "admin", password: "", api_port: "8728" });
   const router = useRouter();
 
@@ -226,6 +231,55 @@ function DevicesPageInner() {
     setAddingSelected(false);
   };
 
+  // Derive a sensible default CIDR from the first managed device's address
+  // (propose its /24). The user can edit it before scanning.
+  const defaultCidr = useMemo(() => {
+    const ipv4 = devices.map((d) => d.address).find((a) => /^\d+\.\d+\.\d+\.\d+$/.test(a));
+    if (!ipv4) return "";
+    const parts = ipv4.split(".");
+    return `${parts[0]}.${parts[1]}.${parts[2]}.0/24`;
+  }, [devices]);
+
+  // Prefill the CIDR input once a default is available (don't clobber edits).
+  useEffect(() => {
+    if (defaultCidr && !deepCidr) setDeepCidr(defaultCidr);
+  }, [defaultCidr, deepCidr]);
+
+  const handleDeepScan = async () => {
+    if (!token) return;
+    setDeepScanning(true);
+    setDeepError(null);
+    setDeepResults([]);
+    try {
+      const results = await api.discovery.deep(token, deepCidr.trim() || undefined);
+      setDeepResults(results);
+      if (results.length === 0) {
+        toast.info("No unmanaged devices found");
+      } else {
+        toast.success(`Found ${results.length} device(s)`);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Deep scan failed";
+      setDeepError(msg);
+      toast.error(msg);
+    } finally {
+      setDeepScanning(false);
+    }
+  };
+
+  // Open the Add Device form prefilled from a deep-scan result so the user can
+  // enter credentials and enroll it.
+  const handleEnrollDeep = (dev: DeepDiscoveredDevice) => {
+    setForm({ address: dev.address, identity: dev.identity || "", username: "admin", password: "", api_port: "8728" });
+    setDiscoveryOpen(false);
+    setDialogOpen(true);
+  };
+
+  const addableDeepResults = useMemo(() => {
+    const managed = new Set(devices.map((d) => d.address));
+    return deepResults.filter((d) => !managed.has(d.address));
+  }, [deepResults, devices]);
+
   const isAdmin = user?.role === "admin";
 
   const visibleDevices = useMemo(
@@ -247,8 +301,16 @@ function DevicesPageInner() {
                 <DialogHeader>
                   <DialogTitle>Network Discovery</DialogTitle>
                 </DialogHeader>
+
+                <Tabs defaultValue="mndp">
+                  <TabsList>
+                    <TabsTrigger value="mndp">MNDP scan</TabsTrigger>
+                    <TabsTrigger value="deep">Deep scan</TabsTrigger>
+                  </TabsList>
+
+                  <TabsContent value="mndp" className="space-y-4 pt-2">
                 <p className="text-sm text-muted-foreground">
-                  Scan the local network for MikroTik devices using MNDP (MikroTik Neighbor Discovery Protocol).
+                  Scan the local network for MikroTik devices using MNDP (MikroTik Neighbor Discovery Protocol). Only finds devices in the NMS host&apos;s broadcast domain.
                 </p>
 
                 <div className="grid grid-cols-4 gap-3 items-end">
@@ -364,6 +426,96 @@ function DevicesPageInner() {
                     </Table>
                   </>
                 )}
+                  </TabsContent>
+
+                  <TabsContent value="deep" className="space-y-4 pt-2">
+                    <p className="text-sm text-muted-foreground">
+                      Find devices that aren&apos;t directly adjacent: unmanaged neighbors seen by managed devices, plus an optional subnet port-scan (ports 8728 / 8729 / 8291). Subnets larger than /22 are rejected.
+                    </p>
+
+                    <div className="flex items-end gap-3">
+                      <div className="flex-1 space-y-1">
+                        <Label className="text-xs">Subnet CIDR (optional)</Label>
+                        <Input
+                          value={deepCidr}
+                          onChange={(e) => setDeepCidr(e.target.value)}
+                          placeholder="192.168.1.0/24"
+                        />
+                      </div>
+                      <Button onClick={handleDeepScan} disabled={deepScanning}>
+                        {deepScanning ? (
+                          <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Scanning...</>
+                        ) : (
+                          <><Radar className="mr-2 h-4 w-4" />Deep scan</>
+                        )}
+                      </Button>
+                    </div>
+
+                    {deepError && (
+                      <div className="flex items-start gap-3 rounded-lg border-2 border-destructive bg-destructive/10 p-4">
+                        <AlertTriangle className="h-5 w-5 shrink-0 text-destructive mt-0.5" />
+                        <div className="flex-1">
+                          <p className="font-semibold text-destructive">Error</p>
+                          <p className="text-sm text-destructive whitespace-pre-wrap">{deepError}</p>
+                        </div>
+                        <button onClick={() => setDeepError(null)} className="shrink-0 text-destructive hover:text-destructive/70">
+                          <X className="h-4 w-4" />
+                        </button>
+                      </div>
+                    )}
+
+                    {deepResults.length > 0 && (
+                      <>
+                        <span className="text-sm text-muted-foreground">
+                          {deepResults.length} device(s) found · {addableDeepResults.length} not yet managed
+                        </span>
+                        <Table className="table-fixed w-full">
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead className="truncate">Address</TableHead>
+                              <TableHead className="truncate">Identity</TableHead>
+                              <TableHead className="truncate">Board / Version</TableHead>
+                              <TableHead className="truncate">Source</TableHead>
+                              <TableHead className="truncate">Open ports</TableHead>
+                              <TableHead className="truncate">Seen from</TableHead>
+                              <TableHead className="w-16" />
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {deepResults.map((dev) => {
+                              const alreadyAdded = existingAddresses.has(dev.address);
+                              const sourceVariant =
+                                dev.source === "both" ? "default" : dev.source === "neighbor" ? "secondary" : "outline";
+                              return (
+                                <TableRow key={dev.address}>
+                                  <TableCell className="font-mono text-xs truncate" title={dev.address}>{dev.address}</TableCell>
+                                  <TableCell className="font-medium truncate" title={dev.identity}>{dev.identity || "—"}</TableCell>
+                                  <TableCell className="text-xs truncate" title={`${dev.board} ${dev.version}`}>
+                                    {dev.board || dev.version ? `${dev.board || "—"}${dev.version ? ` / ${dev.version}` : ""}` : "—"}
+                                  </TableCell>
+                                  <TableCell>
+                                    <Badge variant={sourceVariant}>{dev.source}</Badge>
+                                  </TableCell>
+                                  <TableCell className="font-mono text-xs truncate">{dev.open_ports?.length ? dev.open_ports.join(", ") : "—"}</TableCell>
+                                  <TableCell className="text-xs truncate" title={dev.seen_from}>{dev.seen_from || "—"}</TableCell>
+                                  <TableCell>
+                                    {alreadyAdded ? (
+                                      <Badge variant="secondary"><Check className="mr-1 h-3 w-3" />Added</Badge>
+                                    ) : (
+                                      <Button size="sm" variant="ghost" onClick={() => handleEnrollDeep(dev)} title="Add device">
+                                        <Plus className="h-3 w-3" />
+                                      </Button>
+                                    )}
+                                  </TableCell>
+                                </TableRow>
+                              );
+                            })}
+                          </TableBody>
+                        </Table>
+                      </>
+                    )}
+                  </TabsContent>
+                </Tabs>
               </DialogContent>
             </Dialog>
 

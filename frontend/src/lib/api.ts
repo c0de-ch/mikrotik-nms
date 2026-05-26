@@ -121,6 +121,10 @@ export const api = {
   discovery: {
     scan: (token: string, duration = 10) =>
       apiFetch<DiscoveredDevice[]>(`/discovery?duration=${duration}`, { token }),
+    deep: (token: string, cidr?: string) => {
+      const qs = cidr ? `?cidr=${encodeURIComponent(cidr)}` : "";
+      return apiFetch<DeepDiscoveredDevice[]>(`/discovery/deep${qs}`, { token });
+    },
   },
 
   // Network clients
@@ -568,4 +572,16 @@ export interface DiscoveredDevice {
   uptime: string;
   software_id: string;
   source_addr: string;
+}
+
+export interface DeepDiscoveredDevice {
+  address: string;
+  mac: string;
+  identity: string;
+  platform: string;
+  board: string;
+  version: string;
+  source: "neighbor" | "port-scan" | "both";
+  open_ports: number[];
+  seen_from: string;
 }

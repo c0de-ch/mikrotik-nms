@@ -88,6 +88,64 @@ func ListAllNeighbors(db *sql.DB) ([]Neighbor, error) {
 	return neighbors, rows.Err()
 }
 
+// UnmanagedNeighbor describes a neighbor whose address is not (yet) one of the
+// managed devices. SeenFromIdentity / SeenFromAddress identify the managed
+// device that observed it via /ip/neighbor, so the user can tell where an
+// otherwise-unreachable device was spotted.
+type UnmanagedNeighbor struct {
+	NeighborAddress  string `json:"neighbor_address"`
+	NeighborMAC      string `json:"neighbor_mac"`
+	NeighborIdentity string `json:"neighbor_identity"`
+	NeighborPlatform string `json:"neighbor_platform"`
+	NeighborBoard    string `json:"neighbor_board"`
+	NeighborVersion  string `json:"neighbor_version"`
+	DiscoveredBy     string `json:"discovered_by"`
+	SeenFromID       string `json:"seen_from_id"`
+	SeenFromIdentity string `json:"seen_from_identity"`
+	SeenFromAddress  string `json:"seen_from_address"`
+}
+
+// ListUnmanagedNeighbors returns neighbor rows whose neighbor_address is not in
+// devices.address (i.e. devices seen by a managed device but not themselves
+// managed). Rows without an address are skipped since they cannot be enrolled.
+// When the same address is seen by multiple devices, the most recent sighting
+// wins (ORDER BY last_seen DESC + dedup on neighbor_address).
+func ListUnmanagedNeighbors(db *sql.DB) ([]UnmanagedNeighbor, error) {
+	rows, err := db.Query(
+		`SELECT n.neighbor_address, n.neighbor_mac, n.neighbor_identity,
+		        n.neighbor_platform, n.neighbor_board, n.neighbor_version,
+		        n.discovered_by, d.id, d.identity, d.address
+		 FROM neighbors n
+		 JOIN devices d ON d.id = n.device_id
+		 WHERE n.neighbor_address != ''
+		   AND n.neighbor_address NOT IN (SELECT address FROM devices)
+		 ORDER BY n.last_seen DESC`,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	seen := make(map[string]struct{})
+	var out []UnmanagedNeighbor
+	for rows.Next() {
+		var u UnmanagedNeighbor
+		if err := rows.Scan(
+			&u.NeighborAddress, &u.NeighborMAC, &u.NeighborIdentity,
+			&u.NeighborPlatform, &u.NeighborBoard, &u.NeighborVersion,
+			&u.DiscoveredBy, &u.SeenFromID, &u.SeenFromIdentity, &u.SeenFromAddress,
+		); err != nil {
+			return nil, err
+		}
+		if _, dup := seen[u.NeighborAddress]; dup {
+			continue
+		}
+		seen[u.NeighborAddress] = struct{}{}
+		out = append(out, u)
+	}
+	return out, rows.Err()
+}
+
 func DeleteStaleNeighbors(db *sql.DB, cutoff time.Time) (int64, error) {
 	res, err := db.Exec(`DELETE FROM neighbors WHERE last_seen < ?`, cutoff)
 	if err != nil {
