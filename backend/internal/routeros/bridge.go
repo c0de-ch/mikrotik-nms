@@ -139,6 +139,48 @@ func GetBridgePorts(client *ros.Client) ([]BridgePortInfo, error) {
 	return ports, nil
 }
 
+// BridgeVLAN describes one /interface/bridge/vlan row: which VLAN IDs are
+// configured on a bridge and which ports they're tagged / untagged on.
+type BridgeVLAN struct {
+	Bridge          string
+	VLANIDs         string // configured vlan-ids, e.g. "28" or "28,78"
+	Tagged          string // statically configured tagged ports (comma-separated)
+	Untagged        string // statically configured untagged ports
+	CurrentTagged   string // runtime tagged ports (incl. dynamic)
+	CurrentUntagged string // runtime untagged ports
+	Comment         string
+}
+
+// GetBridgeVLANs returns the bridge VLAN table on the device.
+//
+// On devices without bridge VLAN filtering this returns an empty slice. Rows
+// with an empty vlan-ids field are skipped — they carry no useful VLAN info.
+func GetBridgeVLANs(client *ros.Client) ([]BridgeVLAN, error) {
+	reply, err := RunCommand(client, "/interface/bridge/vlan/print")
+	if err != nil {
+		return nil, err
+	}
+
+	vlans := make([]BridgeVLAN, 0, len(reply.Re))
+	for _, re := range reply.Re {
+		m := GetSentenceMap(re)
+		vlanIDs := m["vlan-ids"]
+		if vlanIDs == "" {
+			continue
+		}
+		vlans = append(vlans, BridgeVLAN{
+			Bridge:          m["bridge"],
+			VLANIDs:         vlanIDs,
+			Tagged:          m["tagged"],
+			Untagged:        m["untagged"],
+			CurrentTagged:   m["current-tagged"],
+			CurrentUntagged: m["current-untagged"],
+			Comment:         m["comment"],
+		})
+	}
+	return vlans, nil
+}
+
 func enrichBridgePortFromMonitor(client *ros.Client, p *BridgePortInfo) {
 	reply, err := RunCommand(client, "/interface/bridge/port/monitor",
 		"=numbers="+p.ID,

@@ -211,6 +211,27 @@ func (n *NetworkHealthPoller) poll(ctx context.Context) {
 				_ = queries.UpsertBridgePortStatus(n.db, ps)
 			}
 
+			// Bridge VLAN table: which VLANs exist and where they're
+			// tagged / untagged. Best-effort — devices without bridge VLAN
+			// filtering return an empty table.
+			vlans, err := routeros.GetBridgeVLANs(client)
+			if err == nil {
+				for _, v := range vlans {
+					bv := &queries.BridgeVLAN{
+						ID:              dev.ID + ":" + v.Bridge + ":" + v.VLANIDs,
+						DeviceID:        dev.ID,
+						BridgeName:      v.Bridge,
+						VLANIDs:         v.VLANIDs,
+						Tagged:          v.Tagged,
+						Untagged:        v.Untagged,
+						CurrentTagged:   v.CurrentTagged,
+						CurrentUntagged: v.CurrentUntagged,
+						Comment:         v.Comment,
+					}
+					_ = queries.UpsertBridgeVLAN(n.db, bv)
+				}
+			}
+
 			// Bridge log events: loop / mac flap / bpdu on edge.
 			logEvents, err := routeros.GetBridgeLogEvents(client)
 			if err == nil {
@@ -256,6 +277,9 @@ func (n *NetworkHealthPoller) poll(ctx context.Context) {
 	}
 	if err := queries.DeleteStaleInterfaceStates(n.db, staleCutoff); err != nil {
 		log.Printf("network health: stale interface cleanup: %v", err)
+	}
+	if err := queries.DeleteStaleBridgeVLANs(n.db, staleCutoff); err != nil {
+		log.Printf("network health: stale bridge vlan cleanup: %v", err)
 	}
 
 	if cycleStart.Sub(n.lastLogPruneAt) > 5*time.Minute {
