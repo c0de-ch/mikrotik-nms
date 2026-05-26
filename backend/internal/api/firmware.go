@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
@@ -27,6 +28,10 @@ func (s *Server) handleListFirmware(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCheckFirmware(w http.ResponseWriter, r *http.Request) {
+	// Run a real check across all online devices in the background (reuses the
+	// shared connection pool). Previously this was a no-op that just relied on
+	// the 6h poller, so "Check All" appeared to do nothing.
+	go poller.RunFirmwareCheck(context.Background(), s.db, s.pool, s.hub)
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "firmware check triggered"})
 }
 

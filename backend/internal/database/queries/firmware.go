@@ -24,9 +24,17 @@ func UpsertFirmwareStatus(db *sql.DB, f *FirmwareStatus) error {
 		    update_available, routerboard_current, routerboard_upgrade, last_checked, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
 		 ON CONFLICT(device_id) DO UPDATE SET
-		    channel=excluded.channel, installed_version=excluded.installed_version,
-		    latest_version=excluded.latest_version, update_available=excluded.update_available,
-		    routerboard_current=excluded.routerboard_current, routerboard_upgrade=excluded.routerboard_upgrade,
+		    channel=excluded.channel,
+		    installed_version=COALESCE(NULLIF(excluded.installed_version, ''), firmware_status.installed_version),
+		    -- An incomplete check (async update fetch not finished, or the device
+		    -- couldn't reach MikroTik's servers) returns an empty latest-version.
+		    -- Preserve the last-known value instead of clobbering it with blank,
+		    -- and only refresh update_available when we actually got a latest.
+		    latest_version=COALESCE(NULLIF(excluded.latest_version, ''), firmware_status.latest_version),
+		    update_available=CASE WHEN NULLIF(excluded.latest_version, '') IS NOT NULL
+		        THEN excluded.update_available ELSE firmware_status.update_available END,
+		    routerboard_current=COALESCE(NULLIF(excluded.routerboard_current, ''), firmware_status.routerboard_current),
+		    routerboard_upgrade=COALESCE(NULLIF(excluded.routerboard_upgrade, ''), firmware_status.routerboard_upgrade),
 		    last_checked=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP`,
 		f.ID, f.DeviceID, f.Channel, f.InstalledVersion, f.LatestVersion,
 		f.UpdateAvailable, f.RouterboardCurrent, f.RouterboardUpgrade,
