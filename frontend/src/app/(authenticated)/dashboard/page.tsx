@@ -179,8 +179,10 @@ export default function DashboardPage() {
                       {deviceStatusLabel(device.status)}
                     </Badge>
                   </div>
-                  {device.status === "online" ? (
-                    <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-muted-foreground">
+                  {/* Cached details are always shown — they persist across
+                      blips and only refresh on the info interval. */}
+                  <div className="mt-3 space-y-1 text-xs text-muted-foreground">
+                    <div className="grid grid-cols-2 gap-2">
                       <div>CPU: {device.cpu_load ?? "—"}%</div>
                       <div>
                         Mem:{" "}
@@ -189,18 +191,17 @@ export default function DashboardPage() {
                           : "—"}
                         %
                       </div>
-                      <div className="col-span-2">v{device.ros_version || "—"} • {device.board || "—"}</div>
                     </div>
-                  ) : (
-                    <div className="mt-3 space-y-1 text-xs text-muted-foreground">
+                    <div>v{device.ros_version || "—"} • {device.board || "—"}</div>
+                    {device.status !== "online" && (
                       <div>Last seen: {device.last_seen ? timeAgo(device.last_seen) : "never"}</div>
-                      {device.last_error && (
-                        <div className="truncate text-red-600/80 dark:text-red-400/80" title={device.last_error}>
-                          {device.last_error}
-                        </div>
-                      )}
-                    </div>
-                  )}
+                    )}
+                    {device.status !== "online" && device.last_error && (
+                      <div className="truncate text-red-600/80 dark:text-red-400/80" title={device.last_error}>
+                        {device.last_error}
+                      </div>
+                    )}
+                  </div>
                 </CardContent>
               </Card>
             </Link>

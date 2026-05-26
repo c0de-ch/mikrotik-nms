@@ -30,6 +30,7 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		"client_discovery_interval": true,
 		"network_health_interval":   true,
 		"offline_threshold_seconds": true,
+		"info_interval":             true,
 		"retention_days":            true,
 		"dark_mode":                 true,
 		"kea_url":                   true,

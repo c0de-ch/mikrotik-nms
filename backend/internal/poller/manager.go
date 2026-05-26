@@ -39,6 +39,7 @@ func (m *Manager) Start() {
 	m.cancel = cancel
 
 	go m.healthLoop(ctx)
+	go m.infoLoop(ctx)
 	go m.topologyLoop(ctx)
 	go m.firmwareLoop(ctx)
 	go m.retentionLoop(ctx)
@@ -109,60 +110,42 @@ func (m *Manager) safePollDevice(dev queries.Device) {
 	m.pollDevice(dev)
 }
 
+// pollDevice is the lightweight liveness check run on the frequent health
+// interval. It only answers "is the device up?" via a cheap TCP ping that
+// bypasses the RouterOS API session, so it can't contend with the heavier
+// pollers and doesn't flap on transient API slowness. The full stats/version/
+// interface refresh is the infoLoop's job (see refreshDeviceInfo).
 func (m *Manager) pollDevice(dev queries.Device) {
-	client, err := m.pool.EnsureConnection(
-		dev.ID, dev.Address, dev.APIPort, dev.Username, dev.PasswordEnc, dev.UseTLS,
-	)
-	if err != nil {
+	if err := m.ping(dev); err != nil {
 		m.markUnreachable(dev, err)
 		return
 	}
 
-	res, err := routeros.GetSystemResource(client)
-	if err != nil {
-		m.markUnreachable(dev, err)
-		m.pool.Close(dev.ID)
-		return
-	}
-
-	memUsed := res.MemoryTotal - res.MemoryFree
-	_ = queries.UpdateDeviceHealth(m.db, dev.ID, "online",
-		&res.CPULoad, &memUsed, &res.MemoryTotal, &res.Uptime, nil)
-	_ = queries.UpdateDeviceInfo(m.db, dev.ID,
-		res.Platform, res.Board, res.Version, "", res.Architecture)
-
-	// Update interfaces
-	ifaces, err := routeros.GetInterfaces(client)
-	if err == nil {
-		for _, iface := range ifaces {
-			mtu := iface.MTU
-			_ = queries.UpsertInterface(m.db, &queries.Interface{
-				ID:         dev.ID + ":" + iface.Name,
-				DeviceID:   dev.ID,
-				Name:       iface.Name,
-				Type:       iface.Type,
-				MACAddress: iface.MACAddress,
-				MTU:        &mtu,
-				Running:    iface.Running,
-				Disabled:   iface.Disabled,
-				Comment:    iface.Comment,
-			})
-		}
-	}
-
-	memPct := 0
-	if res.MemoryTotal > 0 {
-		memPct = int(memUsed * 100 / res.MemoryTotal)
-	}
-
+	_ = queries.MarkDeviceOnline(m.db, dev.ID)
 	m.hub.Publish("device.health", map[string]interface{}{
-		"device_id":  dev.ID,
-		"status":     "online",
-		"cpu_load":   res.CPULoad,
-		"memory_pct": memPct,
-		"uptime":     res.Uptime,
-		"last_seen":  time.Now().UTC().Format(time.RFC3339),
+		"device_id": dev.ID,
+		"status":    "online",
+		"last_seen": time.Now().UTC().Format(time.RFC3339),
 	})
+
+	// A device we've never gathered details from (freshly added) gets enriched
+	// right away instead of waiting up to a full info interval.
+	if dev.Board == "" || dev.ROSVersion == "" {
+		m.refreshDeviceInfo(dev)
+	}
+}
+
+// ping does a couple of quick TCP dials so a single dropped packet doesn't
+// register as the device being down.
+func (m *Manager) ping(dev queries.Device) error {
+	var err error
+	for attempt := 0; attempt < 2; attempt++ {
+		if err = routeros.Ping(dev.Address, dev.APIPort, 3*time.Second); err == nil {
+			return nil
+		}
+		time.Sleep(400 * time.Millisecond)
+	}
+	return err
 }
 
 // defaultOfflineThreshold is how long a device may stay unreachable before it's
@@ -214,6 +197,130 @@ func (m *Manager) markUnreachable(dev queries.Device, pollErr error) {
 		payload["last_seen"] = dev.LastSeen.UTC().Format(time.RFC3339)
 	}
 	m.hub.Publish("device.health", payload)
+}
+
+// defaultInfoInterval is how often the full device info (cpu/memory/uptime,
+// version/board/platform/arch and interfaces) is refreshed when the admin
+// hasn't configured info_interval. Static details rarely change, so the
+// frequent liveness poll just pings while this heavier refresh runs rarely.
+const defaultInfoInterval = 60 * time.Minute
+
+// infoInterval reads the runtime-tunable info-refresh period from app_settings.
+// Picked up on the next cycle without a backend restart.
+func (m *Manager) infoInterval() time.Duration {
+	v, err := queries.GetSetting(m.db, "info_interval")
+	if err != nil {
+		return defaultInfoInterval
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil || n <= 0 {
+		return defaultInfoInterval
+	}
+	return time.Duration(n) * time.Second
+}
+
+func (m *Manager) infoLoop(ctx context.Context) {
+	// Refresh shortly after startup so cached stats are fresh on boot, then on
+	// the configured (long) interval. A fresh timer each iteration lets a
+	// Settings change to info_interval take effect on the next cycle.
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(8 * time.Second):
+	}
+	m.refreshAllInfo(ctx)
+
+	for {
+		timer := time.NewTimer(m.infoInterval())
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+			m.refreshAllInfo(ctx)
+		}
+	}
+}
+
+func (m *Manager) refreshAllInfo(ctx context.Context) {
+	devices, err := queries.ListDevices(m.db)
+	if err != nil {
+		log.Printf("poller: info refresh list devices: %v", err)
+		return
+	}
+	for _, dev := range devices {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+			m.safeRefreshInfo(dev)
+		}
+	}
+}
+
+func (m *Manager) safeRefreshInfo(dev queries.Device) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("poller: panic refreshing info for %s (%s): %v\n%s", dev.Identity, dev.Address, r, debug.Stack())
+			m.pool.Close(dev.ID)
+		}
+	}()
+	m.refreshDeviceInfo(dev)
+}
+
+// refreshDeviceInfo does the heavy lifting: a full RouterOS API session to read
+// system resources (cpu/memory/uptime), static details (version/board/platform/
+// arch) and the interface list, caching them in the DB. Status stays owned by
+// the liveness poll — on a connection failure here we leave status alone.
+func (m *Manager) refreshDeviceInfo(dev queries.Device) {
+	client, err := m.pool.EnsureConnection(
+		dev.ID, dev.Address, dev.APIPort, dev.Username, dev.PasswordEnc, dev.UseTLS,
+	)
+	if err != nil {
+		return
+	}
+
+	res, err := routeros.GetSystemResource(client)
+	if err != nil {
+		m.pool.Close(dev.ID)
+		return
+	}
+
+	memUsed := res.MemoryTotal - res.MemoryFree
+	_ = queries.UpdateDeviceHealth(m.db, dev.ID, "online",
+		&res.CPULoad, &memUsed, &res.MemoryTotal, &res.Uptime, nil)
+	_ = queries.UpdateDeviceInfo(m.db, dev.ID,
+		res.Platform, res.Board, res.Version, "", res.Architecture)
+
+	if ifaces, err := routeros.GetInterfaces(client); err == nil {
+		for _, iface := range ifaces {
+			mtu := iface.MTU
+			_ = queries.UpsertInterface(m.db, &queries.Interface{
+				ID:         dev.ID + ":" + iface.Name,
+				DeviceID:   dev.ID,
+				Name:       iface.Name,
+				Type:       iface.Type,
+				MACAddress: iface.MACAddress,
+				MTU:        &mtu,
+				Running:    iface.Running,
+				Disabled:   iface.Disabled,
+				Comment:    iface.Comment,
+			})
+		}
+	}
+
+	memPct := 0
+	if res.MemoryTotal > 0 {
+		memPct = int(memUsed * 100 / res.MemoryTotal)
+	}
+	m.hub.Publish("device.health", map[string]interface{}{
+		"device_id":  dev.ID,
+		"status":     "online",
+		"cpu_load":   res.CPULoad,
+		"memory_pct": memPct,
+		"uptime":     res.Uptime,
+		"last_seen":  time.Now().UTC().Format(time.RFC3339),
+	})
 }
 
 func (m *Manager) topologyLoop(ctx context.Context) {
