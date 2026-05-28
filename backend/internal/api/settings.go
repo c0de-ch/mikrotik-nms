@@ -2,15 +2,36 @@ package api
 
 import (
 	"net/http"
+	"strings"
 
+	"github.com/mikrotik-nms/backend/internal/auth"
 	"github.com/mikrotik-nms/backend/internal/database/queries"
 )
+
+// isSecretSettingKey reports whether a settings value is a credential that must
+// not be exposed to non-admin users (e.g. opnsense_api_secret / api_key).
+func isSecretSettingKey(key string) bool {
+	k := strings.ToLower(key)
+	return strings.Contains(k, "secret") ||
+		strings.Contains(k, "api_key") ||
+		strings.Contains(k, "password") ||
+		strings.Contains(k, "token")
+}
 
 func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	settings, err := queries.GetAllSettings(s.db)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to get settings")
 		return
+	}
+	// Redact integration secrets for non-admins (this endpoint is readable by
+	// any authenticated user, including viewers).
+	if user := auth.UserFromContext(r.Context()); user == nil || user.Role != "admin" {
+		for k := range settings {
+			if isSecretSettingKey(k) && settings[k] != "" {
+				settings[k] = ""
+			}
+		}
 	}
 	writeJSON(w, http.StatusOK, settings)
 }

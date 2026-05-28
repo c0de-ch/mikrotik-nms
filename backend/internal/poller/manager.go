@@ -18,11 +18,12 @@ import (
 )
 
 type Manager struct {
-	db     *sql.DB
-	pool   *routeros.Pool
-	hub    *ws.Hub
-	cfg    *config.Config
-	cancel context.CancelFunc
+	db         *sql.DB
+	pool       *routeros.Pool
+	hub        *ws.Hub
+	cfg        *config.Config
+	cancel     context.CancelFunc
+	lastVacuum time.Time
 }
 
 func NewManager(db *sql.DB, pool *routeros.Pool, hub *ws.Hub, cfg *config.Config) *Manager {
@@ -566,6 +567,33 @@ func (m *Manager) retentionLoop(ctx context.Context) {
 			} else if n > 0 {
 				log.Printf("poller retention: deleted %d old loop events", n)
 			}
+
+			if n, err := queries.DeleteStaleMACLookups(m.db, wifiCutoff); err != nil {
+				log.Printf("poller retention: mac lookup: %v", err)
+			} else if n > 0 {
+				log.Printf("poller retention: deleted %d stale mac-lookup entries", n)
+			}
+
+			m.reclaimSpace()
 		}
 	}
+}
+
+// reclaimSpace bounds the WAL on every sweep and compacts the database file
+// roughly once a day. DELETEs alone never return freed pages to the OS, so the
+// file would otherwise only ever grow.
+func (m *Manager) reclaimSpace() {
+	if _, err := m.db.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {
+		log.Printf("poller retention: wal checkpoint: %v", err)
+	}
+	now := time.Now()
+	if now.Sub(m.lastVacuum) < 24*time.Hour {
+		return
+	}
+	if _, err := m.db.Exec(`VACUUM`); err != nil {
+		log.Printf("poller retention: vacuum: %v", err)
+		return
+	}
+	m.lastVacuum = now
+	log.Println("poller retention: vacuumed database")
 }

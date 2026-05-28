@@ -2,7 +2,9 @@ package api
 
 import (
 	"database/sql"
+	"log"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -30,22 +32,38 @@ func NewRouter(db *sql.DB, hub *ws.Hub, cfg *config.Config, pool *routeros.Pool)
 	// Middleware
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
-	r.Use(middleware.Logger)
+	r.Use(requestLogger) // redacts the WS ?token= from access logs
 	r.Use(middleware.Recoverer)
-	r.Use(cors.Handler(cors.Options{
-		AllowOriginFunc: func(r *http.Request, origin string) bool { return true },
-		AllowedMethods:  []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
-		AllowedHeaders:  []string{"Accept", "Authorization", "Content-Type"},
+	r.Use(securityHeaders)
+
+	corsOpts := cors.Options{
+		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type"},
 		AllowCredentials: true,
 		MaxAge:           300,
-	}))
+	}
+	if len(cfg.AllowedOrigins) > 0 {
+		corsOpts.AllowedOrigins = cfg.AllowedOrigins
+	} else {
+		// No allow-list configured: reflect any origin (backwards compatible),
+		// but warn so operators know to lock browser access down in production.
+		corsOpts.AllowOriginFunc = func(r *http.Request, origin string) bool { return true }
+		log.Println("warning: MIKROTIK_NMS_ALLOWED_ORIGINS is not set — CORS accepts any origin; set it to restrict browser access")
+	}
+	r.Use(cors.Handler(corsOpts))
+
+	// Throttle unauthenticated auth endpoints against brute force.
+	authLimiter := newRateLimiter(10, time.Minute)
 
 	r.Route("/api/v1", func(r chi.Router) {
 		// Public endpoints
 		r.Get("/health", s.handleHealth)
-		r.Post("/auth/login", s.handleLogin)
-		r.Post("/auth/refresh", s.handleRefresh)
-		r.Post("/auth/setup", s.handleSetup)
+		r.Group(func(r chi.Router) {
+			r.Use(authLimiter.middleware)
+			r.Post("/auth/login", s.handleLogin)
+			r.Post("/auth/refresh", s.handleRefresh)
+			r.Post("/auth/setup", s.handleSetup)
+		})
 
 		// Authenticated endpoints
 		r.Group(func(r chi.Router) {

@@ -11,7 +11,9 @@ import (
 
 	"github.com/mikrotik-nms/backend/internal/api"
 	"github.com/mikrotik-nms/backend/internal/config"
+	"github.com/mikrotik-nms/backend/internal/crypto"
 	"github.com/mikrotik-nms/backend/internal/database"
+	"github.com/mikrotik-nms/backend/internal/database/queries"
 	"github.com/mikrotik-nms/backend/internal/poller"
 	"github.com/mikrotik-nms/backend/internal/routeros"
 	"github.com/mikrotik-nms/backend/internal/ws"
@@ -29,10 +31,27 @@ func main() {
 	}
 	defer db.Close()
 
+	// Install the at-rest cipher for device credentials.
+	cipher, err := crypto.New(cfg.EncryptionKey)
+	if err != nil {
+		log.Fatalf("failed to init encryption: %v", err)
+	}
+	queries.SetCipher(cipher)
+	if !cipher.Enabled() {
+		log.Println("warning: MIKROTIK_NMS_ENCRYPTION_KEY is not set — device passwords are stored unencrypted at rest")
+	} else if n, err := queries.EncryptPlaintextDeviceSecrets(db); err != nil {
+		log.Printf("warning: could not encrypt existing device secrets: %v", err)
+	} else if n > 0 {
+		log.Printf("encrypted %d plaintext device password(s) at rest", n)
+	}
+	if len(cfg.JWTSecret) < 32 {
+		log.Println("warning: MIKROTIK_NMS_JWT_SECRET is shorter than 32 characters — use a longer, random secret")
+	}
+
 	hub := ws.NewHub()
 	go hub.Run()
 
-	pool := routeros.NewPool()
+	pool := routeros.NewPool(cfg.ROSTLSVerify)
 
 	pollerMgr := poller.NewManager(db, pool, hub, cfg)
 	go pollerMgr.Start()

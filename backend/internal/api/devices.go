@@ -87,7 +87,7 @@ func (s *Server) handleCreateDevice(w http.ResponseWriter, r *http.Request) {
 	var testClient *ros.Client
 	var testErr error
 	if req.UseTLS {
-		testClient, testErr = ros.DialTLS(addr, req.Username, password, &tls.Config{InsecureSkipVerify: true})
+		testClient, testErr = ros.DialTLS(addr, req.Username, password, &tls.Config{InsecureSkipVerify: !s.cfg.ROSTLSVerify}) //nolint:gosec // opt-in verification via MIKROTIK_NMS_ROS_TLS_VERIFY
 	} else {
 		testClient, testErr = ros.Dial(addr, req.Username, password)
 	}
@@ -168,7 +168,7 @@ func (s *Server) handleUpdateDevice(w http.ResponseWriter, r *http.Request) {
 		existing.Username = req.Username
 	}
 	if req.Password != "" {
-		existing.PasswordEnc = req.Password // TODO: encrypt
+		existing.PasswordEnc = req.Password // encrypted at rest by queries.UpdateDevice
 	}
 	existing.UseTLS = req.UseTLS
 	if req.APIPort > 0 {

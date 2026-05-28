@@ -63,17 +63,6 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
-	// Only works if no users exist
-	count, err := queries.CountUsers(s.db)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "database error")
-		return
-	}
-	if count > 0 {
-		writeError(w, http.StatusConflict, "setup already completed")
-		return
-	}
-
 	var req setupRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -98,8 +87,15 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 		Role:         "admin",
 	}
 
-	if err := queries.CreateUser(s.db, user); err != nil {
+	// Atomic guard: only creates the admin if the users table is still empty,
+	// so two concurrent setup requests can't both succeed.
+	created, err := queries.CreateFirstUser(s.db, user)
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create user")
+		return
+	}
+	if !created {
+		writeError(w, http.StatusConflict, "setup already completed")
 		return
 	}
 

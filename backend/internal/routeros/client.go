@@ -11,15 +11,24 @@ import (
 	"github.com/go-routeros/routeros/proto"
 )
 
+// CommandTimeout bounds a single RouterOS API call so one hung device cannot
+// stall a serial poller goroutine indefinitely.
+var CommandTimeout = 30 * time.Second
+
 // Pool manages RouterOS API connections keyed by device ID.
 type Pool struct {
-	mu      sync.RWMutex
-	clients map[string]*ros.Client
+	mu        sync.RWMutex
+	clients   map[string]*ros.Client
+	verifyTLS bool
 }
 
-func NewPool() *Pool {
+// NewPool creates a connection pool. verifyTLS controls whether RouterOS
+// API-TLS connections validate the device certificate (false = skip, the
+// historical behaviour, since RouterOS ships self-signed certs).
+func NewPool(verifyTLS bool) *Pool {
 	return &Pool{
-		clients: make(map[string]*ros.Client),
+		clients:   make(map[string]*ros.Client),
+		verifyTLS: verifyTLS,
 	}
 }
 
@@ -63,7 +72,7 @@ func (p *Pool) Dial(deviceID, address string, port int, username, password strin
 
 	if useTLS {
 		client, err = ros.DialTLS(addr, username, password, &tls.Config{
-			InsecureSkipVerify: true, // RouterOS uses self-signed certs
+			InsecureSkipVerify: !p.verifyTLS, //nolint:gosec // self-signed certs are common; opt-in verification via MIKROTIK_NMS_ROS_TLS_VERIFY
 		})
 	} else {
 		client, err = ros.Dial(addr, username, password)
@@ -109,13 +118,35 @@ func (p *Pool) CloseAll() {
 // RunCommand executes a RouterOS command and returns the reply sentences.
 // Serializes access to clients that were created via Pool.Dial so multiple
 // pollers cannot trigger concurrent reads on the same bufio.Reader.
+//
+// The call is bounded by CommandTimeout: a hung device would otherwise block
+// the calling (serial) poller goroutine forever while holding the per-client
+// mutex. On timeout the client is closed, which unblocks the in-flight read so
+// the helper goroutine can exit, and the next EnsureConnection redials.
 func RunCommand(client *ros.Client, command string, args ...string) (*ros.Reply, error) {
 	if v, ok := clientMutexes.Load(client); ok {
 		mu := v.(*sync.Mutex)
 		mu.Lock()
 		defer mu.Unlock()
 	}
-	return client.RunArgs(append([]string{command}, args...))
+
+	type result struct {
+		reply *ros.Reply
+		err   error
+	}
+	done := make(chan result, 1)
+	go func() {
+		reply, err := client.RunArgs(append([]string{command}, args...))
+		done <- result{reply, err}
+	}()
+
+	select {
+	case res := <-done:
+		return res.reply, res.err
+	case <-time.After(CommandTimeout):
+		client.Close() // unblocks the goroutine's read; it then exits via the buffered chan
+		return nil, fmt.Errorf("routeros command %q timed out after %s", command, CommandTimeout)
+	}
 }
 
 // GetSentenceMap returns the key-value map from a RouterOS reply sentence.

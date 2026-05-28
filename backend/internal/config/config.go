@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -12,6 +13,10 @@ type Config struct {
 	DBPath        string
 	EncryptionKey string
 	JWTSecret     string
+
+	// AllowedOrigins is the CORS / WebSocket origin allow-list. When empty the
+	// server reflects any origin (backwards-compatible) but logs a warning.
+	AllowedOrigins []string
 
 	// Polling intervals
 	HealthInterval        time.Duration
@@ -28,6 +33,11 @@ type Config struct {
 	DefaultROSPass string
 	DefaultROSPort int
 	DefaultROSTLS  bool
+
+	// ROSTLSVerify enables RouterOS API-TLS certificate verification. Defaults
+	// to false because RouterOS ships self-signed certs; set true once devices
+	// present a trusted cert.
+	ROSTLSVerify bool
 }
 
 func Load() (*Config, error) {
@@ -46,6 +56,8 @@ func Load() (*Config, error) {
 		DefaultROSPass:    os.Getenv("MIKROTIK_NMS_DEFAULT_ROS_PASS"),
 		DefaultROSPort:    envIntOr("MIKROTIK_NMS_DEFAULT_ROS_PORT", 8728),
 		DefaultROSTLS:     envBoolOr("MIKROTIK_NMS_DEFAULT_ROS_TLS", false),
+		AllowedOrigins:    envListOr("MIKROTIK_NMS_ALLOWED_ORIGINS", nil),
+		ROSTLSVerify:      envBoolOr("MIKROTIK_NMS_ROS_TLS_VERIFY", false),
 	}
 
 	if cfg.JWTSecret == "" {
@@ -53,6 +65,21 @@ func Load() (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// envListOr parses a comma-separated env var into a trimmed, non-empty slice.
+func envListOr(key string, fallback []string) []string {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	var out []string
+	for _, part := range strings.Split(v, ",") {
+		if p := strings.TrimSpace(part); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func envOr(key, fallback string) string {

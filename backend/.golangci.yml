@@ -1,0 +1,19 @@
+# golangci-lint configuration. Run locally with:
+#   cd backend && golangci-lint run ./...
+#
+# CI currently gates on `go vet` + `go test`; this config is provided so a
+# stricter lint pass is one command away and consistent across contributors.
+version: "2"
+
+linters:
+  enable:
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - misspell
+    - bodyclose
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

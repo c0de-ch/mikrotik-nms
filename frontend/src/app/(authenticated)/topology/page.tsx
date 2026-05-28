@@ -104,10 +104,21 @@ export default function TopologyPage() {
   useWebSocket("topology.update", (data) => {
     setTopology(data as TopologyData);
   });
-  // Refresh device health on the dedicated topic so memory/uptime stay current.
-  useWebSocket("device.health", useCallback(() => {
-    if (token) api.devices.list(token).then(setDevices).catch(() => {});
-  }, [token]));
+  // Merge live health deltas into device state instead of refetching the whole
+  // device list on every tick (at scale that was many full reloads per minute).
+  useWebSocket("device.health", useCallback((data) => {
+    const u = data as { device_id?: string; status?: Device["status"]; cpu_load?: number; uptime?: string; last_seen?: string };
+    if (!u.device_id) return;
+    setDevices((prev) => prev.map((d) => {
+      if (d.id !== u.device_id) return d;
+      const next = { ...d };
+      if (u.status) next.status = u.status;
+      if (typeof u.cpu_load === "number") next.cpu_load = u.cpu_load;
+      if (u.uptime) next.uptime = u.uptime;
+      if (u.last_seen) next.last_seen = u.last_seen;
+      return next;
+    }));
+  }, []));
 
   // Build per-device port connections + lookup maps.
   const { deviceConnections, deviceByID } = useMemo(() => {

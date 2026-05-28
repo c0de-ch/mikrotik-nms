@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"sync"
+	"time"
 )
 
 type Message struct {
@@ -93,8 +94,9 @@ func (h *Hub) Unsubscribe(client *Client, topic string) {
 // Publish sends a message to all clients subscribed to the topic.
 func (h *Hub) Publish(topic string, data interface{}) {
 	msg := Message{
-		Topic: topic,
-		Data:  data,
+		Topic:     topic,
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+		Data:      data,
 	}
 	payload, err := json.Marshal(msg)
 	if err != nil {
