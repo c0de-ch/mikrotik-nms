@@ -5,9 +5,19 @@ A web-based network management system for MikroTik devices. Provides real-time t
 ![MikroTik NMS Dashboard](docs/screenshot.png)
 <!-- Replace the path above with an actual screenshot -->
 
+## Documentation
+
+| Doc | What's in it |
+|---|---|
+| [ARCHITECTURE.md](ARCHITECTURE.md) | System overview, components, polling model, WebSocket topics, data flow, schema, design tradeoffs |
+| [docs/API.md](docs/API.md) | Complete REST + WebSocket API reference (auth, every endpoint, topic catalog, examples) |
+| [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Docker, Kubernetes, LXC/bare-metal, continuous deploy, config reference, backups, hardening |
+| [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | Local setup, build/test/lint, and how-tos for adding migrations, endpoints, pollers, WS topics, and pages |
+| [IMPROVEMENTS.md](IMPROVEMENTS.md) | Prioritized review backlog (security, performance, correctness, testing, UX) |
+
 ## Features
 
-- **Topology Map** — interactive network topology powered by Cytoscape.js
+- **Topology Map** — device/link view built from MNDP neighbor discovery (card-grid layout)
 - **Device Discovery** — automatic scanning via MNDP (UDP 5678)
 - **Traffic Monitoring** — real-time interface bandwidth graphs with Recharts
 - **Firmware Management** — view and upgrade RouterOS across your fleet
@@ -81,7 +91,9 @@ The backend is configured entirely via `MIKROTIK_NMS_*` environment variables. T
 | `MIKROTIK_NMS_JWT_SECRET` | Yes | — | Secret used to sign JWT tokens (32+ chars recommended) |
 | `MIKROTIK_NMS_LISTEN` | No | `:8080` | Address and port the backend binds to |
 | `MIKROTIK_NMS_DB_PATH` | No | `mikrotik-nms.db` | Path to the SQLite database file |
-| `MIKROTIK_NMS_ENCRYPTION_KEY` | No | — | AES key for encrypting device passwords at rest |
+| `MIKROTIK_NMS_ENCRYPTION_KEY` | No | — | AES key for encrypting device passwords at rest (AES-256-GCM). Set in production; existing rows migrate on startup. Unset = plaintext + redacted from backups |
+| `MIKROTIK_NMS_ALLOWED_ORIGINS` | No | — | Comma-separated CORS / WebSocket origin allow-list. Unset = accept any origin (warns) |
+| `MIKROTIK_NMS_ROS_TLS_VERIFY` | No | `false` | Verify RouterOS API-TLS device certificates (off by default; self-signed certs) |
 | `MIKROTIK_NMS_HEALTH_INTERVAL` | No | `30s` | How often to poll `/system/resource` |
 | `MIKROTIK_NMS_TOPOLOGY_INTERVAL` | No | `60s` | How often to poll `/ip/neighbor` and rebuild the link graph |
 | `MIKROTIK_NMS_FIRMWARE_INTERVAL` | No | `6h` | How often to check for RouterOS firmware updates |
@@ -235,7 +247,7 @@ The backend API will be available at `http://172.17.0.2:8080`. You can add NAT r
 | Layer | Technology |
 |---|---|
 | Backend | Go, chi router, SQLite (WAL mode) |
-| Frontend | Next.js 15, React, shadcn/ui, Cytoscape.js, Recharts |
+| Frontend | Next.js 16, React 19, shadcn/ui (base-ui), Recharts |
 | Auth | JWT (access + refresh), admin/viewer roles |
 | Real-time | WebSocket |
 | Discovery | MNDP (UDP 5678) |

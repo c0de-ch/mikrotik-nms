@@ -30,7 +30,7 @@ Go with `chi` router, SQLite (WAL mode) via `modernc.org/sqlite`, no ORM (raw SQ
 
 - **`cmd/mikrotik-nms/main.go`** — entrypoint, wires config → DB → WebSocket hub → poller manager → HTTP server
 - **`internal/config/`** — env-based configuration (`MIKROTIK_NMS_*` prefix)
-- **`internal/database/`** — SQLite setup, goose migrations (`001_init.sql` … `013_loop_event_ack.sql`), query functions. Tables: `users`, `devices`, `interfaces`, `neighbors`, `links`, `traffic_samples`, `firmware_status`, `upgrade_jobs`, `upgrade_job_devices`, `dns_servers`, `wifi_history`, `client_history`, `mac_lookup`, `app_settings`, `bridge_status`, `bridge_port_status`, `loop_events`, `interface_state`, `bridge_vlans`, `vlan_labels`
+- **`internal/database/`** — SQLite setup, goose migrations (`001_init.sql` … `014_traffic_retention_index.sql`), query functions. Tables: `users`, `devices`, `interfaces`, `neighbors`, `links`, `traffic_samples`, `firmware_status`, `upgrade_jobs`, `upgrade_job_devices`, `dns_servers`, `wifi_history`, `client_history`, `mac_lookup`, `app_settings`, `bridge_status`, `bridge_port_status`, `loop_events`, `interface_state`, `bridge_vlans`, `vlan_labels`
 - **`internal/auth/`** — JWT (access 15min + refresh 7d), bcrypt passwords, chi middleware (`RequireAuth`, `RequireRole`)
 - **`internal/routeros/`** — RouterOS API client pool wrapping `go-routeros/routeros/v3`. Functions for `/system/resource`, `/ip/neighbor`, `/interface/monitor-traffic`, `/system/package/update`, `/interface/bridge` + `monitor`, `/interface/bridge/port` + `monitor`, CAPsMAN/wifi registration tables, ARP/DHCP, and parsed `/log/print` events (wireless and bridge topics)
 - **`internal/kea/`** — minimal client for the Kea DHCP Control Agent (`lease4-get-all`); used by client discovery to enrich MAC → IP/hostname lookups when `kea_url` is set in app settings
@@ -40,8 +40,8 @@ Go with `chi` router, SQLite (WAL mode) via `modernc.org/sqlite`, no ORM (raw SQ
   - Topology: 60s (env), polls `/ip/neighbor`, runs topology builder, broadcasts graph via WS
   - Traffic: on-demand via `TrafficManager` — starts/stops per-interface 1s polling when WS clients subscribe to `traffic.*` topics
   - Firmware: 6h (env), checks for RouterOS updates
-  - WiFi tracking: 30s (hardcoded; runtime-tunable via `wifi_interval` setting), drains wireless logs + registration tables and writes `wifi_history` join/leave/roam rows
-  - Client discovery: 15m (hardcoded; runtime-tunable via `client_discovery_interval` setting), pulls ARP/DHCP/CAPsMAN + optional Kea leases, refreshes `mac_lookup` and `client_history`
+  - WiFi tracking: default 30s, runtime-tunable via the `wifi_interval` setting (seconds, re-read each cycle), drains wireless logs + registration tables and writes `wifi_history` join/leave/roam rows
+  - Client discovery: default 15m, runtime-tunable via the `client_discovery_interval` setting (seconds, re-read each cycle), pulls ARP/DHCP/CAPsMAN + optional Kea leases, refreshes `mac_lookup` and `client_history`
   - Network health: 60s (env), polls bridges + bridge ports + the bridge VLAN table (`/interface/bridge/vlan`) + bridge logs + per-device interface runtime state (running/disabled/last-link-up/last-link-down). Writes `bridge_status` / `bridge_port_status` / `bridge_vlans` / `interface_state` / `loop_events`. The **VLANs** page renders a VLAN×device matrix (tagged/untagged per device) from `bridge_vlans`, with admin-editable per-VLAN labels in `vlan_labels`. Port-monitoring half is runtime-tunable via `port_monitor_enabled` / `port_monitor_filter` / `port_flap_threshold` / `port_flap_window_seconds` settings; emits `port_disabled` / `port_link_down` / `port_link_flap` event kinds.
   - Retention: 1h, deletes old traffic samples, stale neighbors, old wifi/client/loop history
 - **`internal/poller/firmware.go`** — `UpgradeExecutor` runs async firmware upgrade jobs with per-device progress tracking (download → install → reboot → verify), broadcasting status via WS `upgrade.progress.<jobId>`
@@ -51,10 +51,10 @@ Go with `chi` router, SQLite (WAL mode) via `modernc.org/sqlite`, no ORM (raw SQ
 
 ### Frontend (`frontend/`)
 
-Next.js 15 (App Router) + shadcn/ui (base-ui, not Radix) + Tailwind CSS v4.
+Next.js 16 (App Router) + React 19 + shadcn/ui (base-ui, not Radix) + Tailwind CSS v4.
 
 - **Route group `(authenticated)/`** — protected layout with sidebar, redirects to `/login` if no token
-- **Pages:** dashboard, topology (Cytoscape.js), devices (data table + CRUD), device detail (`/devices/[id]` — tabs for interfaces/neighbors, CPU/mem gauges), traffic (Recharts area charts with live WS updates), firmware (bulk upgrade with real-time progress via WS), wifi (per-AP client list + roam timeline + live event feed), clients (ARP/DHCP/CAPsMAN snapshot enriched with `mac_lookup`), network-health (bridge/STP state + per-port state + recent loop/flap/port events), vlans (VLAN×device tagged/untagged matrix + per-VLAN port detail + admin-editable VLAN labels), users (admin), settings (admin: polling intervals, retention, dark mode, Kea Control Agent URL, DNS servers, port-monitoring filter/thresholds)
+- **Pages:** dashboard, topology (node card-grid view built from neighbor data; the `cytoscape` deps in package.json are currently unused), devices (data table + CRUD), device detail (`/devices/[id]` — tabs for interfaces/neighbors, CPU/mem gauges), traffic (Recharts area charts with live WS updates), firmware (bulk upgrade with real-time progress via WS), wifi (per-AP client list + roam timeline + live event feed), clients (ARP/DHCP/CAPsMAN snapshot enriched with `mac_lookup`), network-health (bridge/STP state + per-port state + recent loop/flap/port events), vlans (VLAN×device tagged/untagged matrix + per-VLAN port detail + admin-editable VLAN labels), users (admin), settings (admin: polling intervals, retention, dark mode, Kea Control Agent URL, DNS servers, port-monitoring filter/thresholds)
 - **`src/lib/api.ts`** — typed API client for all REST endpoints
 - **`src/lib/ws.ts`** — WebSocket client with auto-reconnect and topic subscription
 - **`src/context/auth.tsx`** — auth state management (login, setup, refresh, logout)
@@ -63,7 +63,7 @@ Next.js 15 (App Router) + shadcn/ui (base-ui, not Radix) + Tailwind CSS v4.
 ### Key patterns
 
 - shadcn/ui in this project uses **base-ui** (not Radix). Use `render={<Component />}` instead of `asChild` for composition.
-- Device credentials stored in SQLite `devices.password_enc` field. TODO: encrypt with `MIKROTIK_NMS_ENCRYPTION_KEY`.
+- Device credentials in `devices.password_enc` are encrypted at rest (AES-256-GCM, `internal/crypto`) when `MIKROTIK_NMS_ENCRYPTION_KEY` is set — encrypt/decrypt happens transparently in `queries` (CreateDevice/UpdateDevice/GetDevice/ListDevices), plaintext rows migrate on startup, and the column carries an `enc:v1:` prefix. Without a key it falls back to plaintext and is redacted from `/admin` backups/exports.
 - Topology links are **derived** from raw neighbor data in the `neighbors` table, stored in `links` table. Rebuilt on each topology poll cycle.
 - Traffic monitoring is on-demand: streaming starts when a WebSocket client subscribes to a `traffic.*` topic.
 - WiFi join/leave/roam events have two sources: **wireless log lines** (authoritative — parsed from `/log/print`) and **registration-table snapshots** (safety net). Each row in `wifi_history` records its `source` (`log` / `snapshot` / `absence`) so the UI can show provenance.
