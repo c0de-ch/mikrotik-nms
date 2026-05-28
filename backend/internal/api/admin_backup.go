@@ -10,7 +10,25 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/mikrotik-nms/backend/internal/database/queries"
 )
+
+// redactExport strips cleartext device passwords from export/backup output.
+// When encryption is enabled the stored value is ciphertext and is kept so the
+// backup remains restorable; when it is disabled the value is plaintext and is
+// blanked so a downloaded backup never carries credentials in the clear.
+// (password_hash is a one-way bcrypt hash and is retained so restores preserve
+// logins.)
+func redactExport(table string, rows []map[string]any) {
+	if table != "devices" || queries.EncryptionEnabled() {
+		return
+	}
+	for _, row := range rows {
+		if _, ok := row["password_enc"]; ok {
+			row["password_enc"] = ""
+		}
+	}
+}
 
 // exportableTables lists every persisted table that the backup/restore
 // endpoints can touch, in foreign-key-safe insert order (parents first).
@@ -70,6 +88,7 @@ func (s *Server) handleExportTable(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("export %s: %v", table, err))
 		return
 	}
+	redactExport(table, rows)
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Content-Disposition",
 		fmt.Sprintf(`attachment; filename="mikrotik-nms-%s-%s.json"`,
@@ -124,6 +143,7 @@ func (s *Server) handleFullBackup(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, fmt.Sprintf("export %s: %v", table, err))
 			return
 		}
+		redactExport(table, rows)
 		bundle.Tables[table] = rows
 	}
 	w.Header().Set("Content-Type", "application/json")

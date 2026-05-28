@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"log"
+	"strconv"
 	"strings"
 	"time"
 
@@ -27,19 +28,34 @@ func NewClientDiscoveryPoller(db *sql.DB, pool *routeros.Pool, res *resolver.Res
 	return &ClientDiscoveryPoller{db: db, pool: pool, resolver: res, interval: interval}
 }
 
-func (cdp *ClientDiscoveryPoller) Run(ctx context.Context) {
-	ticker := time.NewTicker(cdp.interval)
-	defer ticker.Stop()
+// currentInterval reads the runtime-tunable client_discovery_interval (seconds)
+// from app_settings, falling back to the constructed interval. Re-read each
+// cycle so a Settings change applies without a backend restart.
+func (cdp *ClientDiscoveryPoller) currentInterval() time.Duration {
+	if v, err := queries.GetSetting(cdp.db, "client_discovery_interval"); err == nil {
+		if n, e := strconv.Atoi(strings.TrimSpace(v)); e == nil && n > 0 {
+			return time.Duration(n) * time.Second
+		}
+	}
+	return cdp.interval
+}
 
-	// Run immediately on startup (short delay for device connections to establish)
-	time.Sleep(10 * time.Second)
+func (cdp *ClientDiscoveryPoller) Run(ctx context.Context) {
+	// Run shortly after startup (short delay for device connections to establish)
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(10 * time.Second):
+	}
 	cdp.safePoll(ctx)
 
 	for {
+		timer := time.NewTimer(cdp.currentInterval())
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return
-		case <-ticker.C:
+		case <-timer.C:
 			cdp.safePoll(ctx)
 		}
 	}

@@ -150,3 +150,14 @@ func DeleteOldClientHistory(db *sql.DB, cutoff time.Time) (int64, error) {
 	}
 	return res.RowsAffected()
 }
+
+// DeleteStaleMACLookups prunes MAC cache entries not refreshed since cutoff.
+// Without this the mac_lookup table (and the /mac-lookup and /clients/cached
+// responses built from it) grows unbounded with every client ever seen.
+func DeleteStaleMACLookups(db *sql.DB, cutoff time.Time) (int64, error) {
+	res, err := db.Exec(`DELETE FROM mac_lookup WHERE updated_at < ?`, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}

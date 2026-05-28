@@ -36,7 +36,7 @@ func CreateDevice(db *sql.DB, d *Device) error {
 		`INSERT INTO devices (id, address, identity, username, password_enc, use_tls, api_port,
 		    platform, board, ros_version, architecture, status, tags, notes)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		d.ID, d.Address, d.Identity, d.Username, d.PasswordEnc, d.UseTLS, d.APIPort,
+		d.ID, d.Address, d.Identity, d.Username, encryptSecret(d.PasswordEnc), d.UseTLS, d.APIPort,
 		d.Platform, d.Board, d.ROSVersion, d.Architecture, d.Status, d.Tags, d.Notes,
 	)
 	return err
@@ -59,6 +59,7 @@ func GetDevice(db *sql.DB, id string) (*Device, error) {
 	if err != nil {
 		return nil, err
 	}
+	d.PasswordEnc = decryptSecret(d.PasswordEnc)
 	return d, nil
 }
 
@@ -86,6 +87,7 @@ func ListDevices(db *sql.DB) ([]Device, error) {
 		); err != nil {
 			return nil, err
 		}
+		d.PasswordEnc = decryptSecret(d.PasswordEnc)
 		devices = append(devices, d)
 	}
 	return devices, rows.Err()
@@ -96,7 +98,7 @@ func UpdateDevice(db *sql.DB, d *Device) error {
 		`UPDATE devices SET address=?, identity=?, username=?, password_enc=?, use_tls=?, api_port=?,
 		        tags=?, notes=?, updated_at=CURRENT_TIMESTAMP
 		 WHERE id=?`,
-		d.Address, d.Identity, d.Username, d.PasswordEnc, d.UseTLS, d.APIPort,
+		d.Address, d.Identity, d.Username, encryptSecret(d.PasswordEnc), d.UseTLS, d.APIPort,
 		d.Tags, d.Notes, d.ID,
 	)
 	return err

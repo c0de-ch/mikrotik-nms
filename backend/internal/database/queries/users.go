@@ -80,3 +80,19 @@ func CountUsers(db *sql.DB) (int, error) {
 	err := db.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&count)
 	return count, err
 }
+
+// CreateFirstUser atomically inserts the initial user only if the users table
+// is empty, closing the check-then-act race in first-run setup. Returns true if
+// the user was created, false if users already exist.
+func CreateFirstUser(db *sql.DB, u *User) (bool, error) {
+	res, err := db.Exec(
+		`INSERT INTO users (id, username, password_hash, role)
+		 SELECT ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM users)`,
+		u.ID, u.Username, u.PasswordHash, u.Role,
+	)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}

@@ -75,8 +75,9 @@ func (s *Server) handleUpgradeFirmware(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Launch async execution
-	executor := poller.NewUpgradeExecutor(s.db, routeros.NewPool(), s.hub)
+	// Launch async execution, reusing the shared connection pool instead of
+	// dialing a fresh set of connections per job.
+	executor := poller.NewUpgradeExecutor(s.db, s.pool, s.hub)
 	go executor.Execute(jobID)
 
 	writeJSON(w, http.StatusAccepted, map[string]interface{}{

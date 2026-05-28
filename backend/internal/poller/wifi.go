@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"log"
+	"strconv"
 	"strings"
 	"time"
 
@@ -74,20 +75,35 @@ func NewWifiTracker(db *sql.DB, pool *routeros.Pool, hub *ws.Hub, interval time.
 	}
 }
 
-func (wt *WifiTracker) Run(ctx context.Context) {
-	ticker := time.NewTicker(wt.interval)
-	defer ticker.Stop()
+// currentInterval reads the runtime-tunable wifi_interval (seconds) from
+// app_settings, falling back to the interval the tracker was constructed with.
+// Re-read each cycle so a Settings change applies without a backend restart.
+func (wt *WifiTracker) currentInterval() time.Duration {
+	if v, err := queries.GetSetting(wt.db, "wifi_interval"); err == nil {
+		if n, e := strconv.Atoi(strings.TrimSpace(v)); e == nil && n > 0 {
+			return time.Duration(n) * time.Second
+		}
+	}
+	return wt.interval
+}
 
+func (wt *WifiTracker) Run(ctx context.Context) {
 	wt.restoreState()
 
-	time.Sleep(15 * time.Second)
-	wt.poll(ctx)
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(15 * time.Second):
+	}
+	wt.safePoll(ctx)
 
 	for {
+		timer := time.NewTimer(wt.currentInterval())
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return
-		case <-ticker.C:
+		case <-timer.C:
 			wt.safePoll(ctx)
 		}
 	}
