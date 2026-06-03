@@ -36,8 +36,8 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	// Synthetic read-only key: lets the admin UI show whether self-service
 	// password reset is actually able to send mail. Not persisted — computed
-	// from env-based config at request time.
-	settings["smtp_configured"] = strconv.FormatBool(s.cfg.SMTPEnabled())
+	// from the resolved settings+env config at request time.
+	settings["smtp_configured"] = strconv.FormatBool(s.effectiveMailer().Enabled())
 	writeJSON(w, http.StatusOK, settings)
 }
 
@@ -70,11 +70,19 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		"opnsense_api_key":          true,
 		"opnsense_api_secret":       true,
 		"opnsense_verify_tls":       true,
-		// Self-service password reset admin toggles. "pwreset_enabled" is named
-		// to avoid the isSecretSettingKey "password" substring so it stays
-		// visible (not redacted) for admins.
-		"smtp_from_address": true,
-		"pwreset_enabled":   true,
+		// Self-service password reset / SMTP. "pwreset_enabled" is named to avoid
+		// the isSecretSettingKey "password" substring so it stays visible. The
+		// "smtp_password" key DOES contain "password" so it is redacted from
+		// non-admin reads. These override the env-based SMTP config at run time
+		// (empty value = fall back to env); see resolveMailerConfig.
+		"smtp_from_address":    true,
+		"pwreset_enabled":      true,
+		"smtp_host":            true,
+		"smtp_port":            true,
+		"smtp_user":            true,
+		"smtp_password":        true,
+		"smtp_tls_mode":        true,
+		"smtp_tls_skip_verify": true,
 	}
 
 	for key, value := range req {

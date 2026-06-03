@@ -671,6 +671,115 @@ export default function SettingsPage() {
         </CardContent>
       </Card>
 
+      {/* Email / SMTP (self-service password reset) */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between gap-2">
+            <CardTitle className="text-base">Email (SMTP)</CardTitle>
+            <span
+              className={`text-xs rounded px-2 py-0.5 ${settings.smtp_configured === "true" ? "bg-green-100 text-green-700" : "bg-muted text-muted-foreground"}`}
+            >
+              {settings.smtp_configured === "true" ? "Configured" : "Not configured"}
+            </span>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Outgoing mail server for self-service password reset. Requires a host, a public base URL
+            (<code>MIKROTIK_NMS_PUBLIC_BASE_URL</code>, env), and — for most relays — a username and password.
+            Settings here override the backend environment and apply on the next request (no restart). Leave a
+            field empty to fall back to the environment value.
+          </p>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="grid grid-cols-3 gap-3">
+            <div className="col-span-2 space-y-1">
+              <Label>Host</Label>
+              <Input
+                value={settings.smtp_host || ""}
+                onChange={(e) => updateSetting("smtp_host", e.target.value)}
+                placeholder="mail.example.com"
+              />
+            </div>
+            <div className="space-y-1">
+              <Label>Port</Label>
+              <Input
+                value={settings.smtp_port || ""}
+                onChange={(e) => updateSetting("smtp_port", e.target.value)}
+                placeholder="587"
+              />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1">
+              <Label>Username</Label>
+              <Input
+                value={settings.smtp_user || ""}
+                onChange={(e) => updateSetting("smtp_user", e.target.value)}
+                placeholder="mailbox@example.com"
+                autoComplete="off"
+              />
+            </div>
+            <div className="space-y-1">
+              <Label>Password</Label>
+              <Input
+                type="password"
+                value={settings.smtp_password || ""}
+                onChange={(e) => updateSetting("smtp_password", e.target.value)}
+                placeholder="••••••••"
+                autoComplete="new-password"
+              />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1">
+              <Label>From address</Label>
+              <Input
+                value={settings.smtp_from_address || ""}
+                onChange={(e) => updateSetting("smtp_from_address", e.target.value)}
+                placeholder="nms@example.com"
+              />
+            </div>
+            <div className="space-y-1">
+              <Label>TLS mode</Label>
+              <Input
+                value={settings.smtp_tls_mode || ""}
+                onChange={(e) => updateSetting("smtp_tls_mode", e.target.value)}
+                placeholder="starttls"
+              />
+            </div>
+          </div>
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex-1">
+              <p className="font-medium text-sm">Skip TLS verification</p>
+              <p className="text-xs text-muted-foreground">Only for a self-signed relay on a trusted network.</p>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => updateSetting("smtp_tls_skip_verify", settings.smtp_tls_skip_verify === "true" ? "false" : "true")}
+            >
+              {settings.smtp_tls_skip_verify === "true" ? "On" : "Off"}
+            </Button>
+          </div>
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex-1">
+              <p className="font-medium text-sm">Enable password reset</p>
+              <p className="text-xs text-muted-foreground">Kill-switch for the self-service reset flow.</p>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => updateSetting("pwreset_enabled", settings.pwreset_enabled === "false" ? "true" : "false")}
+            >
+              {settings.pwreset_enabled === "false" ? "Off" : "On"}
+            </Button>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            The password (and any value matching <code>secret</code>/<code>token</code>) is stored masked and never
+            shown to non-admins.
+          </p>
+        </CardContent>
+      </Card>
+
       {/* DNS Servers */}
       <Card>
         <CardHeader>

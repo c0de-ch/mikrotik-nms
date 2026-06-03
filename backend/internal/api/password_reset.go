@@ -59,7 +59,10 @@ func (s *Server) handleRequestReset(w http.ResponseWriter, r *http.Request) {
 
 	// Feature gate: SMTP must be enabled AND the admin kill-switch must not be
 	// off. Both checks are silent — the response is identical either way.
-	if s.mailer == nil || !s.mailer.Enabled() || !s.pwresetEnabled() {
+	// The mailer is resolved from current settings+env so a Settings change
+	// applies without a restart.
+	m := s.effectiveMailer()
+	if m == nil || !m.Enabled() || !s.pwresetEnabled() {
 		writeJSON(w, http.StatusOK, okBody)
 		return
 	}
@@ -91,7 +94,7 @@ func (s *Server) handleRequestReset(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		done := make(chan error, 1)
-		go func() { done <- s.mailer.SendPasswordResetEmail(to, link) }()
+		go func() { done <- m.SendPasswordResetEmail(to, link) }()
 		select {
 		case err := <-done:
 			if err != nil && !errors.Is(err, mailer.ErrDisabled) {

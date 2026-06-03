@@ -54,7 +54,10 @@ func main() {
 
 	pool := routeros.NewPool(cfg.ROSTLSVerify)
 
-	mailerSvc := mailer.New(mailer.Config{
+	// Informational only: the live SMTP config is resolved per request from
+	// app_settings (Settings page) with this env config as the fallback, so a
+	// nil mailer is passed to the router and the API builds one on demand.
+	envMailer := mailer.New(mailer.Config{
 		SMTPHost:          cfg.SMTPHost,
 		SMTPPort:          cfg.SMTPPort,
 		SMTPUser:          cfg.SMTPUser,
@@ -64,14 +67,14 @@ func main() {
 		SMTPTLSSkipVerify: cfg.SMTPTLSSkipVerify,
 		PublicBaseURL:     cfg.PublicBaseURL,
 	})
-	if !mailerSvc.Enabled() {
-		log.Println("warning: SMTP not configured — self-service password reset emails are disabled")
+	if !envMailer.Enabled() {
+		log.Println("note: SMTP not configured via env — configure it in Settings (or env) to enable self-service password-reset emails")
 	}
 
 	pollerMgr := poller.NewManager(db, pool, hub, cfg)
 	go pollerMgr.Start()
 
-	router := api.NewRouter(db, hub, cfg, pool, mailerSvc)
+	router := api.NewRouter(db, hub, cfg, pool, nil)
 
 	srv := &http.Server{
 		Addr:         cfg.Listen,
