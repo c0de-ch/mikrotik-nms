@@ -115,6 +115,19 @@ export const api = {
       apiFetch("/auth/logout", { method: "POST", token }),
     me: (token: string) =>
       apiFetch<{ id: string; username: string; role: string }>("/auth/me", { token }),
+    // Self-service password reset (public, no Authorization header). The server
+    // always answers request-reset with a generic {status:"ok"} so the caller
+    // must never branch on the response to reveal whether an account exists.
+    requestReset: (username: string) =>
+      apiFetch<{ status: string }>("/auth/request-reset", {
+        method: "POST",
+        body: JSON.stringify({ username }),
+      }),
+    performReset: (token: string, newPassword: string) =>
+      apiFetch<{ status: string }>("/auth/perform-reset", {
+        method: "POST",
+        body: JSON.stringify({ token, new_password: newPassword }),
+      }),
   },
 
   // Discovery

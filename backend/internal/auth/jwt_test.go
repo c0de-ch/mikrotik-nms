@@ -10,7 +10,7 @@ import (
 const testSecret = "test-secret-key-for-unit-tests"
 
 func TestGenerateTokenPair(t *testing.T) {
-	pair, err := GenerateTokenPair(testSecret, "user-123", "admin", "admin")
+	pair, err := GenerateTokenPair(testSecret, "user-123", "admin", "admin", 0)
 	if err != nil {
 		t.Fatalf("GenerateTokenPair returned error: %v", err)
 	}
@@ -30,7 +30,7 @@ func TestGenerateTokenPair(t *testing.T) {
 }
 
 func TestValidateAccessToken_Valid(t *testing.T) {
-	pair, err := GenerateTokenPair(testSecret, "user-123", "admin", "admin")
+	pair, err := GenerateTokenPair(testSecret, "user-123", "admin", "admin", 0)
 	if err != nil {
 		t.Fatalf("GenerateTokenPair returned error: %v", err)
 	}
@@ -54,7 +54,7 @@ func TestValidateAccessToken_Valid(t *testing.T) {
 }
 
 func TestValidateAccessToken_WrongSecret(t *testing.T) {
-	pair, err := GenerateTokenPair(testSecret, "user-123", "admin", "admin")
+	pair, err := GenerateTokenPair(testSecret, "user-123", "admin", "admin", 0)
 	if err != nil {
 		t.Fatalf("GenerateTokenPair returned error: %v", err)
 	}
@@ -90,27 +90,30 @@ func TestValidateAccessToken_Expired(t *testing.T) {
 }
 
 func TestValidateRefreshToken_Valid(t *testing.T) {
-	pair, err := GenerateTokenPair(testSecret, "user-456", "viewer", "viewer")
+	pair, err := GenerateTokenPair(testSecret, "user-456", "viewer", "viewer", 0)
 	if err != nil {
 		t.Fatalf("GenerateTokenPair returned error: %v", err)
 	}
 
-	userID, err := ValidateRefreshToken(testSecret, pair.RefreshToken)
+	userID, version, err := ValidateRefreshToken(testSecret, pair.RefreshToken)
 	if err != nil {
 		t.Fatalf("ValidateRefreshToken returned error: %v", err)
 	}
 	if userID != "user-456" {
 		t.Errorf("userID = %q, want %q", userID, "user-456")
 	}
+	if version != 0 {
+		t.Errorf("token version = %d, want 0", version)
+	}
 }
 
 func TestValidateRefreshToken_WrongSecret(t *testing.T) {
-	pair, err := GenerateTokenPair(testSecret, "user-456", "viewer", "viewer")
+	pair, err := GenerateTokenPair(testSecret, "user-456", "viewer", "viewer", 0)
 	if err != nil {
 		t.Fatalf("GenerateTokenPair returned error: %v", err)
 	}
 
-	_, err = ValidateRefreshToken("wrong-secret", pair.RefreshToken)
+	_, _, err = ValidateRefreshToken("wrong-secret", pair.RefreshToken)
 	if err == nil {
 		t.Error("expected error when validating with wrong secret, got nil")
 	}
@@ -129,8 +132,37 @@ func TestValidateRefreshToken_Expired(t *testing.T) {
 		t.Fatalf("failed to create expired refresh token: %v", err)
 	}
 
-	_, err = ValidateRefreshToken(testSecret, token)
+	_, _, err = ValidateRefreshToken(testSecret, token)
 	if err == nil {
 		t.Error("expected error for expired refresh token, got nil")
+	}
+}
+
+func TestTokenVersionRoundTrips(t *testing.T) {
+	const wantVersion = 7
+	pair, err := GenerateTokenPair(testSecret, "user-789", "admin", "admin", wantVersion)
+	if err != nil {
+		t.Fatalf("GenerateTokenPair returned error: %v", err)
+	}
+
+	// Access token carries tv.
+	claims, err := ValidateAccessToken(testSecret, pair.AccessToken)
+	if err != nil {
+		t.Fatalf("ValidateAccessToken returned error: %v", err)
+	}
+	if claims.TokenVersion != wantVersion {
+		t.Errorf("access token tv = %d, want %d", claims.TokenVersion, wantVersion)
+	}
+
+	// Refresh token carries the same tv and resolves the user id.
+	userID, version, err := ValidateRefreshToken(testSecret, pair.RefreshToken)
+	if err != nil {
+		t.Fatalf("ValidateRefreshToken returned error: %v", err)
+	}
+	if userID != "user-789" {
+		t.Errorf("userID = %q, want %q", userID, "user-789")
+	}
+	if version != wantVersion {
+		t.Errorf("refresh token tv = %d, want %d", version, wantVersion)
 	}
 }

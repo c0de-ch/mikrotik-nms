@@ -14,6 +14,7 @@ import (
 	"github.com/mikrotik-nms/backend/internal/crypto"
 	"github.com/mikrotik-nms/backend/internal/database"
 	"github.com/mikrotik-nms/backend/internal/database/queries"
+	"github.com/mikrotik-nms/backend/internal/mailer"
 	"github.com/mikrotik-nms/backend/internal/poller"
 	"github.com/mikrotik-nms/backend/internal/routeros"
 	"github.com/mikrotik-nms/backend/internal/ws"
@@ -53,10 +54,24 @@ func main() {
 
 	pool := routeros.NewPool(cfg.ROSTLSVerify)
 
+	mailerSvc := mailer.New(mailer.Config{
+		SMTPHost:          cfg.SMTPHost,
+		SMTPPort:          cfg.SMTPPort,
+		SMTPUser:          cfg.SMTPUser,
+		SMTPPass:          cfg.SMTPPass,
+		SMTPFrom:          cfg.SMTPFrom,
+		SMTPTLSMode:       cfg.SMTPTLSMode,
+		SMTPTLSSkipVerify: cfg.SMTPTLSSkipVerify,
+		PublicBaseURL:     cfg.PublicBaseURL,
+	})
+	if !mailerSvc.Enabled() {
+		log.Println("warning: SMTP not configured — self-service password reset emails are disabled")
+	}
+
 	pollerMgr := poller.NewManager(db, pool, hub, cfg)
 	go pollerMgr.Start()
 
-	router := api.NewRouter(db, hub, cfg, pool)
+	router := api.NewRouter(db, hub, cfg, pool, mailerSvc)
 
 	srv := &http.Server{
 		Addr:         cfg.Listen,

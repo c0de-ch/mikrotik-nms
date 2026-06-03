@@ -11,6 +11,7 @@ type User struct {
 	PasswordHash string    `json:"-"`
 	Role         string    `json:"role"`
 	CreatedAt    time.Time `json:"created_at"`
+	TokenVersion int       `json:"-"`
 }
 
 func CreateUser(db *sql.DB, u *User) error {
@@ -24,9 +25,9 @@ func CreateUser(db *sql.DB, u *User) error {
 func GetUserByUsername(db *sql.DB, username string) (*User, error) {
 	u := &User{}
 	err := db.QueryRow(
-		`SELECT id, username, password_hash, role, created_at FROM users WHERE username = ?`,
+		`SELECT id, username, password_hash, role, created_at, token_version FROM users WHERE username = ?`,
 		username,
-	).Scan(&u.ID, &u.Username, &u.PasswordHash, &u.Role, &u.CreatedAt)
+	).Scan(&u.ID, &u.Username, &u.PasswordHash, &u.Role, &u.CreatedAt, &u.TokenVersion)
 	if err != nil {
 		return nil, err
 	}
@@ -36,9 +37,9 @@ func GetUserByUsername(db *sql.DB, username string) (*User, error) {
 func GetUserByID(db *sql.DB, id string) (*User, error) {
 	u := &User{}
 	err := db.QueryRow(
-		`SELECT id, username, password_hash, role, created_at FROM users WHERE id = ?`,
+		`SELECT id, username, password_hash, role, created_at, token_version FROM users WHERE id = ?`,
 		id,
-	).Scan(&u.ID, &u.Username, &u.PasswordHash, &u.Role, &u.CreatedAt)
+	).Scan(&u.ID, &u.Username, &u.PasswordHash, &u.Role, &u.CreatedAt, &u.TokenVersion)
 	if err != nil {
 		return nil, err
 	}
@@ -46,7 +47,7 @@ func GetUserByID(db *sql.DB, id string) (*User, error) {
 }
 
 func ListUsers(db *sql.DB) ([]User, error) {
-	rows, err := db.Query(`SELECT id, username, password_hash, role, created_at FROM users ORDER BY created_at`)
+	rows, err := db.Query(`SELECT id, username, password_hash, role, created_at, token_version FROM users ORDER BY created_at`)
 	if err != nil {
 		return nil, err
 	}
@@ -55,7 +56,7 @@ func ListUsers(db *sql.DB) ([]User, error) {
 	var users []User
 	for rows.Next() {
 		var u User
-		if err := rows.Scan(&u.ID, &u.Username, &u.PasswordHash, &u.Role, &u.CreatedAt); err != nil {
+		if err := rows.Scan(&u.ID, &u.Username, &u.PasswordHash, &u.Role, &u.CreatedAt, &u.TokenVersion); err != nil {
 			return nil, err
 		}
 		users = append(users, u)
@@ -95,4 +96,17 @@ func CreateFirstUser(db *sql.DB, u *User) (bool, error) {
 	}
 	n, _ := res.RowsAffected()
 	return n > 0, nil
+}
+
+// UpdateUserPasswordAndBumpVersion sets a new password hash and increments
+// token_version in a single atomic statement, invalidating all existing
+// refresh sessions for the user (the new version no longer matches any
+// previously-issued refresh token's "tv" claim). It runs inside the caller's
+// transaction so the password update and reset-token consume commit together.
+func UpdateUserPasswordAndBumpVersion(tx *sql.Tx, userID, newHash string) error {
+	_, err := tx.Exec(
+		`UPDATE users SET password_hash=?, token_version=token_version+1 WHERE id=?`,
+		newHash, userID,
+	)
+	return err
 }

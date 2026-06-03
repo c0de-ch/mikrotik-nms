@@ -1,9 +1,13 @@
 package api
 
 import (
+	"bytes"
+	"encoding/json"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -124,4 +128,42 @@ func (rl *rateLimiter) middleware(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// limitResetPerUser throttles password-reset requests per submitted username so
+// a single account can't be email-bombed (and the per-IP authLimiter still
+// applies). It peeks at the JSON body — restoring it for the handler — and keys
+// the limiter on the trimmed, lowercased username. An empty/missing username is
+// NOT rate-limited here; the handler still returns the generic 200, preserving
+// enumeration-safety (the limiter keys on the submitted string, never on whether
+// the user exists). On breach it returns a generic 429 that reveals nothing.
+func (s *Server) limitResetPerUser(rl *rateLimiter, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		b, err := io.ReadAll(io.LimitReader(r.Body, 1<<16))
+		_ = r.Body.Close()
+		if err != nil {
+			b = nil
+		}
+		// Restore the body so the downstream handler can decode it.
+		r.Body = io.NopCloser(bytes.NewReader(b))
+
+		var peek struct {
+			Username string `json:"username"`
+			Email    string `json:"email"`
+		}
+		_ = json.Unmarshal(b, &peek)
+
+		username := peek.Username
+		if username == "" {
+			username = peek.Email
+		}
+		username = strings.ToLower(strings.TrimSpace(username))
+
+		if username != "" && !rl.allow("reset:"+username, time.Now()) {
+			w.Header().Set("Retry-After", "900")
+			http.Error(w, `{"error":"too many requests"}`, http.StatusTooManyRequests)
+			return
+		}
+		next.ServeHTTP(w, r)
+	}
 }

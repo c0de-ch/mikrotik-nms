@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/mikrotik-nms/backend/internal/auth"
@@ -33,6 +34,10 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	// Synthetic read-only key: lets the admin UI show whether self-service
+	// password reset is actually able to send mail. Not persisted — computed
+	// from env-based config at request time.
+	settings["smtp_configured"] = strconv.FormatBool(s.cfg.SMTPEnabled())
 	writeJSON(w, http.StatusOK, settings)
 }
 
@@ -65,6 +70,11 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		"opnsense_api_key":          true,
 		"opnsense_api_secret":       true,
 		"opnsense_verify_tls":       true,
+		// Self-service password reset admin toggles. "pwreset_enabled" is named
+		// to avoid the isSecretSettingKey "password" substring so it stays
+		// visible (not redacted) for admins.
+		"smtp_from_address": true,
+		"pwreset_enabled":   true,
 	}
 
 	for key, value := range req {

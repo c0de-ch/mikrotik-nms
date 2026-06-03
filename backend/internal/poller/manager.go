@@ -579,6 +579,15 @@ func (m *Manager) retentionLoop(ctx context.Context) {
 				log.Printf("poller retention: deleted %d stale mac-lookup entries", n)
 			}
 
+			// Backstop the request-reset handler's lazy cleanup: sweep reset
+			// tokens whose expiry passed over 24h ago.
+			resetCutoff := time.Now().Add(-24 * time.Hour)
+			if n, err := queries.DeleteExpiredResetTokens(m.db, resetCutoff); err != nil {
+				log.Printf("poller retention: reset tokens: %v", err)
+			} else if n > 0 {
+				log.Printf("poller retention: deleted %d expired reset tokens", n)
+			}
+
 			m.reclaimSpace()
 		}
 	}

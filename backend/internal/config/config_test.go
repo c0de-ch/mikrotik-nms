@@ -121,3 +121,84 @@ func TestLoad_CustomEnvValues(t *testing.T) {
 		t.Errorf("RetentionDays = %d, want %d", cfg.RetentionDays, 30)
 	}
 }
+
+// smtpEnvKeys are cleared before each SMTP test so ambient env can't leak in.
+var smtpEnvKeys = []string{
+	"MIKROTIK_NMS_SMTP_HOST",
+	"MIKROTIK_NMS_SMTP_PORT",
+	"MIKROTIK_NMS_SMTP_USER",
+	"MIKROTIK_NMS_SMTP_PASS",
+	"MIKROTIK_NMS_SMTP_FROM",
+	"MIKROTIK_NMS_SMTP_TLS_MODE",
+	"MIKROTIK_NMS_SMTP_TLS_SKIP_VERIFY",
+	"MIKROTIK_NMS_PUBLIC_BASE_URL",
+	"MIKROTIK_NMS_PASSWORD_RESET_TTL",
+}
+
+func withCleanSMTPEnv(t *testing.T) {
+	t.Helper()
+	prevSecret := os.Getenv("MIKROTIK_NMS_JWT_SECRET")
+	os.Setenv("MIKROTIK_NMS_JWT_SECRET", "test-secret")
+	t.Cleanup(func() { os.Setenv("MIKROTIK_NMS_JWT_SECRET", prevSecret) })
+	for _, k := range smtpEnvKeys {
+		prev := os.Getenv(k)
+		os.Unsetenv(k)
+		key := k
+		t.Cleanup(func() { os.Setenv(key, prev) })
+	}
+}
+
+func TestSMTPDefaultsAndFromFallback(t *testing.T) {
+	withCleanSMTPEnv(t)
+	os.Setenv("MIKROTIK_NMS_SMTP_HOST", "smtp.example.com")
+	os.Setenv("MIKROTIK_NMS_SMTP_USER", "relay@example.com")
+	os.Setenv("MIKROTIK_NMS_PUBLIC_BASE_URL", "https://nms.example.com")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.SMTPPort != 587 {
+		t.Errorf("SMTPPort = %d, want default 587", cfg.SMTPPort)
+	}
+	if cfg.SMTPTLSMode != "starttls" {
+		t.Errorf("SMTPTLSMode = %q, want default starttls", cfg.SMTPTLSMode)
+	}
+	if cfg.PasswordResetTTL.Hours() != 1 {
+		t.Errorf("PasswordResetTTL = %v, want default 1h", cfg.PasswordResetTTL)
+	}
+	// From falls back to user when SMTP_FROM is unset.
+	if cfg.SMTPFrom != "relay@example.com" {
+		t.Errorf("SMTPFrom = %q, want fallback to SMTP_USER", cfg.SMTPFrom)
+	}
+	if !cfg.SMTPEnabled() {
+		t.Error("SMTPEnabled() should be true with host+port+base url")
+	}
+}
+
+func TestSMTPEnabledRequiresBaseURL(t *testing.T) {
+	withCleanSMTPEnv(t)
+	os.Setenv("MIKROTIK_NMS_SMTP_HOST", "smtp.example.com")
+	// no PUBLIC_BASE_URL
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load should not hard-fail when base URL is missing: %v", err)
+	}
+	if cfg.SMTPEnabled() {
+		t.Error("SMTPEnabled() should be false without a public base URL")
+	}
+}
+
+func TestSMTPDisabledWhenHostUnset(t *testing.T) {
+	withCleanSMTPEnv(t)
+	os.Setenv("MIKROTIK_NMS_PUBLIC_BASE_URL", "https://nms.example.com")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.SMTPEnabled() {
+		t.Error("SMTPEnabled() should be false without an SMTP host")
+	}
+}
