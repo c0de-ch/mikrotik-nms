@@ -269,6 +269,105 @@ func TestReconcileAddresses_DisabledByDefault(t *testing.T) {
 	}
 }
 
+// --- audit MAC is the discovered MAC (deterministic), not an arbitrary one ---
+
+func TestPlanMoves_AuditMACIsDiscoveredMAC(t *testing.T) {
+	now := time.Now()
+	cutoff := now.Add(-2 * time.Minute)
+	dev := queries.Device{ID: "d1", Identity: "sw", Address: "192.168.78.10", Board: "CRS"}
+	// Device owns two MACs; the sighting is on the SECOND one.
+	macIdx := map[string]string{"AA:BB:CC:DD:EE:01": "d1", "AA:BB:CC:DD:EE:02": "d1"}
+	neigh := []queries.Neighbor{{NeighborMAC: "aa:bb:cc:dd:ee:02", NeighborAddress: "192.168.78.50", LastSeen: now}}
+	moves := planMoves([]queries.Device{dev}, macIdx, map[string]bool{}, map[string]string{"192.168.78.10": "d1"}, neigh, cutoff)
+	if len(moves) != 1 {
+		t.Fatalf("want 1 move, got %d", len(moves))
+	}
+	if moves[0].MAC != "AA:BB:CC:DD:EE:02" {
+		t.Fatalf("audit MAC = %s, want the discovered MAC AA:BB:CC:DD:EE:02", moves[0].MAC)
+	}
+}
+
+func TestPlanMoves_BatchReservesTargetIP(t *testing.T) {
+	now := time.Now()
+	cutoff := now.Add(-2 * time.Minute)
+	// Two devices, both sighted (via their own MACs) at the SAME new IP in one
+	// batch. Only one move may be emitted (the other is blocked by the in-batch
+	// reservation) to avoid a UNIQUE collision / IP swap at commit time.
+	d1 := queries.Device{ID: "d1", Identity: "a", Address: "192.168.78.10"}
+	d2 := queries.Device{ID: "d2", Identity: "b", Address: "192.168.78.11"}
+	macIdx := map[string]string{"AA:AA:AA:AA:AA:01": "d1", "BB:BB:BB:BB:BB:02": "d2"}
+	addr := map[string]string{"192.168.78.10": "d1", "192.168.78.11": "d2"}
+	neigh := []queries.Neighbor{
+		{NeighborMAC: "AA:AA:AA:AA:AA:01", NeighborAddress: "192.168.78.99", LastSeen: now},
+		{NeighborMAC: "BB:BB:BB:BB:BB:02", NeighborAddress: "192.168.78.99", LastSeen: now},
+	}
+	moves := planMoves([]queries.Device{d1, d2}, macIdx, map[string]bool{}, addr, neigh, cutoff)
+	if len(moves) != 1 {
+		t.Fatalf("want exactly 1 move (in-batch IP reservation), got %d: %+v", len(moves), moves)
+	}
+}
+
+func TestInterfacesContainMAC(t *testing.T) {
+	ifaces := []routeros.InterfaceInfo{{Name: "ether1", MACAddress: "04:F4:1C:85:97:B2"}, {Name: "bridge", MACAddress: "04:F4:1C:85:97:B2"}}
+	if !interfacesContainMAC(ifaces, "04:f4:1c:85:97:b2") {
+		t.Fatal("should match case-insensitively")
+	}
+	if interfacesContainMAC(ifaces, "AA:BB:CC:DD:EE:FF") {
+		t.Fatal("should not match an absent MAC")
+	}
+	if interfacesContainMAC(ifaces, "") {
+		t.Fatal("empty MAC should never match")
+	}
+}
+
+// --- verifyAndCommitMove rejection paths (fail-closed, audited) ---
+
+func TestVerifyAndCommitMove_NoCredentialsRejected(t *testing.T) {
+	db := pollerTestDB(t)
+	mustCreateDevice(t, db, &queries.Device{
+		ID: "d1", Identity: "ap", Address: "192.168.78.56", Board: "cAP ax",
+		Username: "admin", PasswordEnc: "", APIPort: 8728,
+	})
+	m := NewManager(db, routeros.NewPool(false), ws.NewHub(), &config.Config{TopologyInterval: time.Minute})
+	m.verifyAndCommitMove(addressMove{DeviceID: "d1", OldAddr: "192.168.78.56", NewAddr: "192.168.78.232", MAC: "04:F4:1C:85:97:B2"})
+	assertAddr(t, db, "d1", "192.168.78.56")
+	if n := countLoopEvents(t, db); n != 1 {
+		t.Fatalf("want 1 rejection audit event, got %d", n)
+	}
+}
+
+func TestVerifyAndCommitMove_DialFailureRejected(t *testing.T) {
+	db := pollerTestDB(t)
+	// Port 1 / loopback: the verify dial is refused fast, exercising the
+	// dial-failure rejection path without a real device.
+	mustCreateDevice(t, db, &queries.Device{
+		ID: "d1", Identity: "ap", Address: "192.168.78.56", Board: "cAP ax",
+		Username: "admin", PasswordEnc: "secret", APIPort: 1,
+	})
+	m := NewManager(db, routeros.NewPool(false), ws.NewHub(), &config.Config{TopologyInterval: time.Minute})
+	m.verifyAndCommitMove(addressMove{DeviceID: "d1", OldAddr: "192.168.78.56", NewAddr: "127.0.0.1", MAC: "04:F4:1C:85:97:B2"})
+	assertAddr(t, db, "d1", "192.168.78.56")
+	if n := countLoopEvents(t, db); n != 1 {
+		t.Fatalf("want 1 rejection audit event, got %d", n)
+	}
+}
+
+func TestVerifyAndCommitMove_StaleCandidateNoop(t *testing.T) {
+	db := pollerTestDB(t)
+	// Current address (.99) no longer matches the planned OldAddr (.56): a manual
+	// edit happened since planning, so the move is silently skipped — no dial, no event.
+	mustCreateDevice(t, db, &queries.Device{
+		ID: "d1", Identity: "ap", Address: "192.168.78.99", Board: "cAP ax",
+		Username: "admin", PasswordEnc: "secret", APIPort: 8728,
+	})
+	m := NewManager(db, routeros.NewPool(false), ws.NewHub(), &config.Config{TopologyInterval: time.Minute})
+	m.verifyAndCommitMove(addressMove{DeviceID: "d1", OldAddr: "192.168.78.56", NewAddr: "192.168.78.232", MAC: "04:F4:1C:85:97:B2"})
+	assertAddr(t, db, "d1", "192.168.78.99")
+	if n := countLoopEvents(t, db); n != 0 {
+		t.Fatalf("want 0 events for a stale candidate, got %d", n)
+	}
+}
+
 // --- test helpers ---
 
 func mustCreateDevice(t *testing.T, db *sql.DB, d *queries.Device) {
@@ -290,6 +389,17 @@ func mustUpsertIface(t *testing.T, db *sql.DB, deviceID, name, mac string) {
 		ID: deviceID + ":" + name, DeviceID: deviceID, Name: name, Type: "ether", MACAddress: mac,
 	}); err != nil {
 		t.Fatalf("upsert interface %s/%s: %v", deviceID, name, err)
+	}
+}
+
+func assertAddr(t *testing.T, db *sql.DB, id, want string) {
+	t.Helper()
+	d, err := queries.GetDevice(db, id)
+	if err != nil {
+		t.Fatalf("get device: %v", err)
+	}
+	if d.Address != want {
+		t.Fatalf("device %s address = %s, want %s", id, d.Address, want)
 	}
 }
 

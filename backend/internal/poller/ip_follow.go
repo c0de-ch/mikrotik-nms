@@ -107,8 +107,10 @@ func planMoves(devices []queries.Device, macToDeviceID map[string]string, ambigu
 		deviceByID[d.ID] = d
 	}
 
-	// Collect the set of distinct proposed new addresses per device.
-	proposed := make(map[string]map[string]bool)
+	// Collect the set of distinct proposed new addresses per device, remembering
+	// the exact discovered neighbor MAC that proposed each address (for the audit
+	// trail — a device may have several interface MACs).
+	proposed := make(map[string]map[string]string) // deviceID -> newAddr -> discovered MAC
 	for _, n := range neighbors {
 		if n.NeighborMAC == "" || n.NeighborAddress == "" {
 			continue
@@ -133,10 +135,10 @@ func planMoves(devices []queries.Device, macToDeviceID map[string]string, ambigu
 		}
 		set := proposed[deviceID]
 		if set == nil {
-			set = make(map[string]bool)
+			set = make(map[string]string)
 			proposed[deviceID] = set
 		}
-		set[n.NeighborAddress] = true
+		set[n.NeighborAddress] = mac // last writer wins; all MACs map to this device
 	}
 
 	// Deterministic output: iterate devices in their input order.
@@ -149,21 +151,17 @@ func planMoves(devices []queries.Device, macToDeviceID map[string]string, ambigu
 			}
 			continue // 0 = nothing to do, >1 = conflicting sightings (anti-flap)
 		}
-		newAddr := onlyKey(set)
+		newAddr, mac := onlyEntry(set)
 		if owner, ok := addrToDeviceID[newAddr]; ok && owner != dev.ID {
 			// Target IP already owned by another managed device — skip to avoid
 			// a UNIQUE violation / accidental two-device IP swap.
 			log.Printf("poller: auto-follow: new address %s for %s already owned by another device — skipping", newAddr, dev.Identity)
 			continue
 		}
-		// Recover the matching MAC for the audit trail.
-		mac := ""
-		for m, id := range macToDeviceID {
-			if id == dev.ID {
-				mac = m
-				break
-			}
-		}
+		// Reserve this target within the batch so a later device proposing the
+		// same new IP is caught by the guard above rather than colliding on the
+		// devices.address UNIQUE constraint at commit time.
+		addrToDeviceID[newAddr] = dev.ID
 		moves = append(moves, addressMove{DeviceID: dev.ID, OldAddr: dev.Address, NewAddr: newAddr, MAC: mac})
 	}
 	return moves
@@ -289,10 +287,32 @@ func (m *Manager) verifyAndCommitMove(mv addressMove) {
 		return
 	}
 
-	// Commit: address only; leave identity/credentials/ports/tags/notes intact.
-	dev.Address = mv.NewAddr
-	if err := queries.UpdateDevice(m.db, dev); err != nil {
+	// Strongest anchor: confirm the authenticated device genuinely owns the MAC
+	// we matched on. A board string ("cAP ax") is shared across every unit of a
+	// model, but the burned-in interface MAC is globally unique. Best-effort —
+	// a present-but-missing MAC is a hard reject; if interfaces can't be read we
+	// fall back to the board/version match already verified above.
+	if mv.MAC != "" {
+		if ifaces, ierr := routeros.GetInterfaces(client); ierr != nil {
+			log.Printf("poller: auto-follow: %s could not list interfaces at %s to confirm MAC: %v (proceeding on board/version)", dev.Identity, mv.NewAddr, ierr)
+		} else if !interfacesContainMAC(ifaces, mv.MAC) {
+			m.recordIPRejection(dev.ID, mv, fmt.Sprintf("matched MAC %s not present on the device answering at %s", mv.MAC, mv.NewAddr))
+			log.Printf("poller: auto-follow: MAC %s not found on device at %s for %s — skipping", mv.MAC, mv.NewAddr, dev.Identity)
+			return
+		}
+	}
+
+	// Commit address only, atomically, and only if it hasn't changed since we
+	// planned (a manual edit wins). This avoids a read-modify-write race and
+	// never rewrites the encrypted credential column.
+	committed, err := queries.UpdateDeviceAddressIfUnchanged(m.db, dev.ID, mv.OldAddr, mv.NewAddr)
+	if err != nil {
+		m.recordIPRejection(dev.ID, mv, fmt.Sprintf("commit failed: %v", err))
 		log.Printf("poller: auto-follow: update device %s -> %s: %v", dev.Identity, mv.NewAddr, err)
+		return
+	}
+	if !committed {
+		log.Printf("poller: auto-follow: %s address changed concurrently — skipping commit to %s", dev.Identity, mv.NewAddr)
 		return
 	}
 	// Drop the stale live connection to the OLD ip so health/info redial the new one.
@@ -326,7 +346,23 @@ func (m *Manager) recordIPRejection(deviceID string, mv addressMove, reason stri
 	})
 }
 
-func keysOf(set map[string]bool) []string {
+// interfacesContainMAC reports whether any of the device's interfaces carries
+// the given MAC (case-insensitive), used to confirm the authenticated device at
+// the new IP genuinely owns the MAC we matched on.
+func interfacesContainMAC(ifaces []routeros.InterfaceInfo, mac string) bool {
+	want := strings.ToUpper(strings.TrimSpace(mac))
+	if want == "" {
+		return false
+	}
+	for _, i := range ifaces {
+		if strings.ToUpper(strings.TrimSpace(i.MACAddress)) == want {
+			return true
+		}
+	}
+	return false
+}
+
+func keysOf(set map[string]string) []string {
 	out := make([]string, 0, len(set))
 	for k := range set {
 		out = append(out, k)
@@ -334,9 +370,11 @@ func keysOf(set map[string]bool) []string {
 	return out
 }
 
-func onlyKey(set map[string]bool) string {
-	for k := range set {
-		return k
+// onlyEntry returns the single addr->MAC entry of a len-1 map (the caller has
+// already guarded len(set) == 1).
+func onlyEntry(set map[string]string) (addr, mac string) {
+	for a, m := range set {
+		return a, m
 	}
-	return ""
+	return "", ""
 }
