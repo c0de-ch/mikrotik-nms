@@ -403,6 +403,11 @@ func (m *Manager) pollTopology(ctx context.Context) {
 		time.Sleep(time.Second)
 	}
 
+	// Auto-follow IP changes: opt-in reconcile of devices that moved to a new IP,
+	// using the neighbors just upserted above. Runs before the rebuild so a
+	// committed address change is reflected in this same cycle's graph.
+	m.reconcileAddresses(ctx)
+
 	// Rebuild topology from neighbors
 	builder := topology.NewBuilder(m.db)
 	graph, err := builder.Build()

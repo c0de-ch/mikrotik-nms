@@ -60,6 +60,7 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		"port_flap_threshold":       true,
 		"port_flap_window_seconds":  true,
 		"tcn_storm_threshold":       true,
+		"auto_follow_ip":            true,
 		"opnsense_url":              true,
 		"opnsense_api_key":          true,
 		"opnsense_api_secret":       true,

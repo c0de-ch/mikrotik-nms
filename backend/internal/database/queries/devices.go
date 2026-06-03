@@ -104,6 +104,25 @@ func UpdateDevice(db *sql.DB, d *Device) error {
 	return err
 }
 
+// UpdateDeviceAddressIfUnchanged atomically re-points a device's address only if
+// it still equals oldAddr at write time. Returns true when a row was updated and
+// false when the address changed concurrently (a manual edit wins). Avoids a
+// read-modify-write race and never rewrites the encrypted credential column.
+func UpdateDeviceAddressIfUnchanged(db *sql.DB, id, oldAddr, newAddr string) (bool, error) {
+	res, err := db.Exec(
+		`UPDATE devices SET address=?, updated_at=CURRENT_TIMESTAMP WHERE id=? AND address=?`,
+		newAddr, id, oldAddr,
+	)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n == 1, nil
+}
+
 func UpdateDeviceHealth(db *sql.DB, id string, status string, cpuLoad *int, memUsed, memTotal *int64, uptime *string, lastError *string) error {
 	_, err := db.Exec(
 		`UPDATE devices SET status=?, cpu_load=?, memory_used=?, memory_total=?, uptime=?,
