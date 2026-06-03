@@ -55,6 +55,7 @@ function eventTypeLabel(t: string): string {
     case "port_link_down": return "Link down";
     case "port_link_flap": return "Port flap";
     case "port_loop_protect": return "Loop protect tripped";
+    case "ip_address_changed": return "IP address changed";
     default: return t;
   }
 }
