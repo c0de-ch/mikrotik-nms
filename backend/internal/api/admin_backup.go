@@ -20,12 +20,24 @@ import (
 // (password_hash is a one-way bcrypt hash and is retained so restores preserve
 // logins.)
 func redactExport(table string, rows []map[string]any) {
-	if table != "devices" || queries.EncryptionEnabled() {
-		return
-	}
-	for _, row := range rows {
-		if _, ok := row["password_enc"]; ok {
-			row["password_enc"] = ""
+	switch table {
+	case "devices":
+		// Plaintext device credentials (no encryption key) are blanked.
+		if queries.EncryptionEnabled() {
+			return
+		}
+		for _, row := range rows {
+			if _, ok := row["password_enc"]; ok {
+				row["password_enc"] = ""
+			}
+		}
+	case "app_settings":
+		// Credential-like settings (SMTP password, OPNsense secret/api key,
+		// any *token) must never leave in a backup/export in the clear.
+		for _, row := range rows {
+			if key, ok := row["key"].(string); ok && isSecretSettingKey(key) {
+				row["value"] = ""
+			}
 		}
 	}
 }
