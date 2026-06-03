@@ -11,6 +11,7 @@ import (
 	"github.com/go-chi/cors"
 	"github.com/mikrotik-nms/backend/internal/auth"
 	"github.com/mikrotik-nms/backend/internal/config"
+	"github.com/mikrotik-nms/backend/internal/mailer"
 	"github.com/mikrotik-nms/backend/internal/resolver"
 	"github.com/mikrotik-nms/backend/internal/routeros"
 	"github.com/mikrotik-nms/backend/internal/ws"
@@ -21,11 +22,12 @@ type Server struct {
 	hub      *ws.Hub
 	cfg      *config.Config
 	pool     *routeros.Pool
+	mailer   mailer.Sender
 	resolver *resolver.Resolver
 }
 
-func NewRouter(db *sql.DB, hub *ws.Hub, cfg *config.Config, pool *routeros.Pool) http.Handler {
-	s := &Server{db: db, hub: hub, cfg: cfg, pool: pool, resolver: resolver.New(db)}
+func NewRouter(db *sql.DB, hub *ws.Hub, cfg *config.Config, pool *routeros.Pool, m mailer.Sender) http.Handler {
+	s := &Server{db: db, hub: hub, cfg: cfg, pool: pool, mailer: m, resolver: resolver.New(db)}
 
 	r := chi.NewRouter()
 
@@ -54,6 +56,9 @@ func NewRouter(db *sql.DB, hub *ws.Hub, cfg *config.Config, pool *routeros.Pool)
 
 	// Throttle unauthenticated auth endpoints against brute force.
 	authLimiter := newRateLimiter(10, time.Minute)
+	// Per-username throttle on password-reset requests to curb email bombing /
+	// enumeration (keyed on the submitted username, not on user existence).
+	resetLimiter := newRateLimiter(3, 15*time.Minute)
 
 	r.Route("/api/v1", func(r chi.Router) {
 		// Public endpoints
@@ -63,6 +68,9 @@ func NewRouter(db *sql.DB, hub *ws.Hub, cfg *config.Config, pool *routeros.Pool)
 			r.Post("/auth/login", s.handleLogin)
 			r.Post("/auth/refresh", s.handleRefresh)
 			r.Post("/auth/setup", s.handleSetup)
+			// Self-service password reset (public, enumeration-safe).
+			r.Post("/auth/request-reset", s.limitResetPerUser(resetLimiter, s.handleRequestReset))
+			r.Post("/auth/perform-reset", s.handlePerformReset)
 		})
 
 		// Authenticated endpoints

@@ -43,7 +43,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tokens, err := auth.GenerateTokenPair(s.cfg.JWTSecret, user.ID, user.Username, user.Role)
+	tokens, err := auth.GenerateTokenPair(s.cfg.JWTSecret, user.ID, user.Username, user.Role, user.TokenVersion)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to generate tokens")
 		return
@@ -99,7 +99,8 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tokens, err := auth.GenerateTokenPair(s.cfg.JWTSecret, user.ID, user.Username, user.Role)
+	// A freshly-created user always starts at token_version 0.
+	tokens, err := auth.GenerateTokenPair(s.cfg.JWTSecret, user.ID, user.Username, user.Role, user.TokenVersion)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to generate tokens")
 		return
@@ -127,7 +128,7 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	userID, err := auth.ValidateRefreshToken(s.cfg.JWTSecret, refreshToken)
+	userID, tokenVersion, err := auth.ValidateRefreshToken(s.cfg.JWTSecret, refreshToken)
 	if err != nil {
 		writeError(w, http.StatusUnauthorized, "invalid refresh token")
 		return
@@ -139,7 +140,14 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tokens, err := auth.GenerateTokenPair(s.cfg.JWTSecret, user.ID, user.Username, user.Role)
+	// Session invalidation: a password reset bumps users.token_version, so a
+	// refresh token minted before the reset no longer matches and is rejected.
+	if tokenVersion != user.TokenVersion {
+		writeError(w, http.StatusUnauthorized, "invalid refresh token")
+		return
+	}
+
+	tokens, err := auth.GenerateTokenPair(s.cfg.JWTSecret, user.ID, user.Username, user.Role, user.TokenVersion)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to generate tokens")
 		return

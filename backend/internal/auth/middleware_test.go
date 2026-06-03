@@ -9,7 +9,7 @@ import (
 const mwSecret = "a-sufficiently-long-test-secret-value"
 
 func TestRequireAuthValidToken(t *testing.T) {
-	tokens, err := GenerateTokenPair(mwSecret, "uid-1", "alice", "admin")
+	tokens, err := GenerateTokenPair(mwSecret, "uid-1", "alice", "admin", 0)
 	if err != nil {
 		t.Fatalf("token pair: %v", err)
 	}
@@ -42,7 +42,7 @@ func TestRequireAuthRejectsMissingAndBadTokens(t *testing.T) {
 		"missing": "",
 		"garbage": "Bearer not-a-jwt",
 		"wrongsecret": func() string {
-			toks, _ := GenerateTokenPair("some-other-secret", "u", "u", "viewer")
+			toks, _ := GenerateTokenPair("some-other-secret", "u", "u", "viewer", 0)
 			return "Bearer " + toks.AccessToken
 		}(),
 	}
@@ -65,7 +65,7 @@ func TestRequireRole(t *testing.T) {
 	ok := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
 
 	// Viewer hitting an admin-gated handler → 403.
-	viewer, _ := GenerateTokenPair(mwSecret, "v", "viewer", "viewer")
+	viewer, _ := GenerateTokenPair(mwSecret, "v", "viewer", "viewer", 0)
 	chain := RequireAuth(mwSecret)(RequireRole("admin")(ok))
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -77,7 +77,7 @@ func TestRequireRole(t *testing.T) {
 	}
 
 	// Admin passes.
-	admin, _ := GenerateTokenPair(mwSecret, "a", "admin", "admin")
+	admin, _ := GenerateTokenPair(mwSecret, "a", "admin", "admin", 0)
 	req2 := httptest.NewRequest(http.MethodGet, "/", nil)
 	req2.Header.Set("Authorization", "Bearer "+admin.AccessToken)
 	rr2 := httptest.NewRecorder()
