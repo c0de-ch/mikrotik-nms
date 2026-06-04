@@ -12,6 +12,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"html"
 	"net"
 	"net/mail"
 	"net/smtp"
@@ -102,7 +103,9 @@ func (m *Mailer) Send(to, subject, textBody, htmlBody string) error {
 		return fmt.Errorf("mailer: invalid to address: %w", err)
 	}
 
-	msg, err := m.compose(fromAddr.Address, toAddr.Address, subject, textBody, htmlBody)
+	// The From header carries a friendly display name ("MikroTik NMS"); the SMTP
+	// envelope (MAIL FROM) below still uses the bare address.
+	msg, err := m.compose(fromHeaderValue(m.from), toAddr.Address, subject, textBody, htmlBody)
 	if err != nil {
 		return err
 	}
@@ -215,27 +218,79 @@ func (m *Mailer) compose(from, to, subject, textBody, htmlBody string) (string, 
 	return b.String(), nil
 }
 
+// fromHeaderValue formats the From header with a friendly display name. If the
+// configured From already carries a display name it is preserved; otherwise the
+// product name "MikroTik NMS" is used so inboxes show "MikroTik NMS" instead of
+// the bare address. The SMTP envelope still uses the bare address.
+func fromHeaderValue(from string) string {
+	addr, err := mail.ParseAddress(from)
+	if err != nil {
+		return from
+	}
+	if strings.TrimSpace(addr.Name) == "" {
+		addr.Name = "MikroTik NMS"
+	}
+	return addr.String()
+}
+
 // SendPasswordResetEmail composes and sends the reset email for resetURL.
 func (m *Mailer) SendPasswordResetEmail(to, resetURL string) error {
 	subject := "Reset your MikroTik NMS password"
 	text := fmt.Sprintf(
-		"We received a request to reset the password for your MikroTik NMS account.\r\n\r\n"+
-			"Click the link below to choose a new password:\r\n\r\n"+
+		"Reset your MikroTik NMS password\r\n"+
+			"================================\r\n\r\n"+
+			"We received a request to reset the password for your MikroTik NMS account.\r\n"+
+			"Open the link below to choose a new password:\r\n\r\n"+
 			"%s\r\n\r\n"+
-			"This link can be used once and expires in 1 hour. If you did not request\r\n"+
-			"a password reset, you can safely ignore this email — your password will\r\n"+
-			"not change.\r\n",
+			"This link can be used once and expires in 1 hour. If you did not request a\r\n"+
+			"password reset, you can safely ignore this email - your password will not change.\r\n\r\n"+
+			"-- MikroTik NMS (automated message, please do not reply)\r\n",
 		resetURL,
 	)
-	html := fmt.Sprintf(
-		"<p>We received a request to reset the password for your MikroTik NMS account.</p>"+
-			"<p><a href=%q>Reset your password</a></p>"+
-			"<p>This link can be used once and expires in 1 hour. "+
-			"If you did not request a password reset, you can safely ignore this email.</p>",
-		resetURL,
-	)
-	return m.Send(to, subject, text, html)
+	htmlBody := strings.ReplaceAll(passwordResetTemplate, "{{URL}}", html.EscapeString(resetURL))
+	return m.Send(to, subject, text, htmlBody)
 }
+
+// passwordResetTemplate is a modern, responsive transactional email built with
+// table layout + inline CSS for broad mail-client support. {{URL}} is replaced
+// with the (HTML-escaped) reset link in the button, the fallback link, and its
+// visible text.
+const passwordResetTemplate = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="light only">
+<title>Reset your password</title>
+</head>
+<body style="margin:0;padding:0;background-color:#f1f5f9;-webkit-font-smoothing:antialiased;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#f1f5f9;padding:28px 12px;">
+<tr><td align="center">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:520px;width:100%;background-color:#ffffff;border-radius:14px;overflow:hidden;border:1px solid #e2e8f0;box-shadow:0 1px 3px rgba(15,23,42,0.06);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+<tr><td style="background-color:#0f172a;padding:22px 32px;">
+<span style="display:inline-block;width:9px;height:9px;border-radius:50%;background-color:#22c55e;margin-right:9px;vertical-align:middle;"></span>
+<span style="color:#ffffff;font-size:17px;font-weight:600;letter-spacing:0.2px;vertical-align:middle;">MikroTik&nbsp;NMS</span>
+</td></tr>
+<tr><td style="padding:34px 32px 8px 32px;">
+<h1 style="margin:0 0 14px 0;font-size:21px;line-height:28px;color:#0f172a;font-weight:600;">Reset your password</h1>
+<p style="margin:0 0 24px 0;font-size:14px;line-height:23px;color:#475569;">We received a request to reset the password for your MikroTik&nbsp;NMS account. Click the button below to choose a new one.</p>
+<table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 0 26px 0;"><tr><td style="border-radius:9px;background-color:#2563eb;">
+<a href="{{URL}}" target="_blank" style="display:inline-block;padding:13px 28px;font-size:14px;font-weight:600;color:#ffffff;text-decoration:none;border-radius:9px;">Reset password</a>
+</td></tr></table>
+<p style="margin:0 0 6px 0;font-size:12px;line-height:18px;color:#94a3b8;">Or paste this link into your browser:</p>
+<p style="margin:0 0 26px 0;font-size:12px;line-height:18px;word-break:break-all;"><a href="{{URL}}" target="_blank" style="color:#2563eb;text-decoration:none;">{{URL}}</a></p>
+</td></tr>
+<tr><td style="padding:0 32px 30px 32px;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td style="border-top:1px solid #e2e8f0;padding-top:18px;">
+<p style="margin:0;font-size:12px;line-height:19px;color:#94a3b8;">This link can be used once and expires in <strong style="color:#64748b;">1&nbsp;hour</strong>. If you didn&rsquo;t request a password reset, you can safely ignore this email &mdash; your password won&rsquo;t change.</p>
+</td></tr></table>
+</td></tr>
+</table>
+<p style="max-width:520px;margin:16px auto 0 auto;font-size:11px;line-height:16px;color:#94a3b8;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">MikroTik&nbsp;NMS &middot; automated message, please do not reply</p>
+</td></tr>
+</table>
+</body>
+</html>`
 
 // sanitizeMsgIDHost keeps the Message-ID right-hand side syntactically safe.
 func sanitizeMsgIDHost(host string) string {
