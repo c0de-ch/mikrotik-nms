@@ -54,6 +54,51 @@ const tcnStormCriticalDelta = 100
 
 const bridgeLogFingerprintTTL = 30 * time.Minute
 
+// filterRealBridges drops entries that are not genuinely bridges. RouterOS 7.23's
+// /interface/bridge/print can return non-bridge interfaces (ethernet ports, the
+// loopback, WireGuard/veth, VLANs), which would otherwise be tracked as bridges
+// and drive bogus topology-change "storms". Using the authoritative interface
+// type list, we remove any entry whose name maps to a non-bridge interface; names
+// not positively identified as non-bridge are kept (so real bridges are never
+// lost, and the function is a no-op when type info is unavailable).
+func filterRealBridges(bridges []routeros.BridgeInfo, ifaces []routeros.InterfaceInfo) []routeros.BridgeInfo {
+	if len(ifaces) == 0 {
+		return bridges
+	}
+	nonBridge := make(map[string]bool, len(ifaces))
+	for _, i := range ifaces {
+		if i.Type != "" && !strings.EqualFold(i.Type, "bridge") {
+			nonBridge[i.Name] = true
+		}
+	}
+	out := make([]routeros.BridgeInfo, 0, len(bridges))
+	for _, b := range bridges {
+		if !nonBridge[b.Name] {
+			out = append(out, b)
+		}
+	}
+	return out
+}
+
+// tcnStormSeverity decides whether a bridge's per-cycle topology-change delta is a
+// TCN storm and at what severity. Topology-change notifications are an STP concept,
+// so only an STP-running bridge can storm — a non-STP "bridge" (incl. any interface
+// mis-reported as a bridge) never fires, which is the definitive guard against the
+// false positives. Returns the delta for the event message.
+func tcnStormSeverity(b routeros.BridgeInfo, prev, threshold int) (severity string, delta int, fire bool) {
+	if !b.STPEnabled() {
+		return "", 0, false
+	}
+	delta = b.TopologyChanges - prev
+	if delta < threshold {
+		return "", delta, false
+	}
+	if delta >= tcnStormCriticalDelta {
+		return "critical", delta, true
+	}
+	return "warn", delta, true
+}
+
 func NewNetworkHealthPoller(db *sql.DB, pool *routeros.Pool, hub *ws.Hub, interval time.Duration) *NetworkHealthPoller {
 	if interval <= 0 {
 		interval = 60 * time.Second
@@ -151,6 +196,12 @@ func (n *NetworkHealthPoller) poll(ctx context.Context) {
 			if err != nil {
 				return
 			}
+			// Keep only genuine bridges — some RouterOS versions report
+			// non-bridge interfaces via /interface/bridge/print, which would
+			// otherwise be tracked as bridges and drive false TCN storms.
+			if ifaces, ierr := routeros.GetInterfaces(client); ierr == nil {
+				bridges = filterRealBridges(bridges, ifaces)
+			}
 			ports, err := routeros.GetBridgePorts(client)
 			if err != nil {
 				ports = nil
@@ -206,16 +257,12 @@ func (n *NetworkHealthPoller) poll(ctx context.Context) {
 					}
 				}
 
-				// tcn_storm: topology changes rising fast within one cycle. The
-				// threshold is runtime-tunable; escalate to critical past a hard
-				// ceiling regardless of the configured warn threshold.
+				// tcn_storm: topology changes rising fast within one cycle. Only
+				// STP-running bridges can storm (see tcnStormSeverity); the
+				// threshold is runtime-tunable and escalates to critical past a
+				// hard ceiling regardless of the configured warn threshold.
 				if hadPrev {
-					delta := b.TopologyChanges - prev
-					if delta >= tcnThreshold {
-						severity := "warn"
-						if delta >= tcnStormCriticalDelta {
-							severity = "critical"
-						}
+					if severity, delta, fire := tcnStormSeverity(b, prev, tcnThreshold); fire {
 						if n.recordEvent(dev.ID, "tcn_storm", severity, b.Name, "", "",
 							fmt.Sprintf("bridge %q topology-changes rose by %d in last poll (now %d)",
 								b.Name, delta, b.TopologyChanges)) {
