@@ -43,6 +43,41 @@ func TestFilterRealBridges(t *testing.T) {
 	}
 }
 
+func TestShouldFlagSTPDisabled(t *testing.T) {
+	stp := routeros.BridgeInfo{Name: "bridge", ProtocolMode: "rstp"}
+	noStp := routeros.BridgeInfo{Name: "bridge", ProtocolMode: "none"}
+	tests := []struct {
+		name    string
+		b       routeros.BridgeInfo
+		everSTP bool
+		nonEdge int
+		want    bool
+	}{
+		{"STP running now -> no warn", stp, false, 5, false},
+		{"flicker: ever ran STP -> suppressed", noStp, true, 5, false},
+		{"genuine STP-off with >1 non-edge -> warn", noStp, false, 3, true},
+		{"STP-off single uplink -> no warn", noStp, false, 1, false},
+		{"loopback never warns", routeros.BridgeInfo{Name: "lo", ProtocolMode: "none"}, false, 9, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := shouldFlagSTPDisabled(tc.b, tc.everSTP, tc.nonEdge); got != tc.want {
+				t.Fatalf("shouldFlagSTPDisabled = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCountNonEdgePorts(t *testing.T) {
+	ports := []routeros.BridgePortInfo{{Edge: true}, {Edge: false}, {Edge: false}, {Edge: true}}
+	if n := countNonEdgePorts(ports); n != 2 {
+		t.Fatalf("countNonEdgePorts = %d, want 2", n)
+	}
+	if n := countNonEdgePorts(nil); n != 0 {
+		t.Fatalf("countNonEdgePorts(nil) = %d, want 0", n)
+	}
+}
+
 func TestTCNStormSeverity(t *testing.T) {
 	stp := func(tc int) routeros.BridgeInfo {
 		return routeros.BridgeInfo{Name: "bridge", ProtocolMode: "rstp", TopologyChanges: tc}
