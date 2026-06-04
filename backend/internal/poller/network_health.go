@@ -34,6 +34,9 @@ type NetworkHealthPoller struct {
 
 	// previous topology_changes per bridge — used to compute deltas.
 	prevTC map[string]int // key = device_id|bridge_name
+	// bridges ever observed running STP — used to suppress false stp_disabled
+	// when RouterOS 7.23 intermittently reports an rstp bridge as protocol=none.
+	bridgeSTPSeen map[string]bool // key = device_id|bridge_name
 	// log fingerprints already processed per device.
 	seenLogs       map[string]map[string]time.Time
 	lastLogPruneAt time.Time
@@ -72,6 +75,33 @@ func filterRealBridges(bridges []routeros.BridgeInfo, nonBridgeNames map[string]
 		}
 	}
 	return out
+}
+
+func countNonEdgePorts(ports []routeros.BridgePortInfo) int {
+	n := 0
+	for _, p := range ports {
+		if !p.Edge {
+			n++
+		}
+	}
+	return n
+}
+
+// shouldFlagSTPDisabled reports whether a bridge with STP off and multiple
+// non-edge ports is a genuine loop risk worth a warning. everSTP suppresses the
+// warning for any bridge we've ever seen running STP: RouterOS 7.23 intermittently
+// reports an rstp bridge's protocol as "none", and trusting the "STP on" read over
+// the flickering "off" read avoids a flood of false stp_disabled warnings. The
+// loopback is always skipped (it never carries external traffic).
+func shouldFlagSTPDisabled(b routeros.BridgeInfo, everSTP bool, nonEdgeCount int) bool {
+	if b.STPEnabled() || everSTP {
+		return false
+	}
+	switch strings.ToLower(b.Name) {
+	case "lo", "loopback":
+		return false
+	}
+	return nonEdgeCount > 1
 }
 
 // nonBridgeInterfaceNames returns the set of a device's interface names that are
@@ -121,9 +151,10 @@ func NewNetworkHealthPoller(db *sql.DB, pool *routeros.Pool, hub *ws.Hub, interv
 		pool:     pool,
 		hub:      hub,
 		interval: interval,
-		prevTC:   make(map[string]int),
-		seenLogs: make(map[string]map[string]time.Time),
-		ports:    newPortMonitor(),
+		prevTC:        make(map[string]int),
+		bridgeSTPSeen: make(map[string]bool),
+		seenLogs:      make(map[string]map[string]time.Time),
+		ports:         newPortMonitor(),
 	}
 }
 
@@ -137,6 +168,17 @@ func (n *NetworkHealthPoller) Run(ctx context.Context) {
 	// until something changed on the device.
 	if err := n.ports.RestoreFromDB(n.db); err != nil {
 		log.Printf("network health: restore port state: %v", err)
+	}
+
+	// Seed "has run STP" from stored bridge state so a flickering protocol read
+	// right after a restart doesn't produce false stp_disabled warnings.
+	if bridges, err := queries.ListBridgeStatus(n.db); err == nil {
+		for _, b := range bridges {
+			switch strings.ToLower(b.Protocol) {
+			case "stp", "rstp", "mstp":
+				n.bridgeSTPSeen[b.DeviceID+"|"+b.BridgeName] = true
+			}
+		}
 	}
 
 	// Stagger after the topology poller's initial run.
@@ -247,25 +289,22 @@ func (n *NetworkHealthPoller) poll(ctx context.Context) {
 				prev, hadPrev := n.prevTC[key]
 				n.prevTC[key] = b.TopologyChanges
 
+				// Remember bridges that run STP so a later flickering "none" read
+				// (RouterOS 7.23) doesn't produce a false stp_disabled warning.
+				if b.STPEnabled() {
+					n.bridgeSTPSeen[key] = true
+				}
+
 				// stp_disabled: bridge has multiple *non-edge* ports but no STP.
 				// A loop needs at least two non-edge ports to physically form, so
 				// counting only non-edge ports stops access-only bridges (all
-				// edge ports) and single-uplink bridges from false-firing. Loopback
-				// bridges never carry external traffic, so skip them entirely.
-				lowerName := strings.ToLower(b.Name)
-				if !b.STPEnabled() && lowerName != "lo" && lowerName != "loopback" {
-					nonEdgeCount := 0
-					for _, p := range portsByBridge[b.Name] {
-						if !p.Edge {
-							nonEdgeCount++
-						}
-					}
-					if nonEdgeCount > 1 {
-						if n.recordEvent(dev.ID, "stp_disabled", "warn", b.Name, "", "",
-							fmt.Sprintf("bridge %q runs %d non-edge ports with STP disabled (protocol=%s)",
-								b.Name, nonEdgeCount, nonempty(b.ProtocolMode, "none"))) {
-							evCount++
-						}
+				// edge ports) and single-uplink bridges from false-firing.
+				nonEdgeCount := countNonEdgePorts(portsByBridge[b.Name])
+				if shouldFlagSTPDisabled(b, n.bridgeSTPSeen[key], nonEdgeCount) {
+					if n.recordEvent(dev.ID, "stp_disabled", "warn", b.Name, "", "",
+						fmt.Sprintf("bridge %q runs %d non-edge ports with STP disabled (protocol=%s)",
+							b.Name, nonEdgeCount, nonempty(b.ProtocolMode, "none"))) {
+						evCount++
 					}
 				}
 
