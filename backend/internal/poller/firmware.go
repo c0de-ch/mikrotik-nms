@@ -81,9 +81,18 @@ func (ue *UpgradeExecutor) upgradeDevice(jobID string, jd queries.UpgradeJobDevi
 
 	publish("downloading", fmt.Sprintf("Checking update on %s", dev.Identity))
 
+	// The device can be briefly unreachable when the job starts — e.g. still
+	// rebooting from a RouterBOARD firmware upgrade applied moments earlier.
+	// Retry the initial connection for a bounded window rather than failing the
+	// whole job on the first refused dial.
 	client, err := ue.pool.EnsureConnection(dev.ID, dev.Address, dev.APIPort, dev.Username, dev.PasswordEnc, dev.UseTLS)
+	for connectDeadline := time.Now().Add(3 * time.Minute); err != nil && time.Now().Before(connectDeadline); {
+		publish("downloading", fmt.Sprintf("Waiting for %s to respond...", dev.Identity))
+		time.Sleep(10 * time.Second)
+		client, err = ue.pool.EnsureConnection(dev.ID, dev.Address, dev.APIPort, dev.Username, dev.PasswordEnc, dev.UseTLS)
+	}
 	if err != nil {
-		publish("failed", fmt.Sprintf("connection failed: %v", err))
+		publish("failed", fmt.Sprintf("connection failed after retries: %v", err))
 		return false
 	}
 
