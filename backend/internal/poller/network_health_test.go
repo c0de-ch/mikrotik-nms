@@ -19,29 +19,24 @@ func TestFilterRealBridges(t *testing.T) {
 		{Name: "bridge"}, {Name: "internal"}, {Name: "ether1"},
 		{Name: "lo"}, {Name: "wg-owcam"}, {Name: "net28"}, {Name: "veth1"},
 	}
-	ifaces := []routeros.InterfaceInfo{
-		{Name: "bridge", Type: "bridge"},
-		{Name: "internal", Type: "bridge"},
-		{Name: "ether1", Type: "ether"},
-		{Name: "lo", Type: "loopback"},
-		{Name: "wg-owcam", Type: "wg"},
-		{Name: "net28", Type: "vlan"},
-		{Name: "veth1", Type: "veth"},
+	// Names known (by type) NOT to be bridges.
+	nonBridge := map[string]bool{
+		"ether1": true, "lo": true, "wg-owcam": true, "net28": true, "veth1": true,
 	}
-	got := bridgeNames(filterRealBridges(bridges, ifaces))
+	got := bridgeNames(filterRealBridges(bridges, nonBridge))
 	if len(got) != 2 || got[0] != "bridge" || got[1] != "internal" {
 		t.Fatalf("expected only real bridges [bridge internal], got %v", got)
 	}
 
-	// No interface info -> no-op (never lose bridges on a transient fetch error).
+	// Empty set -> no-op (never lose bridges when type info is unavailable).
 	if n := len(filterRealBridges(bridges, nil)); n != len(bridges) {
-		t.Fatalf("nil ifaces should be a no-op, got %d bridges", n)
+		t.Fatalf("nil set should be a no-op, got %d bridges", n)
 	}
 
-	// A bridge not present in the interface list (unknown) is kept, not dropped.
+	// A bridge not in the non-bridge set (unknown) is kept, not dropped.
 	got = bridgeNames(filterRealBridges(
 		[]routeros.BridgeInfo{{Name: "mystery"}},
-		[]routeros.InterfaceInfo{{Name: "ether1", Type: "ether"}},
+		map[string]bool{"ether1": true},
 	))
 	if len(got) != 1 || got[0] != "mystery" {
 		t.Fatalf("unknown bridge should be kept, got %v", got)
