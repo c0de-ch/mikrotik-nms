@@ -57,27 +57,40 @@ const bridgeLogFingerprintTTL = 30 * time.Minute
 // filterRealBridges drops entries that are not genuinely bridges. RouterOS 7.23's
 // /interface/bridge/print can return non-bridge interfaces (ethernet ports, the
 // loopback, WireGuard/veth, VLANs), which would otherwise be tracked as bridges
-// and drive bogus topology-change "storms". Using the authoritative interface
-// type list, we remove any entry whose name maps to a non-bridge interface; names
-// not positively identified as non-bridge are kept (so real bridges are never
-// lost, and the function is a no-op when type info is unavailable).
-func filterRealBridges(bridges []routeros.BridgeInfo, ifaces []routeros.InterfaceInfo) []routeros.BridgeInfo {
-	if len(ifaces) == 0 {
+// and drive bogus topology-change "storms". nonBridgeNames is the set of interface
+// names known (from their type) NOT to be bridges. Any entry in that set is
+// removed; names not positively identified as non-bridge are kept (so real bridges
+// are never lost), and the function is a no-op when the set is empty.
+func filterRealBridges(bridges []routeros.BridgeInfo, nonBridgeNames map[string]bool) []routeros.BridgeInfo {
+	if len(nonBridgeNames) == 0 {
 		return bridges
-	}
-	nonBridge := make(map[string]bool, len(ifaces))
-	for _, i := range ifaces {
-		if i.Type != "" && !strings.EqualFold(i.Type, "bridge") {
-			nonBridge[i.Name] = true
-		}
 	}
 	out := make([]routeros.BridgeInfo, 0, len(bridges))
 	for _, b := range bridges {
-		if !nonBridge[b.Name] {
+		if !nonBridgeNames[b.Name] {
 			out = append(out, b)
 		}
 	}
 	return out
+}
+
+// nonBridgeInterfaceNames returns the set of a device's interface names that are
+// known (by cached type) not to be bridges. It reads the stored interfaces table
+// rather than a live query, because on RouterOS 7.23 the live interface fetch can
+// fail (go-routeros parse errors) while the cached types stay valid — interface
+// types effectively never change.
+func nonBridgeInterfaceNames(db *sql.DB, deviceID string) map[string]bool {
+	ifaces, err := queries.ListInterfacesByDevice(db, deviceID)
+	if err != nil {
+		return nil
+	}
+	set := make(map[string]bool, len(ifaces))
+	for _, i := range ifaces {
+		if i.Type != "" && !strings.EqualFold(i.Type, "bridge") {
+			set[i.Name] = true
+		}
+	}
+	return set
 }
 
 // tcnStormSeverity decides whether a bridge's per-cycle topology-change delta is a
@@ -198,10 +211,9 @@ func (n *NetworkHealthPoller) poll(ctx context.Context) {
 			}
 			// Keep only genuine bridges — some RouterOS versions report
 			// non-bridge interfaces via /interface/bridge/print, which would
-			// otherwise be tracked as bridges and drive false TCN storms.
-			if ifaces, ierr := routeros.GetInterfaces(client); ierr == nil {
-				bridges = filterRealBridges(bridges, ifaces)
-			}
+			// otherwise be tracked as bridges and drive false TCN storms. Use
+			// cached interface types (a live fetch can fail on 7.23).
+			bridges = filterRealBridges(bridges, nonBridgeInterfaceNames(n.db, dev.ID))
 			ports, err := routeros.GetBridgePorts(client)
 			if err != nil {
 				ports = nil
