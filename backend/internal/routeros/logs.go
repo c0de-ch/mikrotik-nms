@@ -4,7 +4,7 @@ import (
 	"regexp"
 	"strings"
 
-	ros "github.com/go-routeros/routeros"
+	ros "github.com/go-routeros/routeros/v3"
 )
 
 // WirelessLogEvent is a parsed wireless/CAPsMAN/wifi log entry.

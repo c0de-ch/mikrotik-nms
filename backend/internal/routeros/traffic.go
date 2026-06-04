@@ -3,7 +3,7 @@ package routeros
 import (
 	"strconv"
 
-	ros "github.com/go-routeros/routeros"
+	ros "github.com/go-routeros/routeros/v3"
 )
 
 type TrafficData struct {

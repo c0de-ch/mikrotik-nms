@@ -1,7 +1,7 @@
 package routeros
 
 import (
-	ros "github.com/go-routeros/routeros"
+	ros "github.com/go-routeros/routeros/v3"
 )
 
 type NeighborInfo struct {

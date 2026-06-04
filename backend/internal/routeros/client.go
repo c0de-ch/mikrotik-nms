@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	ros "github.com/go-routeros/routeros"
-	"github.com/go-routeros/routeros/proto"
+	ros "github.com/go-routeros/routeros/v3"
+	"github.com/go-routeros/routeros/v3/proto"
 )
 
 // CommandTimeout bounds a single RouterOS API call so one hung device cannot

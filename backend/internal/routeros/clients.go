@@ -3,7 +3,7 @@ package routeros
 import (
 	"strconv"
 
-	ros "github.com/go-routeros/routeros"
+	ros "github.com/go-routeros/routeros/v3"
 )
 
 // ARPEntry represents an entry from /ip/arp.
