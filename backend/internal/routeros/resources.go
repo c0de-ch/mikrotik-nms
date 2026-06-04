@@ -4,7 +4,7 @@ import (
 	"errors"
 	"strconv"
 
-	ros "github.com/go-routeros/routeros"
+	ros "github.com/go-routeros/routeros/v3"
 )
 
 // ErrEmptyReply is returned when a RouterOS command succeeded but

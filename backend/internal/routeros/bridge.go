@@ -4,7 +4,7 @@ import (
 	"strconv"
 	"strings"
 
-	ros "github.com/go-routeros/routeros"
+	ros "github.com/go-routeros/routeros/v3"
 )
 
 // BridgeInfo describes one bridge interface and its STP runtime state.

@@ -4,7 +4,7 @@ import (
 	"regexp"
 	"strings"
 
-	ros "github.com/go-routeros/routeros"
+	ros "github.com/go-routeros/routeros/v3"
 )
 
 // BridgeLogEvent is a parsed bridge,info log line that signals a loop or flap.
