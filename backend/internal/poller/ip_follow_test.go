@@ -117,6 +117,32 @@ func TestPlanMoves(t *testing.T) {
 			neighbors:     []queries.Neighbor{{NeighborMAC: mac, NeighborAddress: "192.168.78.232", LastSeen: fresh}},
 			wantAddrs:     map[string]string{},
 		},
+		{
+			// Regression: a multi-VLAN switch exposes the same bridge MAC on
+			// several SVIs. Neighbors see the MAC at both the current dev.Address
+			// and another live IP — that's not a move, it's a multi-homed device.
+			// Without this guard the poller flaps the address each cycle.
+			name:          "multi-homed device: current address still live, skip move",
+			devices:       []queries.Device{dev},
+			macToDeviceID: map[string]string{mac: "d1"},
+			neighbors: []queries.Neighbor{
+				{NeighborMAC: mac, NeighborAddress: "192.168.78.56", LastSeen: fresh},  // current dev.Address
+				{NeighborMAC: mac, NeighborAddress: "192.168.78.232", LastSeen: fresh}, // also live
+			},
+			wantAddrs: map[string]string{},
+		},
+		{
+			// A move should still commit when the old address has gone stale
+			// (no fresh sighting), even if the same MAC is seen at a new IP.
+			name:          "true move: only new address is live, old has gone quiet",
+			devices:       []queries.Device{dev},
+			macToDeviceID: map[string]string{mac: "d1"},
+			neighbors: []queries.Neighbor{
+				{NeighborMAC: mac, NeighborAddress: "192.168.78.56", LastSeen: stale},  // old: stale
+				{NeighborMAC: mac, NeighborAddress: "192.168.78.232", LastSeen: fresh}, // new: live
+			},
+			wantAddrs: map[string]string{"d1": "192.168.78.232"},
+		},
 	}
 
 	for _, tc := range tests {
