@@ -98,8 +98,9 @@ func buildDeviceMACIndex(db *sql.DB, devices []queries.Device) (macToDeviceID ma
 // planMoves is the pure, DB/network-free core. Given the MAC index and the
 // freshly-upserted neighbor rows, it returns at most one proposed address move
 // per device. It applies: MAC normalization, staleness filtering, idempotency,
-// per-device collapse of duplicate sightings, multi-IP conflict rejection, and
-// the target-IP-already-managed (UNIQUE) guard. Deterministic and fully
+// per-device collapse of duplicate sightings, multi-IP conflict rejection,
+// multi-homed-device suppression (current address still live on the same MAC),
+// and the target-IP-already-managed (UNIQUE) guard. Deterministic and fully
 // unit-testable.
 func planMoves(devices []queries.Device, macToDeviceID map[string]string, ambiguous map[string]bool, addrToDeviceID map[string]string, neighbors []queries.Neighbor, recentCutoff time.Time) []addressMove {
 	deviceByID := make(map[string]queries.Device, len(devices))
@@ -109,8 +110,13 @@ func planMoves(devices []queries.Device, macToDeviceID map[string]string, ambigu
 
 	// Collect the set of distinct proposed new addresses per device, remembering
 	// the exact discovered neighbor MAC that proposed each address (for the audit
-	// trail — a device may have several interface MACs).
+	// trail — a device may have several interface MACs). Separately, track
+	// devices whose CURRENT dev.Address is also being sighted on one of their
+	// MACs within the same recency window — those are multi-homed (e.g. a switch
+	// with L3 SVIs on multiple VLANs sharing the bridge MAC) and must NOT be
+	// "moved", or auto-follow ping-pongs them every poll cycle.
 	proposed := make(map[string]map[string]string) // deviceID -> newAddr -> discovered MAC
+	liveOnOldAddr := make(map[string]bool)         // deviceID -> dev.Address still live
 	for _, n := range neighbors {
 		if n.NeighborMAC == "" || n.NeighborAddress == "" {
 			continue
@@ -131,6 +137,7 @@ func planMoves(devices []queries.Device, macToDeviceID map[string]string, ambigu
 			continue
 		}
 		if n.NeighborAddress == dev.Address {
+			liveOnOldAddr[deviceID] = true
 			continue // idempotent — already correct
 		}
 		set := proposed[deviceID]
@@ -145,11 +152,17 @@ func planMoves(devices []queries.Device, macToDeviceID map[string]string, ambigu
 	var moves []addressMove
 	for _, dev := range devices {
 		set := proposed[dev.ID]
+		if len(set) == 0 {
+			continue
+		}
+		if liveOnOldAddr[dev.ID] {
+			log.Printf("poller: auto-follow: %s multi-homed (current %s and discovered %v both live on the same MAC) — skipping",
+				dev.Identity, dev.Address, keysOf(set))
+			continue
+		}
 		if len(set) != 1 {
-			if len(set) > 1 {
-				log.Printf("poller: auto-follow: ambiguous new address for %s: %v — skipping", dev.Identity, keysOf(set))
-			}
-			continue // 0 = nothing to do, >1 = conflicting sightings (anti-flap)
+			log.Printf("poller: auto-follow: ambiguous new address for %s: %v — skipping", dev.Identity, keysOf(set))
+			continue // >1 = conflicting sightings (anti-flap)
 		}
 		newAddr, mac := onlyEntry(set)
 		if owner, ok := addrToDeviceID[newAddr]; ok && owner != dev.ID {
