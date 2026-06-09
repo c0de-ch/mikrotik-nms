@@ -143,6 +143,24 @@ func TestPlanMoves(t *testing.T) {
 			},
 			wantAddrs: map[string]string{"d1": "192.168.78.232"},
 		},
+		{
+			// An IPv6 link-local sighting is never a management move target (and
+			// crashed the verify dial with "too many colons"). Old address quiet
+			// so the multi-homed guard doesn't apply — the link-local filter is
+			// what suppresses it.
+			name:          "ipv6 link-local candidate skipped",
+			devices:       []queries.Device{dev},
+			macToDeviceID: map[string]string{mac: "d1"},
+			neighbors:     []queries.Neighbor{{NeighborMAC: mac, NeighborAddress: "fe80::1afd:74ff:fe4c:419e", LastSeen: fresh}},
+			wantAddrs:     map[string]string{},
+		},
+		{
+			name:          "ipv4 link-local candidate skipped",
+			devices:       []queries.Device{dev},
+			macToDeviceID: map[string]string{mac: "d1"},
+			neighbors:     []queries.Neighbor{{NeighborMAC: mac, NeighborAddress: "169.254.5.5", LastSeen: fresh}},
+			wantAddrs:     map[string]string{},
+		},
 	}
 
 	for _, tc := range tests {
@@ -391,6 +409,56 @@ func TestVerifyAndCommitMove_StaleCandidateNoop(t *testing.T) {
 	assertAddr(t, db, "d1", "192.168.78.99")
 	if n := countLoopEvents(t, db); n != 0 {
 		t.Fatalf("want 0 events for a stale candidate, got %d", n)
+	}
+}
+
+func TestIsFollowableCandidate(t *testing.T) {
+	cases := map[string]bool{
+		"192.168.78.232":            true,  // routable v4
+		"10.0.0.1":                  true,  // routable v4
+		"2001:db8::1":               true,  // global v6
+		"fe80::1afd:74ff:fe4c:419e": false, // v6 link-local (the prod crash source)
+		"169.254.10.5":              false, // v4 link-local
+		"127.0.0.1":                 false, // loopback
+		"0.0.0.0":                   false, // unspecified
+		"224.0.0.1":                 false, // multicast
+		"not-an-ip":                 false, // not an IP literal
+		"":                          false, // empty
+	}
+	for addr, want := range cases {
+		if got := isFollowableCandidate(addr); got != want {
+			t.Errorf("isFollowableCandidate(%q) = %v, want %v", addr, got, want)
+		}
+	}
+}
+
+// Identical rejections (same move + category) collapse to one audit row within
+// the TTL; a different proposed target — or the SAME move with a different
+// failure category (the dial-fail→impostor escalation) — is recorded separately.
+func TestRecordIPRejection_Dedup(t *testing.T) {
+	db := pollerTestDB(t)
+	mustCreateDevice(t, db, &queries.Device{ID: "d1", Identity: "ap", Address: "192.168.78.56", APIPort: 8728})
+	m := NewManager(db, routeros.NewPool(false), ws.NewHub(), &config.Config{TopologyInterval: time.Minute})
+
+	mv := addressMove{DeviceID: "d1", OldAddr: "192.168.78.56", NewAddr: "192.168.78.232", MAC: "AA:BB:CC:DD:EE:FF"}
+	m.recordIPRejection("d1", "dial_failed", mv, "verify dial failed: timeout")
+	m.recordIPRejection("d1", "dial_failed", mv, "verify dial failed: refused") // same move+category — suppressed
+	if n := countLoopEvents(t, db); n != 1 {
+		t.Fatalf("identical rejection should dedup to 1 row, got %d", n)
+	}
+
+	// Same proposed move, but the failure escalates to an impostor answering —
+	// a different category, so it must still be audited.
+	m.recordIPRejection("d1", "identity_mismatch", mv, "identity mismatch (board=X vs Y)")
+	if n := countLoopEvents(t, db); n != 2 {
+		t.Fatalf("a category escalation on the same move should record, got %d", n)
+	}
+
+	// A distinct proposed target is its own rejection.
+	other := addressMove{DeviceID: "d1", OldAddr: "192.168.78.56", NewAddr: "192.168.78.240"}
+	m.recordIPRejection("d1", "dial_failed", other, "verify dial failed: timeout")
+	if n := countLoopEvents(t, db); n != 3 {
+		t.Fatalf("a distinct proposed move should record, got %d", n)
 	}
 }
 
