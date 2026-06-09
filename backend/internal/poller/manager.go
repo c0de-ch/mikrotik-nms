@@ -7,6 +7,7 @@ import (
 	"runtime/debug"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mikrotik-nms/backend/internal/config"
@@ -24,14 +25,21 @@ type Manager struct {
 	cfg        *config.Config
 	cancel     context.CancelFunc
 	lastVacuum time.Time
+
+	// ipRejectSeen rate-limits auto-follow rejection audit rows by proposed
+	// move (see ipRejectionTTL / recordIPRejection). Accessed only from the
+	// topology goroutine today, but guarded so it stays safe if that changes.
+	ipRejectMu   sync.Mutex
+	ipRejectSeen map[string]time.Time
 }
 
 func NewManager(db *sql.DB, pool *routeros.Pool, hub *ws.Hub, cfg *config.Config) *Manager {
 	return &Manager{
-		db:   db,
-		pool: pool,
-		hub:  hub,
-		cfg:  cfg,
+		db:           db,
+		pool:         pool,
+		hub:          hub,
+		cfg:          cfg,
+		ipRejectSeen: make(map[string]time.Time),
 	}
 }
 

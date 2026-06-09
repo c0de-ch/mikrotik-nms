@@ -4,6 +4,9 @@ import (
 	"crypto/tls"
 	"fmt"
 	"log"
+	"net"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -53,6 +56,20 @@ func releaseClientLock(c *ros.Client) {
 	clientMutexes.Delete(c)
 }
 
+// JoinHostPort builds a dial target from a host and port. Unlike a bare
+// "host:port" format it brackets an IPv6 literal correctly (so an IPv6 address
+// doesn't fail with "too many colons in address"), and it strips one pair of
+// surrounding brackets first so an already-bracketed literal (e.g. "[2001:db8::1]"
+// entered by hand) isn't double-wrapped into "[[...]]". For an IPv4 address or a
+// hostname the result is identical to "host:port".
+func JoinHostPort(host string, port int) string {
+	h := strings.TrimSpace(host)
+	if len(h) >= 2 && h[0] == '[' && h[len(h)-1] == ']' {
+		h = h[1 : len(h)-1]
+	}
+	return net.JoinHostPort(h, strconv.Itoa(port))
+}
+
 // Dial connects to a RouterOS device and stores the connection.
 func (p *Pool) Dial(deviceID, address string, port int, username, password string, useTLS bool) (*ros.Client, error) {
 	p.mu.Lock()
@@ -65,7 +82,7 @@ func (p *Pool) Dial(deviceID, address string, port int, username, password strin
 		delete(p.clients, deviceID)
 	}
 
-	addr := fmt.Sprintf("%s:%d", address, port)
+	addr := JoinHostPort(address, port)
 
 	var client *ros.Client
 	var err error

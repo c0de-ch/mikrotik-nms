@@ -32,7 +32,9 @@ func TestPlanMoves(t *testing.T) {
 	stale := now.Add(-1 * time.Hour)
 
 	const mac = "04:F4:1C:85:97:B2"
-	dev := queries.Device{ID: "d1", Identity: "ap02", Address: "192.168.78.56", Board: "cAP ax"}
+	// Status "offline" — auto-follow only ever considers a device confirmed
+	// unreachable at its stored address (see the gate in planMoves).
+	dev := queries.Device{ID: "d1", Identity: "ap02", Address: "192.168.78.56", Board: "cAP ax", Status: "offline"}
 
 	tests := []struct {
 		name          string
@@ -115,6 +117,50 @@ func TestPlanMoves(t *testing.T) {
 			macToDeviceID: map[string]string{mac: "d1"},
 			addrToDevice:  map[string]string{"192.168.78.56": "d1", "192.168.78.232": "d2"},
 			neighbors:     []queries.Neighbor{{NeighborMAC: mac, NeighborAddress: "192.168.78.232", LastSeen: fresh}},
+			wantAddrs:     map[string]string{},
+		},
+		{
+			// The ping-pong bug: a device holding management IPs on two VLANs is
+			// online at one and sighted at the other. An online device is never
+			// followed, so no move is proposed.
+			name:          "online device is never followed (anti ping-pong)",
+			devices:       []queries.Device{{ID: "d1", Identity: "switch012", Address: "192.168.28.212", Board: "CRS", Status: "online"}},
+			macToDeviceID: map[string]string{mac: "d1"},
+			neighbors:     []queries.Neighbor{{NeighborMAC: mac, NeighborAddress: "192.168.78.212", LastSeen: fresh}},
+			wantAddrs:     map[string]string{},
+		},
+		{
+			// The legitimate case: a device unreachable at its stored address is
+			// followed to where its MAC is now seen.
+			name:          "offline device IS followed",
+			devices:       []queries.Device{{ID: "d1", Identity: "switch012", Address: "192.168.28.212", Board: "CRS", Status: "offline"}},
+			macToDeviceID: map[string]string{mac: "d1"},
+			neighbors:     []queries.Neighbor{{NeighborMAC: mac, NeighborAddress: "192.168.78.212", LastSeen: fresh}},
+			wantAddrs:     map[string]string{"d1": "192.168.78.212"},
+		},
+		{
+			// The transient grace state: a brief blip on the stored VLAN flips a
+			// dual-homed device to "unknown" while it's still reachable on the
+			// other VLAN. It must NOT be followed (only "offline" is followed),
+			// else the device drifts to its secondary VLAN on momentary loss.
+			name:          "unknown (transient blip) is never followed",
+			devices:       []queries.Device{{ID: "d1", Identity: "switch012", Address: "192.168.28.212", Board: "CRS", Status: "unknown"}},
+			macToDeviceID: map[string]string{mac: "d1"},
+			neighbors:     []queries.Neighbor{{NeighborMAC: mac, NeighborAddress: "192.168.78.212", LastSeen: fresh}},
+			wantAddrs:     map[string]string{},
+		},
+		{
+			name:          "ipv6 link-local candidate skipped",
+			devices:       []queries.Device{dev},
+			macToDeviceID: map[string]string{mac: "d1"},
+			neighbors:     []queries.Neighbor{{NeighborMAC: mac, NeighborAddress: "fe80::1afd:74ff:fe4c:419e", LastSeen: fresh}},
+			wantAddrs:     map[string]string{},
+		},
+		{
+			name:          "ipv4 link-local candidate skipped",
+			devices:       []queries.Device{dev},
+			macToDeviceID: map[string]string{mac: "d1"},
+			neighbors:     []queries.Neighbor{{NeighborMAC: mac, NeighborAddress: "169.254.5.5", LastSeen: fresh}},
 			wantAddrs:     map[string]string{},
 		},
 	}
@@ -274,7 +320,7 @@ func TestReconcileAddresses_DisabledByDefault(t *testing.T) {
 func TestPlanMoves_AuditMACIsDiscoveredMAC(t *testing.T) {
 	now := time.Now()
 	cutoff := now.Add(-2 * time.Minute)
-	dev := queries.Device{ID: "d1", Identity: "sw", Address: "192.168.78.10", Board: "CRS"}
+	dev := queries.Device{ID: "d1", Identity: "sw", Address: "192.168.78.10", Board: "CRS", Status: "offline"}
 	// Device owns two MACs; the sighting is on the SECOND one.
 	macIdx := map[string]string{"AA:BB:CC:DD:EE:01": "d1", "AA:BB:CC:DD:EE:02": "d1"}
 	neigh := []queries.Neighbor{{NeighborMAC: "aa:bb:cc:dd:ee:02", NeighborAddress: "192.168.78.50", LastSeen: now}}
@@ -293,8 +339,8 @@ func TestPlanMoves_BatchReservesTargetIP(t *testing.T) {
 	// Two devices, both sighted (via their own MACs) at the SAME new IP in one
 	// batch. Only one move may be emitted (the other is blocked by the in-batch
 	// reservation) to avoid a UNIQUE collision / IP swap at commit time.
-	d1 := queries.Device{ID: "d1", Identity: "a", Address: "192.168.78.10"}
-	d2 := queries.Device{ID: "d2", Identity: "b", Address: "192.168.78.11"}
+	d1 := queries.Device{ID: "d1", Identity: "a", Address: "192.168.78.10", Status: "offline"}
+	d2 := queries.Device{ID: "d2", Identity: "b", Address: "192.168.78.11", Status: "offline"}
 	macIdx := map[string]string{"AA:AA:AA:AA:AA:01": "d1", "BB:BB:BB:BB:BB:02": "d2"}
 	addr := map[string]string{"192.168.78.10": "d1", "192.168.78.11": "d2"}
 	neigh := []queries.Neighbor{
@@ -365,6 +411,56 @@ func TestVerifyAndCommitMove_StaleCandidateNoop(t *testing.T) {
 	assertAddr(t, db, "d1", "192.168.78.99")
 	if n := countLoopEvents(t, db); n != 0 {
 		t.Fatalf("want 0 events for a stale candidate, got %d", n)
+	}
+}
+
+func TestIsFollowableCandidate(t *testing.T) {
+	cases := map[string]bool{
+		"192.168.78.232":            true,  // routable v4
+		"10.0.0.1":                  true,  // routable v4
+		"2001:db8::1":               true,  // global v6
+		"fe80::1afd:74ff:fe4c:419e": false, // v6 link-local (the prod crash source)
+		"169.254.10.5":              false, // v4 link-local
+		"127.0.0.1":                 false, // loopback
+		"0.0.0.0":                   false, // unspecified
+		"224.0.0.1":                 false, // multicast
+		"not-an-ip":                 false, // not an IP literal
+		"":                          false, // empty
+	}
+	for addr, want := range cases {
+		if got := isFollowableCandidate(addr); got != want {
+			t.Errorf("isFollowableCandidate(%q) = %v, want %v", addr, got, want)
+		}
+	}
+}
+
+// Identical rejections (same move + category) collapse to one audit row within
+// the TTL; a different proposed target — or the SAME move with a different
+// failure category (the dial-fail→impostor escalation) — is recorded separately.
+func TestRecordIPRejection_Dedup(t *testing.T) {
+	db := pollerTestDB(t)
+	mustCreateDevice(t, db, &queries.Device{ID: "d1", Identity: "ap", Address: "192.168.78.56", APIPort: 8728})
+	m := NewManager(db, routeros.NewPool(false), ws.NewHub(), &config.Config{TopologyInterval: time.Minute})
+
+	mv := addressMove{DeviceID: "d1", OldAddr: "192.168.78.56", NewAddr: "192.168.78.232", MAC: "AA:BB:CC:DD:EE:FF"}
+	m.recordIPRejection("d1", "dial_failed", mv, "verify dial failed: timeout")
+	m.recordIPRejection("d1", "dial_failed", mv, "verify dial failed: refused") // same move+category — suppressed
+	if n := countLoopEvents(t, db); n != 1 {
+		t.Fatalf("identical rejection should dedup to 1 row, got %d", n)
+	}
+
+	// Same proposed move, but the failure escalates to an impostor answering —
+	// a different category, so it must still be audited.
+	m.recordIPRejection("d1", "identity_mismatch", mv, "identity mismatch (board=X vs Y)")
+	if n := countLoopEvents(t, db); n != 2 {
+		t.Fatalf("a category escalation on the same move should record, got %d", n)
+	}
+
+	// A distinct proposed target is its own rejection.
+	other := addressMove{DeviceID: "d1", OldAddr: "192.168.78.56", NewAddr: "192.168.78.240"}
+	m.recordIPRejection("d1", "dial_failed", other, "verify dial failed: timeout")
+	if n := countLoopEvents(t, db); n != 3 {
+		t.Fatalf("a distinct proposed move should record, got %d", n)
 	}
 }
 
