@@ -82,8 +82,9 @@ func (s *Server) handleCreateDevice(w http.ResponseWriter, r *http.Request) {
 		password = s.cfg.DefaultROSPass
 	}
 
-	// Test connection before adding
-	addr := fmt.Sprintf("%s:%d", req.Address, req.APIPort)
+	// Test connection before adding. JoinHostPort (not "%s:%d") so an IPv6
+	// literal is bracketed correctly instead of failing with "too many colons".
+	addr := rosutil.JoinHostPort(req.Address, req.APIPort)
 	var testClient *ros.Client
 	var testErr error
 	if req.UseTLS {

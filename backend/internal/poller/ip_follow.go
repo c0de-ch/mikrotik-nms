@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"net"
 	"runtime/debug"
 	"strings"
 	"time"
@@ -32,6 +33,14 @@ import (
 // defaultAutoFollowInterval is used to size the "recent sighting" window when
 // the configured topology interval is unavailable (e.g. in tests).
 const defaultAutoFollowInterval = 60 * time.Second
+
+// ipRejectionTTL collapses repeated identical rejections (same device + same
+// proposed move + same failure category) to at most one audit row per window,
+// so a device that is persistently unreachable at its stored address but keeps
+// being sighted at a candidate IP that fails verification cannot flood
+// loop_events. The first rejection of each (device, move, category) is always
+// recorded.
+const ipRejectionTTL = time.Hour
 
 // addressMove is one verified-pending re-point. It is the output of the pure
 // matcher (planMoves) and carries no I/O — the unit-test seam.
@@ -124,6 +133,9 @@ func planMoves(devices []queries.Device, macToDeviceID map[string]string, ambigu
 		if n.LastSeen.Before(recentCutoff) {
 			continue // stale sighting — ignore
 		}
+		if !isFollowableCandidate(n.NeighborAddress) {
+			continue // link-local / non-routable / non-IP — never a management target
+		}
 		mac := strings.ToUpper(strings.TrimSpace(n.NeighborMAC))
 		if mac == "" || ambiguous[mac] {
 			continue
@@ -178,6 +190,26 @@ func planMoves(devices []queries.Device, macToDeviceID map[string]string, ambigu
 		moves = append(moves, addressMove{DeviceID: dev.ID, OldAddr: dev.Address, NewAddr: newAddr, MAC: mac})
 	}
 	return moves
+}
+
+// isFollowableCandidate reports whether a discovered neighbor address is a
+// plausible new *management* address worth chasing. It rejects anything that is
+// not a routable unicast IP literal: link-local (IPv4 169.254.0.0/16, IPv6
+// fe80::/10), unspecified, loopback and multicast are never stable management
+// addresses, and an IPv6 link-local additionally has no usable host:port form
+// here (it needs a zone), which is what produced the "too many colons in
+// address" verify-dial failures observed in production. A non-IP string (e.g. a
+// hostname) is also rejected — we only ever re-point to a verifiable IP.
+func isFollowableCandidate(addr string) bool {
+	ip := net.ParseIP(strings.TrimSpace(addr))
+	if ip == nil {
+		return false
+	}
+	if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
+		ip.IsUnspecified() || ip.IsLoopback() || ip.IsMulticast() {
+		return false
+	}
+	return true
 }
 
 // verifyIdentity is the pure anti-spoof comparator. It confirms the host that
@@ -268,7 +300,7 @@ func (m *Manager) verifyAndCommitMove(mv addressMove) {
 		return
 	}
 	if dev.PasswordEnc == "" {
-		m.recordIPRejection(dev.ID, mv, "no usable credentials (encryption key unset or decrypt failed)")
+		m.recordIPRejection(dev.ID, "no_credentials", mv, "no usable credentials (encryption key unset or decrypt failed)")
 		log.Printf("poller: auto-follow: no usable credentials for %s — skipping", dev.Identity)
 		return
 	}
@@ -279,7 +311,7 @@ func (m *Manager) verifyAndCommitMove(mv addressMove) {
 	verifyKey := mv.DeviceID + ":verify"
 	client, err := m.pool.Dial(verifyKey, mv.NewAddr, dev.APIPort, dev.Username, dev.PasswordEnc, dev.UseTLS)
 	if err != nil {
-		m.recordIPRejection(dev.ID, mv, fmt.Sprintf("verify dial failed: %v", err))
+		m.recordIPRejection(dev.ID, "dial_failed", mv, fmt.Sprintf("verify dial failed: %v", err))
 		log.Printf("poller: auto-follow: verify dial to %s for %s failed: %v", mv.NewAddr, dev.Identity, err)
 		return
 	}
@@ -287,13 +319,13 @@ func (m *Manager) verifyAndCommitMove(mv addressMove) {
 
 	res, err := routeros.GetSystemResource(client)
 	if err != nil {
-		m.recordIPRejection(dev.ID, mv, fmt.Sprintf("read system resource failed: %v", err))
+		m.recordIPRejection(dev.ID, "read_failed", mv, fmt.Sprintf("read system resource failed: %v", err))
 		log.Printf("poller: auto-follow: read resource from %s for %s failed: %v", mv.NewAddr, dev.Identity, err)
 		return
 	}
 
 	if !verifyIdentity(*dev, res) {
-		m.recordIPRejection(dev.ID, mv, fmt.Sprintf("identity mismatch (stored board=%q version=%q; live board=%q version=%q)",
+		m.recordIPRejection(dev.ID, "identity_mismatch", mv, fmt.Sprintf("identity mismatch (stored board=%q version=%q; live board=%q version=%q)",
 			dev.Board, dev.ROSVersion, res.Board, res.Version))
 		log.Printf("poller: auto-follow: identity mismatch for %s at %s (board %q vs %q) — skipping",
 			dev.Identity, mv.NewAddr, dev.Board, res.Board)
@@ -309,7 +341,7 @@ func (m *Manager) verifyAndCommitMove(mv addressMove) {
 		if ifaces, ierr := routeros.GetInterfaces(client); ierr != nil {
 			log.Printf("poller: auto-follow: %s could not list interfaces at %s to confirm MAC: %v (proceeding on board/version)", dev.Identity, mv.NewAddr, ierr)
 		} else if !interfacesContainMAC(ifaces, mv.MAC) {
-			m.recordIPRejection(dev.ID, mv, fmt.Sprintf("matched MAC %s not present on the device answering at %s", mv.MAC, mv.NewAddr))
+			m.recordIPRejection(dev.ID, "mac_mismatch", mv, fmt.Sprintf("matched MAC %s not present on the device answering at %s", mv.MAC, mv.NewAddr))
 			log.Printf("poller: auto-follow: MAC %s not found on device at %s for %s — skipping", mv.MAC, mv.NewAddr, dev.Identity)
 			return
 		}
@@ -320,7 +352,7 @@ func (m *Manager) verifyAndCommitMove(mv addressMove) {
 	// never rewrites the encrypted credential column.
 	committed, err := queries.UpdateDeviceAddressIfUnchanged(m.db, dev.ID, mv.OldAddr, mv.NewAddr)
 	if err != nil {
-		m.recordIPRejection(dev.ID, mv, fmt.Sprintf("commit failed: %v", err))
+		m.recordIPRejection(dev.ID, "commit_failed", mv, fmt.Sprintf("commit failed: %v", err))
 		log.Printf("poller: auto-follow: update device %s -> %s: %v", dev.Identity, mv.NewAddr, err)
 		return
 	}
@@ -348,15 +380,60 @@ func (m *Manager) verifyAndCommitMove(mv addressMove) {
 }
 
 // recordIPRejection writes a fail-closed audit row for a move we refused to
-// commit, so an admin can see why a discovered IP change was not applied.
-func (m *Manager) recordIPRejection(deviceID string, mv addressMove, reason string) {
-	_, _ = queries.InsertLoopEvent(m.db, &queries.LoopEvent{
+// commit, so an admin can see why a discovered IP change was not applied. The
+// category is a coarse, stable failure class (e.g. "dial_failed",
+// "identity_mismatch") used for dedup: identical rejections for the same
+// proposed move AND category are suppressed for ipRejectionTTL so a stuck
+// candidate can't flood the table — but a CHANGE in category (e.g. "nothing
+// answered" escalating to "an impostor answered") still records once, preserving
+// the security-relevant signal. The dedup is only updated after a successful
+// insert, so a failed write doesn't silently swallow the next cycle's retry.
+func (m *Manager) recordIPRejection(deviceID, category string, mv addressMove, reason string) {
+	sig := ipRejectionSig(deviceID, category, mv)
+	if m.ipRejectionSuppressed(sig) {
+		return
+	}
+	if _, err := queries.InsertLoopEvent(m.db, &queries.LoopEvent{
 		DeviceID:   deviceID,
 		EventType:  "ip_address_changed",
 		Severity:   "warn",
 		MACAddress: mv.MAC,
 		Message:    fmt.Sprintf("rejected move %s → %s: %s", mv.OldAddr, mv.NewAddr, reason),
-	})
+	}); err != nil {
+		log.Printf("poller: auto-follow: record rejection for %s: %v", deviceID, err)
+		return // leave sig unmarked so the next cycle retries the audit
+	}
+	m.markIPRejection(sig)
+}
+
+func ipRejectionSig(deviceID, category string, mv addressMove) string {
+	return deviceID + "|" + mv.OldAddr + "|" + mv.NewAddr + "|" + category
+}
+
+// ipRejectionSuppressed reports whether this exact rejection signature was
+// already audited within ipRejectionTTL (read-only — does not mark).
+func (m *Manager) ipRejectionSuppressed(sig string) bool {
+	m.ipRejectMu.Lock()
+	defer m.ipRejectMu.Unlock()
+	last, ok := m.ipRejectSeen[sig]
+	return ok && time.Since(last) < ipRejectionTTL
+}
+
+// markIPRejection stamps a signature as audited now and opportunistically prunes
+// expired entries so the map stays bounded.
+func (m *Manager) markIPRejection(sig string) {
+	now := time.Now()
+	m.ipRejectMu.Lock()
+	defer m.ipRejectMu.Unlock()
+	if m.ipRejectSeen == nil {
+		m.ipRejectSeen = make(map[string]time.Time)
+	}
+	for k, t := range m.ipRejectSeen {
+		if now.Sub(t) > ipRejectionTTL {
+			delete(m.ipRejectSeen, k)
+		}
+	}
+	m.ipRejectSeen[sig] = now
 }
 
 // interfacesContainMAC reports whether any of the device's interfaces carries
