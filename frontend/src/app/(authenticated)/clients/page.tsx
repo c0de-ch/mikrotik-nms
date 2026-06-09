@@ -57,6 +57,7 @@ export default function ClientsPage() {
   const [sortKey, setSortKey] = useState<SortKey>("ip_address");
   const [sortAsc, setSortAsc] = useState(true);
   const [tab, setTab] = useState("all");
+  const [showInactive, setShowInactive] = useState(false);
   const [selected, setSelected] = useState<NetworkClient | null>(null);
   const [scanTime, setScanTime] = useState<string | null>(null);
   const [scanTimeout, setScanTimeout] = useState(30);
@@ -124,8 +125,14 @@ export default function ClientsPage() {
     else { setSortKey(key); setSortAsc(true); }
   };
 
-  const wifiClients = clients.filter((c) => c.source === "wifi" || c.ssid);
-  const allClients = tab === "wifi" ? wifiClients : clients;
+  // A client is "inactive" once its cache entry hasn't been refreshed within the
+  // backend's inactivity window (e.g. a device that left, or a reservation on a
+  // now-disabled DHCP server). Hidden by default; reveal them with the toggle.
+  const inactiveCount = useMemo(() => clients.filter((c) => c.active === false).length, [clients]);
+  const visible = showInactive ? clients : clients.filter((c) => c.active !== false);
+
+  const wifiClients = visible.filter((c) => c.source === "wifi" || c.ssid);
+  const allClients = tab === "wifi" ? wifiClients : visible;
 
   const filtered = useMemo(() => {
     const q = search.toLowerCase();
@@ -255,7 +262,18 @@ export default function ClientsPage() {
               onChange={(e) => setSearch(e.target.value)}
               className="max-w-sm"
             />
-            <span className="text-xs text-muted-foreground ml-auto">{filtered.length} result(s)</span>
+            <div className="ml-auto flex items-center gap-3">
+              {inactiveCount > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setShowInactive((v) => !v)}
+                  className="text-xs text-muted-foreground underline-offset-2 hover:underline"
+                >
+                  {showInactive ? "Hide" : "Show"} inactive ({inactiveCount})
+                </button>
+              )}
+              <span className="text-xs text-muted-foreground">{filtered.length} result(s)</span>
+            </div>
           </div>
 
           <Table>
@@ -275,12 +293,19 @@ export default function ClientsPage() {
               {filtered.map((c, i) => (
                 <TableRow
                   key={`${c.mac_address}-${i}`}
-                  className="cursor-pointer hover:bg-muted/50"
+                  className={`cursor-pointer hover:bg-muted/50${c.active === false ? " opacity-50" : ""}`}
                   onClick={() => setSelected(c)}
                 >
                   <TableCell className="font-mono text-sm">{c.ip_address || "—"}</TableCell>
                   <TableCell className="font-mono text-xs whitespace-nowrap">{c.mac_address}</TableCell>
-                  <TableCell>{c.host_name || <span className="text-muted-foreground">—</span>}</TableCell>
+                  <TableCell>
+                    {c.host_name || <span className="text-muted-foreground">—</span>}
+                    {c.active === false && (
+                      <Badge variant="outline" className="ml-2 text-[10px] text-muted-foreground">
+                        inactive
+                      </Badge>
+                    )}
+                  </TableCell>
                   {tab === "wifi" && <TableCell className="text-sm">{c.ap || "—"}</TableCell>}
                   {tab === "wifi" && <TableCell className="text-sm">{c.ssid || "—"}</TableCell>}
                   {tab === "wifi" && (
@@ -343,6 +368,10 @@ export default function ClientsPage() {
                   <DetailRow label="Interface" value={selected.interface} />
                   <DetailRow label="Source" value={selected.source} />
                   <DetailRow label="Reported By" value={selected.device_name} />
+                  <DetailRow label="Status" value={selected.active === false ? "Inactive" : "Active"} />
+                  {selected.last_seen && (
+                    <DetailRow label="Last seen" value={new Date(selected.last_seen).toLocaleString()} />
+                  )}
                 </div>
               </div>
 

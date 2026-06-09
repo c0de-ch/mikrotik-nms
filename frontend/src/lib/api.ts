@@ -485,6 +485,8 @@ export interface NetworkClient {
   tx_rate?: string;
   rx_rate?: string;
   uptime?: string;
+  active?: boolean;
+  last_seen?: string;
 }
 
 export interface BridgePortStatus {

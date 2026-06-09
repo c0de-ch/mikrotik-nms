@@ -67,7 +67,48 @@ func GetDHCPLeases(client *ros.Client) ([]DHCPLease, error) {
 			Dynamic:    m["dynamic"] == "true",
 		})
 	}
-	return leases, nil
+	// A disabled DHCP server keeps its lease/reservation rows in the table, but
+	// those aren't live assignments — the server isn't handing them out. Drop
+	// them so a switch whose dhcp server is turned off doesn't surface a ghost
+	// "client" for every leftover static reservation.
+	return activeLeases(leases, disabledDHCPServers(client)), nil
+}
+
+// disabledDHCPServers returns the set of administratively-disabled DHCP server
+// names. Best-effort: any error yields an empty set, so leases are shown rather
+// than wrongly hidden on a transient query failure (fail-open).
+func disabledDHCPServers(client *ros.Client) map[string]bool {
+	reply, err := RunCommand(client, "/ip/dhcp-server/print")
+	if err != nil {
+		return nil
+	}
+	out := make(map[string]bool)
+	for _, re := range reply.Re {
+		m := GetSentenceMap(re)
+		if m["disabled"] == "true" {
+			if name := m["name"]; name != "" {
+				out[name] = true
+			}
+		}
+	}
+	return out
+}
+
+// activeLeases drops leases that belong to a disabled DHCP server. Pure, for
+// testing. A lease whose server is empty/unknown is kept (we only hide leases we
+// can positively attribute to a disabled server).
+func activeLeases(leases []DHCPLease, disabledServers map[string]bool) []DHCPLease {
+	if len(disabledServers) == 0 {
+		return leases
+	}
+	out := make([]DHCPLease, 0, len(leases))
+	for _, l := range leases {
+		if disabledServers[l.Server] {
+			continue
+		}
+		out = append(out, l)
+	}
+	return out
 }
 
 // WifiRegistration represents a wireless client registration (CAPsMAN or wifi).

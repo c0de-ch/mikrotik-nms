@@ -14,14 +14,19 @@ import (
 )
 
 type networkClient struct {
-	MAC       string `json:"mac_address"`
-	IP        string `json:"ip_address"`
-	HostName  string `json:"host_name"`
-	DNSName   string `json:"dns_name"`
-	Interface string `json:"interface"`
-	Source    string `json:"source"`      // "arp", "dhcp", "wifi"
-	DeviceID  string `json:"device_id"`   // which managed device reported this
+	MAC        string `json:"mac_address"`
+	IP         string `json:"ip_address"`
+	HostName   string `json:"host_name"`
+	DNSName    string `json:"dns_name"`
+	Interface  string `json:"interface"`
+	Source     string `json:"source"`    // "arp", "dhcp", "wifi"
+	DeviceID   string `json:"device_id"` // which managed device reported this
 	DeviceName string `json:"device_name"`
+	// Freshness: Active is false once the cache entry hasn't been refreshed
+	// within the inactivity window (e.g. a device that left, or a reservation on
+	// a now-disabled DHCP server). LastSeen is the last refresh (RFC3339).
+	Active   bool   `json:"active"`
+	LastSeen string `json:"last_seen,omitempty"`
 	// Wifi-specific fields
 	AP        string `json:"ap,omitempty"`
 	SSID      string `json:"ssid,omitempty"`
@@ -287,6 +292,9 @@ done:
 	}
 	dnsNames := s.resolver.ResolveMany(ips)
 
+	// Everything returned by a live scan was just seen, so it's active by
+	// definition (and will refresh the cache's updated_at via UpsertMACLookup).
+	nowStr := time.Now().UTC().Format(time.RFC3339)
 	results := make([]networkClient, 0, len(clientMap))
 	for _, c := range clientMap {
 		if name, ok := dnsNames[c.IP]; ok && name != "" {
@@ -296,6 +304,8 @@ done:
 				c.HostName = name
 			}
 		}
+		c.Active = true
+		c.LastSeen = nowStr
 		results = append(results, *c)
 	}
 
@@ -337,6 +347,26 @@ done:
 	})
 }
 
+// defaultClientInactiveAfter is how long a cached client may go without being
+// re-seen before it's reported inactive, when the admin hasn't configured
+// client_inactive_after_seconds. Picked well above the client-discovery interval
+// so a live client never flickers, but far below the ~30-day cache retention so
+// a device that left (or a reservation on a disabled DHCP server) drops off the
+// active list promptly instead of lingering for weeks.
+const defaultClientInactiveAfter = 30 * time.Minute
+
+func (s *Server) clientInactiveAfter() time.Duration {
+	v, err := queries.GetSetting(s.db, "client_inactive_after_seconds")
+	if err != nil {
+		return defaultClientInactiveAfter
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil || n <= 0 {
+		return defaultClientInactiveAfter
+	}
+	return time.Duration(n) * time.Second
+}
+
 func (s *Server) handleCachedClients(w http.ResponseWriter, r *http.Request) {
 	entries, err := queries.GetAllMACLookupsSlice(s.db)
 	if err != nil {
@@ -344,8 +374,15 @@ func (s *Server) handleCachedClients(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	threshold := s.clientInactiveAfter()
+	now := time.Now()
+	active := 0
 	clients := make([]networkClient, 0, len(entries))
 	for _, e := range entries {
+		isActive := now.Sub(e.UpdatedAt) < threshold
+		if isActive {
+			active++
+		}
 		clients = append(clients, networkClient{
 			MAC:        e.MACAddress,
 			IP:         e.IPAddress,
@@ -364,12 +401,15 @@ func (s *Server) handleCachedClients(w http.ResponseWriter, r *http.Request) {
 			TxRate:     e.TxRate,
 			RxRate:     e.RxRate,
 			Uptime:     e.Uptime,
+			Active:     isActive,
+			LastSeen:   e.UpdatedAt.UTC().Format(time.RFC3339),
 		})
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"clients": clients,
 		"total":   len(clients),
+		"active":  active,
 		"cached":  true,
 	})
 }
