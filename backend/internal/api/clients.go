@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/mikrotik-nms/backend/internal/database/queries"
+	"github.com/mikrotik-nms/backend/internal/leasesource"
 	"github.com/mikrotik-nms/backend/internal/routeros"
 )
 
@@ -260,6 +261,23 @@ func (s *Server) handleScanClients(w http.ResponseWriter, r *http.Request) {
 	}
 
 done:
+	// External DHCP (Kea / OPNsense, per app_settings) — the same sources the
+	// background discovery poller uses. Without this a live scan only sees
+	// MikroTik-visible clients and drops OPNsense/Kea-only clients (and their
+	// DHCP hostnames), so the auto-scan would wipe them from the cached view.
+	for _, l := range leasesource.FromSettings(s.db) {
+		if existing, ok := clientMap[l.MAC]; ok {
+			if existing.IP == "" && l.IP != "" {
+				existing.IP = l.IP
+			}
+			if existing.HostName == "" && l.Hostname != "" {
+				existing.HostName = l.Hostname
+			}
+		} else {
+			clientMap[l.MAC] = &networkClient{MAC: l.MAC, IP: l.IP, HostName: l.Hostname, Source: "dhcp", DeviceName: l.Origin}
+		}
+	}
+
 	// Resolve DNS names for all IPs
 	ips := make([]string, 0, len(clientMap))
 	for _, c := range clientMap {
