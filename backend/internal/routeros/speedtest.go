@@ -26,12 +26,16 @@ type SpeedResult struct {
 // download can take 60-120s, far past the shared CommandTimeout, and would
 // otherwise hold a pooled client's mutex and force-close it under every other
 // poller.
-func FetchSpeedTest(client *ros.Client, url string, timeout time.Duration) (*SpeedResult, error) {
+// A non-empty srcAddress sources the download from that address (the device's
+// IP on a specific VLAN) — fetch's only source selector; it has no
+// interface/vrf parameter (verified on RouterOS 7.23).
+func FetchSpeedTest(client *ros.Client, url, srcAddress string, timeout time.Duration) (*SpeedResult, error) {
+	args := []string{"=url=" + url, "=output=none"}
+	if srcAddress != "" {
+		args = append(args, "=src-address="+srcAddress)
+	}
 	start := time.Now()
-	reply, err := RunCommandWithTimeout(client, timeout, "/tool/fetch",
-		"=url="+url,
-		"=output=none",
-	)
+	reply, err := RunCommandWithTimeout(client, timeout, "/tool/fetch", args...)
 	if err != nil {
 		return nil, err
 	}

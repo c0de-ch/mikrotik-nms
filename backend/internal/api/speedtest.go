@@ -3,6 +3,7 @@ package api
 import (
 	"database/sql"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -62,9 +63,10 @@ func (s *Server) handleListSpeedTests(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleCreateSpeedTest(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		DeviceID string `json:"device_id"`
-		URL      string `json:"url"`
-		Label    string `json:"label"`
+		DeviceID   string `json:"device_id"`
+		URL        string `json:"url"`
+		SrcAddress string `json:"src_address"`
+		Label      string `json:"label"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -72,11 +74,12 @@ func (s *Server) handleCreateSpeedTest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	t := &queries.SpeedTest{
-		ID:       uuid.NewString(),
-		DeviceID: strings.TrimSpace(req.DeviceID),
-		URL:      strings.TrimSpace(req.URL),
-		Label:    strings.TrimSpace(req.Label),
-		Enabled:  true,
+		ID:         uuid.NewString(),
+		DeviceID:   strings.TrimSpace(req.DeviceID),
+		URL:        strings.TrimSpace(req.URL),
+		SrcAddress: strings.TrimSpace(req.SrcAddress),
+		Label:      strings.TrimSpace(req.Label),
+		Enabled:    true,
 	}
 	if t.DeviceID == "" {
 		writeError(w, http.StatusBadRequest, "device_id is required")
@@ -84,6 +87,10 @@ func (s *Server) handleCreateSpeedTest(w http.ResponseWriter, r *http.Request) {
 	}
 	if !validSpeedTestURL(t.URL) {
 		writeError(w, http.StatusBadRequest, "url must be a valid http(s) URL")
+		return
+	}
+	if t.SrcAddress != "" && net.ParseIP(t.SrcAddress) == nil {
+		writeError(w, http.StatusBadRequest, "src_address must be a valid IP address")
 		return
 	}
 
@@ -113,10 +120,11 @@ func (s *Server) handleUpdateSpeedTest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		DeviceID *string `json:"device_id"`
-		URL      *string `json:"url"`
-		Label    *string `json:"label"`
-		Enabled  *bool   `json:"enabled"`
+		DeviceID   *string `json:"device_id"`
+		URL        *string `json:"url"`
+		SrcAddress *string `json:"src_address"`
+		Label      *string `json:"label"`
+		Enabled    *bool   `json:"enabled"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -128,6 +136,9 @@ func (s *Server) handleUpdateSpeedTest(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.URL != nil {
 		t.URL = strings.TrimSpace(*req.URL)
+	}
+	if req.SrcAddress != nil {
+		t.SrcAddress = strings.TrimSpace(*req.SrcAddress)
 	}
 	if req.Label != nil {
 		t.Label = strings.TrimSpace(*req.Label)
@@ -141,6 +152,10 @@ func (s *Server) handleUpdateSpeedTest(w http.ResponseWriter, r *http.Request) {
 	}
 	if !validSpeedTestURL(t.URL) {
 		writeError(w, http.StatusBadRequest, "url must be a valid http(s) URL")
+		return
+	}
+	if t.SrcAddress != "" && net.ParseIP(t.SrcAddress) == nil {
+		writeError(w, http.StatusBadRequest, "src_address must be a valid IP address")
 		return
 	}
 
