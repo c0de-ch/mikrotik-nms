@@ -2,7 +2,10 @@ package queries
 
 import (
 	"database/sql"
+	"encoding/json"
 	"time"
+
+	"github.com/mikrotik-nms/backend/internal/routeros"
 )
 
 // PingTarget is something the connectivity poller probes with ICMP from a
@@ -13,15 +16,22 @@ import (
 // kind "client": MACAddress (uppercase) identifies a watched LAN client; the
 // poller resolves its current IP from mac_lookup each cycle and caches it in
 // Address. DeviceID is optional ("" = auto-pick).
+//
+// SrcAddress / SrcInterface are optional probe-source selectors passed to
+// /ping (and /tool/traceroute) as =src-address= / =interface= when non-empty,
+// so the probe leaves FROM a specific VLAN interface / source IP (multi-ISP,
+// policy-routed networks).
 type PingTarget struct {
-	ID         string    `json:"id"`
-	Kind       string    `json:"kind"`
-	Address    string    `json:"address"`
-	MACAddress string    `json:"mac_address"`
-	Label      string    `json:"label"`
-	DeviceID   string    `json:"device_id"`
-	Enabled    bool      `json:"enabled"`
-	CreatedAt  time.Time `json:"created_at"`
+	ID           string    `json:"id"`
+	Kind         string    `json:"kind"`
+	Address      string    `json:"address"`
+	MACAddress   string    `json:"mac_address"`
+	Label        string    `json:"label"`
+	DeviceID     string    `json:"device_id"`
+	SrcAddress   string    `json:"src_address"`
+	SrcInterface string    `json:"src_interface"`
+	Enabled      bool      `json:"enabled"`
+	CreatedAt    time.Time `json:"created_at"`
 }
 
 // PingSample is the outcome of one /ping burst. Error != "" means the probe
@@ -63,19 +73,20 @@ func CreatePingTarget(db *sql.DB, t *PingTarget) error {
 		enabled = 1
 	}
 	_, err := db.Exec(
-		`INSERT INTO ping_targets (id, kind, address, mac_address, label, device_id, enabled)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		t.ID, t.Kind, t.Address, t.MACAddress, t.Label, t.DeviceID, enabled,
+		`INSERT INTO ping_targets (id, kind, address, mac_address, label, device_id, src_address, src_interface, enabled)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.ID, t.Kind, t.Address, t.MACAddress, t.Label, t.DeviceID, t.SrcAddress, t.SrcInterface, enabled,
 	)
 	return err
 }
 
-const pingTargetCols = `id, kind, address, mac_address, label, device_id, enabled, created_at`
+const pingTargetCols = `id, kind, address, mac_address, label, device_id, src_address, src_interface, enabled, created_at`
 
 func scanPingTarget(scanner interface{ Scan(...interface{}) error }) (*PingTarget, error) {
 	t := &PingTarget{}
 	var enabled int
-	err := scanner.Scan(&t.ID, &t.Kind, &t.Address, &t.MACAddress, &t.Label, &t.DeviceID, &enabled, &t.CreatedAt)
+	err := scanner.Scan(&t.ID, &t.Kind, &t.Address, &t.MACAddress, &t.Label, &t.DeviceID,
+		&t.SrcAddress, &t.SrcInterface, &enabled, &t.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -135,8 +146,9 @@ func UpdatePingTarget(db *sql.DB, t *PingTarget) error {
 		enabled = 1
 	}
 	_, err := db.Exec(
-		`UPDATE ping_targets SET kind=?, address=?, mac_address=?, label=?, device_id=?, enabled=? WHERE id=?`,
-		t.Kind, t.Address, t.MACAddress, t.Label, t.DeviceID, enabled, t.ID,
+		`UPDATE ping_targets SET kind=?, address=?, mac_address=?, label=?, device_id=?,
+		        src_address=?, src_interface=?, enabled=? WHERE id=?`,
+		t.Kind, t.Address, t.MACAddress, t.Label, t.DeviceID, t.SrcAddress, t.SrcInterface, enabled, t.ID,
 	)
 	return err
 }
@@ -293,6 +305,83 @@ func GetClientSignalSamples(db *sql.DB, mac string, from, to time.Time, limit in
 		out = append(out, s)
 	}
 	return out, rows.Err()
+}
+
+// TracerouteRun is one stored /tool/traceroute pass against an internet ping
+// target (manual run-now, or auto-captured when probe loss crossed
+// traceroute_loss_threshold). Hops marshals to/from the traceroute_runs.hops
+// JSON TEXT column in this layer; the hop struct lives in the routeros package
+// (where it is parsed) and carries the wire-contract json tags — queries →
+// routeros is a one-way import with no cycle (routeros depends only on stdlib
+// and the go-routeros client).
+type TracerouteRun struct {
+	ID         int64                    `json:"id"`
+	TargetID   string                   `json:"target_id"`
+	Address    string                   `json:"address"`
+	Hops       []routeros.TracerouteHop `json:"hops"`
+	Error      string                   `json:"error"`
+	RecordedAt time.Time                `json:"recorded_at"`
+}
+
+// InsertTracerouteRun persists a run, filling in RecordedAt (now, if unset) and
+// ID so the same struct can be broadcast over WebSocket afterwards.
+func InsertTracerouteRun(db *sql.DB, r *TracerouteRun) error {
+	if r.RecordedAt.IsZero() {
+		r.RecordedAt = time.Now().UTC()
+	}
+	if r.Hops == nil {
+		r.Hops = []routeros.TracerouteHop{}
+	}
+	hops, err := json.Marshal(r.Hops)
+	if err != nil {
+		return err
+	}
+	res, err := db.Exec(
+		`INSERT INTO traceroute_runs (target_id, address, hops, error, recorded_at)
+		 VALUES (?, ?, ?, ?, ?)`,
+		r.TargetID, r.Address, string(hops), r.Error, r.RecordedAt,
+	)
+	if err != nil {
+		return err
+	}
+	r.ID, _ = res.LastInsertId()
+	return nil
+}
+
+// GetTracerouteRuns returns a target's stored runs, newest first, with hops
+// parsed from the JSON column (never nil).
+func GetTracerouteRuns(db *sql.DB, targetID string, limit int) ([]TracerouteRun, error) {
+	rows, err := db.Query(
+		`SELECT id, target_id, address, hops, error, recorded_at FROM traceroute_runs
+		 WHERE target_id = ? ORDER BY recorded_at DESC, id DESC LIMIT ?`,
+		targetID, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []TracerouteRun
+	for rows.Next() {
+		var r TracerouteRun
+		var hops string
+		if err := rows.Scan(&r.ID, &r.TargetID, &r.Address, &hops, &r.Error, &r.RecordedAt); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal([]byte(hops), &r.Hops); err != nil || r.Hops == nil {
+			r.Hops = []routeros.TracerouteHop{}
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+func DeleteOldTracerouteRuns(db *sql.DB, cutoff time.Time) (int64, error) {
+	res, err := db.Exec(`DELETE FROM traceroute_runs WHERE recorded_at < ?`, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 func DeleteOldPingSamples(db *sql.DB, cutoff time.Time) (int64, error) {

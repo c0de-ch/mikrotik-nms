@@ -40,14 +40,38 @@ const defaultConnectivityPingCount = 5
 // Unresolvable/offline targets still persist a sample (sent=0, error set) so
 // the time series shows "no data" gaps honestly.
 type ConnectivityPoller struct {
-	db       *sql.DB
-	pool     *routeros.Pool
-	hub      *ws.Hub
-	interval time.Duration
+	db        *sql.DB
+	pool      *routeros.Pool
+	hub       *ws.Hub
+	interval  time.Duration
+	verifyTLS bool
+
+	// Auto-traceroute state: per-target cooldown so a sustained dropoff doesn't
+	// re-trace every cycle, plus a small global semaphore so a flood of lossy
+	// targets can't spawn unbounded dedicated-connection goroutines.
+	traceMu      sync.Mutex
+	traceLastRun map[string]time.Time
+	traceSem     chan struct{}
 }
 
-func NewConnectivityPoller(db *sql.DB, pool *routeros.Pool, hub *ws.Hub, interval time.Duration) *ConnectivityPoller {
-	return &ConnectivityPoller{db: db, pool: pool, hub: hub, interval: interval}
+// autoTracerouteCooldown is the minimum spacing between auto-captured
+// traceroutes for one target.
+const autoTracerouteCooldown = 10 * time.Minute
+
+// tracerouteTimeout bounds one /tool/traceroute run (20 hops × count=1 against
+// an unresponsive path stays under this).
+const tracerouteTimeout = 45 * time.Second
+
+func NewConnectivityPoller(db *sql.DB, pool *routeros.Pool, hub *ws.Hub, interval time.Duration, verifyTLS bool) *ConnectivityPoller {
+	return &ConnectivityPoller{
+		db:           db,
+		pool:         pool,
+		hub:          hub,
+		interval:     interval,
+		verifyTLS:    verifyTLS,
+		traceLastRun: make(map[string]time.Time),
+		traceSem:     make(chan struct{}, 2),
+	}
 }
 
 // currentInterval reads the runtime-tunable connectivity_interval (seconds)
@@ -80,6 +104,22 @@ func (cp *ConnectivityPoller) pingCount() int {
 		count = 10
 	}
 	return count
+}
+
+// tracerouteLossThreshold reads the runtime-tunable traceroute_loss_threshold
+// (percent) from app_settings. A returned 0 means auto-capture is DISABLED —
+// unset, unparseable or out-of-range (outside 0..100) values all disable it
+// rather than guessing.
+func (cp *ConnectivityPoller) tracerouteLossThreshold() float64 {
+	v, err := queries.GetSetting(cp.db, "traceroute_loss_threshold")
+	if err != nil {
+		return 0
+	}
+	n, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+	if err != nil || n <= 0 || n > 100 {
+		return 0
+	}
+	return n
 }
 
 func (cp *ConnectivityPoller) Run(ctx context.Context) {
@@ -189,6 +229,7 @@ func (cp *ConnectivityPoller) poll(ctx context.Context) {
 	}
 
 	count := cp.pingCount()
+	lossThreshold := cp.tracerouteLossThreshold()
 
 	// Probe each device's group concurrently; within a group sequentially (the
 	// per-client mutex serializes same-device API commands anyway).
@@ -218,7 +259,12 @@ func (cp *ConnectivityPoller) poll(ctx context.Context) {
 					return
 				default:
 				}
-				res, err := routeros.RunPing(client, task.address, count)
+				res, err := routeros.RunPing(client, routeros.PingOptions{
+					Address:    task.address,
+					Count:      count,
+					SrcAddress: task.target.SrcAddress,
+					Interface:  task.target.SrcInterface,
+				})
 				if err != nil {
 					cp.recordError(task.target, devID, task.address, err.Error())
 					continue
@@ -235,6 +281,14 @@ func (cp *ConnectivityPoller) poll(ctx context.Context) {
 					RTTMaxMs: res.RTTMaxMs,
 					JitterMs: res.JitterMs,
 				})
+				// Auto-capture the path during a dropoff: an internet target whose
+				// probe RAN (error=="") but lost >= threshold gets an async
+				// traceroute, so the lossy route is recorded while it's happening.
+				if task.target.Kind != "client" && lossThreshold > 0 && res.LossPct >= lossThreshold {
+					if dev, ok := deviceByID[devID]; ok {
+						cp.maybeAutoTraceroute(task.target, dev)
+					}
+				}
 			}
 		}(devID, tasks)
 	}
@@ -267,6 +321,73 @@ func (cp *ConnectivityPoller) persistAndPublish(s *queries.PingSample) {
 		return
 	}
 	cp.hub.Publish("connectivity.sample", s)
+}
+
+// maybeAutoTraceroute fires an async traceroute for a lossy internet target.
+// Per-target cooldown (autoTracerouteCooldown) plus the global traceSem bound
+// (cap 2) keep a flood of lossy targets from spawning unbounded goroutines —
+// when the bound is hit the capture is simply skipped (the cooldown is only
+// recorded for runs that actually start, so the next cycle retries). The
+// shared TryBeginRun guard additionally keeps it from overlapping an API
+// run-now traceroute for the same target.
+//
+// The trace runs on a dedicated DialOnce connection: a 20-hop run against an
+// unresponsive path takes up to ~45s, which would hold the pooled client's
+// mutex past CommandTimeout and force-close it under every other poller. dev
+// comes from the cycle's ListDevices snapshot, credentials already decrypted.
+func (cp *ConnectivityPoller) maybeAutoTraceroute(t queries.PingTarget, dev queries.Device) {
+	cp.traceMu.Lock()
+	if last, ok := cp.traceLastRun[t.ID]; ok && time.Since(last) < autoTracerouteCooldown {
+		cp.traceMu.Unlock()
+		return
+	}
+	select {
+	case cp.traceSem <- struct{}{}:
+	default:
+		cp.traceMu.Unlock()
+		return // too many traceroutes already in flight
+	}
+	// Shared run guard with the API's run-now endpoint: if a manual traceroute
+	// for this target is mid-flight, skip WITHOUT recording the cooldown so the
+	// next cycle retries.
+	if !TryBeginRun("traceroute:" + t.ID) {
+		<-cp.traceSem
+		cp.traceMu.Unlock()
+		return
+	}
+	cp.traceLastRun[t.ID] = time.Now()
+	cp.traceMu.Unlock()
+
+	go func() {
+		defer EndRun("traceroute:" + t.ID)
+		defer func() { <-cp.traceSem }()
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("connectivity: panic in auto-traceroute for target %s: %v", t.ID, r)
+			}
+		}()
+
+		run := &queries.TracerouteRun{TargetID: t.ID, Address: t.Address}
+		client, err := routeros.DialOnce(dev.Address, dev.APIPort, dev.Username, dev.PasswordEnc, dev.UseTLS, cp.verifyTLS)
+		if err != nil {
+			run.Error = err.Error()
+		} else {
+			hops, err := routeros.Traceroute(client, t.Address, t.SrcAddress, t.SrcInterface, tracerouteTimeout)
+			client.Close()
+			if err != nil {
+				run.Error = err.Error()
+			} else {
+				run.Hops = hops
+			}
+		}
+
+		// Persist FIRST (the WS publish drops for slow clients), then broadcast.
+		if err := queries.InsertTracerouteRun(cp.db, run); err != nil {
+			log.Printf("connectivity: insert traceroute run for target %s: %v", t.ID, err)
+			return
+		}
+		cp.hub.Publish("connectivity.traceroute", run)
+	}()
 }
 
 // collectSignals fetches the wifi registration tables once per online device

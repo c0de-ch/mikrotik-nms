@@ -66,8 +66,11 @@ func (m *Manager) Start() {
 	netHealth := NewNetworkHealthPoller(m.db, m.pool, m.hub, m.cfg.NetworkHealthInterval)
 	go netHealth.Run(ctx)
 
-	connectivity := NewConnectivityPoller(m.db, m.pool, m.hub, defaultConnectivityInterval)
+	connectivity := NewConnectivityPoller(m.db, m.pool, m.hub, defaultConnectivityInterval, m.cfg.ROSTLSVerify)
 	go connectivity.Run(ctx)
+
+	speedTests := NewSpeedTestPoller(m.db, m.hub, m.cfg.ROSTLSVerify, defaultSpeedTestInterval)
+	go speedTests.Run(ctx)
 
 	log.Println("poller: started all pollers")
 }
@@ -595,6 +598,26 @@ func (m *Manager) retentionLoop(ctx context.Context) {
 				log.Printf("poller retention: client signal samples: %v", err)
 			} else if n > 0 {
 				log.Printf("poller retention: deleted %d old client signal samples", n)
+			}
+
+			// Speed samples (~4 rows/day) and traceroute runs are sparse series
+			// and the UI offers a 30d trend, so keep them at least 90 days
+			// regardless of the general retention setting.
+			speedDays := m.cfg.RetentionDays
+			if speedDays < 90 {
+				speedDays = 90
+			}
+			speedCutoff := time.Now().AddDate(0, 0, -speedDays)
+			if n, err := queries.DeleteOldSpeedSamples(m.db, speedCutoff); err != nil {
+				log.Printf("poller retention: speed samples: %v", err)
+			} else if n > 0 {
+				log.Printf("poller retention: deleted %d old speed samples", n)
+			}
+
+			if n, err := queries.DeleteOldTracerouteRuns(m.db, speedCutoff); err != nil {
+				log.Printf("poller retention: traceroute runs: %v", err)
+			} else if n > 0 {
+				log.Printf("poller retention: deleted %d old traceroute runs", n)
 			}
 
 			if n, err := queries.DeleteStaleMACLookups(m.db, wifiCutoff); err != nil {

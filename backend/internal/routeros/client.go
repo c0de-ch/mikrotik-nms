@@ -103,6 +103,33 @@ func (p *Pool) Dial(deviceID, address string, port int, username, password strin
 	return client, nil
 }
 
+// DialOnce opens a one-shot dedicated connection to a RouterOS device,
+// mirroring Pool.Dial's dial logic (TLS handling, IPv6-safe host:port) but NOT
+// registering the client in clientMutexes and NOT pooling it. The caller owns
+// the connection and must Close() it.
+//
+// Intended for long-running commands (speed-test /tool/fetch downloads,
+// /tool/traceroute) that would otherwise hold the shared per-client mutex past
+// CommandTimeout and force-close the pooled connection out from under every
+// other poller.
+func DialOnce(address string, port int, username, password string, useTLS, verifyTLS bool) (*ros.Client, error) {
+	addr := JoinHostPort(address, port)
+
+	var client *ros.Client
+	var err error
+	if useTLS {
+		client, err = ros.DialTLS(addr, username, password, &tls.Config{
+			InsecureSkipVerify: !verifyTLS, //nolint:gosec // self-signed certs are common; opt-in verification via MIKROTIK_NMS_ROS_TLS_VERIFY
+		})
+	} else {
+		client, err = ros.Dial(addr, username, password)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("routeros dial %s: %w", addr, err)
+	}
+	return client, nil
+}
+
 // Get returns an existing connection or nil.
 func (p *Pool) Get(deviceID string) *ros.Client {
 	p.mu.RLock()
@@ -141,6 +168,15 @@ func (p *Pool) CloseAll() {
 // mutex. On timeout the client is closed, which unblocks the in-flight read so
 // the helper goroutine can exit, and the next EnsureConnection redials.
 func RunCommand(client *ros.Client, command string, args ...string) (*ros.Reply, error) {
+	return RunCommandWithTimeout(client, CommandTimeout, command, args...)
+}
+
+// RunCommandWithTimeout is RunCommand with a caller-chosen timeout, for
+// commands that legitimately run longer than CommandTimeout (speed-test
+// downloads, traceroutes). It acquires the per-client mutex IF the client was
+// registered via Pool.Dial — dedicated DialOnce clients aren't, which is fine
+// as long as they are used from a single goroutine.
+func RunCommandWithTimeout(client *ros.Client, timeout time.Duration, command string, args ...string) (*ros.Reply, error) {
 	if v, ok := clientMutexes.Load(client); ok {
 		mu := v.(*sync.Mutex)
 		mu.Lock()
@@ -160,9 +196,9 @@ func RunCommand(client *ros.Client, command string, args ...string) (*ros.Reply,
 	select {
 	case res := <-done:
 		return res.reply, res.err
-	case <-time.After(CommandTimeout):
+	case <-time.After(timeout):
 		client.Close() // unblocks the goroutine's read; it then exits via the buffered chan
-		return nil, fmt.Errorf("routeros command %q timed out after %s", command, CommandTimeout)
+		return nil, fmt.Errorf("routeros command %q timed out after %s", command, timeout)
 	}
 }
 

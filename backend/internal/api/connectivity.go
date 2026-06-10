@@ -2,6 +2,7 @@ package api
 
 import (
 	"database/sql"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/mikrotik-nms/backend/internal/database/queries"
+	"github.com/mikrotik-nms/backend/internal/poller"
 	"github.com/mikrotik-nms/backend/internal/routeros"
 )
 
@@ -43,6 +45,29 @@ func normalizeMAC(mac string) string {
 		return ""
 	}
 	return strings.ToUpper(hw.String())
+}
+
+// validProbeAddress reports whether s is acceptable as a probe address: an IP
+// literal (v4 or v6 — anything net.ParseIP accepts) or a plausible hostname
+// (letters, digits, dots, hyphens, underscores). The hostname charset
+// implicitly rejects whitespace and control characters, which would otherwise
+// be smuggled into the RouterOS command sentence.
+func validProbeAddress(s string) bool {
+	if s == "" {
+		return false
+	}
+	if net.ParseIP(s) != nil {
+		return true
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9',
+			r == '.', r == '-', r == '_':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // enrichPingTargets decorates targets with device names, client hostnames and
@@ -87,11 +112,13 @@ func (s *Server) handleListPingTargets(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleCreatePingTarget(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Kind       string `json:"kind"`
-		Address    string `json:"address"`
-		MACAddress string `json:"mac_address"`
-		Label      string `json:"label"`
-		DeviceID   string `json:"device_id"`
+		Kind         string `json:"kind"`
+		Address      string `json:"address"`
+		MACAddress   string `json:"mac_address"`
+		Label        string `json:"label"`
+		DeviceID     string `json:"device_id"`
+		SrcAddress   string `json:"src_address"`
+		SrcInterface string `json:"src_interface"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -99,18 +126,28 @@ func (s *Server) handleCreatePingTarget(w http.ResponseWriter, r *http.Request) 
 	}
 
 	t := &queries.PingTarget{
-		ID:       uuid.NewString(),
-		Kind:     req.Kind,
-		Address:  strings.TrimSpace(req.Address),
-		Label:    strings.TrimSpace(req.Label),
-		DeviceID: strings.TrimSpace(req.DeviceID),
-		Enabled:  true,
+		ID:           uuid.NewString(),
+		Kind:         req.Kind,
+		Address:      strings.TrimSpace(req.Address),
+		Label:        strings.TrimSpace(req.Label),
+		DeviceID:     strings.TrimSpace(req.DeviceID),
+		SrcAddress:   strings.TrimSpace(req.SrcAddress),
+		SrcInterface: strings.TrimSpace(req.SrcInterface),
+		Enabled:      true,
+	}
+	if t.SrcAddress != "" && net.ParseIP(t.SrcAddress) == nil {
+		writeError(w, http.StatusBadRequest, "src_address must be a valid IP address")
+		return
 	}
 
 	switch req.Kind {
 	case "internet":
 		if t.Address == "" {
 			writeError(w, http.StatusBadRequest, "address is required for internet targets")
+			return
+		}
+		if !validProbeAddress(t.Address) {
+			writeError(w, http.StatusBadRequest, "address must be an IP address (v4 or v6) or a hostname")
 			return
 		}
 		if t.DeviceID == "" {
@@ -164,10 +201,12 @@ func (s *Server) handleUpdatePingTarget(w http.ResponseWriter, r *http.Request) 
 	}
 
 	var req struct {
-		Address  *string `json:"address"`
-		Label    *string `json:"label"`
-		DeviceID *string `json:"device_id"`
-		Enabled  *bool   `json:"enabled"`
+		Address      *string `json:"address"`
+		Label        *string `json:"label"`
+		DeviceID     *string `json:"device_id"`
+		SrcAddress   *string `json:"src_address"`
+		SrcInterface *string `json:"src_interface"`
+		Enabled      *bool   `json:"enabled"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -183,11 +222,27 @@ func (s *Server) handleUpdatePingTarget(w http.ResponseWriter, r *http.Request) 
 	if req.DeviceID != nil {
 		t.DeviceID = strings.TrimSpace(*req.DeviceID)
 	}
+	if req.SrcAddress != nil {
+		t.SrcAddress = strings.TrimSpace(*req.SrcAddress)
+	}
+	if req.SrcInterface != nil {
+		t.SrcInterface = strings.TrimSpace(*req.SrcInterface)
+	}
 	if req.Enabled != nil {
 		t.Enabled = *req.Enabled
 	}
+	if t.SrcAddress != "" && net.ParseIP(t.SrcAddress) == nil {
+		writeError(w, http.StatusBadRequest, "src_address must be a valid IP address")
+		return
+	}
 	if t.Kind == "internet" && t.Address == "" {
 		writeError(w, http.StatusBadRequest, "address is required for internet targets")
+		return
+	}
+	// Validate any non-empty address (client targets' cached addresses are
+	// resolved IPs, so this only ever rejects hand-entered garbage).
+	if t.Address != "" && !validProbeAddress(t.Address) {
+		writeError(w, http.StatusBadRequest, "address must be an IP address (v4 or v6) or a hostname")
 		return
 	}
 	// Mirror the create-time invariant: an internet target without a probing
@@ -293,7 +348,12 @@ func (s *Server) handleRunPingTarget(w http.ResponseWriter, r *http.Request) {
 		DeviceID: deviceID,
 		Address:  address,
 	}
-	res, err := routeros.RunPing(client, address, s.connectivityPingCount())
+	res, err := routeros.RunPing(client, routeros.PingOptions{
+		Address:    address,
+		Count:      s.connectivityPingCount(),
+		SrcAddress: t.SrcAddress,
+		Interface:  t.SrcInterface,
+	})
 	if err != nil {
 		// A trap (e.g. invalid address) is a real probe outcome: record it.
 		sample.Error = err.Error()
@@ -364,6 +424,120 @@ func (s *Server) handleGetPingSamples(w http.ResponseWriter, r *http.Request) {
 		samples = []queries.PingSample{}
 	}
 	writeJSON(w, http.StatusOK, samples)
+}
+
+// tracerouteRunTimeout bounds one /tool/traceroute run on its dedicated
+// connection (20 hops × count=1 against an unresponsive path stays under it).
+const tracerouteRunTimeout = 45 * time.Second
+
+// handleRunTraceroute starts an async traceroute for an internet target and
+// returns 202 immediately — up to ~45s on a DEDICATED connection (DialOnce)
+// would blow the HTTP write timeout and, on a pooled client, hold its mutex
+// past CommandTimeout. The result is persisted and broadcast on
+// "connectivity.traceroute". The run guard shared with the auto-traceroute
+// poller yields 409 for concurrent runs against the same target, and the
+// global API run-slot cap yields 409 when too many run-nows are in flight.
+func (s *Server) handleRunTraceroute(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	t, err := queries.GetPingTarget(s.db, id)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			writeError(w, http.StatusNotFound, "ping target not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to get ping target")
+		return
+	}
+	if t.Kind == "client" {
+		writeError(w, http.StatusBadRequest, "traceroute is only available for internet targets")
+		return
+	}
+	if t.DeviceID == "" {
+		writeError(w, http.StatusConflict, "no probing device configured")
+		return
+	}
+	dev, err := queries.GetDevice(s.db, t.DeviceID)
+	if err != nil {
+		writeError(w, http.StatusConflict, "probing device no longer exists")
+		return
+	}
+	if dev.Status != "online" {
+		writeError(w, http.StatusConflict, "probing device is "+dev.Status)
+		return
+	}
+
+	key := "traceroute:" + t.ID
+	if !poller.TryBeginRun(key) {
+		writeError(w, http.StatusConflict, "a run for this test/target is already in progress")
+		return
+	}
+	if !poller.TryAcquireAPIRunSlot() {
+		poller.EndRun(key)
+		writeError(w, http.StatusConflict, "too many runs in flight — try again shortly")
+		return
+	}
+
+	verifyTLS := s.cfg.ROSTLSVerify
+	go func() {
+		defer poller.EndRun(key)
+		defer poller.ReleaseAPIRunSlot()
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("api: panic in traceroute for target %s: %v", t.ID, r)
+			}
+		}()
+
+		run := &queries.TracerouteRun{TargetID: t.ID, Address: t.Address}
+		client, err := routeros.DialOnce(dev.Address, dev.APIPort, dev.Username, dev.PasswordEnc, dev.UseTLS, verifyTLS)
+		if err != nil {
+			run.Error = err.Error()
+		} else {
+			hops, err := routeros.Traceroute(client, t.Address, t.SrcAddress, t.SrcInterface, tracerouteRunTimeout)
+			client.Close()
+			if err != nil {
+				run.Error = err.Error()
+			} else {
+				run.Hops = hops
+			}
+		}
+
+		// Persist FIRST (the WS publish drops for slow clients), then broadcast.
+		if err := queries.InsertTracerouteRun(s.db, run); err != nil {
+			log.Printf("api: insert traceroute run for target %s: %v", t.ID, err)
+			return
+		}
+		s.hub.Publish("connectivity.traceroute", run)
+	}()
+
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "started"})
+}
+
+func (s *Server) handleListTracerouteRuns(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if _, err := queries.GetPingTarget(s.db, id); err != nil {
+		if err == sql.ErrNoRows {
+			writeError(w, http.StatusNotFound, "ping target not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to get ping target")
+		return
+	}
+
+	limit := 10
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if l, err := strconv.Atoi(v); err == nil && l > 0 && l <= 50 {
+			limit = l
+		}
+	}
+	runs, err := queries.GetTracerouteRuns(s.db, id, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to get traceroute runs")
+		return
+	}
+	if runs == nil {
+		runs = []queries.TracerouteRun{}
+	}
+	writeJSON(w, http.StatusOK, runs)
 }
 
 func (s *Server) handleClientTimeline(w http.ResponseWriter, r *http.Request) {

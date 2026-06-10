@@ -250,13 +250,28 @@ export const api = {
     targets: (token: string) => apiFetch<PingTarget[]>("/connectivity/targets", { token }),
     createTarget: (
       token: string,
-      data: { kind: "internet" | "client"; address?: string; mac_address?: string; label?: string; device_id?: string },
+      data: {
+        kind: "internet" | "client";
+        address?: string;
+        mac_address?: string;
+        label?: string;
+        device_id?: string;
+        src_address?: string;
+        src_interface?: string;
+      },
     ) =>
       apiFetch<PingTarget>("/connectivity/targets", { method: "POST", token, body: JSON.stringify(data) }),
     updateTarget: (
       token: string,
       id: string,
-      data: Partial<{ address: string; label: string; device_id: string; enabled: boolean }>,
+      data: Partial<{
+        address: string;
+        label: string;
+        device_id: string;
+        enabled: boolean;
+        src_address: string;
+        src_interface: string;
+      }>,
     ) =>
       apiFetch<PingTarget>(`/connectivity/targets/${id}`, { method: "PUT", token, body: JSON.stringify(data) }),
     deleteTarget: (token: string, id: string) =>
@@ -277,6 +292,40 @@ export const api = {
       if (to) qs.set("to", to);
       const q = qs.toString() ? `?${qs}` : "";
       return apiFetch<ClientTimeline>(`/connectivity/clients/${encodeURIComponent(mac)}/timeline${q}`, { token });
+    },
+
+    // Speed tests: scheduled /tool/fetch download measurements from a device.
+    speedtests: (token: string) => apiFetch<SpeedTest[]>("/connectivity/speedtests", { token }),
+    createSpeedtest: (token: string, data: { device_id: string; url: string; label?: string }) =>
+      apiFetch<SpeedTest>("/connectivity/speedtests", { method: "POST", token, body: JSON.stringify(data) }),
+    updateSpeedtest: (
+      token: string,
+      id: string,
+      data: Partial<{ device_id: string; url: string; label: string; enabled: boolean }>,
+    ) =>
+      apiFetch<SpeedTest>(`/connectivity/speedtests/${id}`, { method: "PUT", token, body: JSON.stringify(data) }),
+    deleteSpeedtest: (token: string, id: string) =>
+      apiFetch<{ status: string }>(`/connectivity/speedtests/${id}`, { method: "DELETE", token }),
+    // Async: 202 {status:"started"}; the resulting sample arrives via the
+    // "connectivity.speed" WS topic once the download finishes.
+    runSpeedtest: (token: string, id: string) =>
+      apiFetch<{ status: string }>(`/connectivity/speedtests/${id}/run`, { method: "POST", token }),
+    speedtestSamples: (token: string, id: string, params?: { from?: string; to?: string; limit?: number }) => {
+      const qs = new URLSearchParams();
+      if (params?.from) qs.set("from", params.from);
+      if (params?.to) qs.set("to", params.to);
+      if (params?.limit) qs.set("limit", String(params.limit));
+      const q = qs.toString() ? `?${qs}` : "";
+      return apiFetch<SpeedSample[]>(`/connectivity/speedtests/${id}/samples${q}`, { token });
+    },
+
+    // Traceroute on internet targets. Async like runSpeedtest: 202, the run
+    // arrives via the "connectivity.traceroute" WS topic.
+    runTraceroute: (token: string, targetId: string) =>
+      apiFetch<{ status: string }>(`/connectivity/targets/${targetId}/traceroute`, { method: "POST", token }),
+    traceroutes: (token: string, targetId: string, limit?: number) => {
+      const q = limit ? `?limit=${limit}` : "";
+      return apiFetch<TracerouteRun[]>(`/connectivity/targets/${targetId}/traceroutes${q}`, { token });
     },
   },
 
@@ -627,6 +676,11 @@ export interface PingTarget {
   label: string;
   device_id: string;
   enabled: boolean;
+  // Optional probe source: when set, /ping (and traceroute) run with
+  // =src-address= / =interface= so the probe leaves via a specific VLAN/ISP
+  // path instead of the default route. Empty string = unset.
+  src_address: string;
+  src_interface: string;
   created_at: string;
   device_name: string;
   host_name: string;
@@ -648,6 +702,54 @@ export interface PingSample {
   rtt_avg_ms: number | null;
   rtt_max_ms: number | null;
   jitter_ms: number | null;
+  error: string;
+  recorded_at: string;
+}
+
+// Speed test: a scheduled /tool/fetch download measurement run from a RouterOS
+// device. This is the *enriched* shape (device_name / last_sample joined in).
+export interface SpeedTest {
+  id: string;
+  device_id: string;
+  url: string;
+  label: string;
+  enabled: boolean;
+  created_at: string;
+  device_name: string;
+  last_sample: SpeedSample | null;
+}
+
+// One speed-test result. mbps is null when the test failed (error != "").
+export interface SpeedSample {
+  id: number;
+  test_id: string;
+  device_id: string;
+  mbps: number | null;
+  bytes: number;
+  duration_ms: number;
+  error: string;
+  recorded_at: string;
+}
+
+export interface TracerouteHop {
+  hop: number;
+  address: string;
+  loss_pct: number;
+  sent: number;
+  last_ms: number | null;
+  avg_ms: number | null;
+  best_ms: number | null;
+  worst_ms: number | null;
+  status: string;
+}
+
+// One traceroute capture for an internet target (manual run or auto-captured
+// when a probe crosses the loss threshold). hops is never null on success.
+export interface TracerouteRun {
+  id: number;
+  target_id: string;
+  address: string;
+  hops: TracerouteHop[];
   error: string;
   recorded_at: string;
 }

@@ -35,6 +35,9 @@ func TestOpen(t *testing.T) {
 		"ping_targets",
 		"ping_samples",
 		"client_signal_samples",
+		"speed_tests",
+		"speed_samples",
+		"traceroute_runs",
 	}
 
 	for _, table := range expectedTables {

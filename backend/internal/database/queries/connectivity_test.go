@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/mikrotik-nms/backend/internal/routeros"
 )
 
 func TestPingTargetCRUDRoundtrip(t *testing.T) {
@@ -67,6 +68,44 @@ func TestPingTargetCRUDRoundtrip(t *testing.T) {
 	}
 	if _, err := GetPingTarget(db, got.ID); err != sql.ErrNoRows {
 		t.Errorf("get after delete err = %v, want sql.ErrNoRows", err)
+	}
+}
+
+func TestPingTargetSrcFieldsRoundtrip(t *testing.T) {
+	db := testDB(t)
+
+	target := &PingTarget{
+		ID:           uuid.NewString(),
+		Kind:         "internet",
+		Address:      "1.1.1.1",
+		DeviceID:     "dev1",
+		SrcAddress:   "192.168.88.1",
+		SrcInterface: "vlan88",
+		Enabled:      true,
+	}
+	if err := CreatePingTarget(db, target); err != nil {
+		t.Fatalf("CreatePingTarget: %v", err)
+	}
+
+	got, err := GetPingTarget(db, target.ID)
+	if err != nil {
+		t.Fatalf("GetPingTarget: %v", err)
+	}
+	if got.SrcAddress != "192.168.88.1" || got.SrcInterface != "vlan88" {
+		t.Errorf("src fields roundtrip mismatch: %+v", got)
+	}
+
+	got.SrcAddress = "2a01:db8::1"
+	got.SrcInterface = ""
+	if err := UpdatePingTarget(db, got); err != nil {
+		t.Fatalf("UpdatePingTarget: %v", err)
+	}
+	again, err := GetPingTarget(db, got.ID)
+	if err != nil {
+		t.Fatalf("GetPingTarget after update: %v", err)
+	}
+	if again.SrcAddress != "2a01:db8::1" || again.SrcInterface != "" {
+		t.Errorf("src fields update not persisted: %+v", again)
 	}
 }
 
@@ -171,6 +210,185 @@ func TestClientSignalSamplesRoundtrip(t *testing.T) {
 	}
 	if n != 1 {
 		t.Errorf("deleted %d signal samples, want 1", n)
+	}
+}
+
+func TestSpeedTestCRUDAndSamples(t *testing.T) {
+	db := testDB(t)
+
+	test := &SpeedTest{
+		ID:       uuid.NewString(),
+		DeviceID: "dev1",
+		URL:      "https://speed.example.com/100MB.bin",
+		Label:    "wan via dev1",
+		Enabled:  true,
+	}
+	if err := CreateSpeedTest(db, test); err != nil {
+		t.Fatalf("CreateSpeedTest: %v", err)
+	}
+
+	got, err := GetSpeedTest(db, test.ID)
+	if err != nil {
+		t.Fatalf("GetSpeedTest: %v", err)
+	}
+	if got.URL != test.URL || got.DeviceID != "dev1" || !got.Enabled {
+		t.Errorf("roundtrip mismatch: %+v", got)
+	}
+	if got.CreatedAt.IsZero() {
+		t.Error("created_at not populated by DB default")
+	}
+
+	got.Enabled = false
+	got.Label = "renamed"
+	if err := UpdateSpeedTest(db, got); err != nil {
+		t.Fatalf("UpdateSpeedTest: %v", err)
+	}
+	enabled, err := ListEnabledSpeedTests(db)
+	if err != nil {
+		t.Fatalf("ListEnabledSpeedTests: %v", err)
+	}
+	if len(enabled) != 0 {
+		t.Errorf("disabled test listed as enabled: %d", len(enabled))
+	}
+	all, err := ListSpeedTests(db)
+	if err != nil {
+		t.Fatalf("ListSpeedTests: %v", err)
+	}
+	if len(all) != 1 || all[0].Label != "renamed" {
+		t.Errorf("update not persisted: %+v", all)
+	}
+
+	// Samples: a successful one and a newer failed one (nil mbps).
+	mbps := 87.5
+	older := &SpeedSample{
+		TestID: test.ID, DeviceID: "dev1", Mbps: &mbps, Bytes: 104857600, DurationMs: 9586,
+		RecordedAt: time.Now().UTC().Add(-time.Minute),
+	}
+	if err := InsertSpeedSample(db, older); err != nil {
+		t.Fatalf("InsertSpeedSample(older): %v", err)
+	}
+	newer := &SpeedSample{TestID: test.ID, DeviceID: "dev1", Error: "device is offline"}
+	if err := InsertSpeedSample(db, newer); err != nil {
+		t.Fatalf("InsertSpeedSample(newer): %v", err)
+	}
+	if newer.ID == 0 || newer.RecordedAt.IsZero() {
+		t.Errorf("InsertSpeedSample did not backfill id/recorded_at: %+v", newer)
+	}
+
+	samples, err := GetSpeedSamples(db, test.ID, time.Now().Add(-time.Hour), time.Now().Add(time.Hour), 100)
+	if err != nil {
+		t.Fatalf("GetSpeedSamples: %v", err)
+	}
+	if len(samples) != 2 {
+		t.Fatalf("got %d samples, want 2", len(samples))
+	}
+	if samples[0].Error != "device is offline" || samples[0].Mbps != nil {
+		t.Errorf("samples not newest-first or error sample has mbps: %+v", samples[0])
+	}
+	if samples[1].Mbps == nil || *samples[1].Mbps != 87.5 || samples[1].Bytes != 104857600 {
+		t.Errorf("mbps/bytes roundtrip failed: %+v", samples[1])
+	}
+
+	latest, err := GetLatestSpeedSamples(db)
+	if err != nil {
+		t.Fatalf("GetLatestSpeedSamples: %v", err)
+	}
+	ls, ok := latest[test.ID]
+	if !ok {
+		t.Fatal("no latest sample for test")
+	}
+	if ls.ID != newer.ID {
+		t.Errorf("latest sample id = %d, want %d", ls.ID, newer.ID)
+	}
+
+	// Retention: everything older than now+1h goes away.
+	n, err := DeleteOldSpeedSamples(db, time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("DeleteOldSpeedSamples: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("deleted %d samples, want 2", n)
+	}
+
+	if err := DeleteSpeedTest(db, test.ID); err != nil {
+		t.Fatalf("DeleteSpeedTest: %v", err)
+	}
+	if err := DeleteSpeedTest(db, test.ID); err != sql.ErrNoRows {
+		t.Errorf("second delete err = %v, want sql.ErrNoRows", err)
+	}
+	if _, err := GetSpeedTest(db, test.ID); err != sql.ErrNoRows {
+		t.Errorf("get after delete err = %v, want sql.ErrNoRows", err)
+	}
+}
+
+func TestTracerouteRunRoundtrip(t *testing.T) {
+	db := testDB(t)
+
+	target := &PingTarget{ID: uuid.NewString(), Kind: "internet", Address: "8.8.8.8", DeviceID: "dev1", Enabled: true}
+	if err := CreatePingTarget(db, target); err != nil {
+		t.Fatalf("CreatePingTarget: %v", err)
+	}
+
+	last := 8.2
+	older := &TracerouteRun{
+		TargetID: target.ID,
+		Address:  "8.8.8.8",
+		Hops: []routeros.TracerouteHop{
+			{Hop: 1, Address: "192.168.1.1", LossPct: 0, Sent: 1, LastMs: &last, AvgMs: &last, BestMs: &last, WorstMs: &last},
+			{Hop: 2, Address: "", LossPct: 100, Sent: 1, Status: "timeout"},
+		},
+		RecordedAt: time.Now().UTC().Add(-time.Minute),
+	}
+	if err := InsertTracerouteRun(db, older); err != nil {
+		t.Fatalf("InsertTracerouteRun(older): %v", err)
+	}
+	newer := &TracerouteRun{TargetID: target.ID, Address: "8.8.8.8", Error: "probing device offline"}
+	if err := InsertTracerouteRun(db, newer); err != nil {
+		t.Fatalf("InsertTracerouteRun(newer): %v", err)
+	}
+	if newer.ID == 0 || newer.RecordedAt.IsZero() {
+		t.Errorf("InsertTracerouteRun did not backfill id/recorded_at: %+v", newer)
+	}
+	if newer.Hops == nil {
+		t.Error("InsertTracerouteRun left Hops nil — struct not publishable as-is")
+	}
+
+	runs, err := GetTracerouteRuns(db, target.ID, 10)
+	if err != nil {
+		t.Fatalf("GetTracerouteRuns: %v", err)
+	}
+	if len(runs) != 2 {
+		t.Fatalf("got %d runs, want 2", len(runs))
+	}
+	if runs[0].Error != "probing device offline" || len(runs[0].Hops) != 0 || runs[0].Hops == nil {
+		t.Errorf("runs not newest-first or error run hops not empty slice: %+v", runs[0])
+	}
+	if len(runs[1].Hops) != 2 {
+		t.Fatalf("hops JSON roundtrip: got %d hops, want 2", len(runs[1].Hops))
+	}
+	h := runs[1].Hops[0]
+	if h.Hop != 1 || h.Address != "192.168.1.1" || h.LastMs == nil || *h.LastMs != 8.2 {
+		t.Errorf("hop 1 roundtrip mismatch: %+v", h)
+	}
+	if to := runs[1].Hops[1]; to.Status != "timeout" || to.LastMs != nil || to.LossPct != 100 {
+		t.Errorf("timeout hop roundtrip mismatch: %+v", to)
+	}
+
+	// limit applies
+	one, err := GetTracerouteRuns(db, target.ID, 1)
+	if err != nil {
+		t.Fatalf("GetTracerouteRuns(limit=1): %v", err)
+	}
+	if len(one) != 1 || one[0].ID != newer.ID {
+		t.Errorf("limit/order wrong: %+v", one)
+	}
+
+	n, err := DeleteOldTracerouteRuns(db, time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("DeleteOldTracerouteRuns: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("deleted %d runs, want 2", n)
 	}
 }
 

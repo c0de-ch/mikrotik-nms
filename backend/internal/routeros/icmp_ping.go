@@ -29,24 +29,44 @@ type PingResult struct {
 // CLI-default 1s spacing.
 const pingProbeInterval = "0.2"
 
+// PingOptions parameterizes one RunPing burst. SrcAddress / Interface are
+// optional probe-source selectors (=src-address= / =interface=) for
+// multi-ISP / policy-routed setups where the probe must leave via a specific
+// VLAN interface or source IP; empty means RouterOS picks per its routing
+// table.
+type PingOptions struct {
+	Address    string
+	Count      int
+	SrcAddress string
+	Interface  string
+}
+
 // RunPing executes the RouterOS /ping command from the device the client is
-// connected to and summarizes the replies. count is clamped to 1..10 so the
+// connected to and summarizes the replies. Count is clamped to 1..10 so the
 // burst (count × pingProbeInterval) stays far under the shared CommandTimeout.
 //
 // Not to be confused with Ping (the plain TCP liveness dial): RunPing sends
 // real ICMP from the RouterOS device to an arbitrary address.
-func RunPing(client *ros.Client, address string, count int) (*PingResult, error) {
+func RunPing(client *ros.Client, opts PingOptions) (*PingResult, error) {
+	count := opts.Count
 	if count < 1 {
 		count = 1
 	}
 	if count > 10 {
 		count = 10
 	}
-	reply, err := RunCommand(client, "/ping",
-		"=address="+address,
-		"=count="+strconv.Itoa(count),
-		"=interval="+pingProbeInterval,
-	)
+	args := []string{
+		"=address=" + opts.Address,
+		"=count=" + strconv.Itoa(count),
+		"=interval=" + pingProbeInterval,
+	}
+	if opts.SrcAddress != "" {
+		args = append(args, "=src-address="+opts.SrcAddress)
+	}
+	if opts.Interface != "" {
+		args = append(args, "=interface="+opts.Interface)
+	}
+	reply, err := RunCommand(client, "/ping", args...)
 	if err != nil {
 		return nil, err
 	}
