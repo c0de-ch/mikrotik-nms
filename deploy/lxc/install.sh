@@ -35,6 +35,7 @@ SERVICE_USER="mikrotik-nms"
 
 HOSTNAME_ARG=""
 PUBLIC_URL=""
+PUBLIC_URL_EXPLICIT=0
 SOURCE_DIR=""
 NO_TLS=0
 TLS_INTERNAL=0
@@ -62,7 +63,7 @@ usage() {
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --hostname)   HOSTNAME_ARG="$2"; shift 2 ;;
-        --public-url) PUBLIC_URL="$2";   shift 2 ;;
+        --public-url) PUBLIC_URL="$2"; PUBLIC_URL_EXPLICIT=1; shift 2 ;;
         --source)     SOURCE_DIR="$2";   shift 2 ;;
         --no-tls)        NO_TLS=1;       shift   ;;
         --tls-internal)  TLS_INTERNAL=1; shift   ;;
@@ -114,6 +115,19 @@ case "$PUBLIC_URL" in
     http://*)  PUBLIC_WS_URL="ws://${PUBLIC_URL#http://}" ;;
     *)         die "--public-url must start with http:// or https://" ;;
 esac
+
+# Bake absolute API/WS URLs into the JS bundle only when the operator
+# explicitly passed --public-url. The frontend defaults to same-origin via
+# the reverse proxy, which keeps the site working under every hostname it
+# is reached on (IP, internal DNS name, public name). A baked URL silently
+# breaks all of them the day that one hostname moves or dies.
+if [[ $PUBLIC_URL_EXPLICIT -eq 1 ]]; then
+    BAKED_API_URL="$PUBLIC_URL"
+    BAKED_WS_URL="$PUBLIC_WS_URL"
+else
+    BAKED_API_URL=""
+    BAKED_WS_URL=""
+fi
 
 # ---- 1. system packages -----------------------------------------------------
 
@@ -242,8 +256,13 @@ NODE_ENV=production
 
 # --- frontend build-time vars (baked into the JS bundle) ---
 # These are read by install.sh during 'npm run build'.
-NEXT_PUBLIC_API_URL=${PUBLIC_URL}
-NEXT_PUBLIC_WS_URL=${PUBLIC_WS_URL}
+# Leave EMPTY for same-origin (recommended): the browser calls /api/* on
+# whatever hostname the site was loaded from and Caddy proxies it to the
+# backend. Only set an absolute URL if the API lives on a different origin
+# than the frontend; a wrong value here makes every page fail with
+# "Failed to fetch" after the next rebuild.
+NEXT_PUBLIC_API_URL=${BAKED_API_URL}
+NEXT_PUBLIC_WS_URL=${BAKED_WS_URL}
 
 # --- caddy ---
 NMS_HOSTNAME=${HOSTNAME_ARG:-:80}

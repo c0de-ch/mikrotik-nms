@@ -10,7 +10,12 @@ import { toast } from "sonner";
 
 function getApiBase() {
   if (process.env.NEXT_PUBLIC_API_URL) return process.env.NEXT_PUBLIC_API_URL;
-  if (typeof window !== "undefined") return `http://${window.location.hostname}:8080`;
+  if (typeof window !== "undefined") {
+    // Same logic as src/lib/api.ts: dev backend on :8080, otherwise
+    // same-origin through the reverse proxy.
+    if (window.location.port === "3000") return `http://${window.location.hostname}:8080`;
+    return "";
+  }
   return "http://localhost:8080";
 }
 

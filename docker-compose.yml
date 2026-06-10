@@ -28,9 +28,9 @@ services:
       dockerfile: ../deploy/docker/Dockerfile.frontend
     ports:
       - "3000:3000"
-    environment:
-      - NEXT_PUBLIC_API_URL=http://backend:8080
-      - NEXT_PUBLIC_WS_URL=ws://backend:8080
+    # NEXT_PUBLIC_* are inlined at build time, not read at runtime — do not
+    # set them here. The frontend on port 3000 targets <hostname>:8080,
+    # which matches the backend port published above.
     depends_on:
       backend:
         condition: service_healthy

@@ -1,7 +1,30 @@
 function getApiBase() {
   if (process.env.NEXT_PUBLIC_API_URL) return process.env.NEXT_PUBLIC_API_URL;
-  if (typeof window !== "undefined") return `http://${window.location.hostname}:8080`;
+  if (typeof window !== "undefined") {
+    // `next dev` serves the frontend on :3000 with the Go backend on :8080.
+    // Anywhere else the reverse proxy serves /api/* on the same origin, so an
+    // empty base (relative URLs) works for every hostname the site is reached
+    // under — baking an absolute URL breaks access via any other hostname.
+    if (window.location.port === "3000") return `http://${window.location.hostname}:8080`;
+    return "";
+  }
   return "http://localhost:8080";
+}
+
+// Human-readable description of where API requests go, for error messages.
+function describeApiTarget(): string {
+  if (process.env.NEXT_PUBLIC_API_URL) {
+    return `${process.env.NEXT_PUBLIC_API_URL} (build-time NEXT_PUBLIC_API_URL — rebuild the frontend if this address is wrong)`;
+  }
+  if (typeof window !== "undefined") return getApiBase() || window.location.origin;
+  return getApiBase();
+}
+
+function networkError(): ApiError {
+  return new ApiError(
+    0,
+    `Cannot reach the NMS API at ${describeApiTarget()}. The server may be down or unreachable from this network.`,
+  );
 }
 
 interface FetchOptions extends RequestInit {
@@ -51,11 +74,17 @@ async function apiFetch<T>(path: string, options: FetchOptions = {}): Promise<T>
     if (accessToken) {
       headers["Authorization"] = `Bearer ${accessToken}`;
     }
-    return fetch(`${getApiBase()}/api/v1${path}`, {
-      ...fetchOptions,
-      headers,
-      credentials: "include",
-    });
+    try {
+      return await fetch(`${getApiBase()}/api/v1${path}`, {
+        ...fetchOptions,
+        headers,
+        credentials: "include",
+      });
+    } catch (err) {
+      // Keep caller-driven cancellations distinguishable from outages.
+      if (err instanceof DOMException && err.name === "AbortError") throw err;
+      throw networkError();
+    }
   };
 
   let res = await doFetch(token);

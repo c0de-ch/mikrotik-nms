@@ -65,6 +65,7 @@ Next.js 16 (App Router) + React 19 + shadcn/ui (base-ui, not Radix) + Tailwind C
 ### Key patterns
 
 - shadcn/ui in this project uses **base-ui** (not Radix). Use `render={<Component />}` instead of `asChild` for composition.
+- Frontend API/WS base is **same-origin by default** (the reverse proxy serves `/api/*`); `NEXT_PUBLIC_API_URL`/`NEXT_PUBLIC_WS_URL` are optional build-time overrides for split-origin deployments only — leave them empty otherwise (a stale baked URL breaks every page with "Failed to fetch"). `next dev` on port 3000 auto-targets `<hostname>:8080`. Network-level fetch failures surface as `ApiError(0, …)` naming the resolved target.
 - Device credentials in `devices.password_enc` are encrypted at rest (AES-256-GCM, `internal/crypto`) when `MIKROTIK_NMS_ENCRYPTION_KEY` is set — encrypt/decrypt happens transparently in `queries` (CreateDevice/UpdateDevice/GetDevice/ListDevices), plaintext rows migrate on startup, and the column carries an `enc:v1:` prefix. Without a key it falls back to plaintext and is redacted from `/admin` backups/exports.
 - Topology links are **derived** from raw neighbor data in the `neighbors` table, stored in `links` table. Rebuilt on each topology poll cycle.
 - Traffic monitoring is on-demand: streaming starts when a WebSocket client subscribes to a `traffic.*` topic.
