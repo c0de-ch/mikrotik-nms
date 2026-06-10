@@ -165,7 +165,7 @@ func RunSpeedTest(db *sql.DB, test queries.SpeedTest, verifyTLS bool) *queries.S
 	}
 	defer client.Close()
 
-	res, err := routeros.FetchSpeedTest(client, test.URL, speedTestFetchTimeout)
+	res, err := routeros.FetchSpeedTest(client, test.URL, test.SrcAddress, speedTestFetchTimeout)
 	if err != nil {
 		sample.Error = err.Error()
 		return sample

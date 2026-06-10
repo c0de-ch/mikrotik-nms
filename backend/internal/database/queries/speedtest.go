@@ -10,12 +10,13 @@ import (
 // survive deletion of the device it pointed at (the poller records an error
 // sample for a missing device instead of the test silently disappearing).
 type SpeedTest struct {
-	ID        string    `json:"id"`
-	DeviceID  string    `json:"device_id"`
-	URL       string    `json:"url"`
-	Label     string    `json:"label"`
-	Enabled   bool      `json:"enabled"`
-	CreatedAt time.Time `json:"created_at"`
+	ID         string    `json:"id"`
+	DeviceID   string    `json:"device_id"`
+	URL        string    `json:"url"`
+	SrcAddress string    `json:"src_address"` // optional: source the fetch from this device IP (per-VLAN path)
+	Label      string    `json:"label"`
+	Enabled    bool      `json:"enabled"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 // SpeedSample is the outcome of one measurement. Error != "" means the test
@@ -38,19 +39,19 @@ func CreateSpeedTest(db *sql.DB, t *SpeedTest) error {
 		enabled = 1
 	}
 	_, err := db.Exec(
-		`INSERT INTO speed_tests (id, device_id, url, label, enabled)
-		 VALUES (?, ?, ?, ?, ?)`,
-		t.ID, t.DeviceID, t.URL, t.Label, enabled,
+		`INSERT INTO speed_tests (id, device_id, url, src_address, label, enabled)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		t.ID, t.DeviceID, t.URL, t.SrcAddress, t.Label, enabled,
 	)
 	return err
 }
 
-const speedTestCols = `id, device_id, url, label, enabled, created_at`
+const speedTestCols = `id, device_id, url, src_address, label, enabled, created_at`
 
 func scanSpeedTest(scanner interface{ Scan(...interface{}) error }) (*SpeedTest, error) {
 	t := &SpeedTest{}
 	var enabled int
-	err := scanner.Scan(&t.ID, &t.DeviceID, &t.URL, &t.Label, &enabled, &t.CreatedAt)
+	err := scanner.Scan(&t.ID, &t.DeviceID, &t.URL, &t.SrcAddress, &t.Label, &enabled, &t.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -99,8 +100,8 @@ func UpdateSpeedTest(db *sql.DB, t *SpeedTest) error {
 		enabled = 1
 	}
 	_, err := db.Exec(
-		`UPDATE speed_tests SET device_id=?, url=?, label=?, enabled=? WHERE id=?`,
-		t.DeviceID, t.URL, t.Label, enabled, t.ID,
+		`UPDATE speed_tests SET device_id=?, url=?, src_address=?, label=?, enabled=? WHERE id=?`,
+		t.DeviceID, t.URL, t.SrcAddress, t.Label, enabled, t.ID,
 	)
 	return err
 }

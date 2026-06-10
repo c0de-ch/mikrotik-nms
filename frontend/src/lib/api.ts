@@ -345,12 +345,12 @@ export const api = {
 
     // Speed tests: scheduled /tool/fetch download measurements from a device.
     speedtests: (token: string) => apiFetch<SpeedTest[]>("/connectivity/speedtests", { token }),
-    createSpeedtest: (token: string, data: { device_id: string; url: string; label?: string }) =>
+    createSpeedtest: (token: string, data: { device_id: string; url: string; src_address?: string; label?: string }) =>
       apiFetch<SpeedTest>("/connectivity/speedtests", { method: "POST", token, body: JSON.stringify(data) }),
     updateSpeedtest: (
       token: string,
       id: string,
-      data: Partial<{ device_id: string; url: string; label: string; enabled: boolean }>,
+      data: Partial<{ device_id: string; url: string; src_address: string; label: string; enabled: boolean }>,
     ) =>
       apiFetch<SpeedTest>(`/connectivity/speedtests/${id}`, { method: "PUT", token, body: JSON.stringify(data) }),
     deleteSpeedtest: (token: string, id: string) =>
@@ -761,6 +761,7 @@ export interface SpeedTest {
   id: string;
   device_id: string;
   url: string;
+  src_address: string;
   label: string;
   enabled: boolean;
   created_at: string;

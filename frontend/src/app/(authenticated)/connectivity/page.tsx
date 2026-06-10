@@ -242,7 +242,13 @@ export default function ConnectivityPage() {
   // Speed-test dialog state
   const [speedDialogOpen, setSpeedDialogOpen] = useState(false);
   const [editingSpeed, setEditingSpeed] = useState<SpeedTest | null>(null);
-  const [speedForm, setSpeedForm] = useState({ device_id: "", url: "", label: "", enabled: true });
+  const [speedForm, setSpeedForm] = useState({
+    device_id: "",
+    url: "",
+    src_address: "",
+    label: "",
+    enabled: true,
+  });
   const [confirmDeleteSpeed, setConfirmDeleteSpeed] = useState<SpeedTest | null>(null);
   // Run-now spinners: test ids with a run in flight, resolved by a matching
   // "connectivity.speed" WS sample or the per-test timeout below.
@@ -887,13 +893,19 @@ export default function ConnectivityPage() {
 
   const openAddSpeed = () => {
     setEditingSpeed(null);
-    setSpeedForm({ device_id: "", url: "", label: "", enabled: true });
+    setSpeedForm({ device_id: "", url: "", src_address: "", label: "", enabled: true });
     setSpeedDialogOpen(true);
   };
 
   const openEditSpeed = (st: SpeedTest) => {
     setEditingSpeed(st);
-    setSpeedForm({ device_id: st.device_id, url: st.url, label: st.label, enabled: st.enabled });
+    setSpeedForm({
+      device_id: st.device_id,
+      url: st.url,
+      src_address: st.src_address,
+      label: st.label,
+      enabled: st.enabled,
+    });
     setSpeedDialogOpen(true);
   };
 
@@ -913,6 +925,7 @@ export default function ConnectivityPage() {
         await api.connectivity.updateSpeedtest(token, editingSpeed.id, {
           device_id: speedForm.device_id,
           url: speedForm.url.trim(),
+          src_address: speedForm.src_address.trim(),
           label: speedForm.label.trim(),
           enabled: speedForm.enabled,
         });
@@ -921,6 +934,7 @@ export default function ConnectivityPage() {
         await api.connectivity.createSpeedtest(token, {
           device_id: speedForm.device_id,
           url: speedForm.url.trim(),
+          src_address: speedForm.src_address.trim() || undefined,
           label: speedForm.label.trim() || undefined,
         });
         toast.success("Speed test added");
@@ -1307,7 +1321,12 @@ export default function ConnectivityPage() {
                         {st.url}
                       </div>
                     </TableCell>
-                    <TableCell className="text-xs">{st.device_name || "—"}</TableCell>
+                    <TableCell className="text-xs">
+                      {st.device_name || "—"}
+                      {st.src_address && (
+                        <div className="font-mono text-[10px] text-muted-foreground">src {st.src_address}</div>
+                      )}
+                    </TableCell>
                     <TableCell className="text-xs font-mono">
                       {st.last_sample && !st.last_sample.error && st.last_sample.mbps !== null ? (
                         formatMbps(st.last_sample.mbps)
@@ -1907,6 +1926,20 @@ export default function ConnectivityPage() {
                     </Button>
                   ))}
                 </div>
+              </div>
+              <div className="space-y-2">
+                <Label>Source IP (optional)</Label>
+                <Input
+                  value={speedForm.src_address}
+                  onChange={(e) => setSpeedForm({ ...speedForm, src_address: e.target.value })}
+                  placeholder="e.g. 192.168.28.26"
+                  className="font-mono"
+                />
+                <p className="text-xs text-muted-foreground">
+                  Sources the download from this address — enter the device&apos;s IP on a VLAN to
+                  measure that VLAN&apos;s path (fetch has no interface option, only src-address).
+                  Leave empty for the default route.
+                </p>
               </div>
               <div className="space-y-2">
                 <Label>Label (optional)</Label>
