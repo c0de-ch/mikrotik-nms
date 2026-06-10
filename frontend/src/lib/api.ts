@@ -245,6 +245,41 @@ export const api = {
       apiFetch<VLANLabel>("/vlan-labels", { method: "PUT", token, body: JSON.stringify(data) }),
   },
 
+  // Connectivity monitoring (internet-path probes + per-client ping watches)
+  connectivity: {
+    targets: (token: string) => apiFetch<PingTarget[]>("/connectivity/targets", { token }),
+    createTarget: (
+      token: string,
+      data: { kind: "internet" | "client"; address?: string; mac_address?: string; label?: string; device_id?: string },
+    ) =>
+      apiFetch<PingTarget>("/connectivity/targets", { method: "POST", token, body: JSON.stringify(data) }),
+    updateTarget: (
+      token: string,
+      id: string,
+      data: Partial<{ address: string; label: string; device_id: string; enabled: boolean }>,
+    ) =>
+      apiFetch<PingTarget>(`/connectivity/targets/${id}`, { method: "PUT", token, body: JSON.stringify(data) }),
+    deleteTarget: (token: string, id: string) =>
+      apiFetch<{ status: string }>(`/connectivity/targets/${id}`, { method: "DELETE", token }),
+    runTarget: (token: string, id: string) =>
+      apiFetch<PingSample>(`/connectivity/targets/${id}/run`, { method: "POST", token }),
+    samples: (token: string, id: string, params?: { from?: string; to?: string; limit?: number }) => {
+      const qs = new URLSearchParams();
+      if (params?.from) qs.set("from", params.from);
+      if (params?.to) qs.set("to", params.to);
+      if (params?.limit) qs.set("limit", String(params.limit));
+      const q = qs.toString() ? `?${qs}` : "";
+      return apiFetch<PingSample[]>(`/connectivity/targets/${id}/samples${q}`, { token });
+    },
+    clientTimeline: (token: string, mac: string, from?: string, to?: string) => {
+      const qs = new URLSearchParams();
+      if (from) qs.set("from", from);
+      if (to) qs.set("to", to);
+      const q = qs.toString() ? `?${qs}` : "";
+      return apiFetch<ClientTimeline>(`/connectivity/clients/${encodeURIComponent(mac)}/timeline${q}`, { token });
+    },
+  },
+
   // App settings
   settings: {
     get: (token: string) => apiFetch<Record<string, string>>("/settings", { token }),
@@ -579,6 +614,85 @@ export interface VLANLabel {
   purpose: string;
   color: string;
   updated_at: string;
+}
+
+// Connectivity monitoring types. PingTarget is the *enriched* shape the API
+// returns: the stored target plus device_name / host_name / last_sample
+// joined in by the backend on every GET.
+export interface PingTarget {
+  id: string;
+  kind: "internet" | "client";
+  address: string;
+  mac_address: string;
+  label: string;
+  device_id: string;
+  enabled: boolean;
+  created_at: string;
+  device_name: string;
+  host_name: string;
+  last_sample: PingSample | null;
+}
+
+// One probe result. error != "" means the probe could not run at all
+// (device offline / no API connection / no known IP); such samples have
+// sent=0 and null RTTs.
+export interface PingSample {
+  id: number;
+  target_id: string;
+  device_id: string;
+  address: string;
+  sent: number;
+  received: number;
+  loss_pct: number;
+  rtt_min_ms: number | null;
+  rtt_avg_ms: number | null;
+  rtt_max_ms: number | null;
+  jitter_ms: number | null;
+  error: string;
+  recorded_at: string;
+}
+
+export interface ClientSignalSample {
+  id: number;
+  mac_address: string;
+  ap_name: string;
+  ssid: string;
+  band: string;
+  signal_dbm: number | null;
+  tx_rate: string;
+  rx_rate: string;
+  recorded_at: string;
+}
+
+// One wifi_history row, same shape as GET /wifi/history rows.
+export interface WifiHistoryEntry {
+  id: number;
+  mac_address: string;
+  ip_address: string;
+  host_name: string;
+  ap_name: string;
+  ssid: string;
+  band: string;
+  channel: string;
+  signal: string;
+  tx_rate: string;
+  rx_rate: string;
+  event: string;
+  controller_id: string;
+  controller_name: string;
+  source: string;
+  reason: string;
+  recorded_at: string;
+}
+
+// Correlated history for one watched client: pings + signal samples +
+// wifi join/leave/roam events + network-health events that may explain a
+// dropoff. All arrays are newest-first and never null.
+export interface ClientTimeline {
+  pings: PingSample[];
+  signals: ClientSignalSample[];
+  wifi_events: WifiHistoryEntry[];
+  network_events: LoopEvent[];
 }
 
 export interface DiscoveredDevice {

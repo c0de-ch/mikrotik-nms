@@ -28,7 +28,11 @@ function releaseSharedWs() {
 export function useWebSocket(topic: string, handler: (data: unknown) => void) {
   const { token } = useAuth();
   const handlerRef = useRef(handler);
-  handlerRef.current = handler;
+  // Keep the latest handler in a ref (updated post-render, not during render)
+  // so the WS subscription itself never has to resubscribe on handler change.
+  useEffect(() => {
+    handlerRef.current = handler;
+  }, [handler]);
 
   const stableHandler = useCallback((_topic: string, data: unknown) => {
     handlerRef.current(data);

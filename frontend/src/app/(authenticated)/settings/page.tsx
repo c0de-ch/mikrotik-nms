@@ -73,6 +73,15 @@ const tcnStormThresholdOptions = [
   { label: "200", value: "200" },
 ];
 
+const connectivityIntervalOptions = [
+  { label: "10s", value: "10" },
+  { label: "15s", value: "15" },
+  { label: "30s", value: "30" },
+  { label: "1m", value: "60" },
+  { label: "2m", value: "120" },
+  { label: "5m", value: "300" },
+];
+
 const retentionOptions = [
   { label: "1 day", value: "1" },
   { label: "3 days", value: "3" },
@@ -582,6 +591,51 @@ export default function SettingsPage() {
                 <option key={opt.value} value={opt.value}>{opt.label}</option>
               ))}
             </select>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Connectivity monitoring */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Connectivity monitoring</CardTitle>
+          <p className="text-xs text-muted-foreground">
+            Ping probes for internet targets and watched clients, run from your RouterOS devices
+            (Connectivity page). Changes apply on the next poll cycle — no restart needed.
+          </p>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex-1">
+              <p className="font-medium text-sm">Probe interval</p>
+              <p className="text-xs text-muted-foreground">How often each enabled target is probed.</p>
+            </div>
+            <select
+              className="flex h-8 w-28 rounded-md border bg-transparent px-2 text-sm"
+              value={settings.connectivity_interval || "30"}
+              onChange={(e) => updateSetting("connectivity_interval", e.target.value)}
+            >
+              {connectivityIntervalOptions.map((opt) => (
+                <option key={opt.value} value={opt.value}>{opt.label}</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex-1">
+              <p className="font-medium text-sm">Pings per probe</p>
+              <p className="text-xs text-muted-foreground">
+                ICMP pings sent per probe (1–10). Loss, average RTT and jitter are computed across these.
+              </p>
+            </div>
+            <Input
+              type="number"
+              min={1}
+              max={10}
+              className="w-24"
+              value={settings.connectivity_ping_count ?? "5"}
+              onChange={(e) => updateSetting("connectivity_ping_count", e.target.value)}
+            />
           </div>
         </CardContent>
       </Card>

@@ -104,11 +104,15 @@ func (h *Hub) Publish(topic string, data interface{}) {
 		return
 	}
 
+	// Hold the read lock across the whole send loop: Run() mutates the inner
+	// map (delete on unregister) and closes client.send under the write lock,
+	// so iterating the live map after RUnlock would race both (fatal concurrent
+	// map iteration / send on closed channel). Sends are non-blocking, so
+	// holding the lock here is cheap.
 	h.mu.RLock()
-	clients := h.subscribers[topic]
-	h.mu.RUnlock()
+	defer h.mu.RUnlock()
 
-	for client := range clients {
+	for client := range h.subscribers[topic] {
 		select {
 		case client.send <- payload:
 		default:

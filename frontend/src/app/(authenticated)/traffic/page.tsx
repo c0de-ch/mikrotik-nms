@@ -99,7 +99,6 @@ export default function TrafficPage() {
   const [deviceTraffic, setDeviceTraffic] = useState<Map<string, DeviceTraffic>>(new Map());
 
   const [trafficSummary, setTrafficSummary] = useState<Map<string, { rx: number; tx: number }>>(new Map());
-  const [loadingTraffic, setLoadingTraffic] = useState(false);
   const [showSparklines, setShowSparklines] = useState(true);
 
   useEffect(() => {
@@ -110,12 +109,11 @@ export default function TrafficPage() {
   // Load traffic summary when on overview
   const loadTrafficSummary = useCallback(() => {
     if (!token || viewLevel !== "overview") return;
-    setLoadingTraffic(true);
     api.traffic.summary(token).then((data) => {
       const map = new Map<string, { rx: number; tx: number }>();
       for (const d of data) map.set(d.device_id, { rx: d.rx_bps, tx: d.tx_bps });
       setTrafficSummary(map);
-    }).catch(console.error).finally(() => setLoadingTraffic(false));
+    }).catch(console.error);
   }, [token, viewLevel]);
 
   useEffect(() => {

@@ -69,6 +69,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
+    // Auth bootstrap syncs React state from localStorage (an external system);
+    // the no-saved-token path sets state synchronously by design.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     checkAuth();
   }, [checkAuth]);
 
