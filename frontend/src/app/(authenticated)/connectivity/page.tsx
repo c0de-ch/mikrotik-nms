@@ -163,8 +163,11 @@ function speedTimeLabel(dateStr: string): string {
 }
 
 const quickFillSpeedUrls = [
-  { label: "Cloudflare 100 MB", url: "https://speed.cloudflare.com/__down?bytes=100000000" },
-  { label: "Hetzner 100 MB", url: "https://speed.hetzner.de/100MB.bin" },
+  // Cloudflare's __down endpoint 403s at bytes >= 100000000, so the largest
+  // request it serves is one byte short of 100 MB.
+  { label: "Cloudflare 100 MB", url: "https://speed.cloudflare.com/__down?bytes=99999999" },
+  // speed.hetzner.de is gone; Hetzner serves test files per datacenter now.
+  { label: "Hetzner 100 MB", url: "https://fsn1-speed.hetzner.com/100MB.bin" },
   { label: "Cloudflare 10 MB", url: "https://speed.cloudflare.com/__down?bytes=10000000" },
 ];
 
@@ -1881,7 +1884,7 @@ export default function ConnectivityPage() {
                 <Input
                   value={speedForm.url}
                   onChange={(e) => setSpeedForm({ ...speedForm, url: e.target.value })}
-                  placeholder="https://speed.cloudflare.com/__down?bytes=100000000"
+                  placeholder="https://speed.cloudflare.com/__down?bytes=99999999"
                   className="font-mono"
                   required
                 />
