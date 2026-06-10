@@ -88,11 +88,9 @@ spec:
           ports:
             - containerPort: 3000
               name: http
-          env:
-            - name: NEXT_PUBLIC_API_URL
-              value: "http://mikrotik-nms-backend:8080"
-            - name: NEXT_PUBLIC_WS_URL
-              value: "ws://mikrotik-nms-backend:8080"
+          # NEXT_PUBLIC_* are inlined at build time, not read at runtime —
+          # do not set them here. The bundle defaults to same-origin, which
+          # works through the ingress (it routes /api to the backend).
           resources:
             requests:
               cpu: 50m

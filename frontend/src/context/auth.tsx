@@ -1,7 +1,7 @@
 "use client";
 
 import { createContext, useContext, useEffect, useState, useCallback, type ReactNode } from "react";
-import { api } from "@/lib/api";
+import { api, ApiError } from "@/lib/api";
 
 interface AuthState {
   token: string | null;
@@ -62,8 +62,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       saveTokens(tokens.access_token, tokens.refresh_token);
       const user = await api.auth.me(tokens.access_token);
       setState({ token: tokens.access_token, user, loading: false });
-    } catch {
-      clearTokens();
+    } catch (err) {
+      // A network-level failure (status 0) is an outage, not a credential
+      // rejection — keep the tokens so the session resumes on reload once
+      // the API is reachable again.
+      if (!(err instanceof ApiError && err.status === 0)) clearTokens();
       setState({ token: null, user: null, loading: false });
     }
   }, []);

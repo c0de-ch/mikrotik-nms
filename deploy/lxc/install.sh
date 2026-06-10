@@ -11,13 +11,19 @@
 #
 # Examples:
 #   # Internal LAN, plain HTTP on the LXC IP
-#   sudo ./install.sh --no-tls --public-url http://192.0.2.50
+#   sudo ./install.sh --no-tls
 #
 #   # Public hostname with auto Let's Encrypt
-#   sudo ./install.sh --hostname nms.example.com --public-url https://nms.example.com
+#   sudo ./install.sh --hostname nms.example.com
 #
 #   # Internal hostname with self-signed TLS (Caddy "tls internal")
 #   sudo ./install.sh --hostname nms.lan --tls-internal
+#
+# Do NOT pass --public-url unless the API genuinely lives on a different
+# origin than the frontend: it bakes an absolute API URL into the JS bundle,
+# and the UI then breaks under every other hostname. By default the frontend
+# is same-origin (Caddy proxies /api/* to the backend), which works no matter
+# how the site is reached.
 #
 # Re-running this script is safe; it will rebuild and restart services.
 
@@ -35,6 +41,7 @@ SERVICE_USER="mikrotik-nms"
 
 HOSTNAME_ARG=""
 PUBLIC_URL=""
+PUBLIC_URL_EXPLICIT=0
 SOURCE_DIR=""
 NO_TLS=0
 TLS_INTERNAL=0
@@ -62,7 +69,7 @@ usage() {
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --hostname)   HOSTNAME_ARG="$2"; shift 2 ;;
-        --public-url) PUBLIC_URL="$2";   shift 2 ;;
+        --public-url) PUBLIC_URL="$2"; PUBLIC_URL_EXPLICIT=1; shift 2 ;;
         --source)     SOURCE_DIR="$2";   shift 2 ;;
         --no-tls)        NO_TLS=1;       shift   ;;
         --tls-internal)  TLS_INTERNAL=1; shift   ;;
@@ -114,6 +121,19 @@ case "$PUBLIC_URL" in
     http://*)  PUBLIC_WS_URL="ws://${PUBLIC_URL#http://}" ;;
     *)         die "--public-url must start with http:// or https://" ;;
 esac
+
+# Bake absolute API/WS URLs into the JS bundle only when the operator
+# explicitly passed --public-url. The frontend defaults to same-origin via
+# the reverse proxy, which keeps the site working under every hostname it
+# is reached on (IP, internal DNS name, public name). A baked URL silently
+# breaks all of them the day that one hostname moves or dies.
+if [[ $PUBLIC_URL_EXPLICIT -eq 1 ]]; then
+    BAKED_API_URL="$PUBLIC_URL"
+    BAKED_WS_URL="$PUBLIC_WS_URL"
+else
+    BAKED_API_URL=""
+    BAKED_WS_URL=""
+fi
 
 # ---- 1. system packages -----------------------------------------------------
 
@@ -242,8 +262,13 @@ NODE_ENV=production
 
 # --- frontend build-time vars (baked into the JS bundle) ---
 # These are read by install.sh during 'npm run build'.
-NEXT_PUBLIC_API_URL=${PUBLIC_URL}
-NEXT_PUBLIC_WS_URL=${PUBLIC_WS_URL}
+# Leave EMPTY for same-origin (recommended): the browser calls /api/* on
+# whatever hostname the site was loaded from and Caddy proxies it to the
+# backend. Only set an absolute URL if the API lives on a different origin
+# than the frontend; a wrong value here makes every page fail with
+# "Failed to fetch" after the next rebuild.
+NEXT_PUBLIC_API_URL=${BAKED_API_URL}
+NEXT_PUBLIC_WS_URL=${BAKED_WS_URL}
 
 # --- caddy ---
 NMS_HOSTNAME=${HOSTNAME_ARG:-:80}
@@ -260,6 +285,33 @@ set -a
 # shellcheck disable=SC1090
 . "$ENV_FILE"
 set +a
+
+# Reconcile baked frontend URLs on EXISTING installs. Historic env files
+# always carried an absolute NEXT_PUBLIC_API_URL (the old installer wrote one
+# unconditionally), which gets re-baked into the bundle on every deploy and
+# breaks the UI under any other hostname. This installer serves the API on
+# the same origin via Caddy, so unless the operator explicitly asks for an
+# absolute URL this run, blank the baked values — in the env file and for
+# this build.
+if [[ $PUBLIC_URL_EXPLICIT -eq 1 ]]; then
+    NEXT_PUBLIC_API_URL="$PUBLIC_URL"
+    NEXT_PUBLIC_WS_URL="$PUBLIC_WS_URL"
+    sed -i \
+        -e "s|^NEXT_PUBLIC_API_URL=.*|NEXT_PUBLIC_API_URL=${PUBLIC_URL}|" \
+        -e "s|^NEXT_PUBLIC_WS_URL=.*|NEXT_PUBLIC_WS_URL=${PUBLIC_WS_URL}|" \
+        "$ENV_FILE"
+    log "baking explicit public URL into the frontend: $PUBLIC_URL (persisted to $ENV_FILE)"
+elif [[ -n "${NEXT_PUBLIC_API_URL:-}${NEXT_PUBLIC_WS_URL:-}" ]]; then
+    warn "migrating $ENV_FILE to same-origin: blanking baked NEXT_PUBLIC_API_URL='${NEXT_PUBLIC_API_URL:-}'"
+    warn "  (a baked absolute URL only works via that exact origin; pass --public-url"
+    warn "   to this script if you really need one)"
+    sed -i \
+        -e "s|^NEXT_PUBLIC_API_URL=.*|NEXT_PUBLIC_API_URL=|" \
+        -e "s|^NEXT_PUBLIC_WS_URL=.*|NEXT_PUBLIC_WS_URL=|" \
+        "$ENV_FILE"
+    NEXT_PUBLIC_API_URL=""
+    NEXT_PUBLIC_WS_URL=""
+fi
 
 # ---- 7. build backend -------------------------------------------------------
 

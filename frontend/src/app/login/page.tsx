@@ -33,7 +33,7 @@ function LoginForm() {
       }
       router.push("/dashboard");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Authentication failed");
+      setError(err instanceof Error && err.message ? err.message : "Authentication failed");
       // If login fails with specific error, suggest setup
       if (!isSetup && String(err).includes("invalid credentials")) {
         setError("Invalid credentials. If this is a fresh install, click 'First-time Setup' below.");

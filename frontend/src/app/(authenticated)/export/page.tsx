@@ -6,11 +6,19 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useAuth } from "@/context/auth";
+import { networkError } from "@/lib/api";
 import { toast } from "sonner";
 
 function getApiBase() {
   if (process.env.NEXT_PUBLIC_API_URL) return process.env.NEXT_PUBLIC_API_URL;
-  if (typeof window !== "undefined") return `http://${window.location.hostname}:8080`;
+  if (typeof window !== "undefined") {
+    // Same logic as src/lib/api.ts: dev / docker-compose backend on :8080,
+    // otherwise same-origin through the reverse proxy.
+    if (process.env.NODE_ENV === "development" || window.location.port === "3000") {
+      return `http://${window.location.hostname}:8080`;
+    }
+    return "";
+  }
   return "http://localhost:8080";
 }
 
@@ -77,7 +85,7 @@ export default function ExportPage() {
     try {
       const res = await fetch(`${getApiBase()}/api/v1/netbox/export/${type}`, {
         headers: { Authorization: `Bearer ${token}` },
-      });
+      }).catch(() => { throw networkError(); });
       if (!res.ok) throw new Error("Download failed");
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
@@ -110,7 +118,7 @@ export default function ExportPage() {
     try {
       const res = await fetch(`${getApiBase()}/api/v1/netbox/export`, {
         headers: { Authorization: `Bearer ${token}` },
-      });
+      }).catch(() => { throw networkError(); });
       if (!res.ok) throw new Error("Download failed");
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);

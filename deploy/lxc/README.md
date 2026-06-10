@@ -210,8 +210,13 @@ sensible defaults including a random `MIKROTIK_NMS_JWT_SECRET` and
 `MIKROTIK_NMS_ENCRYPTION_KEY`.
 
 > ⚠️ `NEXT_PUBLIC_API_URL` and `NEXT_PUBLIC_WS_URL` are **baked into the
-> frontend bundle at build time**. If you change them, re-run `install.sh`
-> to rebuild the frontend.
+> frontend bundle at build time**. **Leave them empty** (the default unless
+> you pass `--public-url`): the frontend then talks to `/api/*` on whatever
+> hostname the site was loaded from, and Caddy proxies it to the backend —
+> so the site works via IP, internal DNS, or any public name. Only set an
+> absolute URL when the API genuinely lives on a different origin, and
+> re-run `install.sh` after changing it to rebuild the frontend. A stale
+> baked hostname makes every page fail with "Failed to fetch".
 
 ## First-run setup
 
