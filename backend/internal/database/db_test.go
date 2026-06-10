@@ -32,6 +32,9 @@ func TestOpen(t *testing.T) {
 		"firmware_status",
 		"upgrade_jobs",
 		"upgrade_job_devices",
+		"ping_targets",
+		"ping_samples",
+		"client_signal_samples",
 	}
 
 	for _, table := range expectedTables {

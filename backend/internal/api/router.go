@@ -152,6 +152,18 @@ func NewRouter(db *sql.DB, hub *ws.Hub, cfg *config.Config, pool *routeros.Pool,
 			r.Post("/network-health/events/{id}/ack", s.handleAckNetworkHealthEvent)
 			r.Post("/network-health/events/ack-all", s.handleAckAllNetworkHealthEvents)
 
+			// Connectivity monitoring (ICMP probes run FROM RouterOS devices)
+			r.Get("/connectivity/targets", s.handleListPingTargets)
+			r.Get("/connectivity/targets/{id}/samples", s.handleGetPingSamples)
+			r.Get("/connectivity/clients/{mac}/timeline", s.handleClientTimeline)
+			r.Group(func(r chi.Router) {
+				r.Use(auth.RequireRole("admin"))
+				r.Post("/connectivity/targets", s.handleCreatePingTarget)
+				r.Put("/connectivity/targets/{id}", s.handleUpdatePingTarget)
+				r.Delete("/connectivity/targets/{id}", s.handleDeletePingTarget)
+				r.Post("/connectivity/targets/{id}/run", s.handleRunPingTarget)
+			})
+
 			// VLANs (bridge VLAN table + user-editable labels)
 			r.Get("/vlans", s.handleListVLANs)
 			r.Get("/vlan-labels", s.handleListVLANLabels)

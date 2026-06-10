@@ -15,6 +15,7 @@ import {
   FileOutput,
   ShieldAlert,
   LayoutGrid,
+  Radar,
 } from "lucide-react";
 import {
   Sidebar,
@@ -39,6 +40,7 @@ const navItems = [
   { title: "Clients", href: "/clients", icon: Monitor },
   { title: "WiFi", href: "/wifi", icon: WifiIcon },
   { title: "Traffic", href: "/traffic", icon: Activity },
+  { title: "Connectivity", href: "/connectivity", icon: Radar },
   { title: "Network Health", href: "/network-health", icon: ShieldAlert },
   { title: "VLANs", href: "/vlans", icon: LayoutGrid },
   { title: "Firmware", href: "/firmware", icon: Download },

@@ -191,7 +191,7 @@ export default function ExportPage() {
           <CardTitle className="text-base">How to Import</CardTitle>
         </CardHeader>
         <CardContent className="text-sm space-y-2 text-muted-foreground">
-          <p>1. Download each CSV file in order (or use "Download All")</p>
+          <p>1. Download each CSV file in order (or use &quot;Download All&quot;)</p>
           <p>2. In NetBox, navigate to the section shown in the badge (e.g. <strong>Organization → Manufacturers</strong>)</p>
           <p>3. Click the <strong>Import</strong> button (top right)</p>
           <p>4. Paste the CSV content or upload the file</p>

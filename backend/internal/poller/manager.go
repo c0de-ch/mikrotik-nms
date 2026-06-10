@@ -66,6 +66,9 @@ func (m *Manager) Start() {
 	netHealth := NewNetworkHealthPoller(m.db, m.pool, m.hub, m.cfg.NetworkHealthInterval)
 	go netHealth.Run(ctx)
 
+	connectivity := NewConnectivityPoller(m.db, m.pool, m.hub, defaultConnectivityInterval)
+	go connectivity.Run(ctx)
+
 	log.Println("poller: started all pollers")
 }
 
@@ -580,6 +583,18 @@ func (m *Manager) retentionLoop(ctx context.Context) {
 				log.Printf("poller retention: loop events: %v", err)
 			} else if n > 0 {
 				log.Printf("poller retention: deleted %d old loop events", n)
+			}
+
+			if n, err := queries.DeleteOldPingSamples(m.db, wifiCutoff); err != nil {
+				log.Printf("poller retention: ping samples: %v", err)
+			} else if n > 0 {
+				log.Printf("poller retention: deleted %d old ping samples", n)
+			}
+
+			if n, err := queries.DeleteOldClientSignalSamples(m.db, wifiCutoff); err != nil {
+				log.Printf("poller retention: client signal samples: %v", err)
+			} else if n > 0 {
+				log.Printf("poller retention: deleted %d old client signal samples", n)
 			}
 
 			if n, err := queries.DeleteStaleMACLookups(m.db, wifiCutoff); err != nil {

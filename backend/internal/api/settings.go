@@ -54,6 +54,8 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		"firmware_interval":             true,
 		"wifi_interval":                 true,
 		"client_discovery_interval":     true,
+		"connectivity_interval":         true,
+		"connectivity_ping_count":       true,
 		"network_health_interval":       true,
 		"offline_threshold_seconds":     true,
 		"client_inactive_after_seconds": true,
