@@ -82,6 +82,14 @@ const connectivityIntervalOptions = [
   { label: "5m", value: "300" },
 ];
 
+const speedtestIntervalOptions = [
+  { label: "1h", value: "3600" },
+  { label: "3h", value: "10800" },
+  { label: "6h", value: "21600" },
+  { label: "12h", value: "43200" },
+  { label: "24h", value: "86400" },
+];
+
 const retentionOptions = [
   { label: "1 day", value: "1" },
   { label: "3 days", value: "3" },
@@ -635,6 +643,43 @@ export default function SettingsPage() {
               className="w-24"
               value={settings.connectivity_ping_count ?? "5"}
               onChange={(e) => updateSetting("connectivity_ping_count", e.target.value)}
+            />
+          </div>
+
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex-1">
+              <p className="font-medium text-sm">Speed test interval</p>
+              <p className="text-xs text-muted-foreground">
+                How often scheduled speed tests run. Tests run sequentially (one device at a time) so
+                parallel downloads don&apos;t skew each other&apos;s results.
+              </p>
+            </div>
+            <select
+              className="flex h-8 w-28 rounded-md border bg-transparent px-2 text-sm"
+              value={settings.speedtest_interval || "21600"}
+              onChange={(e) => updateSetting("speedtest_interval", e.target.value)}
+            >
+              {speedtestIntervalOptions.map((opt) => (
+                <option key={opt.value} value={opt.value}>{opt.label}</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex-1">
+              <p className="font-medium text-sm">Auto-traceroute loss threshold</p>
+              <p className="text-xs text-muted-foreground">
+                When an internet probe sees at least this much packet loss, capture a traceroute
+                automatically (0 = off).
+              </p>
+            </div>
+            <Input
+              type="number"
+              min={0}
+              max={100}
+              className="w-24"
+              value={settings.traceroute_loss_threshold ?? "50"}
+              onChange={(e) => updateSetting("traceroute_loss_threshold", e.target.value)}
             />
           </div>
         </CardContent>

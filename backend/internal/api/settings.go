@@ -56,6 +56,8 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		"client_discovery_interval":     true,
 		"connectivity_interval":         true,
 		"connectivity_ping_count":       true,
+		"speedtest_interval":            true,
+		"traceroute_loss_threshold":     true,
 		"network_health_interval":       true,
 		"offline_threshold_seconds":     true,
 		"client_inactive_after_seconds": true,

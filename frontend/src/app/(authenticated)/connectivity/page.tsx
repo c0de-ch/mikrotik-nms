@@ -30,9 +30,13 @@ import {
   type NetworkClient,
   type PingSample,
   type PingTarget,
+  type SpeedSample,
+  type SpeedTest,
+  type TracerouteRun,
   type WifiHistoryEntry,
 } from "@/lib/api";
 import { useWebSocket } from "@/hooks/use-websocket";
+import { deviceStatusLabel } from "@/lib/status";
 import { toast } from "sonner";
 
 // ----- status derivation (per wire contract) --------------------------------
@@ -86,6 +90,13 @@ function formatLoss(pct: number): string {
   return `${Number.isInteger(rounded) ? rounded.toFixed(0) : rounded.toFixed(1)}%`;
 }
 
+// formatMbps renders a measured throughput like "87.4 Mbps"; em-dash for
+// failed samples (mbps null).
+function formatMbps(v: number | null | undefined): string {
+  if (v === null || v === undefined) return "—";
+  return `${v.toFixed(1)} Mbps`;
+}
+
 function timeAgo(dateStr: string): string {
   const diff = Date.now() - new Date(dateStr).getTime();
   const mins = Math.floor(diff / 60000);
@@ -132,6 +143,31 @@ function timeLabel(dateStr: string, range: RangeKey): string {
   return d.toLocaleTimeString();
 }
 
+// Speed-test detail ranges. Speed samples are sparse (default schedule is
+// every 6h), so the ranges are day-scale and the axis always shows the day.
+type SpeedRangeKey = "24h" | "7d" | "30d";
+const speedRangeKeys: SpeedRangeKey[] = ["24h", "7d", "30d"];
+const speedRangeMs: Record<SpeedRangeKey, number> = {
+  "24h": 24 * 3_600_000,
+  "7d": 7 * 24 * 3_600_000,
+  "30d": 30 * 24 * 3_600_000,
+};
+
+function speedTimeLabel(dateStr: string): string {
+  const d = new Date(dateStr);
+  const dd = String(d.getDate()).padStart(2, "0");
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const hh = String(d.getHours()).padStart(2, "0");
+  const min = String(d.getMinutes()).padStart(2, "0");
+  return `${dd}.${mm} ${hh}:${min}`;
+}
+
+const quickFillSpeedUrls = [
+  { label: "Cloudflare 100 MB", url: "https://speed.cloudflare.com/__down?bytes=100000000" },
+  { label: "Hetzner 100 MB", url: "https://speed.hetzner.de/100MB.bin" },
+  { label: "Cloudflare 10 MB", url: "https://speed.cloudflare.com/__down?bytes=10000000" },
+];
+
 // One row of the correlated event list (wifi + network-health merged).
 interface MergedEvent {
   key: string;
@@ -172,15 +208,43 @@ export default function ConnectivityPage() {
   const [devices, setDevices] = useState<Device[]>([]);
   const [clients, setClients] = useState<NetworkClient[]>([]);
   const [running, setRunning] = useState<Set<string>>(new Set());
+  const [speedtests, setSpeedtests] = useState<SpeedTest[]>([]);
 
   // Add / edit / delete dialog state
   const [addInternetOpen, setAddInternetOpen] = useState(false);
-  const [internetForm, setInternetForm] = useState({ label: "", address: "", device_id: "" });
+  const [internetForm, setInternetForm] = useState({
+    label: "",
+    address: "",
+    device_id: "",
+    src_interface: "",
+    src_address: "",
+  });
   const [watchOpen, setWatchOpen] = useState(false);
   const [watchForm, setWatchForm] = useState({ mac: "", freeMac: "", label: "", device_id: "" });
   const [editTarget, setEditTarget] = useState<PingTarget | null>(null);
-  const [editForm, setEditForm] = useState({ label: "", address: "", device_id: "", enabled: true });
+  const [editForm, setEditForm] = useState({
+    label: "",
+    address: "",
+    device_id: "",
+    enabled: true,
+    src_interface: "",
+    src_address: "",
+  });
   const [confirmDelete, setConfirmDelete] = useState<PingTarget | null>(null);
+
+  // Interface names of the device selected in the add/edit internet-target
+  // dialog — feeds the source-interface <datalist> so vlan88 etc. autocomplete.
+  const [ifaceNames, setIfaceNames] = useState<string[]>([]);
+
+  // Speed-test dialog state
+  const [speedDialogOpen, setSpeedDialogOpen] = useState(false);
+  const [editingSpeed, setEditingSpeed] = useState<SpeedTest | null>(null);
+  const [speedForm, setSpeedForm] = useState({ device_id: "", url: "", label: "", enabled: true });
+  const [confirmDeleteSpeed, setConfirmDeleteSpeed] = useState<SpeedTest | null>(null);
+  // Run-now spinners: test ids with a run in flight, resolved by a matching
+  // "connectivity.speed" WS sample or the per-test timeout below.
+  const [runningSpeed, setRunningSpeed] = useState<Set<string>>(new Set());
+  const speedRunTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
   // Detail dialog state
   const [detailTarget, setDetailTarget] = useState<PingTarget | null>(null);
@@ -194,12 +258,58 @@ export default function ConnectivityPage() {
   const [detailWifiEvents, setDetailWifiEvents] = useState<WifiHistoryEntry[]>([]);
   const [detailNetEvents, setDetailNetEvents] = useState<LoopEvent[]>([]);
 
+  // Traceroute state for the internet-target detail dialog. Runs are
+  // newest-first; selectedTraceId null means "show the newest run" so a
+  // freshly-arrived run is displayed without clobbering an explicit choice.
+  const [traceRuns, setTraceRuns] = useState<TracerouteRun[]>([]);
+  const [selectedTraceId, setSelectedTraceId] = useState<number | null>(null);
+  const [traceRunning, setTraceRunning] = useState(false);
+  const traceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // True while a run started from THIS client is pending. The WS handler only
+  // resets the dropdown selection to "newest" for such manual runs — passive
+  // viewers reading an older run keep their selection when loss-triggered
+  // auto-captures arrive.
+  const traceRunPendingRef = useRef(false);
+  // Current detail target, readable from timer callbacks without stale closures.
+  const detailTargetRef = useRef<PingTarget | null>(null);
+
+  // Speed-test detail dialog (separate seq guard, same stale-response rules
+  // as detailSeqRef).
+  const [detailSpeed, setDetailSpeed] = useState<SpeedTest | null>(null);
+  const [speedRange, setSpeedRange] = useState<SpeedRangeKey>("7d");
+  const [speedDetailLoading, setSpeedDetailLoading] = useState(false);
+  const speedSeqRef = useRef(0);
+  // Chronological (oldest-first) so live samples append at the end.
+  const [detailSpeedSamples, setDetailSpeedSamples] = useState<SpeedSample[]>([]);
+
+  useEffect(() => {
+    detailTargetRef.current = detailTarget;
+  }, [detailTarget]);
+
+  const clearTraceTimer = useCallback(() => {
+    if (traceTimerRef.current) {
+      clearTimeout(traceTimerRef.current);
+      traceTimerRef.current = null;
+    }
+  }, []);
+
+  // Clear all pending run timeouts on unmount so they don't toast after leave.
+  useEffect(() => {
+    const timers = speedRunTimers.current;
+    return () => {
+      timers.forEach((t) => clearTimeout(t));
+      timers.clear();
+      clearTraceTimer();
+    };
+  }, [clearTraceTimer]);
+
   const load = useCallback(() => {
     if (!token) return;
-    Promise.all([api.connectivity.targets(token), api.devices.list(token)])
-      .then(([t, d]) => {
+    Promise.all([api.connectivity.targets(token), api.devices.list(token), api.connectivity.speedtests(token)])
+      .then(([t, d, st]) => {
         setTargets(t ?? []);
         setDevices(d ?? []);
+        setSpeedtests(st ?? []);
       })
       .catch(console.error);
   }, [token]);
@@ -218,6 +328,31 @@ export default function ConnectivityPage() {
       .then((res) => setClients(res.clients ?? []))
       .catch(console.error);
   }, [token]);
+
+  // Interface autocomplete for the source-interface input: refetch whenever
+  // the device chosen in the add/edit internet-target dialog changes. Errors
+  // are ignored — the field stays a free-form text input either way.
+  const ifaceDeviceId = addInternetOpen
+    ? internetForm.device_id
+    : editTarget?.kind === "internet"
+      ? editForm.device_id
+      : "";
+  useEffect(() => {
+    if (!token || !ifaceDeviceId) {
+      setIfaceNames([]);
+      return;
+    }
+    let cancelled = false;
+    api.devices
+      .interfaces(token, ifaceDeviceId)
+      .then((ifs) => {
+        if (!cancelled) setIfaceNames((ifs ?? []).map((i) => i.name));
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [token, ifaceDeviceId]);
 
   // Live samples: update the matching target's last_sample (and cached IP for
   // client targets) and, if the detail dialog shows that target, append a point.
@@ -241,6 +376,65 @@ export default function ConnectivityPage() {
         }
       },
       [detailTarget],
+    ),
+  );
+
+  // Speed-test results arrive async (run-now and the scheduled poller both
+  // publish here after persisting): update the matching test's last_sample,
+  // resolve a pending run-now spinner, and append to an open detail chart.
+  useWebSocket(
+    "connectivity.speed",
+    useCallback(
+      (data: unknown) => {
+        const s = data as SpeedSample;
+        if (!s?.test_id) return;
+        setSpeedtests((prev) => prev.map((t) => (t.id === s.test_id ? { ...t, last_sample: s } : t)));
+        const timer = speedRunTimers.current.get(s.test_id);
+        if (timer) {
+          // This client triggered the run — surface the result.
+          clearTimeout(timer);
+          speedRunTimers.current.delete(s.test_id);
+          if (s.error) {
+            toast.error(`Speed test failed: ${s.error}`);
+          } else {
+            toast.success(`Speed test finished: ${formatMbps(s.mbps)}`);
+          }
+        }
+        setRunningSpeed((prev) => {
+          if (!prev.has(s.test_id)) return prev;
+          const next = new Set(prev);
+          next.delete(s.test_id);
+          return next;
+        });
+        if (detailSpeed && detailSpeed.id === s.test_id) {
+          setDetailSpeedSamples((prev) => [...prev, s].slice(-5000));
+        }
+      },
+      [detailSpeed],
+    ),
+  );
+
+  // Traceroute runs (manual and loss-triggered auto-captures alike) — prepend
+  // to the open detail dialog and resolve a pending run spinner.
+  useWebSocket(
+    "connectivity.traceroute",
+    useCallback(
+      (data: unknown) => {
+        const run = data as TracerouteRun;
+        if (!run?.target_id) return;
+        if (!detailTarget || detailTarget.id !== run.target_id) return;
+        setTraceRuns((prev) => [run, ...prev].slice(0, 50));
+        // Only jump to the fresh run when this client started one (null
+        // selection means "newest"). Otherwise preserve an explicit dropdown
+        // choice — loss-triggered auto-captures must not clobber it mid-read.
+        if (traceRunPendingRef.current) {
+          traceRunPendingRef.current = false;
+          setSelectedTraceId(null);
+        }
+        setTraceRunning(false);
+        clearTraceTimer();
+      },
+      [detailTarget, clearTraceTimer],
     ),
   );
 
@@ -285,13 +479,73 @@ export default function ConnectivityPage() {
     loadDetail();
   }, [loadDetail]);
 
+  // Recent traceroute runs for the open internet-target detail dialog.
+  useEffect(() => {
+    if (!token || !detailTarget || detailTarget.kind !== "internet") return;
+    let cancelled = false;
+    api.connectivity
+      .traceroutes(token, detailTarget.id, 10)
+      .then((runs) => {
+        if (!cancelled) setTraceRuns(runs ?? []);
+      })
+      .catch(console.error);
+    return () => {
+      cancelled = true;
+    };
+  }, [token, detailTarget]);
+
   const openDetail = (t: PingTarget) => {
     setDetailPings([]);
     setDetailSignals([]);
     setDetailWifiEvents([]);
     setDetailNetEvents([]);
+    setTraceRuns([]);
+    setSelectedTraceId(null);
+    setTraceRunning(false);
+    traceRunPendingRef.current = false;
+    clearTraceTimer();
     setRange("6h");
     setDetailTarget(t);
+  };
+
+  const closeDetail = () => {
+    setDetailTarget(null);
+    setTraceRunning(false);
+    traceRunPendingRef.current = false;
+    clearTraceTimer();
+  };
+
+  // ----- speed-test detail ----------------------------------------------------
+
+  const loadSpeedDetail = useCallback(async () => {
+    if (!token || !detailSpeed) return;
+    // Same stale-response guard as loadDetail, with its own sequence counter.
+    const seq = ++speedSeqRef.current;
+    setSpeedDetailLoading(true);
+    const from = new Date(Date.now() - speedRangeMs[speedRange]).toISOString();
+    try {
+      const samples = await api.connectivity.speedtestSamples(token, detailSpeed.id, { from, limit: 5000 });
+      if (seq !== speedSeqRef.current) return;
+      setDetailSpeedSamples([...(samples ?? [])].reverse());
+    } catch (e) {
+      if (seq === speedSeqRef.current) {
+        toast.error(e instanceof Error ? e.message : "Failed to load speed samples");
+      }
+    } finally {
+      if (seq === speedSeqRef.current) {
+        setSpeedDetailLoading(false);
+      }
+    }
+  }, [token, detailSpeed, speedRange]);
+
+  useEffect(() => {
+    loadSpeedDetail();
+  }, [loadSpeedDetail]);
+
+  const openSpeedDetail = (st: SpeedTest) => {
+    setDetailSpeedSamples([]);
+    setSpeedRange("7d");
+    setDetailSpeed(st);
   };
 
   // Failed probes (error != "") chart as loss 100 / rtt null so outages are
@@ -313,6 +567,23 @@ export default function ConnectivityPage() {
         signal: s.signal_dbm,
       })),
     [detailSignals, range],
+  );
+
+  // Failed speed tests chart as null so the line gaps instead of dropping to 0.
+  const speedChartData = useMemo(
+    () =>
+      detailSpeedSamples.map((s) => ({
+        time: speedTimeLabel(s.recorded_at),
+        mbps: s.error ? null : s.mbps,
+      })),
+    [detailSpeedSamples],
+  );
+
+  // The traceroute run shown in the detail dialog: an explicit selection, or
+  // the newest run when none is selected (selectedTraceId null).
+  const displayedTraceRun = useMemo(
+    () => traceRuns.find((r) => r.id === selectedTraceId) ?? traceRuns[0] ?? null,
+    [traceRuns, selectedTraceId],
   );
 
   const mergedEvents = useMemo<MergedEvent[]>(() => {
@@ -381,7 +652,13 @@ export default function ConnectivityPage() {
   };
 
   const openAddInternet = (prefill?: { label?: string; address?: string }) => {
-    setInternetForm({ label: prefill?.label ?? "", address: prefill?.address ?? "", device_id: "" });
+    setInternetForm({
+      label: prefill?.label ?? "",
+      address: prefill?.address ?? "",
+      device_id: "",
+      src_interface: "",
+      src_address: "",
+    });
     setAddInternetOpen(true);
   };
 
@@ -402,6 +679,8 @@ export default function ConnectivityPage() {
         address: internetForm.address.trim(),
         label: internetForm.label.trim() || undefined,
         device_id: internetForm.device_id,
+        src_interface: internetForm.src_interface.trim() || undefined,
+        src_address: internetForm.src_address.trim() || undefined,
       });
       toast.success("Target added");
       setAddInternetOpen(false);
@@ -444,7 +723,14 @@ export default function ConnectivityPage() {
   };
 
   const openEdit = (t: PingTarget) => {
-    setEditForm({ label: t.label, address: t.address, device_id: t.device_id, enabled: t.enabled });
+    setEditForm({
+      label: t.label,
+      address: t.address,
+      device_id: t.device_id,
+      enabled: t.enabled,
+      src_interface: t.src_interface,
+      src_address: t.src_address,
+    });
     setEditTarget(t);
   };
 
@@ -462,14 +748,26 @@ export default function ConnectivityPage() {
       }
     }
     try {
-      const data: { label: string; device_id: string; enabled: boolean; address?: string } = {
+      const data: {
+        label: string;
+        device_id: string;
+        enabled: boolean;
+        address?: string;
+        src_interface?: string;
+        src_address?: string;
+      } = {
         label: editForm.label.trim(),
         device_id: editForm.device_id,
         enabled: editForm.enabled,
       };
       // For client targets the address is auto-resolved from mac_lookup;
       // never overwrite the cached value from the edit form.
-      if (editTarget.kind === "internet") data.address = editForm.address.trim();
+      if (editTarget.kind === "internet") {
+        data.address = editForm.address.trim();
+        // Empty string clears the probe source on the backend.
+        data.src_interface = editForm.src_interface.trim();
+        data.src_address = editForm.src_address.trim();
+      }
       await api.connectivity.updateTarget(token, editTarget.id, data);
       toast.success("Target updated");
       setEditTarget(null);
@@ -492,6 +790,159 @@ export default function ConnectivityPage() {
     }
   };
 
+  // POST returns 202 immediately; the run arrives via "connectivity.traceroute"
+  // (handled above). The 60s timer covers a lost broadcast — traceroutes can
+  // legitimately take ~45s on a lossy path.
+  const runTracerouteNow = async () => {
+    if (!token || !detailTarget) return;
+    const targetId = detailTarget.id;
+    // Newest run known before this run starts — the timeout refetch compares
+    // against it to tell a recovered result from a still-running trace.
+    const prevNewest = traceRuns[0] ?? null;
+    setTraceRunning(true);
+    // Arm the pending state BEFORE the POST: an instantly-failing run (e.g.
+    // DialOnce failure) can broadcast its WS result before the 202 await
+    // resolves, and the handler above needs the timer/pending flag in place.
+    traceRunPendingRef.current = true;
+    clearTraceTimer();
+    traceTimerRef.current = setTimeout(() => {
+      traceTimerRef.current = null;
+      traceRunPendingRef.current = false;
+      setTraceRunning(false);
+      // The hub drops slow WS clients, so the result broadcast may have been
+      // lost. Refetch before claiming the run is still going — if a run newer
+      // than the pre-run newest landed, show it instead of the info toast.
+      api.connectivity
+        .traceroutes(token, targetId, 10)
+        .then((runs) => {
+          // Guard: the detail dialog must still show this target.
+          if (detailTargetRef.current?.id !== targetId) return;
+          const list = runs ?? [];
+          if (list.length > 0 && (!prevNewest || list[0].id !== prevNewest.id)) {
+            setTraceRuns(list.slice(0, 50));
+            return;
+          }
+          toast.info("Traceroute is taking longer than expected — it will appear here when it finishes.");
+        })
+        .catch(() => {
+          toast.info("Traceroute is taking longer than expected — it will appear here when it finishes.");
+        });
+    }, 60_000);
+    try {
+      await api.connectivity.runTraceroute(token, targetId);
+    } catch (err) {
+      // The run never started — disarm so no stale timeout toast fires.
+      clearTraceTimer();
+      traceRunPendingRef.current = false;
+      setTraceRunning(false);
+      // 409 = already in flight / device offline; surface the server message.
+      toast.error(err instanceof Error ? err.message : "Failed to start traceroute");
+    }
+  };
+
+  // Same async pattern as traceroute but with a 150s timeout — a 100 MB
+  // download on a slow link plus the device-side fetch easily exceeds 60s.
+  const runSpeedNow = async (st: SpeedTest) => {
+    if (!token) return;
+    setRunningSpeed((prev) => new Set(prev).add(st.id));
+    // Register the pending timer BEFORE the POST: an instantly-failing run
+    // (e.g. DialOnce failure) can broadcast its WS result before the 202
+    // await resolves, and the handler above only surfaces the result toast
+    // when it finds a registered timer.
+    const existing = speedRunTimers.current.get(st.id);
+    if (existing) clearTimeout(existing);
+    speedRunTimers.current.set(
+      st.id,
+      setTimeout(() => {
+        speedRunTimers.current.delete(st.id);
+        setRunningSpeed((prev) => {
+          const next = new Set(prev);
+          next.delete(st.id);
+          return next;
+        });
+        toast.info("Speed test is still running — the result will appear when it finishes.");
+      }, 150_000),
+    );
+    try {
+      await api.connectivity.runSpeedtest(token, st.id);
+    } catch (err) {
+      // The run never started — disarm so no stale "still running" toast fires.
+      const timer = speedRunTimers.current.get(st.id);
+      if (timer) {
+        clearTimeout(timer);
+        speedRunTimers.current.delete(st.id);
+      }
+      setRunningSpeed((prev) => {
+        const next = new Set(prev);
+        next.delete(st.id);
+        return next;
+      });
+      // 409 = already in flight / device offline; surface the server message.
+      toast.error(err instanceof Error ? err.message : "Failed to start speed test");
+    }
+  };
+
+  const openAddSpeed = () => {
+    setEditingSpeed(null);
+    setSpeedForm({ device_id: "", url: "", label: "", enabled: true });
+    setSpeedDialogOpen(true);
+  };
+
+  const openEditSpeed = (st: SpeedTest) => {
+    setEditingSpeed(st);
+    setSpeedForm({ device_id: st.device_id, url: st.url, label: st.label, enabled: st.enabled });
+    setSpeedDialogOpen(true);
+  };
+
+  const submitSpeed = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!token) return;
+    if (!speedForm.device_id) {
+      toast.error("Select the device that runs the download");
+      return;
+    }
+    if (!speedForm.url.trim()) {
+      toast.error("URL is required");
+      return;
+    }
+    try {
+      if (editingSpeed) {
+        await api.connectivity.updateSpeedtest(token, editingSpeed.id, {
+          device_id: speedForm.device_id,
+          url: speedForm.url.trim(),
+          label: speedForm.label.trim(),
+          enabled: speedForm.enabled,
+        });
+        toast.success("Speed test updated");
+      } else {
+        await api.connectivity.createSpeedtest(token, {
+          device_id: speedForm.device_id,
+          url: speedForm.url.trim(),
+          label: speedForm.label.trim() || undefined,
+        });
+        toast.success("Speed test added");
+      }
+      setSpeedDialogOpen(false);
+      setEditingSpeed(null);
+      load();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to save speed test");
+    }
+  };
+
+  const doDeleteSpeed = async () => {
+    if (!token || !confirmDeleteSpeed) return;
+    try {
+      await api.connectivity.deleteSpeedtest(token, confirmDeleteSpeed.id);
+      toast.success("Speed test deleted");
+      setConfirmDeleteSpeed(null);
+      if (detailSpeed?.id === confirmDeleteSpeed.id) setDetailSpeed(null);
+      load();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to delete speed test");
+    }
+  };
+
   // ----- derived lists -------------------------------------------------------
 
   const internetTargets = useMemo(
@@ -510,6 +961,22 @@ export default function ConnectivityPage() {
           (a.label || a.host_name || a.mac_address).localeCompare(b.label || b.host_name || b.mac_address),
         ),
     [targets],
+  );
+
+  const sortedSpeedtests = useMemo(
+    () =>
+      [...speedtests].sort((a, b) => (a.label || a.url).localeCompare(b.label || b.url)),
+    [speedtests],
+  );
+
+  // Speed-test dialog device picker: hide only confirmed-offline devices (a
+  // download from one 409s anyway) — gray "not responding" devices are inside
+  // the transient grace window and stay selectable, annotated in the label.
+  // The currently-assigned device is always included so an existing test
+  // stays editable while its device is down.
+  const speedDeviceOptions = useMemo(
+    () => devices.filter((d) => d.status !== "offline" || d.id === speedForm.device_id),
+    [devices, speedForm.device_id],
   );
 
   const okCount = (list: PingTarget[]) => list.filter((t) => t.enabled && statusOf(t.last_sample) === "ok").length;
@@ -706,7 +1173,16 @@ export default function ConnectivityPage() {
                     onClick={() => openDetail(t)}
                   >
                     <TableCell className="text-sm font-medium">{t.label || "—"}</TableCell>
-                    <TableCell className="font-mono text-xs">{t.address}</TableCell>
+                    <TableCell className="font-mono text-xs">
+                      {t.address}
+                      {(t.src_interface || t.src_address) && (
+                        <div className="text-[10px] text-muted-foreground">
+                          {t.src_interface && `via ${t.src_interface}`}
+                          {t.src_interface && t.src_address && " · "}
+                          {t.src_address && `src ${t.src_address}`}
+                        </div>
+                      )}
+                    </TableCell>
                     {probingDeviceCell(t)}
                     {rttCell(t)}
                     {lossCell(t)}
@@ -777,6 +1253,124 @@ export default function ConnectivityPage() {
         </CardContent>
       </Card>
 
+      {/* Speed tests */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-base">Speed tests</CardTitle>
+            {isAdmin && (
+              <Button size="sm" variant="outline" onClick={openAddSpeed}>
+                <Plus className="mr-1 h-3.5 w-3.5" />
+                Add speed test
+              </Button>
+            )}
+          </div>
+          <p className="text-xs text-muted-foreground">
+            The chosen RouterOS device downloads a file and measures throughput. Runs on a schedule
+            (every 6h by default — Settings) and on demand. Click a row for history.
+          </p>
+        </CardHeader>
+        <CardContent>
+          {sortedSpeedtests.length === 0 ? (
+            <p className="py-8 text-center text-sm text-muted-foreground">
+              No speed tests yet. Add one to track download throughput over time — scheduled runs
+              happen every 6h by default (tunable in Settings), or use Run now for an immediate
+              measurement.
+            </p>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Label</TableHead>
+                  <TableHead>Device</TableHead>
+                  <TableHead>Last speed</TableHead>
+                  <TableHead>Updated</TableHead>
+                  {isAdmin && <TableHead className="text-right">Actions</TableHead>}
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {sortedSpeedtests.map((st) => (
+                  <TableRow
+                    key={st.id}
+                    className={`cursor-pointer hover:bg-muted/50 ${st.enabled ? "" : "opacity-60"}`}
+                    onClick={() => openSpeedDetail(st)}
+                  >
+                    <TableCell>
+                      <span className="inline-flex items-center gap-1.5">
+                        <span className="text-sm font-medium">{st.label || "—"}</span>
+                        {!st.enabled && <Badge variant="secondary">disabled</Badge>}
+                      </span>
+                      <div className="max-w-[320px] truncate font-mono text-[10px] text-muted-foreground" title={st.url}>
+                        {st.url}
+                      </div>
+                    </TableCell>
+                    <TableCell className="text-xs">{st.device_name || "—"}</TableCell>
+                    <TableCell className="text-xs font-mono">
+                      {st.last_sample && !st.last_sample.error && st.last_sample.mbps !== null ? (
+                        formatMbps(st.last_sample.mbps)
+                      ) : (
+                        <span className="inline-flex items-center gap-1.5">
+                          <span className="text-muted-foreground">—</span>
+                          {st.last_sample?.error && (
+                            <Badge className="bg-red-100 text-red-700" title={st.last_sample.error}>
+                              failed
+                            </Badge>
+                          )}
+                        </span>
+                      )}
+                    </TableCell>
+                    <TableCell
+                      className="text-xs text-muted-foreground whitespace-nowrap"
+                      title={st.last_sample ? formatDateTime(st.last_sample.recorded_at) : undefined}
+                    >
+                      {st.last_sample ? timeAgo(st.last_sample.recorded_at) : "—"}
+                    </TableCell>
+                    {isAdmin && (
+                      <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
+                        <div className="flex justify-end gap-1">
+                          <Button
+                            variant="ghost"
+                            size="icon-sm"
+                            title="Run speed test now"
+                            disabled={runningSpeed.has(st.id)}
+                            onClick={() => runSpeedNow(st)}
+                          >
+                            {runningSpeed.has(st.id) ? (
+                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            ) : (
+                              <Play className="h-3.5 w-3.5" />
+                            )}
+                          </Button>
+                          <Button variant="ghost" size="icon-sm" title="Edit" onClick={() => openEditSpeed(st)}>
+                            <Pencil className="h-3.5 w-3.5" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon-sm"
+                            title="Delete"
+                            onClick={() => setConfirmDeleteSpeed(st)}
+                          >
+                            <Trash2 className="h-3.5 w-3.5 text-destructive" />
+                          </Button>
+                        </div>
+                      </TableCell>
+                    )}
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Source-interface autocomplete shared by the add/edit target dialogs.
+          Rendered once at page level so the id stays unique. */}
+      <datalist id="src-iface-options">
+        {ifaceNames.map((n) => (
+          <option key={n} value={n} />
+        ))}
+      </datalist>
+
       {/* Add internet target */}
       {isAdmin && (
         <Dialog open={addInternetOpen} onOpenChange={setAddInternetOpen}>
@@ -798,7 +1392,7 @@ export default function ConnectivityPage() {
                 <Input
                   value={internetForm.address}
                   onChange={(e) => setInternetForm({ ...internetForm, address: e.target.value })}
-                  placeholder="1.1.1.1 or example.com"
+                  placeholder="1.1.1.1, 2606:4700:4700::1111, or a hostname"
                   required
                 />
               </div>
@@ -818,6 +1412,29 @@ export default function ConnectivityPage() {
                   ))}
                 </select>
                 <p className="text-xs text-muted-foreground">The RouterOS device that runs /ping.</p>
+              </div>
+              <div className="space-y-3 rounded-md border p-3">
+                <div className="space-y-2">
+                  <Label>Source interface (VLAN)</Label>
+                  <Input
+                    list="src-iface-options"
+                    value={internetForm.src_interface}
+                    onChange={(e) => setInternetForm({ ...internetForm, src_interface: e.target.value })}
+                    placeholder="e.g. vlan88"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label>Source address</Label>
+                  <Input
+                    value={internetForm.src_address}
+                    onChange={(e) => setInternetForm({ ...internetForm, src_address: e.target.value })}
+                    placeholder="e.g. 192.168.88.2"
+                    className="font-mono"
+                  />
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Optional — probe from a specific VLAN/ISP path instead of the default route.
+                </p>
               </div>
               <Button type="submit" className="w-full">
                 Add target
@@ -914,6 +1531,7 @@ export default function ConnectivityPage() {
                   <Input
                     value={editForm.address}
                     onChange={(e) => setEditForm({ ...editForm, address: e.target.value })}
+                    placeholder="1.1.1.1, 2606:4700:4700::1111, or a hostname"
                     required
                   />
                 </div>
@@ -935,6 +1553,31 @@ export default function ConnectivityPage() {
                   ))}
                 </select>
               </div>
+              {editTarget?.kind === "internet" && (
+                <div className="space-y-3 rounded-md border p-3">
+                  <div className="space-y-2">
+                    <Label>Source interface (VLAN)</Label>
+                    <Input
+                      list="src-iface-options"
+                      value={editForm.src_interface}
+                      onChange={(e) => setEditForm({ ...editForm, src_interface: e.target.value })}
+                      placeholder="e.g. vlan88"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Source address</Label>
+                    <Input
+                      value={editForm.src_address}
+                      onChange={(e) => setEditForm({ ...editForm, src_address: e.target.value })}
+                      placeholder="e.g. 192.168.88.2"
+                      className="font-mono"
+                    />
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Optional — probe from a specific VLAN/ISP path instead of the default route.
+                  </p>
+                </div>
+              )}
               <label className="flex items-center gap-2 text-sm">
                 <input
                   type="checkbox"
@@ -982,7 +1625,7 @@ export default function ConnectivityPage() {
       )}
 
       {/* Detail dialog */}
-      <Dialog open={!!detailTarget} onOpenChange={(open) => !open && setDetailTarget(null)}>
+      <Dialog open={!!detailTarget} onOpenChange={(open) => !open && closeDetail()}>
         <DialogContent className="sm:max-w-3xl max-h-[85vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>{detailTitle}</DialogTitle>
@@ -1067,6 +1710,84 @@ export default function ConnectivityPage() {
                 </>
               )}
 
+              {/* Traceroute: manual runs + loss-triggered auto-captures, both
+                  arriving via the connectivity.traceroute WS topic. */}
+              {detailTarget.kind === "internet" && (
+                <div className="space-y-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <h3 className="text-sm font-medium">Traceroute</h3>
+                    <div className="flex items-center gap-2">
+                      {traceRuns.length > 0 && (
+                        <select
+                          className="flex h-8 rounded-md border bg-transparent px-2 text-xs"
+                          value={String(displayedTraceRun?.id ?? "")}
+                          onChange={(e) => setSelectedTraceId(Number(e.target.value))}
+                        >
+                          {traceRuns.map((r) => (
+                            <option key={r.id} value={r.id}>
+                              {formatDateTime(r.recorded_at)}
+                            </option>
+                          ))}
+                        </select>
+                      )}
+                      {isAdmin && (
+                        <Button size="sm" variant="outline" disabled={traceRunning} onClick={runTracerouteNow}>
+                          {traceRunning ? (
+                            <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                          ) : (
+                            <Play className="mr-1.5 h-3.5 w-3.5" />
+                          )}
+                          Run
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                  {!displayedTraceRun ? (
+                    <p className="text-sm text-muted-foreground">
+                      No traceroutes yet.{isAdmin ? " Run one to capture the current path." : ""} One is
+                      also captured automatically when a probe sees heavy loss (threshold in Settings).
+                    </p>
+                  ) : displayedTraceRun.error ? (
+                    <p className="text-xs text-muted-foreground">
+                      Traceroute failed: <span className="font-mono">{displayedTraceRun.error}</span>
+                    </p>
+                  ) : (
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead className="w-10">#</TableHead>
+                          <TableHead>Address</TableHead>
+                          <TableHead>Avg</TableHead>
+                          <TableHead>Best – Worst</TableHead>
+                          <TableHead>Loss</TableHead>
+                          <TableHead>Status</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {(displayedTraceRun.hops ?? []).map((h) => (
+                          <TableRow key={h.hop} className={h.address ? "" : "text-muted-foreground"}>
+                            <TableCell className="text-xs font-mono">{h.hop}</TableCell>
+                            <TableCell className="text-xs font-mono">{h.address || "—"}</TableCell>
+                            <TableCell className="text-xs font-mono">{formatMs(h.avg_ms)}</TableCell>
+                            <TableCell className="text-xs font-mono whitespace-nowrap">
+                              {h.best_ms === null && h.worst_ms === null
+                                ? "—"
+                                : `${formatMs(h.best_ms)} – ${formatMs(h.worst_ms)}`}
+                            </TableCell>
+                            <TableCell
+                              className={`text-xs font-mono ${h.address ? lossColor(h.loss_pct) : ""}`}
+                            >
+                              {formatLoss(h.loss_pct)}
+                            </TableCell>
+                            <TableCell className="text-xs text-muted-foreground">{h.status || "—"}</TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  )}
+                </div>
+              )}
+
               {detailTarget.kind === "client" && signalData.length > 0 && (
                 <div>
                   <p className="mb-1 text-xs font-medium text-muted-foreground">WiFi signal</p>
@@ -1115,6 +1836,193 @@ export default function ConnectivityPage() {
                       ))}
                     </div>
                   )}
+                </div>
+              )}
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Add / edit speed test */}
+      {isAdmin && (
+        <Dialog
+          open={speedDialogOpen}
+          onOpenChange={(open) => {
+            setSpeedDialogOpen(open);
+            if (!open) setEditingSpeed(null);
+          }}
+        >
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>{editingSpeed ? "Edit speed test" : "Add speed test"}</DialogTitle>
+            </DialogHeader>
+            <form className="space-y-4" onSubmit={submitSpeed}>
+              <div className="space-y-2">
+                <Label>Device</Label>
+                <select
+                  className="flex h-8 w-full rounded-md border bg-transparent px-2 text-sm"
+                  value={speedForm.device_id}
+                  onChange={(e) => setSpeedForm({ ...speedForm, device_id: e.target.value })}
+                  required
+                >
+                  <option value="">Select device…</option>
+                  {speedDeviceOptions.map((d) => (
+                    <option key={d.id} value={d.id}>
+                      {d.status === "online"
+                        ? d.identity || d.address
+                        : `${d.identity || d.address} (${deviceStatusLabel(d.status)})`}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-xs text-muted-foreground">The RouterOS device that runs /tool/fetch.</p>
+              </div>
+              <div className="space-y-2">
+                <Label>URL</Label>
+                <Input
+                  value={speedForm.url}
+                  onChange={(e) => setSpeedForm({ ...speedForm, url: e.target.value })}
+                  placeholder="https://speed.cloudflare.com/__down?bytes=100000000"
+                  className="font-mono"
+                  required
+                />
+                <div className="flex gap-2">
+                  {quickFillSpeedUrls.map((q) => (
+                    <Button
+                      key={q.url}
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() =>
+                        setSpeedForm((prev) => ({
+                          ...prev,
+                          url: q.url,
+                          label: prev.label.trim() ? prev.label : q.label,
+                        }))
+                      }
+                    >
+                      {q.label}
+                    </Button>
+                  ))}
+                </div>
+              </div>
+              <div className="space-y-2">
+                <Label>Label (optional)</Label>
+                <Input
+                  value={speedForm.label}
+                  onChange={(e) => setSpeedForm({ ...speedForm, label: e.target.value })}
+                  placeholder="e.g. WAN via Starlink"
+                />
+              </div>
+              <p className="text-xs text-muted-foreground">
+                The router downloads this file and measures throughput — pick a size your slowest link
+                finishes in under 2 minutes. On slow links (LTE/Starlink backup) use the smaller 10 MB
+                file instead of 100 MB.
+              </p>
+              {editingSpeed && (
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={speedForm.enabled}
+                    onChange={(e) => setSpeedForm({ ...speedForm, enabled: e.target.checked })}
+                  />
+                  Enabled (runs on the schedule)
+                </label>
+              )}
+              <Button type="submit" className="w-full">
+                {editingSpeed ? "Save changes" : "Add speed test"}
+              </Button>
+            </form>
+          </DialogContent>
+        </Dialog>
+      )}
+
+      {/* Delete speed test confirm */}
+      {isAdmin && (
+        <Dialog open={!!confirmDeleteSpeed} onOpenChange={(open) => !open && setConfirmDeleteSpeed(null)}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Delete speed test?</DialogTitle>
+            </DialogHeader>
+            <p className="text-sm">
+              Removes{" "}
+              <span className="font-medium">
+                {confirmDeleteSpeed ? confirmDeleteSpeed.label || confirmDeleteSpeed.url : ""}
+              </span>{" "}
+              and all of its recorded samples. This cannot be undone.
+            </p>
+            <div className="mt-4 flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setConfirmDeleteSpeed(null)}>
+                Cancel
+              </Button>
+              <Button variant="destructive" onClick={doDeleteSpeed}>
+                Delete
+              </Button>
+            </div>
+          </DialogContent>
+        </Dialog>
+      )}
+
+      {/* Speed-test detail dialog */}
+      <Dialog open={!!detailSpeed} onOpenChange={(open) => !open && setDetailSpeed(null)}>
+        <DialogContent className="sm:max-w-3xl max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>{detailSpeed ? detailSpeed.label || detailSpeed.url : ""}</DialogTitle>
+          </DialogHeader>
+          {detailSpeed && (
+            <div className="space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-xs text-muted-foreground font-mono">
+                  {detailSpeed.device_name && `via ${detailSpeed.device_name} · `}
+                  {detailSpeed.url}
+                </p>
+                <div className="flex gap-1">
+                  {speedRangeKeys.map((r) => (
+                    <Button
+                      key={r}
+                      size="sm"
+                      variant={speedRange === r ? "default" : "outline"}
+                      onClick={() => setSpeedRange(r)}
+                    >
+                      {r}
+                    </Button>
+                  ))}
+                </div>
+              </div>
+
+              {detailSpeedSamples[detailSpeedSamples.length - 1]?.error && (
+                <p className="text-xs text-muted-foreground">
+                  Latest run error:{" "}
+                  <span className="font-mono">{detailSpeedSamples[detailSpeedSamples.length - 1].error}</span>
+                </p>
+              )}
+
+              {speedChartData.length === 0 ? (
+                <p className="py-8 text-center text-sm text-muted-foreground">
+                  {speedDetailLoading
+                    ? "Loading samples…"
+                    : "No samples in this range yet. Scheduled runs happen every 6h by default — or hit Run now on the table."}
+                </p>
+              ) : (
+                <div>
+                  <p className="mb-1 text-xs font-medium text-muted-foreground">Download throughput</p>
+                  <ResponsiveContainer width="100%" height={240}>
+                    <AreaChart data={speedChartData}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="time" tick={{ fontSize: 11 }} interval="preserveStartEnd" />
+                      <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => `${v} Mbps`} />
+                      <Tooltip formatter={(value) => formatMbps(Number(value))} />
+                      <Area
+                        type="monotone"
+                        dataKey="mbps"
+                        stroke="#5A9CB5"
+                        fill="#5A9CB5"
+                        fillOpacity={0.2}
+                        name="Mbps"
+                        isAnimationActive={false}
+                        connectNulls={false}
+                      />
+                    </AreaChart>
+                  </ResponsiveContainer>
                 </div>
               )}
             </div>
