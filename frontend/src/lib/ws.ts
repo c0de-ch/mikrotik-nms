@@ -1,9 +1,11 @@
 function getApiBase() {
   if (process.env.NEXT_PUBLIC_API_URL) return process.env.NEXT_PUBLIC_API_URL;
   if (typeof window !== "undefined") {
-    // Same logic as src/lib/api.ts: dev backend on :8080, otherwise
-    // same-origin through the reverse proxy.
-    if (window.location.port === "3000") return `http://${window.location.hostname}:8080`;
+    // Same logic as src/lib/api.ts: dev / docker-compose backend on :8080,
+    // otherwise same-origin through the reverse proxy.
+    if (process.env.NODE_ENV === "development" || window.location.port === "3000") {
+      return `http://${window.location.hostname}:8080`;
+    }
     return "";
   }
   return "http://localhost:8080";
@@ -11,8 +13,13 @@ function getApiBase() {
 
 function getWsBase() {
   if (process.env.NEXT_PUBLIC_WS_URL) return process.env.NEXT_PUBLIC_WS_URL;
+  // A build that bakes only the API URL should keep WS on that same origin
+  // rather than silently diverging to the page origin.
+  if (process.env.NEXT_PUBLIC_API_URL) return process.env.NEXT_PUBLIC_API_URL.replace(/^http/, "ws");
   if (typeof window !== "undefined") {
-    if (window.location.port === "3000") return `ws://${window.location.hostname}:8080`;
+    if (process.env.NODE_ENV === "development" || window.location.port === "3000") {
+      return `ws://${window.location.hostname}:8080`;
+    }
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
     return `${proto}//${window.location.host}`;
   }

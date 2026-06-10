@@ -1,11 +1,15 @@
 function getApiBase() {
   if (process.env.NEXT_PUBLIC_API_URL) return process.env.NEXT_PUBLIC_API_URL;
   if (typeof window !== "undefined") {
-    // `next dev` serves the frontend on :3000 with the Go backend on :8080.
-    // Anywhere else the reverse proxy serves /api/* on the same origin, so an
-    // empty base (relative URLs) works for every hostname the site is reached
-    // under — baking an absolute URL breaks access via any other hostname.
-    if (window.location.port === "3000") return `http://${window.location.hostname}:8080`;
+    // `next dev` (any port — it auto-falls-back past 3000) and the stock
+    // docker-compose mapping (production build published on :3000) serve the
+    // frontend with the Go backend on :8080. Anywhere else the reverse proxy
+    // serves /api/* on the same origin, so an empty base (relative URLs)
+    // works for every hostname the site is reached under — baking an
+    // absolute URL breaks access via any other hostname.
+    if (process.env.NODE_ENV === "development" || window.location.port === "3000") {
+      return `http://${window.location.hostname}:8080`;
+    }
     return "";
   }
   return "http://localhost:8080";
@@ -20,7 +24,7 @@ function describeApiTarget(): string {
   return getApiBase();
 }
 
-function networkError(): ApiError {
+export function networkError(): ApiError {
   return new ApiError(
     0,
     `Cannot reach the NMS API at ${describeApiTarget()}. The server may be down or unreachable from this network.`,
@@ -38,14 +42,22 @@ async function tryRefreshToken(): Promise<{ access_token: string; refresh_token:
   const refreshToken = typeof window !== "undefined" ? localStorage.getItem("refresh_token") : null;
   if (!refreshToken) return null;
 
+  let res: Response;
   try {
-    const res = await fetch(`${getApiBase()}/api/v1/auth/refresh`, {
+    res = await fetch(`${getApiBase()}/api/v1/auth/refresh`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ refresh_token: refreshToken }),
     });
-    if (res.ok) {
-      const tokens = await res.json();
+  } catch {
+    // Network-level failure is an outage, not an expired session — leave the
+    // tokens alone so the session resumes once the API is reachable again.
+    return null;
+  }
+
+  if (res.ok) {
+    const tokens = await res.json().catch(() => null);
+    if (tokens) {
       localStorage.setItem("access_token", tokens.access_token);
       localStorage.setItem("refresh_token", tokens.refresh_token);
       if (typeof window !== "undefined") {
@@ -53,8 +65,7 @@ async function tryRefreshToken(): Promise<{ access_token: string; refresh_token:
       }
       return tokens;
     }
-  } catch {
-    // refresh failed
+    return null;
   }
 
   if (typeof window !== "undefined") {
@@ -101,8 +112,17 @@ async function apiFetch<T>(path: string, options: FetchOptions = {}): Promise<T>
   }
 
   if (!res.ok) {
-    const body = await res.json().catch(() => ({ error: res.statusText }));
-    throw new ApiError(res.status, body.error || res.statusText);
+    const body: { error?: string } = await res.json().catch(() => ({}));
+    let message = body.error || res.statusText;
+    // A reverse-proxy 502/503/504 with no JSON body means the backend behind
+    // it is down; statusText is terse on HTTP/1.1 and empty on HTTP/2, so
+    // neither is something a user can act on.
+    if (!body.error && (res.status === 502 || res.status === 503 || res.status === 504)) {
+      message = `The NMS backend is not responding (HTTP ${res.status} from the reverse proxy). It may be restarting — try again shortly.`;
+    } else if (!message) {
+      message = `Request failed (HTTP ${res.status})`;
+    }
+    throw new ApiError(res.status, message);
   }
 
   return res.json();
@@ -389,15 +409,15 @@ export const api = {
     downloadExport: async (token: string, table: string) => {
       const res = await fetch(`${getApiBase()}/api/v1/admin/export/${encodeURIComponent(table)}`, {
         headers: { Authorization: `Bearer ${token}` },
-      });
-      if (!res.ok) throw new ApiError(res.status, await res.text());
+      }).catch(() => { throw networkError(); });
+      if (!res.ok) throw new ApiError(res.status, (await res.text()) || `Request failed (HTTP ${res.status})`);
       return res.blob();
     },
     downloadFullBackup: async (token: string) => {
       const res = await fetch(`${getApiBase()}/api/v1/admin/backup`, {
         headers: { Authorization: `Bearer ${token}` },
-      });
-      if (!res.ok) throw new ApiError(res.status, await res.text());
+      }).catch(() => { throw networkError(); });
+      if (!res.ok) throw new ApiError(res.status, (await res.text()) || `Request failed (HTTP ${res.status})`);
       return res.blob();
     },
 
