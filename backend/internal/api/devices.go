@@ -228,3 +228,42 @@ func (s *Server) handleListNeighbors(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, neighbors)
 }
+
+// handleDeviceAddresses reads the device's configured IP addresses live
+// (pooled client — /ip/address, /ipv6/address and /interface/vlan are fast
+// prints), annotated with VLAN ids. The UI builds its per-VLAN source
+// pickers (speed test src_address) from this.
+func (s *Server) handleDeviceAddresses(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	dev, err := queries.GetDevice(s.db, id)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			writeError(w, http.StatusNotFound, "device not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to get device")
+		return
+	}
+	if dev.Status != "online" {
+		status := dev.Status
+		if status == "unknown" {
+			status = "not responding" // match the UI's label for the gray state
+		}
+		writeError(w, http.StatusConflict, "device is "+status)
+		return
+	}
+	client := s.pool.Get(id)
+	if client == nil {
+		writeError(w, http.StatusConflict, "no API connection to device yet — try again shortly")
+		return
+	}
+	addrs, err := rosutil.ListAddresses(client)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "failed to read addresses from device: "+err.Error())
+		return
+	}
+	if addrs == nil {
+		addrs = []rosutil.DeviceAddress{}
+	}
+	writeJSON(w, http.StatusOK, addrs)
+}
