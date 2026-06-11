@@ -328,6 +328,16 @@ chown "$SERVICE_USER":"$SERVICE_USER" "$INSTALL_PREFIX/bin/mikrotik-nms"
 # ---- 8. build frontend ------------------------------------------------------
 
 log "building frontend (this can take a few minutes on first run)"
+
+# Version stamp for the UI footer (sidebar): nearest release tag + exact
+# commit, so a running deploy is identifiable at a glance. Falls back to the
+# UI defaults (dev/local) outside a git checkout. Same vars the Docker build
+# passes as build args.
+APP_VERSION="$(git -C "$SOURCE_DIR" describe --tags --abbrev=0 2>/dev/null || true)"
+APP_VERSION="${APP_VERSION#v}"
+COMMIT_SHA="$(git -C "$SOURCE_DIR" rev-parse HEAD 2>/dev/null || true)"
+log "frontend version stamp: v${APP_VERSION:-dev} (${COMMIT_SHA:-local})"
+
 (
     cd "$SOURCE_DIR/frontend"
     # --include=dev is required because the sourced env file sets
@@ -337,6 +347,8 @@ log "building frontend (this can take a few minutes on first run)"
     npm ci --no-audit --no-fund --include=dev
     NEXT_PUBLIC_API_URL="$NEXT_PUBLIC_API_URL" \
     NEXT_PUBLIC_WS_URL="$NEXT_PUBLIC_WS_URL" \
+    NEXT_PUBLIC_APP_VERSION="${APP_VERSION:-dev}" \
+    NEXT_PUBLIC_COMMIT_SHA="${COMMIT_SHA:-local}" \
         npm run build
 )
 
