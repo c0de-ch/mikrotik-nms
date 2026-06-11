@@ -237,11 +237,19 @@ func (s *Server) handleDeviceAddresses(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	dev, err := queries.GetDevice(s.db, id)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "device not found")
+		if err == sql.ErrNoRows {
+			writeError(w, http.StatusNotFound, "device not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to get device")
 		return
 	}
 	if dev.Status != "online" {
-		writeError(w, http.StatusConflict, "device is "+dev.Status)
+		status := dev.Status
+		if status == "unknown" {
+			status = "not responding" // match the UI's label for the gray state
+		}
+		writeError(w, http.StatusConflict, "device is "+status)
 		return
 	}
 	client := s.pool.Get(id)
