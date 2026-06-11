@@ -216,6 +216,10 @@ export const api = {
       apiFetch<DeviceInterface[]>(`/devices/${id}/interfaces`, { token }),
     neighbors: (token: string, id: string) =>
       apiFetch<Neighbor[]>(`/devices/${id}/neighbors`, { token }),
+    // Live from the device: configured IPv4/IPv6 addresses annotated with the
+    // VLAN id when the interface is an /interface/vlan. 409 when offline.
+    addresses: (token: string, id: string) =>
+      apiFetch<DeviceAddress[]>(`/devices/${id}/addresses`, { token }),
   },
 
   // Topology
@@ -753,6 +757,16 @@ export interface PingSample {
   jitter_ms: number | null;
   error: string;
   recorded_at: string;
+}
+
+// One IP address configured on a device, read live; vlan_id is set when the
+// owning interface is an /interface/vlan.
+export interface DeviceAddress {
+  address: string;
+  ip: string;
+  interface: string;
+  vlan_id: string;
+  family: "ip" | "ipv6";
 }
 
 // Speed test: a scheduled /tool/fetch download measurement run from a RouterOS

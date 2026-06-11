@@ -26,6 +26,7 @@ import { useAuth } from "@/context/auth";
 import {
   api,
   type Device,
+  type DeviceAddress,
   type LoopEvent,
   type NetworkClient,
   type PingSample,
@@ -249,6 +250,29 @@ export default function ConnectivityPage() {
     label: "",
     enabled: true,
   });
+  // The selected device's configured addresses (live from the device) for the
+  // source picker. null = not loaded (loading, failed, or no device chosen) —
+  // the dialog falls back to a free-text input then.
+  const [speedAddrs, setSpeedAddrs] = useState<DeviceAddress[] | null>(null);
+  const [speedAddrsError, setSpeedAddrsError] = useState("");
+
+  useEffect(() => {
+    setSpeedAddrs(null);
+    setSpeedAddrsError("");
+    if (!speedDialogOpen || !speedForm.device_id || !token) return;
+    let cancelled = false;
+    api.devices
+      .addresses(token, speedForm.device_id)
+      .then((addrs) => {
+        if (!cancelled) setSpeedAddrs(addrs);
+      })
+      .catch((err) => {
+        if (!cancelled) setSpeedAddrsError(err instanceof Error ? err.message : "failed to load");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [speedDialogOpen, speedForm.device_id, token]);
   const [confirmDeleteSpeed, setConfirmDeleteSpeed] = useState<SpeedTest | null>(null);
   // Run-now spinners: test ids with a run in flight, resolved by a matching
   // "connectivity.speed" WS sample or the per-test timeout below.
@@ -1928,17 +1952,43 @@ export default function ConnectivityPage() {
                 </div>
               </div>
               <div className="space-y-2">
-                <Label>Source IP (optional)</Label>
-                <Input
-                  value={speedForm.src_address}
-                  onChange={(e) => setSpeedForm({ ...speedForm, src_address: e.target.value })}
-                  placeholder="e.g. 192.168.28.26"
-                  className="font-mono"
-                />
+                <Label>Source IP / VLAN (optional)</Label>
+                {speedAddrs ? (
+                  <select
+                    className="flex h-8 w-full rounded-md border bg-transparent px-2 font-mono text-sm"
+                    value={speedForm.src_address}
+                    onChange={(e) => setSpeedForm({ ...speedForm, src_address: e.target.value })}
+                  >
+                    <option value="">Default route (no source address)</option>
+                    {speedForm.src_address &&
+                      !speedAddrs.some((a) => a.ip === speedForm.src_address) && (
+                        <option value={speedForm.src_address}>
+                          {speedForm.src_address} (not currently configured on this device)
+                        </option>
+                      )}
+                    {speedAddrs.map((a, i) => (
+                      <option key={`${a.ip}-${a.interface}-${i}`} value={a.ip}>
+                        {a.ip} — {a.interface}
+                        {a.vlan_id ? ` (VLAN ${a.vlan_id})` : ""}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <Input
+                    value={speedForm.src_address}
+                    onChange={(e) => setSpeedForm({ ...speedForm, src_address: e.target.value })}
+                    placeholder="e.g. 192.168.28.26"
+                    className="font-mono"
+                  />
+                )}
                 <p className="text-xs text-muted-foreground">
-                  Sources the download from this address — enter the device&apos;s IP on a VLAN to
-                  measure that VLAN&apos;s path (fetch has no interface option, only src-address).
-                  Leave empty for the default route.
+                  {speedAddrs
+                    ? "The device's configured addresses, live — pick the one on the VLAN whose path you want to measure (fetch has no interface option, only src-address). Default route = no source pinning."
+                    : speedAddrsError
+                      ? `Couldn't list the device's addresses (${speedAddrsError}) — enter a source IP manually, or leave empty for the default route.`
+                      : speedForm.device_id
+                        ? "Loading the device's addresses…"
+                        : "Select a device to list its addresses and VLANs."}
                 </p>
               </div>
               <div className="space-y-2">
