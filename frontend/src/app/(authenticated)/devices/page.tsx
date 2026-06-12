@@ -44,6 +44,53 @@ function isStatusFilter(v: string | null): v is StatusFilter {
   return v === "online" || v === "offline" || v === "unknown";
 }
 
+// uptimeSeconds parses a RouterOS duration ("2w3d7h12m5s") into seconds so
+// uptimes sort by length rather than alphabetically.
+function uptimeSeconds(s: string | null): number | null {
+  if (!s) return null;
+  const units: Record<string, number> = { w: 604800, d: 86400, h: 3600, m: 60, s: 1 };
+  let total = 0;
+  let matched = false;
+  for (const [, num, unit] of s.matchAll(/(\d+)([wdhms])/g)) {
+    total += parseInt(num) * units[unit];
+    matched = true;
+  }
+  return matched ? total : null;
+}
+
+type DeviceSortKey =
+  | "status"
+  | "identity"
+  | "address"
+  | "board"
+  | "ros_version"
+  | "cpu_load"
+  | "uptime"
+  | "last_seen";
+
+const statusRank: Record<string, number> = { online: 0, unknown: 1, offline: 2 };
+
+function deviceSortValue(d: Device, key: DeviceSortKey): string | number | null {
+  switch (key) {
+    case "status":
+      return statusRank[d.status] ?? 3;
+    case "identity":
+      return d.identity || null;
+    case "address":
+      return d.address;
+    case "board":
+      return d.board || null;
+    case "ros_version":
+      return d.ros_version || null;
+    case "cpu_load":
+      return d.cpu_load;
+    case "uptime":
+      return uptimeSeconds(d.uptime);
+    case "last_seen":
+      return d.last_seen ? Date.parse(d.last_seen) : null;
+  }
+}
+
 export default function DevicesPage() {
   return (
     <Suspense fallback={null}>
@@ -286,6 +333,31 @@ function DevicesPageInner() {
     () => (statusFilter ? devices.filter((d) => d.status === statusFilter) : devices),
     [devices, statusFilter],
   );
+
+  const [devSortKey, setDevSortKey] = useState<DeviceSortKey | null>(null);
+  const [devSortAsc, setDevSortAsc] = useState(true);
+
+  const toggleDevSort = (key: DeviceSortKey) => {
+    if (devSortKey === key) setDevSortAsc(!devSortAsc);
+    else { setDevSortKey(key); setDevSortAsc(true); }
+  };
+
+  const sortedDevices = useMemo(() => {
+    if (!devSortKey) return visibleDevices;
+    return [...visibleDevices].sort((a, b) => {
+      const va = deviceSortValue(a, devSortKey);
+      const vb = deviceSortValue(b, devSortKey);
+      // Missing values always sort last, regardless of direction.
+      if (va == null && vb == null) return 0;
+      if (va == null) return 1;
+      if (vb == null) return -1;
+      const cmp =
+        typeof va === "number" && typeof vb === "number"
+          ? va - vb
+          : String(va).localeCompare(String(vb), undefined, { numeric: true, sensitivity: "base" });
+      return devSortAsc ? cmp : -cmp;
+    });
+  }, [visibleDevices, devSortKey, devSortAsc]);
 
   return (
     <div className="space-y-4">
@@ -580,19 +652,28 @@ function DevicesPageInner() {
       <Table>
         <TableHeader>
           <TableRow>
-            <TableHead>Status</TableHead>
-            <TableHead>Identity</TableHead>
-            <TableHead>Address</TableHead>
-            <TableHead>Model</TableHead>
-            <TableHead>Version</TableHead>
-            <TableHead>CPU</TableHead>
-            <TableHead>Uptime</TableHead>
-            <TableHead>Last seen</TableHead>
+            {([
+              ["status", "Status"],
+              ["identity", "Identity"],
+              ["address", "Address"],
+              ["board", "Model"],
+              ["ros_version", "Version"],
+              ["cpu_load", "CPU"],
+              ["uptime", "Uptime"],
+              ["last_seen", "Last seen"],
+            ] as [DeviceSortKey, string][]).map(([key, label]) => (
+              <TableHead key={key} className="cursor-pointer select-none" onClick={() => toggleDevSort(key)}>
+                <span className="inline-flex items-center gap-1">
+                  {label}
+                  <ArrowUpDown className={`h-3 w-3 shrink-0 ${devSortKey === key ? "text-foreground" : "text-muted-foreground/40"}`} />
+                </span>
+              </TableHead>
+            ))}
             <TableHead className="w-[100px]">Actions</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
-          {visibleDevices.map((device) => (
+          {sortedDevices.map((device) => (
             <TableRow key={device.id} className="cursor-pointer" onClick={() => router.push(`/devices/${device.id}`)}>
               <TableCell>
                 <Badge variant="outline" className={deviceStatusBadgeClass(device.status)}>
