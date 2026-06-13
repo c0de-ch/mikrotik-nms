@@ -9,6 +9,8 @@ package leasesource
 import (
 	"database/sql"
 	"log"
+	"regexp"
+	"sort"
 	"strings"
 	"sync"
 
@@ -27,11 +29,10 @@ type Lease struct {
 	Origin   string
 }
 
-// opnsenseSuffixes are the app_settings key suffixes for OPNsense instances:
-// "" is the primary (opnsense_url, …), "2" the secondary (opnsense2_url, …) for
-// a remote site whose subnet the primary doesn't serve. Add more here (and to
-// the settings whitelist + UI) if further sites are needed.
-var opnsenseSuffixes = []string{"", "2"}
+// opnsenseURLKey matches the app_settings key naming an OPNsense instance's
+// base URL: "opnsense_url" (the primary, suffix "") and "opnsenseN_url" (extra
+// sites, suffix "N"). Any number of instances can be configured this way.
+var opnsenseURLKey = regexp.MustCompile(`^opnsense(\d*)_url$`)
 
 // FromSettings returns the union of active IPv4/IPv6 leases from whichever
 // external DHCP sources are configured in app_settings (kea_url, opnsense*_*).
@@ -41,9 +42,15 @@ var opnsenseSuffixes = []string{"", "2"}
 // the others, so one bad URL can't stall the whole scan. Leases with an empty
 // MAC are dropped (they can't be matched to a client).
 func FromSettings(db *sql.DB) []Lease {
-	// Build the list of source fetchers first (cheap, DB-only), then run them
-	// all concurrently so total wall time is bounded by the slowest single
-	// source, not the sum.
+	all, err := queries.GetAllSettings(db)
+	if err != nil {
+		log.Printf("leasesource: read settings: %v", err)
+		return nil
+	}
+
+	// Build the list of source fetchers first (cheap), then run them all
+	// concurrently so total wall time is bounded by the slowest single source,
+	// not the sum.
 	type source struct {
 		name string
 		fn   func() ([]Lease, error)
@@ -52,37 +59,42 @@ func FromSettings(db *sql.DB) []Lease {
 
 	// Kea Control Agent(s). The kea_url setting may list more than one agent —
 	// one per line, or comma-separated.
-	if keaURLs, err := queries.GetSetting(db, "kea_url"); err == nil {
-		for _, keaURL := range splitURLs(keaURLs) {
-			keaURL := keaURL
-			fetchers = append(fetchers, source{"kea " + keaURL, func() ([]Lease, error) {
-				leases, err := kea.New(keaURL).GetLeases4()
-				if err != nil {
-					return nil, err
+	for _, keaURL := range splitURLs(all["kea_url"]) {
+		keaURL := keaURL
+		fetchers = append(fetchers, source{"kea " + keaURL, func() ([]Lease, error) {
+			leases, err := kea.New(keaURL).GetLeases4()
+			if err != nil {
+				return nil, err
+			}
+			out := make([]Lease, 0, len(leases))
+			for _, l := range leases {
+				if mac := strings.ToUpper(l.HWAddress); mac != "" {
+					out = append(out, Lease{MAC: mac, IP: l.IPAddress, Hostname: l.Hostname, Origin: "kea"})
 				}
-				out := make([]Lease, 0, len(leases))
-				for _, l := range leases {
-					if mac := strings.ToUpper(l.HWAddress); mac != "" {
-						out = append(out, Lease{MAC: mac, IP: l.IPAddress, Hostname: l.Hostname, Origin: "kea"})
-					}
-				}
-				return out, nil
-			}})
-		}
+			}
+			return out, nil
+		}})
 	}
 
-	// OPNsense Kea wrapper(s). Primary + numbered extras (e.g. a remote site).
-	for _, suffix := range opnsenseSuffixes {
-		opURL, _ := queries.GetSetting(db, "opnsense"+suffix+"_url")
-		opKey, _ := queries.GetSetting(db, "opnsense"+suffix+"_api_key")
-		opSecret, _ := queries.GetSetting(db, "opnsense"+suffix+"_api_secret")
+	// OPNsense Kea wrapper(s) — the primary (opnsense_*) plus any number of extra
+	// sites (opnsenseN_*), discovered dynamically from the configured keys.
+	var suffixes []string
+	for k := range all {
+		if m := opnsenseURLKey.FindStringSubmatch(k); m != nil {
+			suffixes = append(suffixes, m[1])
+		}
+	}
+	sort.Strings(suffixes) // deterministic ordering for logs
+	for _, suffix := range suffixes {
+		opURL := strings.TrimSpace(all["opnsense"+suffix+"_url"])
+		opKey := all["opnsense"+suffix+"_api_key"]
+		opSecret := all["opnsense"+suffix+"_api_secret"]
 		if opURL == "" || opKey == "" || opSecret == "" {
 			continue
 		}
-		opVerify, _ := queries.GetSetting(db, "opnsense"+suffix+"_verify_tls")
 		cfg := opnsense.Config{
 			URL: opURL, APIKey: opKey, APISecret: opSecret,
-			VerifyTLS: opVerify == "true" || opVerify == "1",
+			VerifyTLS: all["opnsense"+suffix+"_verify_tls"] == "true" || all["opnsense"+suffix+"_verify_tls"] == "1",
 		}
 		origin := "opnsense" + suffix // "opnsense", "opnsense2", …
 		fetchers = append(fetchers, source{origin, func() ([]Lease, error) {

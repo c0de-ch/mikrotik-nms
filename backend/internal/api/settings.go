@@ -2,12 +2,24 @@ package api
 
 import (
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 
 	"github.com/mikrotik-nms/backend/internal/auth"
 	"github.com/mikrotik-nms/backend/internal/database/queries"
 )
+
+// opnsenseSourceKey matches the app_settings keys for an OPNsense DHCP source —
+// the primary (opnsense_url, …) and any number of extra sites (opnsenseN_url, …).
+var opnsenseSourceKey = regexp.MustCompile(`^opnsense\d*_(url|api_key|api_secret|verify_tls)$`)
+
+// isOpnsenseSourceKey reports whether key configures an OPNsense DHCP source, so
+// the settings endpoint accepts an arbitrary number of them without an explicit
+// whitelist entry per instance.
+func isOpnsenseSourceKey(key string) bool {
+	return opnsenseSourceKey.MatchString(key)
+}
 
 // isSecretSettingKey reports whether a settings value is a credential that must
 // not be exposed to non-admin users (e.g. opnsense_api_secret / api_key).
@@ -71,17 +83,11 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		"port_flap_window_seconds":      true,
 		"tcn_storm_threshold":           true,
 		"auto_follow_ip":                true,
-		"opnsense_url":                  true,
-		"opnsense_api_key":              true,
-		"opnsense_api_secret":           true,
-		"opnsense_verify_tls":           true,
-		// Secondary OPNsense (e.g. a remote site whose subnet the primary doesn't
-		// serve). _api_key / _api_secret keep the isSecretSettingKey substrings so
-		// they're redacted from non-admin reads and from backups, like the primary.
-		"opnsense2_url":        true,
-		"opnsense2_api_key":    true,
-		"opnsense2_api_secret": true,
-		"opnsense2_verify_tls": true,
+		// OPNsense instances (opnsense_* primary + opnsenseN_* extra sites) are
+		// allowed via isOpnsenseSourceKey below rather than listed here, so any
+		// number of sources can be configured. Their _api_key / _api_secret keys
+		// keep the isSecretSettingKey substrings, so they're redacted from
+		// non-admin reads and from backups like every other credential.
 		// Self-service password reset / SMTP. "pwreset_enabled" is named to avoid
 		// the isSecretSettingKey "password" substring so it stays visible. The
 		// "smtp_password" key DOES contain "password" so it is redacted from
@@ -98,7 +104,7 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	for key, value := range req {
-		if !allowed[key] {
+		if !allowed[key] && !isOpnsenseSourceKey(key) {
 			continue
 		}
 		if err := queries.SetSetting(s.db, key, value); err != nil {

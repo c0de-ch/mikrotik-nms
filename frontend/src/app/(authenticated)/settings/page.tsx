@@ -120,6 +120,9 @@ export default function SettingsPage() {
   const [settings, setSettings] = useState<Record<string, string>>({});
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
+  // Suffixes (>=2) of the extra OPNsense sources shown below the primary one.
+  // opnsense_* is the primary; opnsenseN_* are additional sites.
+  const [extraOpnsense, setExtraOpnsense] = useState<number[]>([]);
 
   // DNS state
   const [dnsServers, setDnsServers] = useState<DNSServer[]>([]);
@@ -230,8 +233,32 @@ export default function SettingsPage() {
 
   const loadSettings = useCallback(() => {
     if (!token) return;
-    api.settings.get(token).then(setSettings).catch(console.error);
+    api.settings.get(token).then((s) => {
+      setSettings(s);
+      // Discover configured extra OPNsense sources (opnsenseN_* with any value),
+      // merging with any unsaved entry the user just added locally.
+      const found: number[] = [];
+      for (const k of Object.keys(s)) {
+        const m = /^opnsense(\d+)_url$/.exec(k);
+        if (!m) continue;
+        const n = Number(m[1]);
+        if (n >= 2 && (s[`opnsense${n}_url`] || s[`opnsense${n}_api_key`] || s[`opnsense${n}_api_secret`])) {
+          found.push(n);
+        }
+      }
+      setExtraOpnsense((prev) => Array.from(new Set([...prev, ...found])).sort((a, b) => a - b));
+    }).catch(console.error);
   }, [token]);
+
+  const addOpnsense = () => {
+    const next = (extraOpnsense.length ? Math.max(...extraOpnsense) : 1) + 1;
+    setExtraOpnsense((prev) => [...prev, next]);
+  };
+
+  const removeOpnsense = (n: number) => {
+    ["url", "api_key", "api_secret", "verify_tls"].forEach((f) => updateSetting(`opnsense${n}_${f}`, ""));
+    setExtraOpnsense((prev) => prev.filter((x) => x !== n));
+  };
 
   const loadDNS = useCallback(() => {
     if (!token) return;
@@ -773,60 +800,66 @@ export default function SettingsPage() {
         </CardContent>
       </Card>
 
-      {/* Secondary OPNsense (remote site) */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">OPNsense Kea DHCP — Secondary (remote site)</CardTitle>
-          <p className="text-xs text-muted-foreground">
-            A second OPNsense to cover a subnet the primary doesn&apos;t serve (e.g. a remote site).
-            Queried alongside the primary; leave empty if unused.
-          </p>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="space-y-1">
-            <Label>Base URL</Label>
-            <Input
-              value={settings.opnsense2_url || ""}
-              onChange={(e) => updateSetting("opnsense2_url", e.target.value)}
-              placeholder="https://192.168.80.1:1443"
-            />
-          </div>
-          <div className="grid grid-cols-2 gap-3">
+      {/* Additional OPNsense sources (remote sites) — add as many as needed */}
+      {extraOpnsense.map((n) => (
+        <Card key={`opnsense-${n}`}>
+          <CardHeader>
+            <div className="flex items-center justify-between gap-2">
+              <CardTitle className="text-base">OPNsense Kea DHCP — Additional #{n}</CardTitle>
+              <Button variant="ghost" size="sm" onClick={() => removeOpnsense(n)}>Remove</Button>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              A further OPNsense to cover a subnet the others don&apos;t serve (e.g. a remote site).
+              Queried alongside the rest; leave empty to disable.
+            </p>
+          </CardHeader>
+          <CardContent className="space-y-3">
             <div className="space-y-1">
-              <Label>API Key</Label>
+              <Label>Base URL</Label>
               <Input
-                value={settings.opnsense2_api_key || ""}
-                onChange={(e) => updateSetting("opnsense2_api_key", e.target.value)}
-                placeholder="key"
+                value={settings[`opnsense${n}_url`] || ""}
+                onChange={(e) => updateSetting(`opnsense${n}_url`, e.target.value)}
+                placeholder="https://192.168.80.1:1443"
               />
             </div>
-            <div className="space-y-1">
-              <Label>API Secret</Label>
-              <Input
-                type="password"
-                value={settings.opnsense2_api_secret || ""}
-                onChange={(e) => updateSetting("opnsense2_api_secret", e.target.value)}
-                placeholder="secret"
-              />
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <Label>API Key</Label>
+                <Input
+                  value={settings[`opnsense${n}_api_key`] || ""}
+                  onChange={(e) => updateSetting(`opnsense${n}_api_key`, e.target.value)}
+                  placeholder="key"
+                />
+              </div>
+              <div className="space-y-1">
+                <Label>API Secret</Label>
+                <Input
+                  type="password"
+                  value={settings[`opnsense${n}_api_secret`] || ""}
+                  onChange={(e) => updateSetting(`opnsense${n}_api_secret`, e.target.value)}
+                  placeholder="secret"
+                />
+              </div>
             </div>
-          </div>
-          <div className="flex items-center justify-between gap-4">
-            <div className="flex-1">
-              <p className="font-medium text-sm">Verify TLS certificate</p>
-              <p className="text-xs text-muted-foreground">
-                Disable for OPNsense&apos;s default self-signed cert.
-              </p>
+            <div className="flex items-center justify-between gap-4">
+              <div className="flex-1">
+                <p className="font-medium text-sm">Verify TLS certificate</p>
+                <p className="text-xs text-muted-foreground">Disable for a self-signed cert.</p>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => updateSetting(`opnsense${n}_verify_tls`, settings[`opnsense${n}_verify_tls`] === "true" ? "false" : "true")}
+              >
+                {settings[`opnsense${n}_verify_tls`] === "true" ? "On" : "Off"}
+              </Button>
             </div>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => updateSetting("opnsense2_verify_tls", settings.opnsense2_verify_tls === "true" ? "false" : "true")}
-            >
-              {settings.opnsense2_verify_tls === "true" ? "On" : "Off"}
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
+          </CardContent>
+        </Card>
+      ))}
+      <Button variant="outline" size="sm" onClick={addOpnsense} className="w-fit">
+        + Add OPNsense source
+      </Button>
 
       {/* Email / SMTP (self-service password reset) */}
       <Card>
