@@ -186,6 +186,7 @@ func NewRouter(db *sql.DB, hub *ws.Hub, cfg *config.Config, pool *routeros.Pool,
 			r.Group(func(r chi.Router) {
 				r.Use(auth.RequireRole("admin"))
 				r.Put("/settings", s.handleUpdateSettings)
+				r.Post("/settings/opnsense/test", s.handleTestOpnsense)
 				r.Post("/admin/purge-history", s.handlePurgeHistory)
 				r.Get("/admin/export/{table}", s.handleExportTable)
 				r.Post("/admin/import/{table}", s.handleImportTable)

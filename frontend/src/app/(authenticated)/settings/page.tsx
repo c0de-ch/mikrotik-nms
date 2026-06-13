@@ -123,6 +123,8 @@ export default function SettingsPage() {
   // Suffixes (>=2) of the extra OPNsense sources shown below the primary one.
   // opnsense_* is the primary; opnsenseN_* are additional sites.
   const [extraOpnsense, setExtraOpnsense] = useState<number[]>([]);
+  // Per-source validation result, keyed by suffix ("" = primary, "2".. = extras).
+  const [opnsenseTest, setOpnsenseTest] = useState<Record<string, { ok: boolean; msg: string } | "loading">>({});
 
   // DNS state
   const [dnsServers, setDnsServers] = useState<DNSServer[]>([]);
@@ -258,6 +260,42 @@ export default function SettingsPage() {
   const removeOpnsense = (n: number) => {
     ["url", "api_key", "api_secret", "verify_tls"].forEach((f) => updateSetting(`opnsense${n}_${f}`, ""));
     setExtraOpnsense((prev) => prev.filter((x) => x !== n));
+    setOpnsenseTest((prev) => { const c = { ...prev }; delete c[String(n)]; return c; });
+  };
+
+  // Validate the credentials currently in the form (saved or unsaved) against
+  // OPNsense — confirms the key/secret and reachability before saving.
+  const testOpnsense = async (suffix: string) => {
+    if (!token) return;
+    setOpnsenseTest((p) => ({ ...p, [suffix]: "loading" }));
+    try {
+      const r = await api.settings.testOpnsense(token, {
+        url: settings[`opnsense${suffix}_url`] || "",
+        api_key: settings[`opnsense${suffix}_api_key`] || "",
+        api_secret: settings[`opnsense${suffix}_api_secret`] || "",
+        verify_tls: settings[`opnsense${suffix}_verify_tls`] === "true",
+      });
+      setOpnsenseTest((p) => ({ ...p, [suffix]: { ok: r.ok, msg: r.message } }));
+    } catch (e) {
+      setOpnsenseTest((p) => ({ ...p, [suffix]: { ok: false, msg: e instanceof Error ? e.message : "request failed" } }));
+    }
+  };
+
+  // Validate button + inline result, shared by the primary and extra cards.
+  const opnsenseValidate = (suffix: string) => {
+    const t = opnsenseTest[suffix];
+    return (
+      <div className="flex items-center gap-3">
+        <Button variant="outline" size="sm" disabled={t === "loading"} onClick={() => testOpnsense(suffix)}>
+          {t === "loading" ? "Validating…" : "Validate"}
+        </Button>
+        {t && t !== "loading" && (
+          <span className={`text-xs ${t.ok ? "text-green-600" : "text-red-600"}`}>
+            {t.ok ? "✓ " : "✗ "}{t.msg}
+          </span>
+        )}
+      </div>
+    );
   };
 
   const loadDNS = useCallback(() => {
@@ -793,6 +831,7 @@ export default function SettingsPage() {
               {settings.opnsense_verify_tls === "true" ? "On" : "Off"}
             </Button>
           </div>
+          {opnsenseValidate("")}
           <p className="text-xs text-muted-foreground">
             The client-discovery poller queries OPNsense every <code>client_discovery_interval</code> (default 15 minutes).
             Leave any field empty to disable the integration.
@@ -854,6 +893,7 @@ export default function SettingsPage() {
                 {settings[`opnsense${n}_verify_tls`] === "true" ? "On" : "Off"}
               </Button>
             </div>
+            {opnsenseValidate(String(n))}
           </CardContent>
         </Card>
       ))}

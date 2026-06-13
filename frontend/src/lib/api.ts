@@ -387,6 +387,8 @@ export const api = {
     get: (token: string) => apiFetch<Record<string, string>>("/settings", { token }),
     update: (token: string, data: Record<string, string>) =>
       apiFetch<Record<string, string>>("/settings", { method: "PUT", token, body: JSON.stringify(data) }),
+    testOpnsense: (token: string, data: { url: string; api_key: string; api_secret: string; verify_tls: boolean }) =>
+      apiFetch<{ ok: boolean; message: string; leases?: number }>("/settings/opnsense/test", { method: "POST", token, body: JSON.stringify(data) }),
   },
 
   // Admin actions

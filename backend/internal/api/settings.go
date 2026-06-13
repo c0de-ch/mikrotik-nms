@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/mikrotik-nms/backend/internal/auth"
 	"github.com/mikrotik-nms/backend/internal/database/queries"
+	"github.com/mikrotik-nms/backend/internal/opnsense"
 )
 
 // opnsenseSourceKey matches the app_settings keys for an OPNsense DHCP source —
@@ -120,4 +122,45 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, settings)
+}
+
+// handleTestOpnsense validates an OPNsense Kea connection using the credentials
+// supplied in the request body (not the saved ones), so the admin can verify a
+// key/secret — and reachability over a site link — before saving. It runs the
+// real lease fetch and reports the active-lease count or the failure reason.
+// Always 200 with {ok,message}; a credential/connection failure is a result,
+// not an HTTP error.
+func (s *Server) handleTestOpnsense(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		URL       string `json:"url"`
+		APIKey    string `json:"api_key"`
+		APISecret string `json:"api_secret"`
+		VerifyTLS bool   `json:"verify_tls"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	req.URL = strings.TrimSpace(req.URL)
+	if req.URL == "" || req.APIKey == "" || req.APISecret == "" {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "message": "URL, API key and secret are all required"})
+		return
+	}
+	client := opnsense.New(opnsense.Config{
+		URL: req.URL, APIKey: req.APIKey, APISecret: req.APISecret, VerifyTLS: req.VerifyTLS,
+	})
+	if client == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "message": "could not build client (check URL/key/secret)"})
+		return
+	}
+	leases, err := client.GetLeases()
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "message": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":      true,
+		"leases":  len(leases),
+		"message": fmt.Sprintf("Connected — %d active lease(s)", len(leases)),
+	})
 }
