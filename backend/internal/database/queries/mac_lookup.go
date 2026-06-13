@@ -2,6 +2,7 @@ package queries
 
 import (
 	"database/sql"
+	"strings"
 	"time"
 )
 
@@ -24,6 +25,35 @@ type MACLookup struct {
 	TxRate        string    `json:"tx_rate,omitempty"`
 	RxRate        string    `json:"rx_rate,omitempty"`
 	Uptime        string    `json:"uptime,omitempty"`
+	// Vendor and Randomized are derived from the MAC's OUI at the API layer
+	// (not persisted): the IEEE-registered hardware vendor, and whether the MAC
+	// is locally-administered (private/randomized). Used as a fallback identity
+	// for clients that have no DHCP/DNS name.
+	Vendor     string `json:"vendor,omitempty"`
+	Randomized bool   `json:"randomized,omitempty"`
+}
+
+// PreferIP chooses the better of an existing and a candidate IP for display,
+// preferring IPv4 over IPv6 (a LAN admin wants the v4 address), then keeping
+// whatever is already set so the choice is stable across polls. An empty
+// candidate never clears an existing value.
+func PreferIP(existing, candidate string) string {
+	if candidate == "" {
+		return existing
+	}
+	if existing == "" {
+		return candidate
+	}
+	candidateV6 := strings.Contains(candidate, ":")
+	existingV6 := strings.Contains(existing, ":")
+	switch {
+	case existingV6 && !candidateV6:
+		return candidate // upgrade IPv6 -> IPv4
+	case !existingV6 && candidateV6:
+		return existing // keep IPv4 over IPv6
+	default:
+		return existing // same family: keep the first-seen value (stable)
+	}
 }
 
 func UpsertMACLookup(db *sql.DB, m *MACLookup) error {
@@ -32,7 +62,14 @@ func UpsertMACLookup(db *sql.DB, m *MACLookup) error {
 		    interface_name, device_id, ap, ssid, band, channel, frequency, signal, tx_rate, rx_rate, uptime, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
 		 ON CONFLICT(mac_address) DO UPDATE SET
-		    ip_address=CASE WHEN excluded.ip_address != '' THEN excluded.ip_address ELSE mac_lookup.ip_address END,
+		    -- Prefer IPv4 over IPv6: a new IPv4 always wins, but a new IPv6 never
+		    -- overwrites a stored IPv4 (it only refreshes a stored IPv6 or fills a blank).
+		    ip_address=CASE
+		        WHEN excluded.ip_address = '' THEN mac_lookup.ip_address
+		        WHEN mac_lookup.ip_address = '' THEN excluded.ip_address
+		        WHEN instr(excluded.ip_address, ':') = 0 THEN excluded.ip_address
+		        WHEN instr(mac_lookup.ip_address, ':') > 0 THEN excluded.ip_address
+		        ELSE mac_lookup.ip_address END,
 		    host_name=CASE WHEN excluded.host_name != '' THEN excluded.host_name ELSE mac_lookup.host_name END,
 		    dns_name=CASE WHEN excluded.dns_name != '' THEN excluded.dns_name ELSE mac_lookup.dns_name END,
 		    source=excluded.source, device_name=excluded.device_name,

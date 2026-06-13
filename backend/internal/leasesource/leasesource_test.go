@@ -106,6 +106,44 @@ func TestFromSettings_OneSourceErrorsDoesNotBlockOther(t *testing.T) {
 	}
 }
 
+func TestFromSettings_SecondaryOpnsense(t *testing.T) {
+	db := testDB(t)
+	opn1 := opnsenseServer(t)
+	defer opn1.Close()
+	// A second OPNsense (e.g. a remote site) returning a distinct active lease.
+	opn2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "leases6") {
+			_, _ = w.Write([]byte(`{"rows":[]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"rows":[
+			{"address":"192.168.80.50","hwaddr":"cc:dd:ee:ff:00:11","hostname":"glaris-host","state":0,"type":""}
+		]}`))
+	}))
+	defer opn2.Close()
+
+	mustSet(t, db, "opnsense_url", opn1.URL)
+	mustSet(t, db, "opnsense_api_key", "key")
+	mustSet(t, db, "opnsense_api_secret", "secret")
+	mustSet(t, db, "opnsense2_url", opn2.URL)
+	mustSet(t, db, "opnsense2_api_key", "key2")
+	mustSet(t, db, "opnsense2_api_secret", "secret2")
+
+	got := map[string]Lease{}
+	for _, l := range FromSettings(db) {
+		got[l.MAC] = l
+	}
+	if len(got) != 2 {
+		t.Fatalf("want leases from both OPNsense instances, got %d: %+v", len(got), got)
+	}
+	if l := got["B8:37:4A:F0:AA:6A"]; l.Origin != "opnsense" {
+		t.Errorf("primary origin = %q, want opnsense (%+v)", l.Origin, l)
+	}
+	if l := got["CC:DD:EE:FF:00:11"]; l.Origin != "opnsense2" || l.IP != "192.168.80.50" {
+		t.Errorf("secondary lease wrong: %+v", l)
+	}
+}
+
 func mustSet(t *testing.T, db *sql.DB, k, v string) {
 	t.Helper()
 	if err := queries.SetSetting(db, k, v); err != nil {

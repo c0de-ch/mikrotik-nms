@@ -26,7 +26,18 @@ import { useAuth } from "@/context/auth";
 import { api, type NetworkClient } from "@/lib/api";
 import { toast } from "sonner";
 
-type SortKey = "mac_address" | "ip_address" | "host_name" | "device_name" | "interface" | "source" | "ssid" | "signal" | "ap";
+type SortKey = "mac_address" | "ip_address" | "host_name" | "device_name" | "interface" | "source" | "ssid" | "signal" | "ap" | "vendor" | "last_seen";
+
+function timeAgo(dateStr?: string): string {
+  if (!dateStr) return "—";
+  const diff = Date.now() - new Date(dateStr).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ${mins % 60}m ago`;
+  return `${Math.floor(hrs / 24)}d ago`;
+}
 
 function formatRate(rate?: string): string | undefined {
   if (!rate) return undefined;
@@ -282,11 +293,13 @@ export default function ClientsPage() {
                 <SortableHead label="IP Address" field="ip_address" />
                 <SortableHead label="MAC Address" field="mac_address" />
                 <SortableHead label="Hostname" field="host_name" />
+                <SortableHead label="Vendor" field="vendor" />
                 {tab === "wifi" && <SortableHead label="AP" field="ap" />}
                 {tab === "wifi" && <SortableHead label="SSID" field="ssid" />}
                 {tab === "wifi" && <SortableHead label="Signal" field="signal" />}
                 <SortableHead label="Source" field="source" />
                 <SortableHead label="Reported By" field="device_name" />
+                <SortableHead label="Last seen" field="last_seen" />
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -299,11 +312,20 @@ export default function ClientsPage() {
                   <TableCell className="font-mono text-sm">{c.ip_address || "—"}</TableCell>
                   <TableCell className="font-mono text-xs whitespace-nowrap">{c.mac_address}</TableCell>
                   <TableCell>
-                    {c.host_name || <span className="text-muted-foreground">—</span>}
+                    {c.host_name || c.dns_name || <span className="text-muted-foreground">—</span>}
                     {c.active === false && (
                       <Badge variant="outline" className="ml-2 text-[10px] text-muted-foreground">
                         inactive
                       </Badge>
+                    )}
+                  </TableCell>
+                  <TableCell className="text-sm">
+                    {c.vendor ? (
+                      <span className="text-muted-foreground">{c.vendor}</span>
+                    ) : c.randomized ? (
+                      <Badge variant="outline" className="text-[10px] text-muted-foreground">Private MAC</Badge>
+                    ) : (
+                      <span className="text-muted-foreground">—</span>
                     )}
                   </TableCell>
                   {tab === "wifi" && <TableCell className="text-sm">{c.ap || "—"}</TableCell>}
@@ -317,11 +339,17 @@ export default function ClientsPage() {
                     </Badge>
                   </TableCell>
                   <TableCell className="text-sm">{c.device_name}</TableCell>
+                  <TableCell
+                    className="whitespace-nowrap text-xs text-muted-foreground"
+                    title={c.last_seen ? new Date(c.last_seen).toLocaleString() : ""}
+                  >
+                    {timeAgo(c.last_seen)}
+                  </TableCell>
                 </TableRow>
               ))}
               {filtered.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={tab === "wifi" ? 8 : 6} className="py-8 text-center text-muted-foreground">
+                  <TableCell colSpan={tab === "wifi" ? 10 : 7} className="py-8 text-center text-muted-foreground">
                     {search ? "No clients match your search" : "No clients found"}
                   </TableCell>
                 </TableRow>
@@ -363,6 +391,7 @@ export default function ClientsPage() {
                 <div className="rounded-lg border p-3">
                   <DetailRow label="IP Address" value={selected.ip_address} />
                   <DetailRow label="MAC Address" value={selected.mac_address} />
+                  <DetailRow label="Vendor" value={selected.vendor || (selected.randomized ? "Private / randomized MAC" : undefined)} />
                   <DetailRow label="Hostname" value={selected.host_name} />
                   <DetailRow label="DNS Name" value={selected.dns_name} />
                   <DetailRow label="Interface" value={selected.interface} />
