@@ -112,8 +112,8 @@ func (cdp *ClientDiscoveryPoller) poll(ctx context.Context) {
 				mac := strings.ToUpper(a.MAC)
 				if _, ok := clientMap[mac]; !ok {
 					clientMap[mac] = &clientEntry{mac: mac, ip: a.Address, source: "arp", deviceName: devName}
-				} else if clientMap[mac].ip == "" {
-					clientMap[mac].ip = a.Address
+				} else {
+					clientMap[mac].ip = queries.PreferIP(clientMap[mac].ip, a.Address)
 				}
 			}
 		}()
@@ -141,9 +141,7 @@ func (cdp *ClientDiscoveryPoller) poll(ctx context.Context) {
 					if existing.hostname == "" && l.HostName != "" {
 						existing.hostname = l.HostName
 					}
-					if existing.ip == "" && addr != "" {
-						existing.ip = addr
-					}
+					existing.ip = queries.PreferIP(existing.ip, addr)
 				} else {
 					clientMap[mac] = &clientEntry{mac: mac, ip: addr, hostname: l.HostName, source: "dhcp", deviceName: devName}
 				}
@@ -157,9 +155,7 @@ func (cdp *ClientDiscoveryPoller) poll(ctx context.Context) {
 	extLeases := leasesource.FromSettings(cdp.db)
 	for _, l := range extLeases {
 		if existing, ok := clientMap[l.MAC]; ok {
-			if existing.ip == "" && l.IP != "" {
-				existing.ip = l.IP
-			}
+			existing.ip = queries.PreferIP(existing.ip, l.IP)
 			if existing.hostname == "" && l.Hostname != "" {
 				existing.hostname = l.Hostname
 			}

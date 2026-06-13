@@ -75,6 +75,13 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		"opnsense_api_key":              true,
 		"opnsense_api_secret":           true,
 		"opnsense_verify_tls":           true,
+		// Secondary OPNsense (e.g. a remote site whose subnet the primary doesn't
+		// serve). _api_key / _api_secret keep the isSecretSettingKey substrings so
+		// they're redacted from non-admin reads and from backups, like the primary.
+		"opnsense2_url":        true,
+		"opnsense2_api_key":    true,
+		"opnsense2_api_secret": true,
+		"opnsense2_verify_tls": true,
 		// Self-service password reset / SMTP. "pwreset_enabled" is named to avoid
 		// the isSecretSettingKey "password" substring so it stays visible. The
 		// "smtp_password" key DOES contain "password" so it is redacted from

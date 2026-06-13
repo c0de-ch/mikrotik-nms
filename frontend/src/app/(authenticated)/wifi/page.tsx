@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
+import Link from "next/link";
 import { Wifi, ArrowRight, Clock, Radio, Search, ChevronDown, ChevronRight } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -133,7 +134,7 @@ function formatDateTime(dateStr: string): string {
   return `${dd}.${mm}.${yyyy} ${hh}:${min}`;
 }
 
-type MACLookupMap = Record<string, { mac_address: string; ip_address: string; host_name: string; dns_name: string }>;
+type MACLookupMap = Record<string, { mac_address: string; ip_address: string; host_name: string; dns_name: string; vendor?: string; randomized?: boolean; updated_at?: string }>;
 
 function UnknownSection({ count, groups, renderGroup }: { count: number; groups: string[]; renderGroup: (g: string) => React.ReactNode }) {
   const [expanded, setExpanded] = useState(false);
@@ -198,6 +199,10 @@ export default function WifiPage() {
     const lookup = macLookups[mac];
     if (lookup?.host_name) return lookup.host_name;
     if (lookup?.dns_name) return lookup.dns_name;
+    // No DHCP/DNS name — fall back to the hardware vendor (from the MAC's OUI),
+    // or mark a private/randomized MAC, so the client isn't just a bare MAC.
+    if (lookup?.vendor) return lookup.vendor;
+    if (lookup?.randomized) return "Randomized MAC";
     return "";
   };
 
@@ -242,6 +247,25 @@ export default function WifiPage() {
         e.ap_name?.toLowerCase().includes(search.toLowerCase())
       )
     : history;
+
+  // When a search matches a client the network knows (ARP/DHCP/OPNsense) but
+  // that has no WiFi history, surface it — that's the answer to "I can't find my
+  // device on WiFi": it's wired or offline, not missing.
+  const searchedKnownClient = (() => {
+    const q = search.trim().toLowerCase();
+    if (!q || filteredHistory.length > 0) return null;
+    for (const m of Object.values(macLookups)) {
+      const name = (m.host_name || m.dns_name || m.vendor || "").toLowerCase();
+      if (
+        m.mac_address.toLowerCase().includes(q) ||
+        name.includes(q) ||
+        (m.ip_address || "").toLowerCase().includes(q)
+      ) {
+        return m;
+      }
+    }
+    return null;
+  })();
 
   return (
     <div className="space-y-4">
@@ -380,6 +404,20 @@ export default function WifiPage() {
               </select>
             </div>
           </div>
+          {searchedKnownClient && (
+            <div className="rounded-lg border border-amber-300/60 bg-amber-50 p-3 text-sm dark:border-amber-500/30 dark:bg-amber-950/20">
+              <p className="font-medium">
+                {searchedKnownClient.host_name || searchedKnownClient.dns_name || searchedKnownClient.vendor || "This client"}
+                <span className="ml-2 font-mono text-xs text-muted-foreground">{searchedKnownClient.mac_address}</span>
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Known to the network but has no WiFi history — it&apos;s likely <strong>wired</strong> or currently offline.
+                {searchedKnownClient.ip_address && <> Last IP <span className="font-mono">{searchedKnownClient.ip_address}</span>.</>}
+                {searchedKnownClient.updated_at && <> Last seen {timeAgo(searchedKnownClient.updated_at)}.</>}{" "}
+                See the <Link href="/clients" className="underline">Clients</Link> page for wired/non-WiFi clients.
+              </p>
+            </div>
+          )}
           <Table>
             <TableHeader>
               <TableRow>

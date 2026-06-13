@@ -624,6 +624,8 @@ export interface NetworkClient {
   uptime?: string;
   active?: boolean;
   last_seen?: string;
+  vendor?: string;
+  randomized?: boolean;
 }
 
 export interface BridgePortStatus {

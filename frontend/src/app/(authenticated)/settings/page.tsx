@@ -21,6 +21,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { useAuth } from "@/context/auth";
 import { api, type DNSServer } from "@/lib/api";
@@ -690,22 +691,24 @@ export default function SettingsPage() {
         <CardHeader>
           <CardTitle className="text-base">Kea DHCP</CardTitle>
           <p className="text-xs text-muted-foreground">
-            Connect to a Kea DHCP Control Agent to resolve WiFi client MACs to IP addresses and hostnames.
+            Connect to one or more Kea DHCP Control Agents to resolve WiFi client MACs to IP addresses and hostnames.
           </p>
         </CardHeader>
         <CardContent>
           <div className="flex items-center gap-3">
             <div className="flex-1 space-y-2">
-              <Label>Control Agent URL</Label>
-              <Input
+              <Label>Control Agent URL(s)</Label>
+              <Textarea
+                rows={2}
                 value={settings.kea_url || ""}
                 onChange={(e) => updateSetting("kea_url", e.target.value)}
-                placeholder="http://192.0.2.81:8000"
+                placeholder={"http://192.0.2.81:8000\nhttp://192.0.2.82:8000"}
               />
             </div>
           </div>
           <p className="text-xs text-muted-foreground mt-2">
-            Leave empty to disable. The client discovery poller queries Kea every 15 minutes.
+            One agent per line (or comma-separated) — add extra agents to cover subnets the primary DHCP source
+            doesn&apos;t serve. Leave empty to disable. The client discovery poller queries each agent every 15 minutes.
           </p>
         </CardContent>
       </Card>
@@ -767,6 +770,61 @@ export default function SettingsPage() {
             The client-discovery poller queries OPNsense every <code>client_discovery_interval</code> (default 15 minutes).
             Leave any field empty to disable the integration.
           </p>
+        </CardContent>
+      </Card>
+
+      {/* Secondary OPNsense (remote site) */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">OPNsense Kea DHCP — Secondary (remote site)</CardTitle>
+          <p className="text-xs text-muted-foreground">
+            A second OPNsense to cover a subnet the primary doesn&apos;t serve (e.g. a remote site).
+            Queried alongside the primary; leave empty if unused.
+          </p>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="space-y-1">
+            <Label>Base URL</Label>
+            <Input
+              value={settings.opnsense2_url || ""}
+              onChange={(e) => updateSetting("opnsense2_url", e.target.value)}
+              placeholder="https://192.168.80.1:1443"
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1">
+              <Label>API Key</Label>
+              <Input
+                value={settings.opnsense2_api_key || ""}
+                onChange={(e) => updateSetting("opnsense2_api_key", e.target.value)}
+                placeholder="key"
+              />
+            </div>
+            <div className="space-y-1">
+              <Label>API Secret</Label>
+              <Input
+                type="password"
+                value={settings.opnsense2_api_secret || ""}
+                onChange={(e) => updateSetting("opnsense2_api_secret", e.target.value)}
+                placeholder="secret"
+              />
+            </div>
+          </div>
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex-1">
+              <p className="font-medium text-sm">Verify TLS certificate</p>
+              <p className="text-xs text-muted-foreground">
+                Disable for OPNsense&apos;s default self-signed cert.
+              </p>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => updateSetting("opnsense2_verify_tls", settings.opnsense2_verify_tls === "true" ? "false" : "true")}
+            >
+              {settings.opnsense2_verify_tls === "true" ? "On" : "Off"}
+            </Button>
+          </div>
         </CardContent>
       </Card>
 

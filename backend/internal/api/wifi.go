@@ -5,6 +5,7 @@ import (
 	"strconv"
 
 	"github.com/mikrotik-nms/backend/internal/database/queries"
+	"github.com/mikrotik-nms/backend/internal/macvendor"
 )
 
 type enrichedWifiEntry struct {
@@ -53,6 +54,11 @@ func (s *Server) handleMACLookup(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to get MAC lookups")
 		return
+	}
+	// Derive the hardware vendor / randomized flag from each OUI so the WiFi and
+	// Clients pages can fall back to a vendor name when there's no DHCP/DNS name.
+	for _, m := range lookups {
+		m.Vendor, m.Randomized = macvendor.Describe(m.MACAddress)
 	}
 	writeJSON(w, http.StatusOK, lookups)
 }

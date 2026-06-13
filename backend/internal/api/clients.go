@@ -10,6 +10,7 @@ import (
 
 	"github.com/mikrotik-nms/backend/internal/database/queries"
 	"github.com/mikrotik-nms/backend/internal/leasesource"
+	"github.com/mikrotik-nms/backend/internal/macvendor"
 	"github.com/mikrotik-nms/backend/internal/routeros"
 )
 
@@ -37,6 +38,10 @@ type networkClient struct {
 	TxRate    string `json:"tx_rate,omitempty"`
 	RxRate    string `json:"rx_rate,omitempty"`
 	Uptime    string `json:"uptime,omitempty"`
+	// Vendor / Randomized are derived from the MAC's OUI (fallback identity when
+	// there's no DHCP/DNS hostname).
+	Vendor     string `json:"vendor,omitempty"`
+	Randomized bool   `json:"randomized,omitempty"`
 }
 
 // handleDebugWifiRaw returns raw fields from the wifi registration table for debugging.
@@ -138,9 +143,7 @@ func (s *Server) handleScanClients(w http.ResponseWriter, r *http.Request) {
 				}
 				mac := strings.ToUpper(a.MAC)
 				if existing, ok := clientMap[mac]; ok {
-					if existing.IP == "" && a.Address != "" {
-						existing.IP = a.Address
-					}
+					existing.IP = queries.PreferIP(existing.IP, a.Address)
 				} else {
 					clientMap[mac] = &networkClient{
 						MAC:        a.MAC,
@@ -178,9 +181,7 @@ func (s *Server) handleScanClients(w http.ResponseWriter, r *http.Request) {
 					if existing.HostName == "" && l.HostName != "" {
 						existing.HostName = l.HostName
 					}
-					if existing.IP == "" && addr != "" {
-						existing.IP = addr
-					}
+					existing.IP = queries.PreferIP(existing.IP, addr)
 					if l.HostName != "" {
 						existing.Source = "dhcp"
 					}
@@ -239,9 +240,7 @@ func (s *Server) handleScanClients(w http.ResponseWriter, r *http.Request) {
 					existing.RxRate = reg.RxRate
 					existing.Uptime = reg.Uptime
 					existing.Source = "wifi"
-					if existing.IP == "" && reg.LastIP != "" {
-						existing.IP = reg.LastIP
-					}
+					existing.IP = queries.PreferIP(existing.IP, reg.LastIP)
 				} else {
 					clientMap[mac] = &networkClient{
 						MAC:        mac,
@@ -272,9 +271,7 @@ done:
 	// DHCP hostnames), so the auto-scan would wipe them from the cached view.
 	for _, l := range leasesource.FromSettings(s.db) {
 		if existing, ok := clientMap[l.MAC]; ok {
-			if existing.IP == "" && l.IP != "" {
-				existing.IP = l.IP
-			}
+			existing.IP = queries.PreferIP(existing.IP, l.IP)
 			if existing.HostName == "" && l.Hostname != "" {
 				existing.HostName = l.Hostname
 			}
@@ -306,6 +303,7 @@ done:
 		}
 		c.Active = true
 		c.LastSeen = nowStr
+		c.Vendor, c.Randomized = macvendor.Describe(c.MAC)
 		results = append(results, *c)
 	}
 
@@ -383,7 +381,7 @@ func (s *Server) handleCachedClients(w http.ResponseWriter, r *http.Request) {
 		if isActive {
 			active++
 		}
-		clients = append(clients, networkClient{
+		nc := networkClient{
 			MAC:        e.MACAddress,
 			IP:         e.IPAddress,
 			HostName:   e.HostName,
@@ -403,7 +401,9 @@ func (s *Server) handleCachedClients(w http.ResponseWriter, r *http.Request) {
 			Uptime:     e.Uptime,
 			Active:     isActive,
 			LastSeen:   e.UpdatedAt.UTC().Format(time.RFC3339),
-		})
+		}
+		nc.Vendor, nc.Randomized = macvendor.Describe(e.MACAddress)
+		clients = append(clients, nc)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
