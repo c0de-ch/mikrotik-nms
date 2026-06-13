@@ -229,8 +229,21 @@ export default function WifiPage() {
     setClientHistory(entries);
   };
 
-  // Group current clients by AP or SSID
-  const groups = current.reduce<Record<string, WifiEntry[]>>((acc, c) => {
+  const q = search.trim().toLowerCase();
+
+  // Does a wifi entry match the current search (MAC, resolved name, IP, AP, SSID)?
+  const matchesWifi = (e: WifiEntry) =>
+    !q ||
+    e.mac_address.toLowerCase().includes(q) ||
+    (e.host_name || "").toLowerCase().includes(q) ||
+    resolveName(e.mac_address, e.host_name).toLowerCase().includes(q) ||
+    (e.ip_address || "").toLowerCase().includes(q) ||
+    (e.ap_name || "").toLowerCase().includes(q) ||
+    (e.ssid || "").toLowerCase().includes(q);
+
+  // Current clients (optionally filtered), grouped by AP or SSID.
+  const filteredCurrent = q ? current.filter(matchesWifi) : current;
+  const groups = filteredCurrent.reduce<Record<string, WifiEntry[]>>((acc, c) => {
     const key = groupBy === "ssid" ? (c.ssid || "Unknown SSID") : (c.ap_name || "Unknown AP");
     if (!acc[key]) acc[key] = [];
     acc[key].push(c);
@@ -240,32 +253,44 @@ export default function WifiPage() {
   const uniqueAPs = new Set(current.map((c) => c.ap_name)).size;
   const uniqueSSIDs = new Set(current.map((c) => c.ssid)).size;
 
-  const filteredHistory = search
-    ? history.filter((e) =>
-        e.mac_address.toLowerCase().includes(search.toLowerCase()) ||
-        e.host_name?.toLowerCase().includes(search.toLowerCase()) ||
-        e.ap_name?.toLowerCase().includes(search.toLowerCase())
-      )
-    : history;
+  const filteredHistory = q ? history.filter(matchesWifi) : history;
 
-  // When a search matches a client the network knows (ARP/DHCP/OPNsense) but
-  // that has no WiFi history, surface it — that's the answer to "I can't find my
-  // device on WiFi": it's wired or offline, not missing.
-  const searchedKnownClient = (() => {
-    const q = search.trim().toLowerCase();
-    if (!q || filteredHistory.length > 0) return null;
-    for (const m of Object.values(macLookups)) {
-      const name = (m.host_name || m.dns_name || m.vendor || "").toLowerCase();
-      if (
-        m.mac_address.toLowerCase().includes(q) ||
-        name.includes(q) ||
-        (m.ip_address || "").toLowerCase().includes(q)
-      ) {
-        return m;
-      }
-    }
-    return null;
-  })();
+  // When the search matches client(s) the network knows (ARP/DHCP/OPNsense) but
+  // that aren't associated to any AP, surface them — that's the answer to "I
+  // can't find my device on WiFi": it's wired or offline, not missing.
+  const hasWifiMatch = !!q && (current.some(matchesWifi) || history.some(matchesWifi));
+  const searchedKnownClients = q && !hasWifiMatch
+    ? Object.values(macLookups)
+        .filter((m) =>
+          m.mac_address.toLowerCase().includes(q) ||
+          (m.host_name || "").toLowerCase().includes(q) ||
+          (m.dns_name || "").toLowerCase().includes(q) ||
+          (m.vendor || "").toLowerCase().includes(q) ||
+          (m.ip_address || "").toLowerCase().includes(q)
+        )
+        .slice(0, 8)
+    : [];
+
+  const knownClientHint = searchedKnownClients.length > 0 ? (
+    <div className="rounded-lg border border-amber-300/60 bg-amber-50 p-3 text-sm dark:border-amber-500/30 dark:bg-amber-950/20">
+      <p className="font-medium">
+        No WiFi match for &ldquo;{search}&rdquo; — but {searchedKnownClients.length === 1 ? "this client is" : "these clients are"} known to the network (wired or offline):
+      </p>
+      <ul className="mt-2 space-y-1">
+        {searchedKnownClients.map((m) => (
+          <li key={m.mac_address} className="text-xs text-muted-foreground">
+            <span className="font-medium text-foreground">{m.host_name || m.dns_name || m.vendor || "Unknown"}</span>
+            <span className="ml-2 font-mono">{m.mac_address}</span>
+            {m.ip_address && <span className="ml-2 font-mono">{m.ip_address}</span>}
+            {m.updated_at && <span className="ml-2">· last seen {timeAgo(m.updated_at)}</span>}
+          </li>
+        ))}
+      </ul>
+      <p className="mt-2 text-xs text-muted-foreground">
+        Not on WiFi — see the <Link href="/clients" className="underline">Clients</Link> page.
+      </p>
+    </div>
+  ) : null;
 
   return (
     <div className="space-y-4">
@@ -307,6 +332,10 @@ export default function WifiPage() {
         </Tabs>
         {tab === "live" && (
           <div className="flex items-center gap-2 text-sm">
+            <div className="relative w-56">
+              <Search className="absolute left-2.5 top-2 h-4 w-4 text-muted-foreground" />
+              <Input placeholder="Search MAC, name, IP, AP..." value={search} onChange={(e) => setSearch(e.target.value)} className="h-8 pl-8" />
+            </div>
             <span className="text-muted-foreground">Group by:</span>
             <Button size="sm" variant={groupBy === "ap" ? "default" : "outline"} onClick={() => setGroupBy("ap")}>AP</Button>
             <Button size="sm" variant={groupBy === "ssid" ? "default" : "outline"} onClick={() => setGroupBy("ssid")}>Network (SSID)</Button>
@@ -367,12 +396,13 @@ export default function WifiPage() {
 
         return (
           <div className="space-y-4">
+            {knownClientHint}
             {knownGroups.map(renderGroup)}
-            {knownGroups.length === 0 && unknownGroups.length === 0 && (
+            {knownGroups.length === 0 && unknownGroups.length === 0 && !knownClientHint && (
               <Card>
                 <CardContent className="py-12 text-center text-muted-foreground">
                   <Wifi className="mx-auto mb-3 h-8 w-8" />
-                  <p>No WiFi clients tracked yet. Data appears after the first polling cycle (30s).</p>
+                  <p>{q ? `No WiFi clients match “${search}”.` : "No WiFi clients tracked yet. Data appears after the first polling cycle (30s)."}</p>
                 </CardContent>
               </Card>
             )}
@@ -404,20 +434,7 @@ export default function WifiPage() {
               </select>
             </div>
           </div>
-          {searchedKnownClient && (
-            <div className="rounded-lg border border-amber-300/60 bg-amber-50 p-3 text-sm dark:border-amber-500/30 dark:bg-amber-950/20">
-              <p className="font-medium">
-                {searchedKnownClient.host_name || searchedKnownClient.dns_name || searchedKnownClient.vendor || "This client"}
-                <span className="ml-2 font-mono text-xs text-muted-foreground">{searchedKnownClient.mac_address}</span>
-              </p>
-              <p className="mt-1 text-xs text-muted-foreground">
-                Known to the network but has no WiFi history — it&apos;s likely <strong>wired</strong> or currently offline.
-                {searchedKnownClient.ip_address && <> Last IP <span className="font-mono">{searchedKnownClient.ip_address}</span>.</>}
-                {searchedKnownClient.updated_at && <> Last seen {timeAgo(searchedKnownClient.updated_at)}.</>}{" "}
-                See the <Link href="/clients" className="underline">Clients</Link> page for wired/non-WiFi clients.
-              </p>
-            </div>
-          )}
+          {knownClientHint}
           <Table>
             <TableHeader>
               <TableRow>
