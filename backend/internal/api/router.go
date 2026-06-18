@@ -9,6 +9,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"github.com/mikrotik-nms/backend/internal/auth"
 	"github.com/mikrotik-nms/backend/internal/config"
 	"github.com/mikrotik-nms/backend/internal/mailer"
@@ -32,6 +33,12 @@ func NewRouter(db *sql.DB, hub *ws.Hub, cfg *config.Config, pool *routeros.Pool,
 	r := chi.NewRouter()
 
 	// Middleware
+	// OpenTelemetry HTTP tracing + server metrics. Uses the global providers, so
+	// it's a cheap no-op when OTel export is disabled. Outermost so spans wrap the
+	// whole request.
+	r.Use(otelhttp.NewMiddleware("http.server", otelhttp.WithSpanNameFormatter(
+		func(_ string, req *http.Request) string { return req.Method + " " + req.URL.Path },
+	)))
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
 	r.Use(requestLogger) // redacts the WS ?token= from access logs
@@ -187,6 +194,7 @@ func NewRouter(db *sql.DB, hub *ws.Hub, cfg *config.Config, pool *routeros.Pool,
 				r.Use(auth.RequireRole("admin"))
 				r.Put("/settings", s.handleUpdateSettings)
 				r.Post("/settings/opnsense/test", s.handleTestOpnsense)
+				r.Post("/settings/otel/test", s.handleTestOTel)
 				r.Post("/admin/purge-history", s.handlePurgeHistory)
 				r.Get("/admin/export/{table}", s.handleExportTable)
 				r.Post("/admin/import/{table}", s.handleImportTable)

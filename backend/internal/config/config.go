@@ -54,6 +54,19 @@ type Config struct {
 	SMTPTLSSkipVerify bool
 	PublicBaseURL     string
 	PasswordResetTTL  time.Duration
+
+	// OpenTelemetry export (metrics→dashboards, logs→Loki, traces→Tempo) to a
+	// single OTLP endpoint, typically an OpenTelemetry Collector gateway. These
+	// are env defaults; the Settings → Observability card overrides them in
+	// app_settings. Changes take effect on backend restart. Insecure defaults to
+	// true because a lab collector commonly speaks plaintext OTLP.
+	OTelEnabled     bool
+	OTelEndpoint    string
+	OTelProtocol    string
+	OTelInsecure    bool
+	OTelHeaders     string
+	OTelServiceName string
+	OTelSampleRatio float64
 }
 
 func Load() (*Config, error) {
@@ -83,6 +96,13 @@ func Load() (*Config, error) {
 		SMTPTLSSkipVerify:     envBoolOr("MIKROTIK_NMS_SMTP_TLS_SKIP_VERIFY", false),
 		PublicBaseURL:         os.Getenv("MIKROTIK_NMS_PUBLIC_BASE_URL"),
 		PasswordResetTTL:      envDurationOr("MIKROTIK_NMS_PASSWORD_RESET_TTL", time.Hour),
+		OTelEnabled:           envBoolOr("MIKROTIK_NMS_OTEL_ENABLED", false),
+		OTelEndpoint:          os.Getenv("MIKROTIK_NMS_OTEL_ENDPOINT"),
+		OTelProtocol:          envOr("MIKROTIK_NMS_OTEL_PROTOCOL", "grpc"),
+		OTelInsecure:          envBoolOr("MIKROTIK_NMS_OTEL_INSECURE", true),
+		OTelHeaders:           os.Getenv("MIKROTIK_NMS_OTEL_HEADERS"),
+		OTelServiceName:       envOr("MIKROTIK_NMS_OTEL_SERVICE_NAME", "mikrotik-nms"),
+		OTelSampleRatio:       envFloatOr("MIKROTIK_NMS_OTEL_SAMPLE_RATIO", 1.0),
 	}
 
 	if cfg.JWTSecret == "" {
@@ -146,6 +166,15 @@ func envBoolOr(key string, fallback bool) bool {
 	if v := os.Getenv(key); v != "" {
 		if b, err := strconv.ParseBool(v); err == nil {
 			return b
+		}
+	}
+	return fallback
+}
+
+func envFloatOr(key string, fallback float64) float64 {
+	if v := os.Getenv(key); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			return f
 		}
 	}
 	return fallback

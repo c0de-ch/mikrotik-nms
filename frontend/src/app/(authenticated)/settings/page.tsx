@@ -125,6 +125,7 @@ export default function SettingsPage() {
   const [extraOpnsense, setExtraOpnsense] = useState<number[]>([]);
   // Per-source validation result, keyed by suffix ("" = primary, "2".. = extras).
   const [opnsenseTest, setOpnsenseTest] = useState<Record<string, { ok: boolean; msg: string } | "loading">>({});
+  const [otelTest, setOtelTest] = useState<{ ok: boolean; msg: string } | "loading" | null>(null);
 
   // DNS state
   const [dnsServers, setDnsServers] = useState<DNSServer[]>([]);
@@ -296,6 +297,25 @@ export default function SettingsPage() {
         )}
       </div>
     );
+  };
+
+  // Verify the OTLP endpoint (saved or unsaved) by exporting a test span before
+  // saving + restarting the backend.
+  const testOtel = async () => {
+    if (!token) return;
+    setOtelTest("loading");
+    try {
+      const r = await api.settings.testOtel(token, {
+        endpoint: settings.otel_endpoint || "",
+        protocol: settings.otel_protocol || "grpc",
+        insecure: settings.otel_insecure !== "false",
+        headers: settings.otel_headers || "",
+        service_name: settings.otel_service_name || "mikrotik-nms",
+      });
+      setOtelTest({ ok: r.ok, msg: r.message });
+    } catch (e) {
+      setOtelTest({ ok: false, msg: e instanceof Error ? e.message : "request failed" });
+    }
   };
 
   const loadDNS = useCallback(() => {
@@ -900,6 +920,104 @@ export default function SettingsPage() {
       <Button variant="outline" size="sm" onClick={addOpnsense} className="w-fit">
         + Add OPNsense source
       </Button>
+
+      {/* Observability (OpenTelemetry) */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Observability (OpenTelemetry)</CardTitle>
+          <p className="text-xs text-muted-foreground">
+            Export the data this app collects — device health/CPU/memory, connectivity loss/RTT/jitter, speed tests,
+            wifi client counts, loop/flap events — plus HTTP traces and app logs, to an OTLP endpoint (an OpenTelemetry
+            Collector gateway that fans out to <code>metrics → dashboards</code>, <code>logs → Loki</code>,{" "}
+            <code>traces → Tempo</code>). Takes effect after a backend restart.
+          </p>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex-1">
+              <p className="font-medium text-sm">Enable export</p>
+              <p className="text-xs text-muted-foreground">Send metrics, traces and logs to the OTLP endpoint below.</p>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => updateSetting("otel_enabled", settings.otel_enabled === "true" ? "false" : "true")}
+            >
+              {settings.otel_enabled === "true" ? "On" : "Off"}
+            </Button>
+          </div>
+
+          <div className="space-y-1">
+            <Label>OTLP endpoint</Label>
+            <Input
+              value={settings.otel_endpoint || ""}
+              onChange={(e) => updateSetting("otel_endpoint", e.target.value)}
+              placeholder="obs.lan:4317  (host:port, no scheme)"
+            />
+            <p className="text-xs text-muted-foreground">
+              The collector gateway. gRPC defaults to <code>:4317</code>, HTTP to <code>:4318</code>.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div className="flex items-center justify-between gap-2">
+              <div>
+                <p className="font-medium text-sm">Protocol</p>
+                <p className="text-xs text-muted-foreground">OTLP transport</p>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => updateSetting("otel_protocol", settings.otel_protocol === "http" ? "grpc" : "http")}
+              >
+                {settings.otel_protocol === "http" ? "HTTP" : "gRPC"}
+              </Button>
+            </div>
+            <div className="flex items-center justify-between gap-2">
+              <div>
+                <p className="font-medium text-sm">Transport security</p>
+                <p className="text-xs text-muted-foreground">Plaintext for a no-TLS collector</p>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => updateSetting("otel_insecure", settings.otel_insecure === "false" ? "true" : "false")}
+              >
+                {settings.otel_insecure === "false" ? "TLS" : "Insecure"}
+              </Button>
+            </div>
+          </div>
+
+          <div className="space-y-1">
+            <Label>Service name</Label>
+            <Input
+              value={settings.otel_service_name || ""}
+              onChange={(e) => updateSetting("otel_service_name", e.target.value)}
+              placeholder="mikrotik-nms"
+            />
+          </div>
+
+          <div className="space-y-1">
+            <Label>Headers (optional)</Label>
+            <Input
+              value={settings.otel_headers || ""}
+              onChange={(e) => updateSetting("otel_headers", e.target.value)}
+              placeholder="key=value,key2=value2  (e.g. auth / tenant headers)"
+            />
+          </div>
+
+          <div className="flex items-center gap-3">
+            <Button variant="outline" size="sm" disabled={otelTest === "loading"} onClick={testOtel}>
+              {otelTest === "loading" ? "Testing…" : "Test connection"}
+            </Button>
+            {otelTest && otelTest !== "loading" && (
+              <span className={`text-xs ${otelTest.ok ? "text-green-600" : "text-red-600"}`}>
+                {otelTest.ok ? "✓ " : "✗ "}{otelTest.msg}
+              </span>
+            )}
+          </div>
+        </CardContent>
+      </Card>
 
       {/* Email / SMTP (self-service password reset) */}
       <Card>
