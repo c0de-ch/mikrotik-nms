@@ -10,6 +10,7 @@ import (
 	"github.com/mikrotik-nms/backend/internal/auth"
 	"github.com/mikrotik-nms/backend/internal/database/queries"
 	"github.com/mikrotik-nms/backend/internal/opnsense"
+	"github.com/mikrotik-nms/backend/internal/telemetry"
 )
 
 // opnsenseSourceKey matches the app_settings keys for an OPNsense DHCP source —
@@ -103,6 +104,17 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		"smtp_password":        true,
 		"smtp_tls_mode":        true,
 		"smtp_tls_skip_verify": true,
+		// OpenTelemetry export → lab-observability (Settings → Observability). The
+		// OTLP endpoint is a collector gateway that fans out to Loki/Tempo/Grafana.
+		// Changes apply on backend restart. "otel_headers" may carry an auth/tenant
+		// header; it's admin-only (this endpoint is admin-gated) so it isn't matched
+		// by isSecretSettingKey.
+		"otel_enabled":      true,
+		"otel_endpoint":     true,
+		"otel_protocol":     true,
+		"otel_insecure":     true,
+		"otel_headers":      true,
+		"otel_service_name": true,
 	}
 
 	for key, value := range req {
@@ -163,4 +175,41 @@ func (s *Server) handleTestOpnsense(w http.ResponseWriter, r *http.Request) {
 		"leases":  len(leases),
 		"message": fmt.Sprintf("Connected — %d active lease(s)", len(leases)),
 	})
+}
+
+// handleTestOTel verifies the OTLP endpoint from the request body (not the saved
+// settings) by exporting one throwaway span, so the admin can confirm reachability
+// before saving + restarting. Always 200 with {ok,message}.
+func (s *Server) handleTestOTel(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Endpoint    string `json:"endpoint"`
+		Protocol    string `json:"protocol"`
+		Insecure    bool   `json:"insecure"`
+		Headers     string `json:"headers"`
+		ServiceName string `json:"service_name"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	req.Endpoint = strings.TrimSpace(req.Endpoint)
+	if req.Endpoint == "" {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "message": "OTLP endpoint (host:port) is required"})
+		return
+	}
+	if req.ServiceName == "" {
+		req.ServiceName = "mikrotik-nms"
+	}
+	msg, err := telemetry.TestConnection(r.Context(), telemetry.Config{
+		Endpoint:    req.Endpoint,
+		Protocol:    req.Protocol,
+		Insecure:    req.Insecure,
+		Headers:     telemetry.ParseHeaders(req.Headers),
+		ServiceName: req.ServiceName,
+	})
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "message": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "message": msg})
 }

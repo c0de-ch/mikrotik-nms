@@ -17,6 +17,7 @@ import (
 	"github.com/mikrotik-nms/backend/internal/mailer"
 	"github.com/mikrotik-nms/backend/internal/poller"
 	"github.com/mikrotik-nms/backend/internal/routeros"
+	"github.com/mikrotik-nms/backend/internal/telemetry"
 	"github.com/mikrotik-nms/backend/internal/ws"
 )
 
@@ -47,6 +48,33 @@ func main() {
 	}
 	if len(cfg.JWTSecret) < 32 {
 		log.Println("warning: MIKROTIK_NMS_JWT_SECRET is shorter than 32 characters — use a longer, random secret")
+	}
+
+	// OpenTelemetry export (Settings → Observability; env defaults overlaid with
+	// app_settings). When enabled, the stdlib log is mirrored to Loki and the
+	// collected metrics/traces are exported to the OTLP endpoint (a collector
+	// gateway that fans out to Loki/Tempo/dashboards).
+	var otelShutdown func(context.Context) error
+	otelCfg := telemetry.ConfigFromSettings(db, telemetry.Config{
+		Enabled:        cfg.OTelEnabled,
+		Endpoint:       cfg.OTelEndpoint,
+		Protocol:       cfg.OTelProtocol,
+		Insecure:       cfg.OTelInsecure,
+		Headers:        telemetry.ParseHeaders(cfg.OTelHeaders),
+		ServiceName:    cfg.OTelServiceName,
+		SampleRatio:    cfg.OTelSampleRatio,
+		ExportInterval: time.Minute,
+	})
+	if otelCfg.Enabled && otelCfg.Endpoint != "" {
+		if prov, err := telemetry.Init(context.Background(), otelCfg, db); err != nil {
+			log.Printf("warning: OpenTelemetry init failed (export disabled): %v", err)
+		} else {
+			otelShutdown = prov.Shutdown
+			log.SetOutput(telemetry.NewLogWriter(os.Stderr)) // tee app logs → Loki
+			log.Printf("OpenTelemetry export enabled → %s (OTLP/%s)", otelCfg.Endpoint, otelCfg.Protocol)
+		}
+	} else {
+		log.Println("note: OpenTelemetry export disabled — enable it in Settings → Observability")
 	}
 
 	hub := ws.NewHub()
@@ -105,5 +133,13 @@ func main() {
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Printf("shutdown error: %v", err)
+	}
+
+	if otelShutdown != nil {
+		octx, ocancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer ocancel()
+		if err := otelShutdown(octx); err != nil {
+			log.Printf("otel shutdown error: %v", err)
+		}
 	}
 }
