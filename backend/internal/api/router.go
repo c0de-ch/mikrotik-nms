@@ -195,6 +195,7 @@ func NewRouter(db *sql.DB, hub *ws.Hub, cfg *config.Config, pool *routeros.Pool,
 				r.Put("/settings", s.handleUpdateSettings)
 				r.Post("/settings/opnsense/test", s.handleTestOpnsense)
 				r.Post("/settings/otel/test", s.handleTestOTel)
+				r.Post("/settings/mail/test", s.handleTestMail)
 				r.Post("/admin/purge-history", s.handlePurgeHistory)
 				r.Get("/admin/export/{table}", s.handleExportTable)
 				r.Post("/admin/import/{table}", s.handleImportTable)

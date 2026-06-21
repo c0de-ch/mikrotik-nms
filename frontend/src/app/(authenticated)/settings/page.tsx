@@ -126,6 +126,8 @@ export default function SettingsPage() {
   // Per-source validation result, keyed by suffix ("" = primary, "2".. = extras).
   const [opnsenseTest, setOpnsenseTest] = useState<Record<string, { ok: boolean; msg: string } | "loading">>({});
   const [otelTest, setOtelTest] = useState<{ ok: boolean; msg: string } | "loading" | null>(null);
+  const [mailTo, setMailTo] = useState("");
+  const [mailTest, setMailTest] = useState<{ ok: boolean; msg: string } | "loading" | null>(null);
 
   // DNS state
   const [dnsServers, setDnsServers] = useState<DNSServer[]>([]);
@@ -318,6 +320,28 @@ export default function SettingsPage() {
     }
   };
 
+  // Send a test email using the current form values (saved or unsaved). Empty
+  // fields fall back to the saved/env SMTP config on the backend.
+  const testMail = async () => {
+    if (!token || !mailTo.trim()) return;
+    setMailTest("loading");
+    try {
+      const r = await api.settings.testMail(token, {
+        to: mailTo.trim(),
+        host: settings.smtp_host || "",
+        port: settings.smtp_port || "",
+        user: settings.smtp_user || "",
+        password: settings.smtp_password || "",
+        from: settings.smtp_from_address || "",
+        tls_mode: settings.smtp_tls_mode || "starttls",
+        skip_verify: settings.smtp_tls_skip_verify === "true",
+      });
+      setMailTest({ ok: r.ok, msg: r.message });
+    } catch (e) {
+      setMailTest({ ok: false, msg: e instanceof Error ? e.message : "request failed" });
+    }
+  };
+
   const loadDNS = useCallback(() => {
     if (!token) return;
     api.dns.list(token).then(setDnsServers).catch(console.error);
@@ -429,7 +453,7 @@ export default function SettingsPage() {
 
   return (
     <div className="space-y-6 max-w-3xl">
-      <div className="flex items-center justify-between">
+      <div className="sticky top-0 z-20 flex items-center justify-between border-b bg-background py-4">
         <h1 className="text-2xl font-bold">Settings</h1>
         <Button onClick={saveSettings} disabled={!dirty || saving}>
           <Save className="mr-2 h-4 w-4" />
@@ -1088,11 +1112,15 @@ export default function SettingsPage() {
             </div>
             <div className="space-y-1">
               <Label>TLS mode</Label>
-              <Input
-                value={settings.smtp_tls_mode || ""}
+              <select
+                className="flex h-8 w-full rounded-md border bg-transparent px-2 text-sm"
+                value={settings.smtp_tls_mode || "starttls"}
                 onChange={(e) => updateSetting("smtp_tls_mode", e.target.value)}
-                placeholder="starttls"
-              />
+              >
+                <option value="starttls">STARTTLS (port 587)</option>
+                <option value="tls">TLS/SSL (port 465)</option>
+                <option value="none">None (plaintext)</option>
+              </select>
             </div>
           </div>
           <div className="flex items-center justify-between gap-4">
@@ -1120,6 +1148,39 @@ export default function SettingsPage() {
             >
               {settings.pwreset_enabled === "false" ? "Off" : "On"}
             </Button>
+          </div>
+          <Separator />
+          <div className="space-y-1">
+            <Label>Send a test email</Label>
+            <div className="flex items-center gap-2">
+              <Input
+                type="email"
+                value={mailTo}
+                onChange={(e) => {
+                  setMailTo(e.target.value);
+                  setMailTest(null);
+                }}
+                placeholder="you@example.com"
+                autoComplete="off"
+              />
+              <Button
+                variant="outline"
+                size="sm"
+                className="shrink-0"
+                disabled={mailTest === "loading" || !mailTo.trim()}
+                onClick={testMail}
+              >
+                {mailTest === "loading" ? "Sending…" : "Send test"}
+              </Button>
+            </div>
+            {mailTest && mailTest !== "loading" && (
+              <span className={`text-xs ${mailTest.ok ? "text-green-600" : "text-red-600"}`}>
+                {mailTest.ok ? "✓ " : "✗ "}{mailTest.msg}
+              </span>
+            )}
+            <p className="text-xs text-muted-foreground">
+              Sends using the values above (no need to save first). Empty fields fall back to the saved/env config.
+            </p>
           </div>
           <p className="text-xs text-muted-foreground">
             The password (and any value matching <code>secret</code>/<code>token</code>) is stored masked and never
