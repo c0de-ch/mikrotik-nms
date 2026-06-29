@@ -9,6 +9,7 @@ import (
 
 	"github.com/mikrotik-nms/backend/internal/auth"
 	"github.com/mikrotik-nms/backend/internal/database/queries"
+	"github.com/mikrotik-nms/backend/internal/mailer"
 	"github.com/mikrotik-nms/backend/internal/opnsense"
 	"github.com/mikrotik-nms/backend/internal/telemetry"
 )
@@ -212,4 +213,82 @@ func (s *Server) handleTestOTel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "message": msg})
+}
+
+// handleTestMail sends a one-off test message so the admin can confirm the SMTP
+// relay works. It starts from the saved/env config (resolveMailerConfig) and lets
+// the request body override any field, so unsaved form values can be tested
+// before saving — mirroring handleTestOpnsense / handleTestOTel. The test message
+// carries no reset link, so the public-base-URL gate the password-reset flow needs
+// is irrelevant here and is force-satisfied. Always 200 with {ok,message}.
+func (s *Server) handleTestMail(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		To         string `json:"to"`
+		Host       string `json:"host"`
+		Port       string `json:"port"`
+		User       string `json:"user"`
+		Password   string `json:"password"`
+		From       string `json:"from"`
+		TLSMode    string `json:"tls_mode"`
+		SkipVerify *bool  `json:"skip_verify"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	req.To = strings.TrimSpace(req.To)
+	if req.To == "" {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "message": "a recipient address is required"})
+		return
+	}
+
+	// Start from saved+env config; empty form fields fall back to it.
+	cfg := s.resolveMailerConfig()
+	if v := strings.TrimSpace(req.Host); v != "" {
+		cfg.SMTPHost = v
+	}
+	if v := strings.TrimSpace(req.Port); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.SMTPPort = n
+		}
+	}
+	if v := strings.TrimSpace(req.User); v != "" {
+		cfg.SMTPUser = v
+	}
+	if req.Password != "" {
+		cfg.SMTPPass = req.Password
+	}
+	if v := strings.TrimSpace(req.From); v != "" {
+		cfg.SMTPFrom = v
+	}
+	if v := strings.TrimSpace(req.TLSMode); v != "" {
+		cfg.SMTPTLSMode = v
+	}
+	// A *bool so an omitted skip_verify falls back to the saved/env value like
+	// every other field above; the UI always sends it, so it normally overrides.
+	if req.SkipVerify != nil {
+		cfg.SMTPTLSSkipVerify = *req.SkipVerify
+	}
+
+	if cfg.SMTPHost == "" || cfg.SMTPPort <= 0 {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "message": "SMTP host and port are required"})
+		return
+	}
+	// A test message needs no reset link, so satisfy the public-base-URL gate
+	// (mailer.New requires it to enable sending) without depending on env.
+	if cfg.PublicBaseURL == "" {
+		cfg.PublicBaseURL = "test"
+	}
+
+	subject := "MikroTik NMS — test email"
+	text := "This is a test message from MikroTik NMS.\r\n\r\n" +
+		"If you received it, your SMTP relay settings are working.\r\n\r\n" +
+		"-- MikroTik NMS (automated message, please do not reply)\r\n"
+	htmlBody := "<p>This is a <strong>test message</strong> from MikroTik&nbsp;NMS.</p>" +
+		"<p>If you received it, your SMTP relay settings are working.</p>"
+	if err := mailer.New(cfg).Send(req.To, subject, text, htmlBody); err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "message": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "message": fmt.Sprintf("Test email sent to %s", req.To)})
 }
