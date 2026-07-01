@@ -50,16 +50,26 @@ func (c *LiveTrafficCollector) Run(ctx context.Context) {
 			if c.hub.TopicSubscriberCount(LiveTrafficTopic) == 0 {
 				continue
 			}
-			c.hub.Publish(LiveTrafficTopic, map[string]interface{}{
-				"links": c.Collect(ctx),
-			})
+			cctx, cancel := context.WithTimeout(ctx, 4*time.Second)
+			links := c.Collect(cctx)
+			cancel()
+			c.hub.Publish(LiveTrafficTopic, map[string]interface{}{"links": links})
 		}
 	}
 }
 
-// Collect samples every up-link once, from whichever endpoint is online. It
-// polls each device's interfaces on that device's pooled client (serialized per
-// device by the client mutex) and runs the devices concurrently.
+// maxIfacesPerDevice caps how many distinct interfaces we sample on a single
+// device per cycle. On a flat L2 the neighbor graph is a near-mesh (every device
+// sees every other via MNDP), so many links share one uplink interface; we
+// therefore sample each (device, interface) ONCE and fan the result out to all
+// links on it. This cap is a backstop so a pathological device can never stall
+// the whole cycle.
+const maxIfacesPerDevice = 48
+
+// Collect samples each distinct (device, interface) once — from whichever
+// endpoint of a link is online — and maps the reading onto every link that
+// shares that interface. Devices run concurrently; interfaces on one device are
+// serialized by the pooled client's mutex.
 func (c *LiveTrafficCollector) Collect(ctx context.Context) []LinkTraffic {
 	links, err := queries.ListLinks(c.db)
 	if err != nil {
@@ -74,21 +84,33 @@ func (c *LiveTrafficCollector) Collect(ctx context.Context) []LinkTraffic {
 		online[d.ID] = d.Status == "online"
 	}
 
-	type probe struct {
-		linkID, source, target, iface string
-		swap                          bool // sampled from the B side → swap rx/tx to A's frame
+	// One link keyed to the interface we'll read it from.
+	type linkRef struct {
+		linkID, source, target string
+		swap                   bool // read from the B side → swap rx/tx into A's frame
 	}
-	byDevice := make(map[string][]probe)
+	// device -> interface -> links measured on it (dedup of redundant polls).
+	byDevIface := make(map[string]map[string][]linkRef)
 	for _, l := range links {
 		if l.Status != "up" {
 			continue
 		}
+		var devID, iface string
+		var swap bool
 		switch {
 		case online[l.DeviceAID] && l.InterfaceA != "" && l.InterfaceA != "unknown":
-			byDevice[l.DeviceAID] = append(byDevice[l.DeviceAID], probe{l.ID, l.DeviceAID, l.DeviceBID, l.InterfaceA, false})
+			devID, iface, swap = l.DeviceAID, l.InterfaceA, false
 		case online[l.DeviceBID] && l.InterfaceB != "" && l.InterfaceB != "unknown":
-			byDevice[l.DeviceBID] = append(byDevice[l.DeviceBID], probe{l.ID, l.DeviceAID, l.DeviceBID, l.InterfaceB, true})
+			devID, iface, swap = l.DeviceBID, l.InterfaceB, true
+		default:
+			continue
 		}
+		ifaces := byDevIface[devID]
+		if ifaces == nil {
+			ifaces = make(map[string][]linkRef)
+			byDevIface[devID] = ifaces
+		}
+		ifaces[iface] = append(ifaces[iface], linkRef{l.ID, l.DeviceAID, l.DeviceBID, swap})
 	}
 
 	var (
@@ -96,31 +118,35 @@ func (c *LiveTrafficCollector) Collect(ctx context.Context) []LinkTraffic {
 		wg  sync.WaitGroup
 		out = make([]LinkTraffic, 0, len(links))
 	)
-	for devID, probes := range byDevice {
+	for devID, ifaces := range byDevIface {
 		wg.Add(1)
-		go func(devID string, probes []probe) {
+		go func(devID string, ifaces map[string][]linkRef) {
 			defer wg.Done()
 			client := c.pool.Get(devID)
 			if client == nil {
 				return
 			}
-			for _, p := range probes {
-				if ctx.Err() != nil {
+			polled := 0
+			for iface, refs := range ifaces {
+				if ctx.Err() != nil || polled >= maxIfacesPerDevice {
 					return
 				}
-				data, err := routeros.GetTrafficSnapshot(client, p.iface)
+				polled++
+				data, err := routeros.GetTrafficSnapshot(client, iface)
 				if err != nil {
 					continue
 				}
-				rx, tx := data.RxBitsPerSec, data.TxBitsPerSec
-				if p.swap {
-					rx, tx = tx, rx
-				}
 				mu.Lock()
-				out = append(out, LinkTraffic{ID: p.linkID, Source: p.source, Target: p.target, RxBps: rx, TxBps: tx})
+				for _, r := range refs {
+					rx, tx := data.RxBitsPerSec, data.TxBitsPerSec
+					if r.swap {
+						rx, tx = tx, rx
+					}
+					out = append(out, LinkTraffic{ID: r.linkID, Source: r.source, Target: r.target, RxBps: rx, TxBps: tx})
+				}
 				mu.Unlock()
 			}
-		}(devID, probes)
+		}(devID, ifaces)
 	}
 	wg.Wait()
 	return out
