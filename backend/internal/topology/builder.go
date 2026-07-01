@@ -276,7 +276,8 @@ var vpnIfaceTypes = map[string]bool{
 // IsVPNIfaceType reports whether a RouterOS interface type is a VPN tunnel.
 func IsVPNIfaceType(t string) bool { return vpnIfaceTypes[strings.ToLower(t)] }
 
-func isPrivateIP(s string) bool {
+// IsPrivateIP reports whether s is an RFC1918 address.
+func IsPrivateIP(s string) bool {
 	ip := net.ParseIP(s)
 	if ip == nil {
 		return false
@@ -314,9 +315,14 @@ func (b *Builder) appendUplinks(graph *Graph, devices []queries.Device) {
 	// A tunnel that already carries the default route is drawn once, as the
 	// default-route edge.
 	routeEgress := make(map[string]bool)
+	// FDB-discovered physical attachment per gateway IP.
+	gwHost := make(map[string]queries.DeviceUplink)
 	for _, u := range ups {
 		if u.Kind == "default-route" && u.Interface != "" {
 			routeEgress[u.DeviceID+":"+u.Interface] = true
+		}
+		if u.Kind == "gateway-host" {
+			gwHost[u.GatewayIP] = u
 		}
 	}
 
@@ -373,7 +379,7 @@ func (b *Builder) appendUplinks(graph *Graph, devices []queries.Device) {
 				}
 				continue
 			}
-			if isPrivateIP(gw) {
+			if IsPrivateIP(gw) {
 				if !gateways[gw] {
 					gateways[gw] = true
 					label := queries.HostnameForIP(b.db, gw)
@@ -383,9 +389,18 @@ func (b *Builder) appendUplinks(graph *Graph, devices []queries.Device) {
 					if label == "" {
 						label = gw
 					}
-					graph.Nodes = append(graph.Nodes, CyNode{Data: Node{
-						ID: "gw:" + gw, Label: label, Type: "gateway", Status: "up", Address: gw,
-					}})
+					n := Node{ID: "gw:" + gw, Label: label, Type: "gateway", Status: "up", Address: gw}
+					if h, ok := gwHost[gw]; ok {
+						n.AttachDeviceID = h.DeviceID
+						n.AttachPort = h.Interface
+						// The FDB-discovered physical edge, carrying the real
+						// switch port; the routed fan-in edges below are logical.
+						graph.Edges = append(graph.Edges, CyEdge{Data: Edge{
+							ID: "gwhost:" + gw, Source: h.DeviceID, Target: "gw:" + gw,
+							SourceInterface: h.Interface, LinkType: "gateway", Status: "up",
+						}})
+					}
+					graph.Nodes = append(graph.Nodes, CyNode{Data: n})
 					ensureInternet()
 					graph.Edges = append(graph.Edges, CyEdge{Data: Edge{
 						ID: "gwnet:" + gw, Source: "gw:" + gw, Target: "internet",

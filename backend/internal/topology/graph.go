@@ -11,6 +11,10 @@ type Node struct {
 	CPULoad    *int   `json:"cpu_load"`
 	Address    string `json:"address"`
 	Managed    bool   `json:"managed"`
+	// Gateway nodes only: the managed device + port that learned the
+	// gateway's MAC in its bridge FDB — its physical attachment point.
+	AttachDeviceID string `json:"attach_device_id,omitempty"`
+	AttachPort     string `json:"attach_port,omitempty"`
 }
 
 // Edge represents a link between two devices.

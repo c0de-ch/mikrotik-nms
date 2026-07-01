@@ -377,6 +377,12 @@ func (m *Manager) pollTopology(ctx context.Context) {
 		return
 	}
 
+	// Gateway MACs (from the previous cycle's uplink rows) to look up in each
+	// device's bridge FDB — locates the switch+port a gateway is physically
+	// attached to instead of guessing.
+	gwMACs := m.gatewayMACs(devices)
+	var gwObservations []queries.DeviceUplink
+
 	for _, dev := range devices {
 		select {
 		case <-ctx.Done():
@@ -420,9 +426,19 @@ func (m *Manager) pollTopology(ctx context.Context) {
 
 		m.collectUplinks(dev, client)
 
+		for mac, ip := range gwMACs {
+			if port, ferr := routeros.FindBridgeHostPort(client, mac); ferr == nil && port != "" {
+				gwObservations = append(gwObservations, queries.DeviceUplink{
+					DeviceID: dev.ID, Interface: port, GatewayIP: ip,
+				})
+			}
+		}
+
 		// Stagger between devices
 		time.Sleep(time.Second)
 	}
+
+	m.resolveGatewayHosts(gwObservations)
 
 	// Auto-follow IP changes: opt-in reconcile of devices that moved to a new IP,
 	// using the neighbors just upserted above. Runs before the rebuild so a
@@ -439,6 +455,80 @@ func (m *Manager) pollTopology(ctx context.Context) {
 
 	m.hub.Publish("topology.update", graph)
 	log.Printf("poller: topology discovery complete — %d nodes, %d edges", len(graph.Nodes), len(graph.Edges))
+}
+
+// gatewayMACs returns MAC→IP for the unmanaged private gateways currently in
+// device_uplinks (previous cycle) whose MAC the client cache knows. These are
+// the addresses whose physical attachment the FDB pass locates.
+func (m *Manager) gatewayMACs(devices []queries.Device) map[string]string {
+	managed := make(map[string]bool, len(devices))
+	for _, d := range devices {
+		managed[d.Address] = true
+	}
+	ups, err := queries.ListDeviceUplinks(m.db, 10*time.Minute)
+	if err != nil {
+		return nil
+	}
+	out := make(map[string]string)
+	for _, u := range ups {
+		if u.Kind != "default-route" {
+			continue
+		}
+		gw := u.GatewayIP
+		if gw == "" || managed[gw] || !topology.IsPrivateIP(gw) {
+			continue
+		}
+		if mac := queries.MACForIP(m.db, gw); mac != "" {
+			out[strings.ToUpper(mac)] = gw
+		}
+	}
+	return out
+}
+
+// resolveGatewayHosts picks, per gateway, the FDB observation that is NOT on
+// an inter-switch link port — the device that learned the gateway's MAC on an
+// edge port is its physical attachment. Ties go to the best-connected device.
+// Keeps previous rows when this cycle produced no observations (transient
+// failures must not flap the map); genuinely stale rows age out via the
+// builder's freshness window.
+func (m *Manager) resolveGatewayHosts(observations []queries.DeviceUplink) {
+	if len(observations) == 0 {
+		return
+	}
+	links, err := queries.ListLinks(m.db)
+	if err != nil {
+		return
+	}
+	interSwitch := make(map[string]bool, len(links)*2)
+	linkDegree := make(map[string]int)
+	for _, l := range links {
+		interSwitch[l.DeviceAID+":"+l.InterfaceA] = true
+		interSwitch[l.DeviceBID+":"+l.InterfaceB] = true
+		linkDegree[l.DeviceAID]++
+		linkDegree[l.DeviceBID]++
+	}
+
+	best := make(map[string]queries.DeviceUplink)
+	for _, o := range observations {
+		if interSwitch[o.DeviceID+":"+o.Interface] {
+			continue // learned via an uplink → transit, not the attachment point
+		}
+		cur, ok := best[o.GatewayIP]
+		if !ok || linkDegree[o.DeviceID] > linkDegree[cur.DeviceID] ||
+			(linkDegree[o.DeviceID] == linkDegree[cur.DeviceID] && o.DeviceID < cur.DeviceID) {
+			best[o.GatewayIP] = o
+		}
+	}
+	if len(best) == 0 {
+		return
+	}
+	rows := make([]queries.DeviceUplink, 0, len(best))
+	for _, o := range best {
+		rows = append(rows, o)
+	}
+	if err := queries.ReplaceGatewayHosts(m.db, rows); err != nil {
+		log.Printf("poller topology: store gateway hosts: %v", err)
+	}
 }
 
 // collectUplinks refreshes the device's egress rows: its active IPv4 default

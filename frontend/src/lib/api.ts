@@ -561,6 +561,10 @@ export interface TopologyNode {
   cpu_load: number | null;
   address: string;
   managed: boolean;
+  // Gateway nodes: the device + port that learned the gateway's MAC in its
+  // bridge FDB — the physical attachment point.
+  attach_device_id?: string;
+  attach_port?: string;
 }
 
 export interface TopologyEdge {

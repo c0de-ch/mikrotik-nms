@@ -188,8 +188,13 @@ export default function MapPage() {
     const keptL2 = l2.filter((e) => e.score <= PHYS_K || (isInfra(e.source) && isInfra(e.target)));
 
     // Declutter gateway fan-in: every device default-routes to the same
-    // gateway, so in physical view keep only the edge from the gateway to the
-    // best-connected infra device — the L2 path the others reach it through.
+    // gateway. In physical view keep one edge per gateway — the FDB-discovered
+    // attachment device when known (authoritative), else fall back to the
+    // best-connected infra device.
+    const attachByGw = new Map<string, string>();
+    for (const n of nodes) {
+      if (n.type === "gateway" && n.attach_device_id) attachByGw.set(n.id, n.attach_device_id);
+    }
     const deg = new Map<string, number>();
     for (const e of keptL2) {
       deg.set(e.source, (deg.get(e.source) ?? 0) + 1);
@@ -201,13 +206,13 @@ export default function MapPage() {
       if (e.link_type !== "gateway") { keptSynth.push(e); continue; }
       const gwNode = e.source.startsWith("gw:") ? e.source : e.target;
       const dev = e.source.startsWith("gw:") ? e.target : e.source;
-      const d = deg.get(dev) ?? 0;
+      const d = attachByGw.get(gwNode) === dev ? Number.MAX_SAFE_INTEGER : (deg.get(dev) ?? 0);
       const cur = bestPerGw.get(gwNode);
       if (!cur || d > cur.d) bestPerGw.set(gwNode, { e, d });
     }
     for (const { e } of bestPerGw.values()) keptSynth.push(e);
     return [...keptL2, ...keptSynth];
-  }, [collapsedEdges, physicalOnly, isInfra]);
+  }, [collapsedEdges, physicalOnly, isInfra, nodes]);
 
   const pairTraffic = useMemo(() => {
     const m = new Map<string, EdgeTraffic>();
@@ -429,6 +434,16 @@ export default function MapPage() {
                 </p>
                 {SYNTH_TYPES.has(detail.node.type) && (
                   <p className="text-xs text-muted-foreground mt-1">{SYNTH_DESCRIPTION[detail.node.type]}</p>
+                )}
+                {detail.node.type === "gateway" && detail.node.attach_device_id && (
+                  <p className="text-xs mt-1">
+                    <span className="text-muted-foreground">Physically attached at </span>
+                    <span className="font-medium">
+                      {nodes.find((n) => n.id === detail.node.attach_device_id)?.label ?? detail.node.attach_device_id}
+                    </span>
+                    <span className="font-mono"> · {detail.node.attach_port}</span>
+                    <span className="text-muted-foreground"> (bridge FDB)</span>
+                  </p>
                 )}
                 {!SYNTH_TYPES.has(detail.node.type) && (
                   <div className="flex items-center gap-3 text-[11px] text-muted-foreground mt-1 flex-wrap">
