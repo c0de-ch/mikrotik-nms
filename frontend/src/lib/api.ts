@@ -553,7 +553,8 @@ export interface TopologyData {
 export interface TopologyNode {
   id: string;
   label: string;
-  type: "router" | "switch" | "ap" | "unknown";
+  // internet/gateway/vpn are synthetic egress nodes (status "up", managed=false).
+  type: "router" | "switch" | "ap" | "unknown" | "internet" | "gateway" | "vpn";
   status: string;
   model: string;
   ros_version: string;

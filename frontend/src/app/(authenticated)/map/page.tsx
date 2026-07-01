@@ -4,7 +4,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import {
   Wifi, Router as RouterIcon, Network as NetworkIcon, Server, Cpu, MemoryStick, Activity,
-  ArrowDownUp, Search, Maximize2, ZoomIn, ZoomOut, Crosshair, Users,
+  ArrowDownUp, Search, Maximize2, ZoomIn, ZoomOut, Crosshair, Users, Globe, Shield, Lock,
+  Shuffle, ListTree,
 } from "lucide-react";
 import { useAuth } from "@/context/auth";
 import {
@@ -17,7 +18,7 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { deviceStatusColor } from "@/lib/status";
-import { fmtBps, BRAND, portLoadColor } from "@/components/graph/graph-style";
+import { fmtBps, BRAND, SYNTH, SYNTH_TYPES, portLoadColor } from "@/components/graph/graph-style";
 import type { EdgeTraffic, CanvasApi, CanvasEdge } from "@/components/graph/topology-canvas";
 
 const TopologyCanvas = dynamic(() => import("@/components/graph/topology-canvas"), {
@@ -37,8 +38,19 @@ function DeviceIcon({ type, className }: { type: string; className?: string }) {
   if (type === "router") return <RouterIcon className={className} />;
   if (type === "switch") return <NetworkIcon className={className} />;
   if (type === "ap") return <Wifi className={className} />;
+  if (type === "internet") return <Globe className={className} />;
+  if (type === "gateway") return <Shield className={className} />;
+  if (type === "vpn") return <Lock className={className} />;
   return <Server className={className} />;
 }
+
+const SYNTH_DESCRIPTION: Record<string, string> = {
+  internet: "Synthetic node — where the network's default routes lead. Edges into it are the discovered internet uplinks.",
+  gateway: "External gateway (not a managed MikroTik) — devices whose default route points here egress through it.",
+  vpn: "VPN tunnel interface running on the connected device.",
+};
+
+const isSynthEdge = (t: string) => t === "gateway" || t === "internet" || t === "vpn";
 
 // ---- switch port grid (live per-port traffic, coloured by load) -------------
 function PortGrid({ deviceId, dark }: { deviceId: string; dark: boolean }) {
@@ -96,6 +108,7 @@ export default function MapPage() {
   const [vlanFilter, setVlanFilter] = useState<string>("");
   const [physicalOnly, setPhysicalOnly] = useState(true);
   const [showClients, setShowClients] = useState(false);
+  const [layout, setLayout] = useState<"force" | "hierarchy">("force");
 
   const apiRef = useRef<CanvasApi | null>(null);
   const registerApi = useCallback((a: CanvasApi) => { apiRef.current = a; }, []);
@@ -145,13 +158,16 @@ export default function MapPage() {
 
   // Collapse parallel edges to one per device-pair; keep the most-physical
   // constituent (lowest interface degree) as the representative for traffic.
+  // Synthetic egress edges (gateway/internet/vpn) bypass the physical scoring.
   const { collapsedEdges, repLink } = useMemo(() => {
     const pairs = new Map<string, CanvasEdge & { score: number }>();
     const rep = new Map<string, string>();
     for (const e of rawEdges) {
       const [a, b] = e.source < e.target ? [e.source, e.target] : [e.target, e.source];
       const pid = `${a}__${b}`;
-      const score = Math.min(degree(e.source, e.source_interface), degree(e.target, e.target_interface));
+      const score = isSynthEdge(e.link_type)
+        ? -1
+        : Math.min(degree(e.source, e.source_interface), degree(e.target, e.target_interface));
       const ex = pairs.get(pid);
       if (!ex) {
         pairs.set(pid, { id: pid, source: a, target: b, link_type: e.link_type, status: e.status, score });
@@ -164,9 +180,34 @@ export default function MapPage() {
     return { collapsedEdges: [...pairs.values()], repLink: rep };
   }, [rawEdges, degree]);
 
-  const visibleEdges = useMemo<CanvasEdge[]>(() => (
-    physicalOnly ? collapsedEdges.filter((e) => e.score <= PHYS_K || (isInfra(e.source) && isInfra(e.target))) : collapsedEdges
-  ), [collapsedEdges, physicalOnly, isInfra]);
+  const visibleEdges = useMemo<CanvasEdge[]>(() => {
+    const l2 = collapsedEdges.filter((e) => !isSynthEdge(e.link_type));
+    const synth = collapsedEdges.filter((e) => isSynthEdge(e.link_type));
+    if (!physicalOnly) return [...l2, ...synth];
+
+    const keptL2 = l2.filter((e) => e.score <= PHYS_K || (isInfra(e.source) && isInfra(e.target)));
+
+    // Declutter gateway fan-in: every device default-routes to the same
+    // gateway, so in physical view keep only the edge from the gateway to the
+    // best-connected infra device — the L2 path the others reach it through.
+    const deg = new Map<string, number>();
+    for (const e of keptL2) {
+      deg.set(e.source, (deg.get(e.source) ?? 0) + 1);
+      deg.set(e.target, (deg.get(e.target) ?? 0) + 1);
+    }
+    const bestPerGw = new Map<string, { e: CanvasEdge; d: number }>();
+    const keptSynth: CanvasEdge[] = [];
+    for (const e of synth) {
+      if (e.link_type !== "gateway") { keptSynth.push(e); continue; }
+      const gwNode = e.source.startsWith("gw:") ? e.source : e.target;
+      const dev = e.source.startsWith("gw:") ? e.target : e.source;
+      const d = deg.get(dev) ?? 0;
+      const cur = bestPerGw.get(gwNode);
+      if (!cur || d > cur.d) bestPerGw.set(gwNode, { e, d });
+    }
+    for (const { e } of bestPerGw.values()) keptSynth.push(e);
+    return [...keptL2, ...keptSynth];
+  }, [collapsedEdges, physicalOnly, isInfra]);
 
   const pairTraffic = useMemo(() => {
     const m = new Map<string, EdgeTraffic>();
@@ -203,11 +244,14 @@ export default function MapPage() {
     return { cnt, idx };
   }, [clients]);
 
-  const matchIds = useMemo(() => {
+  // matchedDevices drives the zoom; matchIds additionally keeps the synthetic
+  // egress nodes visible (never dimmed) for context.
+  const { matchIds, matchedDevices } = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (!q && !vlanFilter && role === "all" && !showClients) return null;
+    if (!q && !vlanFilter && role === "all" && !showClients) return { matchIds: null, matchedDevices: [] as string[] };
     const out = new Set<string>();
     for (const n of nodes) {
+      if (SYNTH_TYPES.has(n.type || "")) continue;
       if (role !== "all") {
         const t = n.type || "other";
         if (role === "other" ? ["router", "switch", "ap"].includes(t) : t !== role) continue;
@@ -221,22 +265,36 @@ export default function MapPage() {
       }
       out.add(n.id);
     }
-    return out;
+    const devices = [...out];
+    for (const n of nodes) if (SYNTH_TYPES.has(n.type || "")) out.add(n.id);
+    return { matchIds: out, matchedDevices: devices };
   }, [search, vlanFilter, role, showClients, nodes, deviceVlans, clientIndex]);
 
-  // Zoom to the matched segment whenever the filter changes to a subset.
+  // Zoom to the matched segment when the filter RESULT changes — keyed on the
+  // stable id set, not array identity, so the 60s topology broadcasts don't
+  // yank the user's pan/zoom while a filter is active.
+  const matchedRef = useRef(matchedDevices);
   useEffect(() => {
-    if (matchIds && matchIds.size > 0) {
-      const t = setTimeout(() => apiRef.current?.fitTo([...matchIds]), 120);
+    matchedRef.current = matchedDevices;
+  }, [matchedDevices]);
+  const matchKey = useMemo(() => matchedDevices.slice().sort().join(","), [matchedDevices]);
+  useEffect(() => {
+    if (matchKey) {
+      const t = setTimeout(() => apiRef.current?.fitTo(matchedRef.current), 120);
       return () => clearTimeout(t);
     }
-  }, [matchIds]);
+  }, [matchKey]);
 
   const summary = useMemo(() => {
-    let online = 0, offline = 0, rx = 0, tx = 0;
-    for (const n of nodes) { const st = statusById.get(n.id) ?? n.status; if (st === "online") online++; else if (st === "offline") offline++; }
+    let total = 0, online = 0, offline = 0, rx = 0, tx = 0;
+    for (const n of nodes) {
+      if (SYNTH_TYPES.has(n.type || "")) continue;
+      total++;
+      const st = statusById.get(n.id) ?? n.status;
+      if (st === "online") online++; else if (st === "offline") offline++;
+    }
     for (const t of pairTraffic.values()) { rx += t.rx; tx += t.tx; }
-    return { total: nodes.length, online, offline, thru: rx + tx, edges: visibleEdges.length, raw: rawEdges.length };
+    return { total, online, offline, thru: rx + tx, edges: visibleEdges.length, raw: rawEdges.length };
   }, [nodes, statusById, pairTraffic, visibleEdges, rawEdges]);
 
   const detail = useMemo(() => {
@@ -298,6 +356,14 @@ export default function MapPage() {
         <button onClick={() => setShowClients((v) => !v)} className={`px-2.5 h-9 rounded-md border text-sm inline-flex items-center gap-1 ${showClients ? "bg-foreground text-background" : "hover:bg-muted"}`}>
           <Users className="h-3.5 w-3.5" /> With clients
         </button>
+        <div className="inline-flex rounded-md border overflow-hidden text-sm" title="Layout">
+          <button onClick={() => setLayout("force")} className={`px-2.5 h-9 inline-flex items-center gap-1 ${layout === "force" ? "bg-foreground text-background" : "hover:bg-muted"}`}>
+            <Shuffle className="h-3.5 w-3.5" /> Auto
+          </button>
+          <button onClick={() => setLayout("hierarchy")} className={`px-2.5 h-9 inline-flex items-center gap-1 border-l ${layout === "hierarchy" ? "bg-foreground text-background" : "hover:bg-muted"}`}>
+            <ListTree className="h-3.5 w-3.5" /> Hierarchy
+          </button>
+        </div>
       </div>
 
       <div className="relative flex-1 rounded-lg border bg-card overflow-hidden">
@@ -310,6 +376,7 @@ export default function MapPage() {
             statusById={statusById}
             trafficById={pairTraffic}
             matchIds={matchIds}
+            layoutName={layout}
             onSelect={setSelectedId}
             registerApi={registerApi}
             dark={dark}
@@ -321,8 +388,8 @@ export default function MapPage() {
           <Button variant="outline" size="icon" className="h-8 w-8 bg-background/90" title="Fit" onClick={() => apiRef.current?.fit()}><Maximize2 className="h-4 w-4" /></Button>
           <Button variant="outline" size="icon" className="h-8 w-8 bg-background/90" title="Zoom in" onClick={() => apiRef.current?.zoomBy(1.3)}><ZoomIn className="h-4 w-4" /></Button>
           <Button variant="outline" size="icon" className="h-8 w-8 bg-background/90" title="Zoom out" onClick={() => apiRef.current?.zoomBy(0.77)}><ZoomOut className="h-4 w-4" /></Button>
-          {matchIds && matchIds.size > 0 && (
-            <Button variant="outline" size="icon" className="h-8 w-8 bg-background/90" title="Focus filtered segment" onClick={() => apiRef.current?.fitTo([...matchIds])}><Crosshair className="h-4 w-4" /></Button>
+          {matchedDevices.length > 0 && (
+            <Button variant="outline" size="icon" className="h-8 w-8 bg-background/90" title="Focus filtered segment" onClick={() => apiRef.current?.fitTo(matchedDevices)}><Crosshair className="h-4 w-4" /></Button>
           )}
         </div>
 
@@ -331,12 +398,16 @@ export default function MapPage() {
           <div className="flex items-center gap-3">
             <span className="inline-flex items-center gap-1"><span className="h-2 w-2 rounded-full" style={{ background: BRAND.primary }} />online</span>
             <span className="inline-flex items-center gap-1"><span className="h-2 w-2 rounded-full" style={{ background: BRAND.red }} />offline</span>
+            <span className="inline-flex items-center gap-1"><span className="h-2 w-2 rounded-full" style={{ background: SYNTH.internet }} />internet</span>
+            <span className="inline-flex items-center gap-1"><span className="h-2 w-2 rounded-full" style={{ background: SYNTH.gateway }} />gateway</span>
+            <span className="inline-flex items-center gap-1"><span className="h-2 w-2 rounded-full" style={{ background: SYNTH.vpn }} />vpn</span>
           </div>
           <div className="flex items-center gap-3 text-muted-foreground">
             <span>edge = live Mbps</span>
             <span className="inline-flex items-center gap-1"><span className="h-0.5 w-4" style={{ background: BRAND.primary }} />&lt;100</span>
             <span className="inline-flex items-center gap-1"><span className="h-0.5 w-4" style={{ background: BRAND.amber }} />100–500</span>
             <span className="inline-flex items-center gap-1"><span className="h-0.5 w-4" style={{ background: BRAND.red }} />&gt;500</span>
+            <span>· dashed = routed/VPN path</span>
           </div>
         </div>
       </div>
@@ -356,13 +427,18 @@ export default function MapPage() {
                 <p className="text-xs text-muted-foreground">
                   {detail.node.address}{detail.node.model && ` · ${detail.node.model}`}{detail.node.ros_version && ` · v${detail.node.ros_version}`}
                 </p>
-                <div className="flex items-center gap-3 text-[11px] text-muted-foreground mt-1 flex-wrap">
-                  <span className="inline-flex items-center gap-1"><span className={`h-2 w-2 rounded-full ${deviceStatusColor(detail.node.status)}`} />{detail.node.status}</span>
-                  {detail.node.cpu_load != null && <span className="inline-flex items-center gap-1"><Cpu className="h-3 w-3" />{detail.node.cpu_load}%</span>}
-                  {memPct != null && <span className="inline-flex items-center gap-1"><MemoryStick className="h-3 w-3" />{memPct}%</span>}
-                  {detail.dev?.uptime && <span className="inline-flex items-center gap-1"><Activity className="h-3 w-3" />{detail.dev.uptime}</span>}
-                  {detail.clientCount > 0 && <span className="inline-flex items-center gap-1"><Users className="h-3 w-3" />{detail.clientCount}</span>}
-                </div>
+                {SYNTH_TYPES.has(detail.node.type) && (
+                  <p className="text-xs text-muted-foreground mt-1">{SYNTH_DESCRIPTION[detail.node.type]}</p>
+                )}
+                {!SYNTH_TYPES.has(detail.node.type) && (
+                  <div className="flex items-center gap-3 text-[11px] text-muted-foreground mt-1 flex-wrap">
+                    <span className="inline-flex items-center gap-1"><span className={`h-2 w-2 rounded-full ${deviceStatusColor(detail.node.status)}`} />{detail.node.status}</span>
+                    {detail.node.cpu_load != null && <span className="inline-flex items-center gap-1"><Cpu className="h-3 w-3" />{detail.node.cpu_load}%</span>}
+                    {memPct != null && <span className="inline-flex items-center gap-1"><MemoryStick className="h-3 w-3" />{memPct}%</span>}
+                    {detail.dev?.uptime && <span className="inline-flex items-center gap-1"><Activity className="h-3 w-3" />{detail.dev.uptime}</span>}
+                    {detail.clientCount > 0 && <span className="inline-flex items-center gap-1"><Users className="h-3 w-3" />{detail.clientCount}</span>}
+                  </div>
+                )}
               </SheetHeader>
 
               <div className="px-4 pb-6 space-y-4">

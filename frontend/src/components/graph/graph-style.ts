@@ -8,6 +8,16 @@ export const BRAND = {
   grey: "#94a3b8", //   unknown / idle
 };
 
+// Synthetic (non-device) node colours — distinct from both the status triad
+// and the load ramp so they can't be misread as device state.
+export const SYNTH = {
+  internet: "#8b5cf6", // violet
+  gateway: "#0d9488", //  teal — unmanaged firewalls/gateways (OPNsense etc.)
+  vpn: "#c026d3", //      fuchsia — tunnel interfaces
+};
+
+export const SYNTH_TYPES = new Set(["internet", "gateway", "vpn"]);
+
 export function fmtBps(n: number): string {
   if (!n || n < 0) return "0";
   if (n >= 1e9) return `${(n / 1e9).toFixed(2)} Gbps`;
@@ -79,6 +89,11 @@ export function buildStylesheet(dark: boolean): GraphStyle[] {
     { selector: 'node[type="switch"]', style: { shape: "round-rectangle", width: 46, height: 30 } },
     { selector: 'node[type="ap"]', style: { shape: "ellipse", width: 32, height: 32 } },
     { selector: 'node[type="unknown"]', style: { shape: "diamond" } },
+    // Synthetic egress nodes: Internet cloud-ish octagon, gateways (unmanaged
+    // firewalls) as diamonds, VPN tunnels as small rhomboids.
+    { selector: 'node[type="internet"]', style: { shape: "octagon", width: 54, height: 54, "font-size": 12, "font-weight": 700 } },
+    { selector: 'node[type="gateway"]', style: { shape: "round-diamond", width: 42, height: 42 } },
+    { selector: 'node[type="vpn"]', style: { shape: "rhomboid", width: 34, height: 22, "font-size": 9 } },
     {
       selector: "node.badge",
       style: {
@@ -111,6 +126,24 @@ export function buildStylesheet(dark: boolean): GraphStyle[] {
     {
       selector: 'edge[status="down"]',
       style: { "line-color": idleEdge, "line-style": "dotted", opacity: 0.35, width: 1 },
+    },
+    // Egress edges: dashed so they read as logical paths, not cables. Measured
+    // ones still get width/colour from live traffic via data(color)/data(width).
+    { selector: 'edge[linkType="gateway"]', style: { "line-style": "dashed", "line-dash-pattern": [3, 4], opacity: 0.6 } },
+    { selector: 'edge[linkType="internet"]', style: { "line-style": "dashed", "line-dash-pattern": [3, 4], opacity: 0.75 } },
+    { selector: 'edge[linkType="vpn"]', style: { "line-style": "dashed", "line-dash-pattern": [2, 3], opacity: 0.75 } },
+    // Live-throughput label on busy edges.
+    {
+      selector: "edge[thruLabel]",
+      style: {
+        label: "data(thruLabel)",
+        "font-size": 8,
+        color: sub,
+        "text-rotation": "autorotate",
+        "text-background-color": dark ? "#0f172a" : "#ffffff",
+        "text-background-opacity": 0.75,
+        "text-background-padding": "1px",
+      },
     },
     {
       selector: "edge:selected",

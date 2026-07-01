@@ -5,7 +5,7 @@ import cytoscape from "cytoscape";
 import cola from "cytoscape-cola";
 import CytoscapeComponent from "react-cytoscapejs";
 import type { TopologyNode } from "@/lib/api";
-import { buildStylesheet, edgeVisual, nodeBg, BRAND } from "./graph-style";
+import { buildStylesheet, edgeVisual, nodeBg, fmtBps, BRAND, SYNTH, SYNTH_TYPES } from "./graph-style";
 
 // Register the cola force-layout once (guard against HMR double-registration).
 let colaRegistered = false;
@@ -43,12 +43,13 @@ interface Props {
   statusById: Map<string, string>;
   trafficById: Map<string, EdgeTraffic>;
   matchIds?: Set<string> | null;
+  layoutName?: "force" | "hierarchy";
   onSelect: (id: string | null) => void;
   registerApi?: (api: CanvasApi) => void;
   dark: boolean;
 }
 
-export default function TopologyCanvas({ nodes, edges, statusById, trafficById, matchIds, onSelect, registerApi, dark }: Props) {
+export default function TopologyCanvas({ nodes, edges, statusById, trafficById, matchIds, layoutName = "force", onSelect, registerApi, dark }: Props) {
   const cyRef = useRef<cytoscape.Core | null>(null);
   const onSelectRef = useRef(onSelect);
   useEffect(() => {
@@ -60,11 +61,16 @@ export default function TopologyCanvas({ nodes, edges, statusById, trafficById, 
   const elements = useMemo<cytoscape.ElementDefinition[]>(() => {
     const els: cytoscape.ElementDefinition[] = [];
     for (const n of nodes) {
-      els.push({ data: { id: n.id, label: n.label, type: n.type || "unknown", bg: nodeBg(n.status) } });
+      const type = n.type || "unknown";
+      const bg = type === "internet" || type === "gateway" || type === "vpn" ? SYNTH[type] : nodeBg(n.status);
+      els.push({ data: { id: n.id, label: n.label, type, bg } });
     }
     for (const e of edges) {
       els.push({
-        data: { id: e.id, source: e.source, target: e.target, color: BRAND.grey, width: 1.8, idle: 1, status: e.status },
+        data: {
+          id: e.id, source: e.source, target: e.target,
+          color: BRAND.grey, width: 1.8, idle: 1, status: e.status, linkType: e.link_type,
+        },
       });
     }
     return els;
@@ -78,14 +84,32 @@ export default function TopologyCanvas({ nodes, edges, statusById, trafficById, 
     [nodes, edges],
   );
   const lastSig = useRef("");
+  const layoutRef = useRef(layoutName);
+  useEffect(() => {
+    layoutRef.current = layoutName;
+  }, [layoutName]);
   const runLayout = (cy: cytoscape.Core) => {
+    if (layoutRef.current === "hierarchy") {
+      // Top-down tree from the Internet (or the best-connected node).
+      let rootID = "internet";
+      if (cy.$id("internet").empty()) {
+        const best = cy.nodes().max((n) => n.degree(false)).ele;
+        if (!best || best.empty()) return;
+        rootID = best.id();
+      }
+      cy.layout({
+        name: "breadthfirst", roots: [rootID], directed: false, spacingFactor: 1.1,
+        animate: true, fit: true, padding: 44,
+      }).run();
+      return;
+    }
     try {
       cy.layout({
         name: "cola",
         animate: true,
-        maxSimulationTime: 1500,
-        nodeSpacing: 22,
-        edgeLength: 130,
+        maxSimulationTime: 1800,
+        nodeSpacing: 26,
+        edgeLength: 140,
         fit: true,
         padding: 44,
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -103,12 +127,19 @@ export default function TopologyCanvas({ nodes, edges, statusById, trafficById, 
     runLayout(cy);
   }, [sig]);
 
-  // Live node status → colour.
+  // Re-run the layout when the user switches layout mode.
+  useEffect(() => {
+    const cy = cyRef.current;
+    if (cy) runLayout(cy);
+  }, [layoutName]);
+
+  // Live node status → colour (device nodes only; synthetic keep their hue).
   useEffect(() => {
     const cy = cyRef.current;
     if (!cy) return;
     cy.batch(() => {
       for (const n of nodes) {
+        if (SYNTH_TYPES.has(n.type || "")) continue;
         const st = statusById.get(n.id) ?? n.status;
         const el = cy.$id(n.id);
         if (el.nonempty()) el.data("bg", nodeBg(st));
@@ -116,18 +147,31 @@ export default function TopologyCanvas({ nodes, edges, statusById, trafficById, 
     });
   }, [statusById, nodes]);
 
-  // Live per-link throughput → edge width / colour / flow class.
+  // Live per-link throughput → edge width / colour / flow class / Mbps label.
+  // Edges whose samples stop arriving are reset to idle so a dead link can't
+  // keep a frozen "live" animation.
   useEffect(() => {
     const cy = cyRef.current;
     if (!cy) return;
     cy.batch(() => {
       cy.edges().forEach((e) => {
         const t = trafficById.get(e.id());
-        if (!t) return;
+        if (!t) {
+          if (!e.data("idle")) {
+            e.data("width", 1.8);
+            e.data("color", BRAND.grey);
+            e.data("idle", 1);
+            e.removeData("thruLabel");
+            e.removeClass("active");
+          }
+          return;
+        }
         const v = edgeVisual(t.rx, t.tx);
         e.data("width", v.width);
         e.data("color", v.color);
         e.removeData("idle");
+        if (v.total >= 2e6) e.data("thruLabel", fmtBps(v.total));
+        else e.removeData("thruLabel");
         if (v.active) e.addClass("active");
         else e.removeClass("active");
       });
@@ -147,7 +191,8 @@ export default function TopologyCanvas({ nodes, edges, statusById, trafficById, 
       cy.nodes().forEach((n) => {
         const m = matchIds.has(n.id());
         n.toggleClass("dim", !m);
-        n.toggleClass("match", m);
+        // Synthetic nodes are dim-exempt for context but are not "matches".
+        n.toggleClass("match", m && !SYNTH_TYPES.has(n.data("type")));
       });
       cy.edges().forEach((e) => {
         const vis = matchIds.has(e.source().id()) && matchIds.has(e.target().id());

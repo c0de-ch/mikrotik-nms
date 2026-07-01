@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	ros "github.com/go-routeros/routeros/v3"
 	"github.com/mikrotik-nms/backend/internal/config"
 	"github.com/mikrotik-nms/backend/internal/database/queries"
 	"github.com/mikrotik-nms/backend/internal/resolver"
@@ -417,6 +418,8 @@ func (m *Manager) pollTopology(ctx context.Context) {
 			})
 		}
 
+		m.collectUplinks(dev, client)
+
 		// Stagger between devices
 		time.Sleep(time.Second)
 	}
@@ -436,6 +439,56 @@ func (m *Manager) pollTopology(ctx context.Context) {
 
 	m.hub.Publish("topology.update", graph)
 	log.Printf("poller: topology discovery complete — %d nodes, %d edges", len(graph.Nodes), len(graph.Edges))
+}
+
+// collectUplinks refreshes the device's egress rows: its active IPv4 default
+// routes (one cheap /ip/route query) plus running VPN tunnel interfaces read
+// live in the same cycle (DB cache only as fallback — it can be up to
+// info_interval old).
+func (m *Manager) collectUplinks(dev queries.Device, client *ros.Client) {
+	routes, err := routeros.GetDefaultRoutes(client)
+	if err != nil {
+		// Keep the previous rows: a transient API failure must not flap the
+		// map's egress edges. Rows age out via the builder's freshness window
+		// once the device is genuinely unreachable.
+		log.Printf("poller topology: default routes for %s: %v", dev.Identity, err)
+		return
+	}
+
+	typeByName := make(map[string]string)
+	var vpnNames []string
+	if live, lerr := routeros.GetInterfaces(client); lerr == nil {
+		for _, i := range live {
+			typeByName[i.Name] = i.Type
+			if i.Running && !i.Disabled && topology.IsVPNIfaceType(i.Type) {
+				vpnNames = append(vpnNames, i.Name)
+			}
+		}
+	} else if cached, cerr := queries.ListInterfacesByDevice(m.db, dev.ID); cerr == nil {
+		for _, i := range cached {
+			typeByName[i.Name] = i.Type
+			if i.Running && !i.Disabled && topology.IsVPNIfaceType(i.Type) {
+				vpnNames = append(vpnNames, i.Name)
+			}
+		}
+	}
+
+	var ups []queries.DeviceUplink
+	for _, r := range routes {
+		ups = append(ups, queries.DeviceUplink{
+			DeviceID: dev.ID, Kind: "default-route",
+			Interface: r.Interface, IfaceType: typeByName[r.Interface], GatewayIP: r.Gateway,
+		})
+	}
+	for _, name := range vpnNames {
+		ups = append(ups, queries.DeviceUplink{
+			DeviceID: dev.ID, Kind: "vpn", Interface: name, IfaceType: typeByName[name],
+		})
+	}
+
+	if err := queries.ReplaceDeviceUplinks(m.db, dev.ID, ups); err != nil {
+		log.Printf("poller topology: store uplinks for %s: %v", dev.Identity, err)
+	}
 }
 
 func (m *Manager) firmwareLoop(ctx context.Context) {

@@ -3,11 +3,13 @@ package poller
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/mikrotik-nms/backend/internal/database/queries"
 	"github.com/mikrotik-nms/backend/internal/routeros"
+	"github.com/mikrotik-nms/backend/internal/topology"
 	"github.com/mikrotik-nms/backend/internal/ws"
 )
 
@@ -91,26 +93,64 @@ func (c *LiveTrafficCollector) Collect(ctx context.Context) []LinkTraffic {
 	}
 	// device -> interface -> links measured on it (dedup of redundant polls).
 	byDevIface := make(map[string]map[string][]linkRef)
-	for _, l := range links {
-		if l.Status != "up" {
-			continue
-		}
-		var devID, iface string
-		var swap bool
-		switch {
-		case online[l.DeviceAID] && l.InterfaceA != "" && l.InterfaceA != "unknown":
-			devID, iface, swap = l.DeviceAID, l.InterfaceA, false
-		case online[l.DeviceBID] && l.InterfaceB != "" && l.InterfaceB != "unknown":
-			devID, iface, swap = l.DeviceBID, l.InterfaceB, true
-		default:
-			continue
-		}
+	addRef := func(devID, iface string, ref linkRef) {
 		ifaces := byDevIface[devID]
 		if ifaces == nil {
 			ifaces = make(map[string][]linkRef)
 			byDevIface[devID] = ifaces
 		}
-		ifaces[iface] = append(ifaces[iface], linkRef{l.ID, l.DeviceAID, l.DeviceBID, swap})
+		ifaces[iface] = append(ifaces[iface], ref)
+	}
+	for _, l := range links {
+		if l.Status != "up" {
+			continue
+		}
+		switch {
+		case online[l.DeviceAID] && l.InterfaceA != "" && l.InterfaceA != "unknown":
+			addRef(l.DeviceAID, l.InterfaceA, linkRef{l.ID, l.DeviceAID, l.DeviceBID, false})
+		case online[l.DeviceBID] && l.InterfaceB != "" && l.InterfaceB != "unknown":
+			addRef(l.DeviceBID, l.InterfaceB, linkRef{l.ID, l.DeviceAID, l.DeviceBID, true})
+		}
+	}
+
+	// Uplink edges (internet / gateway / VPN egress): measurable when the
+	// egress is a real interface — a "via bridge" default route would sample
+	// the device's whole bridge, which is not that link's traffic, so skip it.
+	// The skip rules mirror topology.appendUplinks so we only sample edges
+	// that actually exist in the graph.
+	if ups, err := queries.ListDeviceUplinks(c.db, 10*time.Minute); err == nil {
+		managedIP := make(map[string]bool, len(devices))
+		for _, d := range devices {
+			managedIP[d.Address] = true
+		}
+		routeEgress := make(map[string]bool)
+		for _, u := range ups {
+			if u.Kind == "default-route" && u.Interface != "" {
+				routeEgress[u.DeviceID+":"+u.Interface] = true
+			}
+		}
+		for _, u := range ups {
+			if !online[u.DeviceID] || u.Interface == "" {
+				continue
+			}
+			if u.Kind == "default-route" && u.GatewayIP != "" && managedIP[u.GatewayIP] {
+				continue // builder draws no edge for managed next-hops
+			}
+			if u.Kind == "vpn" && routeEgress[u.DeviceID+":"+u.Interface] {
+				continue // drawn (and sampled) as the default-route edge
+			}
+			t := strings.ToLower(u.IfaceType)
+			if t == "" || t == "bridge" {
+				continue
+			}
+			gw := u.GatewayIP
+			if u.Kind == "vpn" {
+				gw = ""
+			}
+			addRef(u.DeviceID, u.Interface, linkRef{
+				topology.UplinkEdgeID(u.DeviceID, u.Interface, gw), u.DeviceID, "", false,
+			})
+		}
 	}
 
 	var (

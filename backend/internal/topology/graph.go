@@ -4,8 +4,8 @@ package topology
 type Node struct {
 	ID         string `json:"id"`
 	Label      string `json:"label"`
-	Type       string `json:"type"`    // router, switch, ap, unknown
-	Status     string `json:"status"`  // online, offline, unknown
+	Type       string `json:"type"`    // router, switch, ap, unknown; synthetic: internet, gateway, vpn
+	Status     string `json:"status"`  // online, offline, unknown; synthetic nodes: up
 	Model      string `json:"model"`
 	ROSVersion string `json:"ros_version"`
 	CPULoad    *int   `json:"cpu_load"`
@@ -20,7 +20,7 @@ type Edge struct {
 	Target          string `json:"target"`
 	SourceInterface string `json:"source_interface"`
 	TargetInterface string `json:"target_interface"`
-	LinkType        string `json:"link_type"` // ethernet, wireless, vpn
+	LinkType        string `json:"link_type"` // ethernet, wireless; synthetic egress: gateway, internet, vpn
 	Status          string `json:"status"`    // up, down
 }
 
