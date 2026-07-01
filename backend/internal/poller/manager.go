@@ -57,6 +57,9 @@ func (m *Manager) Start() {
 	trafficMgr := NewTrafficManager(m.db, m.pool, m.hub)
 	go trafficMgr.Run(ctx)
 
+	liveTraffic := NewLiveTrafficCollector(m.db, m.pool, m.hub)
+	go liveTraffic.Run(ctx)
+
 	wifiTracker := NewWifiTracker(m.db, m.pool, m.hub, 30*time.Second)
 	go wifiTracker.Run(ctx)
 

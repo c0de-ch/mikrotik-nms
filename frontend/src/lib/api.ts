@@ -231,6 +231,10 @@ export const api = {
   traffic: {
     summary: (token: string) =>
       apiFetch<{ device_id: string; rx_bps: number; tx_bps: number }[]>("/traffic/summary", { token }),
+    // One-shot per-link throughput snapshot for the map's initial paint; the
+    // continuous feed is the "topology.traffic" WS topic.
+    links: (token: string) =>
+      apiFetch<{ links: LinkTraffic[] }>("/traffic/links", { token }),
     get: (token: string, deviceId: string, iface: string, from?: string, to?: string) => {
       const params = new URLSearchParams();
       if (from) params.set("from", from);
@@ -573,6 +577,16 @@ export interface TrafficSample {
   rx_packets_per_sec: number;
   tx_packets_per_sec: number;
   collected_at: string;
+}
+
+// Live per-link throughput for the network map. id == the topology edge id
+// (links.id), so it merges straight onto the corresponding graph edge.
+export interface LinkTraffic {
+  id: string;
+  source: string;
+  target: string;
+  rx_bps: number;
+  tx_bps: number;
 }
 
 export interface FirmwareStatus {

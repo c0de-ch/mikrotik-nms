@@ -127,6 +127,7 @@ func NewRouter(db *sql.DB, hub *ws.Hub, cfg *config.Config, pool *routeros.Pool,
 
 			// Traffic
 			r.Get("/traffic/summary", s.handleGetTrafficSummary)
+			r.Get("/traffic/links", s.handleGetTrafficLinks)
 			r.Get("/traffic/{deviceId}/{iface}", s.handleGetTraffic)
 
 			// Firmware
