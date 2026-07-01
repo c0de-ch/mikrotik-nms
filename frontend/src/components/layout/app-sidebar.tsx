@@ -16,6 +16,7 @@ import {
   ShieldAlert,
   LayoutGrid,
   Radar,
+  Waypoints,
 } from "lucide-react";
 import {
   Sidebar,
@@ -35,6 +36,7 @@ import { Wifi as WifiIcon } from "lucide-react";
 
 const navItems = [
   { title: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
+  { title: "Map", href: "/map", icon: Waypoints },
   { title: "Topology", href: "/topology", icon: Network },
   { title: "Devices", href: "/devices", icon: Server },
   { title: "Clients", href: "/clients", icon: Monitor },

@@ -214,6 +214,10 @@ export const api = {
       apiFetch(`/devices/${id}`, { method: "DELETE", token }),
     interfaces: (token: string, id: string) =>
       apiFetch<DeviceInterface[]>(`/devices/${id}/interfaces`, { token }),
+    // Physical ports with a one-shot live rx/tx sample — powers the switch
+    // port-grid on the map.
+    ports: (token: string, id: string) =>
+      apiFetch<DevicePort[]>(`/devices/${id}/ports`, { token }),
     neighbors: (token: string, id: string) =>
       apiFetch<Neighbor[]>(`/devices/${id}/neighbors`, { token }),
     // Live from the device: configured IPv4/IPv6 addresses annotated with the
@@ -231,6 +235,10 @@ export const api = {
   traffic: {
     summary: (token: string) =>
       apiFetch<{ device_id: string; rx_bps: number; tx_bps: number }[]>("/traffic/summary", { token }),
+    // One-shot per-link throughput snapshot for the map's initial paint; the
+    // continuous feed is the "topology.traffic" WS topic.
+    links: (token: string) =>
+      apiFetch<{ links: LinkTraffic[] }>("/traffic/links", { token }),
     get: (token: string, deviceId: string, iface: string, from?: string, to?: string) => {
       const params = new URLSearchParams();
       if (from) params.set("from", from);
@@ -545,13 +553,18 @@ export interface TopologyData {
 export interface TopologyNode {
   id: string;
   label: string;
-  type: "router" | "switch" | "ap" | "unknown";
+  // internet/gateway/vpn are synthetic egress nodes (status "up", managed=false).
+  type: "router" | "switch" | "ap" | "unknown" | "internet" | "gateway" | "vpn";
   status: string;
   model: string;
   ros_version: string;
   cpu_load: number | null;
   address: string;
   managed: boolean;
+  // Gateway nodes: the device + port that learned the gateway's MAC in its
+  // bridge FDB — the physical attachment point.
+  attach_device_id?: string;
+  attach_port?: string;
 }
 
 export interface TopologyEdge {
@@ -573,6 +586,27 @@ export interface TrafficSample {
   rx_packets_per_sec: number;
   tx_packets_per_sec: number;
   collected_at: string;
+}
+
+// Live per-link throughput for the network map. id == the topology edge id
+// (links.id), so it merges straight onto the corresponding graph edge.
+export interface LinkTraffic {
+  id: string;
+  source: string;
+  target: string;
+  rx_bps: number;
+  tx_bps: number;
+}
+
+// One physical port of a device with a live throughput sample.
+export interface DevicePort {
+  name: string;
+  type: string;
+  running: boolean;
+  disabled: boolean;
+  comment: string;
+  rx_bps: number;
+  tx_bps: number;
 }
 
 export interface FirmwareStatus {
