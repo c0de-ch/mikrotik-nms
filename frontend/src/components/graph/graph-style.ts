@@ -22,6 +22,15 @@ export function nodeBg(status: string): string {
   return BRAND.grey;
 }
 
+// Colour for a switch-port cell by throughput.
+export function portLoadColor(bps: number, dark: boolean): string {
+  const mbps = (bps || 0) / 1e6;
+  if (mbps < 0.05) return dark ? "#334155" : "#e2e8f0"; // idle
+  if (mbps < 20) return BRAND.primary;
+  if (mbps < 200) return BRAND.amber;
+  return BRAND.red;
+}
+
 // Per-edge visual encoding from live throughput (both directions summed).
 export function edgeVisual(rxBps: number, txBps: number) {
   const total = Math.max(0, (rxBps || 0) + (txBps || 0));
@@ -107,5 +116,9 @@ export function buildStylesheet(dark: boolean): GraphStyle[] {
       selector: "edge:selected",
       style: { "line-color": BRAND.amber, opacity: 1 },
     },
+    // Filter dimming / highlight.
+    { selector: "node.dim", style: { opacity: 0.12 } },
+    { selector: "edge.dim", style: { opacity: 0.05 } },
+    { selector: "node.match", style: { "border-color": BRAND.amber, "border-width": 3 } },
   ];
 }

@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, type ComponentProps } from "react";
 import cytoscape from "cytoscape";
 import cola from "cytoscape-cola";
 import CytoscapeComponent from "react-cytoscapejs";
-import type { TopologyNode, TopologyEdge } from "@/lib/api";
+import type { TopologyNode } from "@/lib/api";
 import { buildStylesheet, edgeVisual, nodeBg, BRAND } from "./graph-style";
 
 // Register the cola force-layout once (guard against HMR double-registration).
@@ -23,16 +23,32 @@ export interface EdgeTraffic {
   tx: number;
 }
 
+export interface CanvasApi {
+  fit: () => void;
+  zoomBy: (factor: number) => void;
+  fitTo: (ids: string[]) => void;
+}
+
+export interface CanvasEdge {
+  id: string;
+  source: string;
+  target: string;
+  link_type: string;
+  status: string;
+}
+
 interface Props {
   nodes: TopologyNode[];
-  edges: TopologyEdge[];
+  edges: CanvasEdge[];
   statusById: Map<string, string>;
   trafficById: Map<string, EdgeTraffic>;
+  matchIds?: Set<string> | null;
   onSelect: (id: string | null) => void;
+  registerApi?: (api: CanvasApi) => void;
   dark: boolean;
 }
 
-export default function TopologyCanvas({ nodes, edges, statusById, trafficById, onSelect, dark }: Props) {
+export default function TopologyCanvas({ nodes, edges, statusById, trafficById, matchIds, onSelect, registerApi, dark }: Props) {
   const cyRef = useRef<cytoscape.Core | null>(null);
   const onSelectRef = useRef(onSelect);
   useEffect(() => {
@@ -117,6 +133,48 @@ export default function TopologyCanvas({ nodes, edges, statusById, trafficById, 
       });
     });
   }, [trafficById]);
+
+  // Filter dimming / highlight.
+  useEffect(() => {
+    const cy = cyRef.current;
+    if (!cy) return;
+    cy.batch(() => {
+      if (!matchIds) {
+        cy.elements().removeClass("dim");
+        cy.nodes().removeClass("match");
+        return;
+      }
+      cy.nodes().forEach((n) => {
+        const m = matchIds.has(n.id());
+        n.toggleClass("dim", !m);
+        n.toggleClass("match", m);
+      });
+      cy.edges().forEach((e) => {
+        const vis = matchIds.has(e.source().id()) && matchIds.has(e.target().id());
+        e.toggleClass("dim", !vis);
+      });
+    });
+  }, [matchIds]);
+
+  // Imperative zoom/fit API for the page toolbar.
+  const api = useMemo<CanvasApi>(() => ({
+    fit: () => cyRef.current?.fit(undefined, 44),
+    zoomBy: (factor: number) => {
+      const cy = cyRef.current;
+      if (!cy) return;
+      cy.zoom({ level: cy.zoom() * factor, renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } });
+    },
+    fitTo: (ids: string[]) => {
+      const cy = cyRef.current;
+      if (!cy || ids.length === 0) return;
+      const idset = new Set(ids);
+      const col = cy.nodes().filter((n) => idset.has(n.id()));
+      if (col.length) cy.animate({ fit: { eles: col, padding: 60 } }, { duration: 400 });
+    },
+  }), []);
+  useEffect(() => {
+    registerApi?.(api);
+  }, [registerApi, api]);
 
   // Animate the dashes on active edges — the "flow" effect.
   useEffect(() => {

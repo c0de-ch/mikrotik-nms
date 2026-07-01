@@ -214,6 +214,10 @@ export const api = {
       apiFetch(`/devices/${id}`, { method: "DELETE", token }),
     interfaces: (token: string, id: string) =>
       apiFetch<DeviceInterface[]>(`/devices/${id}/interfaces`, { token }),
+    // Physical ports with a one-shot live rx/tx sample — powers the switch
+    // port-grid on the map.
+    ports: (token: string, id: string) =>
+      apiFetch<DevicePort[]>(`/devices/${id}/ports`, { token }),
     neighbors: (token: string, id: string) =>
       apiFetch<Neighbor[]>(`/devices/${id}/neighbors`, { token }),
     // Live from the device: configured IPv4/IPv6 addresses annotated with the
@@ -585,6 +589,17 @@ export interface LinkTraffic {
   id: string;
   source: string;
   target: string;
+  rx_bps: number;
+  tx_bps: number;
+}
+
+// One physical port of a device with a live throughput sample.
+export interface DevicePort {
+  name: string;
+  type: string;
+  running: boolean;
+  disabled: boolean;
+  comment: string;
   rx_bps: number;
   tx_bps: number;
 }
