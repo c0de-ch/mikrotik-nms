@@ -3,6 +3,8 @@ package topology
 import (
 	"database/sql"
 	"log"
+	"net"
+	"sort"
 	"strings"
 	"time"
 
@@ -252,7 +254,199 @@ func (b *Builder) buildGraph(devices []queries.Device) (*Graph, error) {
 		})
 	}
 
+	b.appendUplinks(graph, devices)
+
 	return graph, nil
+}
+
+// UplinkEdgeID is the edge id for a device's egress edge; the live-traffic
+// collector publishes throughput under the same id so the frontend can join.
+func UplinkEdgeID(deviceID, iface, gateway string) string {
+	return "up:" + deviceID + ":" + iface + ":" + gateway
+}
+
+// vpnIfaceTypes are the /interface types drawn as VPN tunnels on the map.
+var vpnIfaceTypes = map[string]bool{
+	"wg": true, "wireguard": true, "eoip": true, "eoip-tunnel": true,
+	"gre": true, "gre-tunnel": true, "ipip": true, "vxlan": true,
+	"ovpn-out": true, "l2tp-out": true, "sstp-out": true, "pptp-out": true,
+	"zerotier": true,
+}
+
+// IsVPNIfaceType reports whether a RouterOS interface type is a VPN tunnel.
+func IsVPNIfaceType(t string) bool { return vpnIfaceTypes[strings.ToLower(t)] }
+
+// IsPrivateIP reports whether s is an RFC1918 address.
+func IsPrivateIP(s string) bool {
+	ip := net.ParseIP(s)
+	if ip == nil {
+		return false
+	}
+	for _, cidr := range []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"} {
+		_, n, _ := net.ParseCIDR(cidr)
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// appendUplinks adds synthetic Internet / gateway / VPN elements from the
+// per-device egress data collected by the topology poller:
+//   - an unmanaged private default-gateway becomes a "gateway" node (labelled
+//     from the client cache when known) that in turn links to the Internet;
+//   - a public/CGNAT next-hop means the device IS an internet edge — it links
+//     straight to the Internet node (e.g. a Starlink/LTE WAN port);
+//   - running tunnel interfaces (wireguard, EoIP, …) become "vpn" nodes;
+//   - multiple gateway nodes get pairwise "site link" edges — inter-site
+//     traffic flows gateway-to-gateway (the tunnel itself is on the gateways,
+//     which the NMS does not manage).
+func (b *Builder) appendUplinks(graph *Graph, devices []queries.Device) {
+	ups, err := queries.ListDeviceUplinks(b.db, 10*time.Minute)
+	if err != nil || len(ups) == 0 {
+		return
+	}
+
+	managedIP := make(map[string]bool, len(devices))
+	for _, d := range devices {
+		managedIP[d.Address] = true
+	}
+
+	// A tunnel that already carries the default route is drawn once, as the
+	// default-route edge.
+	routeEgress := make(map[string]bool)
+	// FDB-discovered physical attachment per gateway IP.
+	gwHost := make(map[string]queries.DeviceUplink)
+	for _, u := range ups {
+		if u.Kind == "default-route" && u.Interface != "" {
+			routeEgress[u.DeviceID+":"+u.Interface] = true
+		}
+		if u.Kind == "gateway-host" {
+			gwHost[u.GatewayIP] = u
+		}
+	}
+
+	internetAdded := false
+	ensureInternet := func() {
+		if !internetAdded {
+			graph.Nodes = append(graph.Nodes, CyNode{Data: Node{
+				ID: "internet", Label: "Internet", Type: "internet", Status: "up",
+			}})
+			internetAdded = true
+		}
+	}
+
+	gateways := make(map[string]bool)
+	vpnNodes := make(map[string]bool)
+	ensureVPNNode := func(deviceID, iface string) string {
+		id := "vpn:" + deviceID + ":" + iface
+		if !vpnNodes[id] {
+			vpnNodes[id] = true
+			graph.Nodes = append(graph.Nodes, CyNode{Data: Node{
+				ID: id, Label: iface, Type: "vpn", Status: "up",
+			}})
+		}
+		return id
+	}
+
+	for _, u := range ups {
+		switch u.Kind {
+		case "default-route":
+			gw := u.GatewayIP
+			if gw != "" && managedIP[gw] {
+				// Managed next-hops are already on the map as L2 links.
+				continue
+			}
+			if gw == "" {
+				// Interface-only default route (LTE, PPPoE, full-tunnel VPN):
+				// the interface IS the egress. Draw it to a VPN node for
+				// tunnel types, straight to the Internet otherwise.
+				if u.Interface == "" {
+					continue
+				}
+				if IsVPNIfaceType(u.IfaceType) {
+					vpnID := ensureVPNNode(u.DeviceID, u.Interface)
+					graph.Edges = append(graph.Edges, CyEdge{Data: Edge{
+						ID: UplinkEdgeID(u.DeviceID, u.Interface, ""), Source: u.DeviceID, Target: vpnID,
+						SourceInterface: u.Interface, LinkType: "vpn", Status: "up",
+					}})
+				} else {
+					ensureInternet()
+					graph.Edges = append(graph.Edges, CyEdge{Data: Edge{
+						ID: UplinkEdgeID(u.DeviceID, u.Interface, ""), Source: u.DeviceID, Target: "internet",
+						SourceInterface: u.Interface, LinkType: "internet", Status: "up",
+					}})
+				}
+				continue
+			}
+			if IsPrivateIP(gw) {
+				if !gateways[gw] {
+					gateways[gw] = true
+					label := queries.HostnameForIP(b.db, gw)
+					if i := strings.IndexByte(label, '.'); i > 0 {
+						label = label[:i]
+					}
+					if label == "" {
+						label = gw
+					}
+					n := Node{ID: "gw:" + gw, Label: label, Type: "gateway", Status: "up", Address: gw}
+					if h, ok := gwHost[gw]; ok {
+						n.AttachDeviceID = h.DeviceID
+						n.AttachPort = h.Interface
+						// The FDB-discovered physical edge, carrying the real
+						// switch port; the routed fan-in edges below are logical.
+						graph.Edges = append(graph.Edges, CyEdge{Data: Edge{
+							ID: "gwhost:" + gw, Source: h.DeviceID, Target: "gw:" + gw,
+							SourceInterface: h.Interface, LinkType: "gateway", Status: "up",
+						}})
+					}
+					graph.Nodes = append(graph.Nodes, CyNode{Data: n})
+					ensureInternet()
+					graph.Edges = append(graph.Edges, CyEdge{Data: Edge{
+						ID: "gwnet:" + gw, Source: "gw:" + gw, Target: "internet",
+						LinkType: "internet", Status: "up",
+					}})
+				}
+				graph.Edges = append(graph.Edges, CyEdge{Data: Edge{
+					ID: UplinkEdgeID(u.DeviceID, u.Interface, gw), Source: u.DeviceID, Target: "gw:" + gw,
+					SourceInterface: u.Interface, LinkType: "gateway", Status: "up",
+				}})
+			} else {
+				ensureInternet()
+				graph.Edges = append(graph.Edges, CyEdge{Data: Edge{
+					ID: UplinkEdgeID(u.DeviceID, u.Interface, gw), Source: u.DeviceID, Target: "internet",
+					SourceInterface: u.Interface, LinkType: "internet", Status: "up",
+				}})
+			}
+
+		case "vpn":
+			// Skip tunnels that already carry the default route — the
+			// default-route branch drew that edge.
+			if u.Interface == "" || routeEgress[u.DeviceID+":"+u.Interface] {
+				continue
+			}
+			vpnID := ensureVPNNode(u.DeviceID, u.Interface)
+			graph.Edges = append(graph.Edges, CyEdge{Data: Edge{
+				ID: UplinkEdgeID(u.DeviceID, u.Interface, ""), Source: u.DeviceID, Target: vpnID,
+				SourceInterface: u.Interface, LinkType: "vpn", Status: "up",
+			}})
+		}
+	}
+
+	// Site links: traffic between the sites rides gateway-to-gateway.
+	ips := make([]string, 0, len(gateways))
+	for ip := range gateways {
+		ips = append(ips, ip)
+	}
+	sort.Strings(ips)
+	for i := 0; i < len(ips); i++ {
+		for j := i + 1; j < len(ips); j++ {
+			graph.Edges = append(graph.Edges, CyEdge{Data: Edge{
+				ID: "site:" + ips[i] + ":" + ips[j], Source: "gw:" + ips[i], Target: "gw:" + ips[j],
+				SourceInterface: "site link", LinkType: "vpn", Status: "up",
+			}})
+		}
+	}
 }
 
 type macDeviceInfo struct {

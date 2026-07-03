@@ -24,6 +24,7 @@ import { toast } from "sonner";
 import { useAuth } from "@/context/auth";
 import { api, type TopologyData, type TopologyNode, type Device } from "@/lib/api";
 import { deviceStatusColor } from "@/lib/status";
+import { SYNTH_TYPES } from "@/components/graph/graph-style";
 import { useWebSocket } from "@/hooks/use-websocket";
 
 interface PortConnection {
@@ -137,6 +138,9 @@ export default function TopologyPage() {
       const src = nMap.get(e.data.source);
       const tgt = nMap.get(e.data.target);
       if (!src || !tgt) continue;
+      // Synthetic egress elements (internet/gateway/vpn) belong to the Map
+      // page; this card grid shows managed devices and their L2 links only.
+      if (SYNTH_TYPES.has(src.type || "") || SYNTH_TYPES.has(tgt.type || "")) continue;
 
       conns.get(e.data.source)?.push({
         localInterface: e.data.source_interface,
@@ -161,16 +165,22 @@ export default function TopologyPage() {
     return { deviceConnections: conns, deviceByID: dById };
   }, [topology, devices]);
 
-  const nodes = useMemo(() => topology?.nodes.map((n) => n.data) ?? [], [topology]);
+  const nodes = useMemo(
+    () => topology?.nodes.map((n) => n.data).filter((n) => !SYNTH_TYPES.has(n.type || "")) ?? [],
+    [topology],
+  );
 
   // Summary stats — computed from all nodes, ignoring filters.
   const summary = useMemo(() => {
+    const l2Edges = (topology?.edges ?? []).filter(
+      (e) => e.data.link_type === "ethernet" || e.data.link_type === "wireless",
+    );
     const s = {
       total: nodes.length,
       online: 0,
       offline: 0,
       byType: { router: 0, switch: 0, ap: 0, other: 0 },
-      connections: topology?.edges.length ?? 0,
+      connections: l2Edges.length,
       wireless: 0,
     };
     for (const n of nodes) {

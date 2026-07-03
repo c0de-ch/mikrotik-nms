@@ -1,7 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useState, type ReactNode } from "react";
-import { AlertTriangle, ShieldAlert, ShieldCheck, GitBranch, Radio, Cable, ChevronDown, ChevronRight, Ban, X } from "lucide-react";
+import { Fragment, useCallback, useEffect, useState, type ReactNode } from "react";
+import { AlertTriangle, ShieldAlert, ShieldCheck, GitBranch, Radio, Cable, ChevronDown, ChevronRight, Ban, X, Lightbulb } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -17,6 +17,33 @@ import { useAuth } from "@/context/auth";
 import { api, type NetworkHealth, type LoopEvent, type BridgeWithPorts, type InterfaceState } from "@/lib/api";
 import { useWebSocket } from "@/hooks/use-websocket";
 import { foldEvents, foldOptions, type FoldBucket } from "@/lib/fold";
+import { explainEvent, explainPortState, type HealthHint } from "@/lib/health-hints";
+
+// Expanded "what is this & how do I fix it" panel under a clicked row.
+function HintPanel({ hint }: { hint: HealthHint }) {
+  return (
+    <div className="space-y-2 py-1 text-xs">
+      <p className="flex items-start gap-1.5">
+        <Lightbulb className="h-3.5 w-3.5 mt-0.5 shrink-0 text-amber-500" />
+        <span>{hint.meaning}</span>
+      </p>
+      <div className="grid gap-3 md:grid-cols-2 pl-5">
+        <div>
+          <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Likely causes</p>
+          <ul className="list-disc space-y-0.5 pl-4 text-muted-foreground">
+            {hint.causes.map((c, i) => <li key={i}>{c}</li>)}
+          </ul>
+        </div>
+        <div>
+          <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">How to fix</p>
+          <ul className="list-disc space-y-0.5 pl-4 text-muted-foreground">
+            {hint.fixes.map((f, i) => <li key={i}>{f}</li>)}
+          </ul>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function formatDateTime(dateStr: string): string {
   const d = new Date(dateStr);
@@ -164,6 +191,8 @@ export default function NetworkHealthPage() {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [filter, setFilter] = useState<FilterKey>("none");
   const [showAcked, setShowAcked] = useState(false);
+  const [hintOpen, setHintOpen] = useState<Record<number, boolean>>({});
+  const [portHintOpen, setPortHintOpen] = useState<Record<string, boolean>>({});
 
   const load = useCallback(() => {
     if (!token) return;
@@ -267,29 +296,50 @@ export default function NetworkHealthPage() {
     return acc;
   }, {});
 
-  const renderEventRow = (e: LoopEvent, nested = false) => (
-    <TableRow key={e.id} className={e.acknowledged ? "opacity-50" : ""}>
-      <TableCell className={`text-xs whitespace-nowrap${nested ? " pl-8" : ""}`} title={formatDateTime(e.recorded_at)}>{timeAgo(e.recorded_at)}</TableCell>
-      <TableCell>{severityBadge(e.severity)}</TableCell>
-      <TableCell className="text-xs">{eventTypeLabel(e.event_type)}</TableCell>
-      <TableCell className="text-xs">{e.device_name || e.device_id}</TableCell>
-      <TableCell className="text-xs font-mono">
-        {e.bridge_name && <span>{e.bridge_name}</span>}
-        {e.port_interface && <span className="ml-1 text-muted-foreground">/ {e.port_interface}</span>}
-      </TableCell>
-      <TableCell className="text-xs font-mono">{e.mac_address || "—"}</TableCell>
-      <TableCell className="text-xs text-muted-foreground max-w-[300px] truncate" title={e.message}>{e.message}</TableCell>
-      <TableCell className="text-right">
-        {e.acknowledged ? (
-          <Badge variant="secondary">acked</Badge>
-        ) : (
-          <Button variant="outline" size="xs" onClick={() => ackEvent(e.id)}>
-            Ack
-          </Button>
+  const renderEventRow = (e: LoopEvent, nested = false) => {
+    const open = hintOpen[e.id] ?? false;
+    return (
+      <Fragment key={e.id}>
+        <TableRow
+          className={`cursor-pointer ${e.acknowledged ? "opacity-50" : ""}`}
+          onClick={() => setHintOpen((s) => ({ ...s, [e.id]: !open }))}
+          title="Click for cause & fix"
+        >
+          <TableCell className={`text-xs whitespace-nowrap${nested ? " pl-8" : ""}`} title={formatDateTime(e.recorded_at)}>
+            <span className="inline-flex items-center gap-1">
+              {open ? <ChevronDown className="h-3 w-3 text-muted-foreground" /> : <ChevronRight className="h-3 w-3 text-muted-foreground" />}
+              {timeAgo(e.recorded_at)}
+            </span>
+          </TableCell>
+          <TableCell>{severityBadge(e.severity)}</TableCell>
+          <TableCell className="text-xs">{eventTypeLabel(e.event_type)}</TableCell>
+          <TableCell className="text-xs">{e.device_name || e.device_id}</TableCell>
+          <TableCell className="text-xs font-mono">
+            {e.bridge_name && <span>{e.bridge_name}</span>}
+            {e.port_interface && <span className="ml-1 text-muted-foreground">/ {e.port_interface}</span>}
+          </TableCell>
+          <TableCell className="text-xs font-mono">{e.mac_address || "—"}</TableCell>
+          <TableCell className="text-xs text-muted-foreground max-w-[300px] truncate" title={e.message}>{e.message}</TableCell>
+          <TableCell className="text-right">
+            {e.acknowledged ? (
+              <Badge variant="secondary">acked</Badge>
+            ) : (
+              <Button variant="outline" size="xs" onClick={(ev) => { ev.stopPropagation(); ackEvent(e.id); }}>
+                Ack
+              </Button>
+            )}
+          </TableCell>
+        </TableRow>
+        {open && (
+          <TableRow className="bg-muted/30 hover:bg-muted/30">
+            <TableCell colSpan={8} className={nested ? "pl-8" : ""}>
+              <HintPanel hint={explainEvent(e)} />
+            </TableCell>
+          </TableRow>
         )}
-      </TableCell>
-    </TableRow>
-  );
+      </Fragment>
+    );
+  };
 
   return (
     <div className="space-y-4">
@@ -386,6 +436,7 @@ export default function NetworkHealthPage() {
               <CardTitle className="text-base">Recent Loop / Flap Events</CardTitle>
               <p className="text-xs text-muted-foreground">
                 STP topology changes, loop detections from device logs, and MAC address flapping.
+                Click a row for the likely cause and how to fix it.
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-2">
@@ -504,18 +555,39 @@ export default function NetworkHealthPage() {
                       if (p.comment) reasonParts.push(p.comment);
                       const reason = reasonParts.join(" · ") || "—";
 
+                      const hint = explainPortState(p);
+                      const pOpen = portHintOpen[p.id] ?? false;
+
                       return (
-                        <TableRow key={p.id}>
-                          <TableCell className="font-mono text-xs">{p.interface_name}</TableCell>
-                          <TableCell className="text-xs text-muted-foreground">{p.interface_type || "—"}</TableCell>
-                          <TableCell>{stateBadge}</TableCell>
-                          <TableCell className="text-xs text-muted-foreground max-w-[260px] truncate" title={reason}>{reason}</TableCell>
-                          <TableCell className="text-xs text-muted-foreground">{p.last_link_up || "—"}</TableCell>
-                          <TableCell className="text-xs text-muted-foreground">{p.last_link_down || "—"}</TableCell>
-                          <TableCell className={`text-right text-xs ${p.flap_count_window >= 3 ? "text-red-600 font-semibold" : ""}`}>
-                            {p.flap_count_window}
-                          </TableCell>
-                        </TableRow>
+                        <Fragment key={p.id}>
+                          <TableRow
+                            className={hint ? "cursor-pointer" : ""}
+                            onClick={hint ? () => setPortHintOpen((s) => ({ ...s, [p.id]: !pOpen })) : undefined}
+                            title={hint ? "Click for cause & fix" : undefined}
+                          >
+                            <TableCell className="font-mono text-xs">
+                              <span className="inline-flex items-center gap-1">
+                                {hint && (pOpen ? <ChevronDown className="h-3 w-3 text-muted-foreground" /> : <ChevronRight className="h-3 w-3 text-muted-foreground" />)}
+                                {p.interface_name}
+                              </span>
+                            </TableCell>
+                            <TableCell className="text-xs text-muted-foreground">{p.interface_type || "—"}</TableCell>
+                            <TableCell>{stateBadge}</TableCell>
+                            <TableCell className="text-xs text-muted-foreground max-w-[260px] truncate" title={reason}>{reason}</TableCell>
+                            <TableCell className="text-xs text-muted-foreground">{p.last_link_up || "—"}</TableCell>
+                            <TableCell className="text-xs text-muted-foreground">{p.last_link_down || "—"}</TableCell>
+                            <TableCell className={`text-right text-xs ${p.flap_count_window >= 3 ? "text-red-600 font-semibold" : ""}`}>
+                              {p.flap_count_window}
+                            </TableCell>
+                          </TableRow>
+                          {hint && pOpen && (
+                            <TableRow className="bg-muted/30 hover:bg-muted/30">
+                              <TableCell colSpan={7}>
+                                <HintPanel hint={hint} />
+                              </TableCell>
+                            </TableRow>
+                          )}
+                        </Fragment>
                       );
                     })}
                   </TableBody>
