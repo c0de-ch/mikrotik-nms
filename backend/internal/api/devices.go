@@ -252,7 +252,7 @@ func (s *Server) handleDeviceAddresses(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "device is "+status)
 		return
 	}
-	client := s.pool.Get(id)
+	client := s.pool.GetLive(id)
 	if client == nil {
 		writeError(w, http.StatusConflict, "no API connection to device yet — try again shortly")
 		return

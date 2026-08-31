@@ -337,7 +337,7 @@ func (s *Server) handleRunPingTarget(w http.ResponseWriter, r *http.Request) {
 		deviceID, address = t.DeviceID, t.Address
 	}
 
-	client := s.pool.Get(deviceID)
+	client := s.pool.GetLive(deviceID)
 	if client == nil {
 		writeError(w, http.StatusConflict, "no API connection to probing device yet — try again shortly")
 		return

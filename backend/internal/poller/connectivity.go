@@ -245,7 +245,7 @@ func (cp *ConnectivityPoller) poll(ctx context.Context) {
 				}
 			}()
 
-			client := cp.pool.Get(devID)
+			client := cp.pool.GetLive(devID)
 			if client == nil {
 				for _, task := range tasks {
 					cp.recordError(task.target, devID, task.address, "no API connection to probing device")
@@ -405,7 +405,7 @@ func (cp *ConnectivityPoller) collectSignals(ctx context.Context, devices []quer
 		if dev.Status != "online" {
 			continue
 		}
-		client := cp.pool.Get(dev.ID)
+		client := cp.pool.GetLive(dev.ID)
 		if client == nil {
 			continue
 		}

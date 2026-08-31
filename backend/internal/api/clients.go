@@ -51,7 +51,7 @@ func (s *Server) handleDebugWifiRaw(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "device_id required")
 		return
 	}
-	client := s.pool.Get(deviceID)
+	client := s.pool.GetLive(deviceID)
 	if client == nil {
 		writeError(w, http.StatusNotFound, "device not connected")
 		return
@@ -120,7 +120,7 @@ func (s *Server) handleScanClients(w http.ResponseWriter, r *http.Request) {
 		if dev.Status != "online" {
 			continue
 		}
-		client := s.pool.Get(dev.ID)
+		client := s.pool.GetLive(dev.ID)
 		if client == nil {
 			continue
 		}

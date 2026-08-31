@@ -315,7 +315,7 @@ func (m *Manager) verifyAndCommitMove(mv addressMove) {
 		log.Printf("poller: auto-follow: verify dial to %s for %s failed: %v", mv.NewAddr, dev.Identity, err)
 		return
 	}
-	defer m.pool.Close(verifyKey)
+	defer m.pool.Forget(verifyKey)
 
 	res, err := routeros.GetSystemResource(client)
 	if err != nil {

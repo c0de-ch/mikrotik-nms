@@ -162,7 +162,7 @@ func (c *LiveTrafficCollector) Collect(ctx context.Context) []LinkTraffic {
 		wg.Add(1)
 		go func(devID string, ifaces map[string][]linkRef) {
 			defer wg.Done()
-			client := c.pool.Get(devID)
+			client := c.pool.GetLive(devID)
 			if client == nil {
 				return
 			}
