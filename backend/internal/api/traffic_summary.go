@@ -26,7 +26,7 @@ func (s *Server) handleGetTrafficSummary(w http.ResponseWriter, r *http.Request)
 		if dev.Status != "online" {
 			continue
 		}
-		client := s.pool.Get(dev.ID)
+		client := s.pool.GetLive(dev.ID)
 		if client == nil {
 			continue
 		}

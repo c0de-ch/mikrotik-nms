@@ -394,7 +394,7 @@ func (m *Manager) pollTopology(ctx context.Context) {
 			continue
 		}
 
-		client := m.pool.Get(dev.ID)
+		client := m.pool.GetLive(dev.ID)
 		if client == nil {
 			continue
 		}
@@ -636,7 +636,7 @@ func RunFirmwareCheck(ctx context.Context, db *sql.DB, pool *routeros.Pool, hub 
 			continue
 		}
 
-		client := pool.Get(dev.ID)
+		client := pool.GetLive(dev.ID)
 		if client == nil {
 			continue
 		}

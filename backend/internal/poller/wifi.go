@@ -138,7 +138,7 @@ func (wt *WifiTracker) poll(ctx context.Context) {
 		if dev.Status != "online" {
 			continue
 		}
-		client := wt.pool.Get(dev.ID)
+		client := wt.pool.GetLive(dev.ID)
 		if client == nil {
 			continue
 		}
@@ -164,7 +164,7 @@ func (wt *WifiTracker) poll(ctx context.Context) {
 		if dev.Status != "online" {
 			continue
 		}
-		client := wt.pool.Get(dev.ID)
+		client := wt.pool.GetLive(dev.ID)
 		if client == nil {
 			continue
 		}

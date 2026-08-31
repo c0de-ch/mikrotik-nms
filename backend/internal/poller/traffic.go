@@ -110,7 +110,7 @@ func (tm *TrafficManager) runStream(ctx context.Context, dev queries.Device, ifa
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			client := tm.pool.Get(dev.ID)
+			client := tm.pool.GetLive(dev.ID)
 			if client == nil {
 				continue
 			}

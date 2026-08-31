@@ -89,7 +89,7 @@ func (cdp *ClientDiscoveryPoller) poll(ctx context.Context) {
 		if dev.Status != "online" {
 			continue
 		}
-		client := cdp.pool.Get(dev.ID)
+		client := cdp.pool.GetLive(dev.ID)
 		if client == nil {
 			continue
 		}

@@ -63,7 +63,7 @@ func (s *Server) handleGetDevicePorts(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if dev.Status == "online" {
-		if client := s.pool.Get(id); client != nil {
+		if client := s.pool.GetLive(id); client != nil {
 			if tr, err := routeros.GetPortTraffic(client, names); err == nil {
 				for idx := range ports {
 					if t, ok := tr[ports[idx].Name]; ok {

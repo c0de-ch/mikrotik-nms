@@ -132,7 +132,7 @@ func (s *Server) handleSetChannel(w http.ResponseWriter, r *http.Request) {
 	var changed int
 	var errors []string
 	for _, deviceID := range req.DeviceIDs {
-		client := s.pool.Get(deviceID)
+		client := s.pool.GetLive(deviceID)
 		if client == nil {
 			errors = append(errors, deviceID+": not connected")
 			continue
@@ -167,7 +167,7 @@ func (s *Server) handleUpgradeRouterboard(w http.ResponseWriter, r *http.Request
 	var upgraded int
 	var errors []string
 	for _, deviceID := range req.DeviceIDs {
-		client := s.pool.Get(deviceID)
+		client := s.pool.GetLive(deviceID)
 		if client == nil {
 			errors = append(errors, deviceID+": not connected")
 			continue

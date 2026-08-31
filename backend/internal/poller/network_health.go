@@ -233,7 +233,7 @@ func (n *NetworkHealthPoller) poll(ctx context.Context) {
 		if dev.Status != "online" {
 			continue
 		}
-		client := n.pool.Get(dev.ID)
+		client := n.pool.GetLive(dev.ID)
 		if client == nil {
 			continue
 		}
