@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { Suspense, useEffect, useState, useCallback, useMemo } from "react";
 import Link from "next/link";
-import { Wifi, ArrowRight, Clock, Radio, Search, ChevronDown, ChevronRight } from "lucide-react";
+import { useSearchParams } from "next/navigation";
+import { Wifi, ArrowRight, Clock, Radio, Search, ChevronDown, ChevronRight, Users, RadioTower, Shuffle, Activity } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -27,114 +28,36 @@ import { api } from "@/lib/api";
 import { useWebSocket } from "@/hooks/use-websocket";
 import { foldEvents, foldOptions, type FoldBucket } from "@/lib/fold";
 import { toast } from "sonner";
+import {
+  bandLabel,
+  countBy,
+  eventBadge,
+  formatDateTime,
+  formatRate,
+  isWireless,
+  signalColor,
+  SourceBadge,
+  timeAgo,
+  type MACLookupMap,
+  type StatView,
+  type WifiEntry,
+  type WifiEvent,
+} from "./lib";
+import { StatCard } from "./stat-card";
+import { WifiDetailSheet } from "./detail-sheet";
 
-interface WifiEntry {
-  id: number;
-  mac_address: string;
-  ip_address: string;
-  host_name: string;
-  ap_name: string;
-  ssid: string;
-  band: string;
-  channel: string;
-  signal: string;
-  tx_rate: string;
-  rx_rate: string;
-  event: string;
-  controller_id: string;
-  controller_name: string;
-  source: string;
-  reason: string;
-  recorded_at: string;
+type TabValue = "live" | "timeline" | "events";
+const TABS: TabValue[] = ["live", "timeline", "events"];
+const VIEWS: StatView[] = ["clients", "aps", "roams", "events"];
+
+// syncURL mirrors the active tab and open detail panel into the query string
+// (?tab=…&view=…) so a view can be bookmarked, shared, or reloaded.
+function syncURL(tab: TabValue, view: StatView | null) {
+  const url = new URL(window.location.href);
+  if (tab === "live") url.searchParams.delete("tab"); else url.searchParams.set("tab", tab);
+  if (view) url.searchParams.set("view", view); else url.searchParams.delete("view");
+  if (url.href !== window.location.href) window.history.replaceState(null, "", url);
 }
-
-interface WifiEvent {
-  mac: string;
-  ap: string;
-  prev_ap: string;
-  event: string;
-  signal: string;
-  time: string;
-}
-
-function formatRate(rate?: string): string {
-  if (!rate) return "—";
-  const n = parseInt(rate);
-  if (isNaN(n)) return rate;
-  if (n >= 1e6) return `${(n / 1e6).toFixed(0)} Mbps`;
-  if (n >= 1e3) return `${(n / 1e3).toFixed(0)} Kbps`;
-  return `${n} bps`;
-}
-
-function signalColor(signal: string): string {
-  const v = parseInt(signal);
-  if (v > -60) return "text-green-600";
-  if (v > -75) return "text-yellow-600";
-  return "text-red-600";
-}
-
-function eventBadge(event: string) {
-  switch (event) {
-    case "join": return <Badge className="bg-green-100 text-green-700">join</Badge>;
-    case "leave": return <Badge className="bg-red-100 text-red-700">leave</Badge>;
-    case "roam": return <Badge className="bg-blue-100 text-blue-700">roam</Badge>;
-    default: return <Badge variant="secondary">seen</Badge>;
-  }
-}
-
-// SourceBadge shows where a wifi_history row came from. "log" = parsed
-// from the controller's wireless log (authoritative). "snapshot" = caught
-// by the registration-table poll. "absence" = inferred because the client
-// disappeared from the registration table for several polls (safety net).
-function SourceBadge({ source }: { source: string }) {
-  let label = source;
-  let title = "";
-  let cls = "bg-muted text-muted-foreground";
-  switch (source) {
-    case "log":
-      label = "log";
-      title = "Parsed from controller wireless log";
-      cls = "bg-slate-100 text-slate-700";
-      break;
-    case "snapshot":
-      label = "poll";
-      title = "Inferred from registration-table polling";
-      cls = "bg-amber-100 text-amber-700";
-      break;
-    case "absence":
-      label = "absence";
-      title = "Client missing from registration table for >5min (fallback)";
-      cls = "bg-orange-100 text-orange-700";
-      break;
-    default:
-      return null;
-  }
-  return <Badge title={title} className={`text-[10px] font-normal ${cls}`}>{label}</Badge>;
-}
-
-function timeAgo(dateStr: string): string {
-  const diff = Date.now() - new Date(dateStr).getTime();
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m ago`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h ${mins % 60}m ago`;
-  return `${Math.floor(hrs / 24)}d ago`;
-}
-
-// formatDateTime renders an ISO date string as "dd.mm.yyyy HH:mm" in 24h
-// format using the user's local timezone.
-function formatDateTime(dateStr: string): string {
-  const d = new Date(dateStr);
-  const dd = String(d.getDate()).padStart(2, "0");
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  const yyyy = d.getFullYear();
-  const hh = String(d.getHours()).padStart(2, "0");
-  const min = String(d.getMinutes()).padStart(2, "0");
-  return `${dd}.${mm}.${yyyy} ${hh}:${min}`;
-}
-
-type MACLookupMap = Record<string, { mac_address: string; ip_address: string; host_name: string; dns_name: string; vendor?: string; randomized?: boolean; updated_at?: string }>;
 
 function UnknownSection({ count, groups, renderGroup }: { count: number; groups: string[]; renderGroup: (g: string) => React.ReactNode }) {
   const [expanded, setExpanded] = useState(false);
@@ -157,8 +80,28 @@ function UnknownSection({ count, groups, renderGroup }: { count: number; groups:
 }
 
 export default function WifiPage() {
+  return (
+    <Suspense fallback={null}>
+      <WifiPageInner />
+    </Suspense>
+  );
+}
+
+function WifiPageInner() {
   const { token } = useAuth();
-  const [tab, setTab] = useState("live");
+  const searchParams = useSearchParams();
+  // Initial tab/panel come from the URL (?tab=…&view=…); syncURL keeps it updated.
+  const [tab, setTab] = useState<TabValue>(() => {
+    const t = searchParams.get("tab") as TabValue | null;
+    return t && TABS.includes(t) ? t : "live";
+  });
+  const [view, setView] = useState<StatView | null>(() => {
+    const v = searchParams.get("view") as StatView | null;
+    return v && VIEWS.includes(v) ? v : null;
+  });
+  // Panel to reopen when the client dialog closes, so drilling into a client
+  // from a detail panel and closing it lands you back where you were.
+  const [returnView, setReturnView] = useState<StatView | null>(null);
   const [groupBy, setGroupBy] = useState<"ap" | "ssid">("ssid");
   const [current, setCurrent] = useState<WifiEntry[]>([]);
   const [history, setHistory] = useState<WifiEntry[]>([]);
@@ -221,13 +164,45 @@ export default function WifiPage() {
     }
   }, []));
 
+  useEffect(() => { syncURL(tab, view); }, [tab, view]);
+
   const openClientHistory = async (mac: string) => {
+    if (view) {
+      setReturnView(view);
+      setView(null);
+    }
     setSelectedMAC(mac);
     setClientHistory([]); // Clear stale data immediately
     if (!token) return;
     const entries = await api.wifi.history(token, { mac, limit: 200 }) as WifiEntry[];
     setClientHistory(entries);
   };
+
+  const closeClientHistory = () => {
+    setSelectedMAC(null);
+    if (returnView) {
+      setView(returnView);
+      setReturnView(null);
+    }
+  };
+
+  // "Show on Current tab" from the AP panel: group by AP and filter to it.
+  const showAP = (ap: string) => {
+    setView(null);
+    setTab("live");
+    setGroupBy("ap");
+    setSearch(ap);
+  };
+
+  // Stat card numbers + one-line hints.
+  const stats = useMemo(() => {
+    const wireless = current.filter(isWireless);
+    const topBand = countBy(wireless, (e) => bandLabel(e.band))[0];
+    const apLoad = countBy(wireless, (e) => e.ap_name || "Unknown AP");
+    const roams = history.filter((e) => e.event === "roam");
+    const topRoamer = countBy(roams, (e) => e.mac_address)[0];
+    return { wireless, topBand, apLoad, roams, topRoamer };
+  }, [current, history]);
 
   const q = search.trim().toLowerCase();
 
@@ -250,7 +225,6 @@ export default function WifiPage() {
     return acc;
   }, {});
   const sortedGroups = Object.keys(groups).sort();
-  const uniqueAPs = new Set(current.map((c) => c.ap_name)).size;
   const uniqueSSIDs = new Set(current.map((c) => c.ssid)).size;
 
   const filteredHistory = q ? history.filter(matchesWifi) : history;
@@ -294,36 +268,65 @@ export default function WifiPage() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-end justify-between gap-2">
         <div>
           <h1 className="text-2xl font-bold">WiFi Tracking</h1>
           <p className="text-sm text-muted-foreground">
-            {current.length} clients · {uniqueAPs} APs · {uniqueSSIDs} networks · updates every 30s
+            {stats.wireless.length} wireless clients · {stats.apLoad.length} APs · {uniqueSSIDs} networks · updates every 30s
           </p>
         </div>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-4">
-        <Card>
-          <CardHeader className="pb-2"><CardTitle className="text-sm font-medium">Connected</CardTitle></CardHeader>
-          <CardContent><div className="text-2xl font-bold">{current.length}</div></CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="pb-2"><CardTitle className="text-sm font-medium">Access Points</CardTitle></CardHeader>
-          <CardContent><div className="text-2xl font-bold">{uniqueAPs}</div></CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="pb-2"><CardTitle className="text-sm font-medium">Roaming Events</CardTitle></CardHeader>
-          <CardContent><div className="text-2xl font-bold">{history.filter((e) => e.event === "roam").length}</div></CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="pb-2"><CardTitle className="text-sm font-medium">Live Events</CardTitle></CardHeader>
-          <CardContent><div className="text-2xl font-bold">{liveEvents.length}</div></CardContent>
-        </Card>
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <StatCard
+          label="Connected"
+          value={stats.wireless.length}
+          icon={Users}
+          accent="bg-green-500/10 text-green-600"
+          active={view === "clients"}
+          onClick={() => setView("clients")}
+          hint={
+            <>
+              {stats.topBand ? `most on ${stats.topBand[0]} (${stats.topBand[1]})` : "no clients yet"}
+              {current.length > stats.wireless.length && ` · +${current.length - stats.wireless.length} other`}
+            </>
+          }
+        />
+        <StatCard
+          label="Access Points"
+          value={stats.apLoad.length}
+          icon={RadioTower}
+          accent="bg-blue-500/10 text-blue-600"
+          active={view === "aps"}
+          onClick={() => setView("aps")}
+          hint={stats.apLoad[0] ? `busiest: ${stats.apLoad[0][0]} (${stats.apLoad[0][1]})` : "no APs with clients"}
+        />
+        <StatCard
+          label="Roaming Events"
+          value={stats.roams.length}
+          icon={Shuffle}
+          accent="bg-violet-500/10 text-violet-600"
+          active={view === "roams"}
+          onClick={() => setView("roams")}
+          hint={
+            stats.topRoamer
+              ? `top: ${resolveName(stats.topRoamer[0]) || stats.topRoamer[0]} (${stats.topRoamer[1]})`
+              : "no roams in history"
+          }
+        />
+        <StatCard
+          label="Live Events"
+          value={liveEvents.length}
+          icon={Activity}
+          accent="bg-amber-500/10 text-amber-600"
+          active={view === "events"}
+          onClick={() => setView("events")}
+          hint={liveEvents[0] ? `last: ${liveEvents[0].event} ${timeAgo(liveEvents[0].time)}` : "since page opened"}
+        />
       </div>
 
-      <div className="flex items-center justify-between">
-        <Tabs value={tab} onValueChange={setTab}>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <Tabs value={tab} onValueChange={(v) => setTab(v as TabValue)}>
           <TabsList>
             <TabsTrigger value="live"><Wifi className="mr-1.5 h-3.5 w-3.5" />Current ({current.length})</TabsTrigger>
             <TabsTrigger value="timeline"><Clock className="mr-1.5 h-3.5 w-3.5" />Timeline</TabsTrigger>
@@ -331,8 +334,8 @@ export default function WifiPage() {
           </TabsList>
         </Tabs>
         {tab === "live" && (
-          <div className="flex items-center gap-2 text-sm">
-            <div className="relative w-56">
+          <div className="flex flex-wrap items-center gap-2 text-sm">
+            <div className="relative w-full sm:w-56">
               <Search className="absolute left-2.5 top-2 h-4 w-4 text-muted-foreground" />
               <Input placeholder="Search MAC, name, IP, AP..." value={search} onChange={(e) => setSearch(e.target.value)} className="h-8 pl-8" />
             </div>
@@ -567,8 +570,20 @@ export default function WifiPage() {
         </div>
       )}
 
+      <WifiDetailSheet
+        view={view}
+        onClose={() => setView(null)}
+        current={current}
+        history={history}
+        liveEvents={liveEvents}
+        resolveName={resolveName}
+        resolveIP={resolveIP}
+        onSelectClient={openClientHistory}
+        onShowAP={showAP}
+      />
+
       {/* Client history modal */}
-      <Dialog open={!!selectedMAC} onOpenChange={(open) => !open && setSelectedMAC(null)}>
+      <Dialog open={!!selectedMAC} onOpenChange={(open) => !open && closeClientHistory()}>
         <DialogContent className="sm:max-w-2xl max-h-[80vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Client History: {(selectedMAC && resolveName(selectedMAC)) || selectedMAC}</DialogTitle>
