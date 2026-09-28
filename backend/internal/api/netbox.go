@@ -42,13 +42,13 @@ func (s *Server) handleNetboxExport(w http.ResponseWriter, r *http.Request) {
 	}
 
 	result := map[string]interface{}{
-		"manufacturers":   generateManufacturers(),
-		"device_types":    generateDeviceTypes(devices),
-		"device_roles":    generateDeviceRoles(devices),
-		"devices":         generateDevices(devices),
-		"interfaces":      generateInterfaces(devices, allIfaces),
-		"ip_addresses":    generateIPAddresses(devices, allIfaces),
-		"cables":          generateCables(links, deviceByID, allIfaces),
+		"manufacturers": generateManufacturers(),
+		"device_types":  generateDeviceTypes(devices),
+		"device_roles":  generateDeviceRoles(devices),
+		"devices":       generateDevices(devices),
+		"interfaces":    generateInterfaces(devices, allIfaces),
+		"ip_addresses":  generateIPAddresses(devices, allIfaces),
+		"cables":        generateCables(links, deviceByID, allIfaces),
 	}
 
 	writeJSON(w, http.StatusOK, result)

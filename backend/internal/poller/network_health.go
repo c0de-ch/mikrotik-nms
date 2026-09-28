@@ -18,9 +18,9 @@ import (
 // NetworkHealthPoller tracks bridge / STP state and surfaces L2 loop signals.
 //
 // Per cycle it does, for each online device:
-//   1. /interface/bridge/print + monitor → bridge state
-//   2. /interface/bridge/port/print + monitor → port roles
-//   3. /log/print filtered to bridge,info → loop / mac flap events
+//  1. /interface/bridge/print + monitor → bridge state
+//  2. /interface/bridge/port/print + monitor → port roles
+//  3. /log/print filtered to bridge,info → loop / mac flap events
 //
 // Anomaly detection writes rows to loop_events:
 //   - stp_disabled: bridge has STP off and >1 non-edge port
@@ -147,10 +147,10 @@ func NewNetworkHealthPoller(db *sql.DB, pool *routeros.Pool, hub *ws.Hub, interv
 		interval = 60 * time.Second
 	}
 	return &NetworkHealthPoller{
-		db:       db,
-		pool:     pool,
-		hub:      hub,
-		interval: interval,
+		db:            db,
+		pool:          pool,
+		hub:           hub,
+		interval:      interval,
 		prevTC:        make(map[string]int),
 		bridgeSTPSeen: make(map[string]bool),
 		seenLogs:      make(map[string]map[string]time.Time),

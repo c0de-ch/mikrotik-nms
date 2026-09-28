@@ -74,9 +74,9 @@ type rawRow struct {
 }
 
 type searchResponse struct {
-	Total   int      `json:"total"`
-	RowCount int     `json:"rowCount"`
-	Rows    []rawRow `json:"rows"`
+	Total    int      `json:"total"`
+	RowCount int      `json:"rowCount"`
+	Rows     []rawRow `json:"rows"`
 }
 
 // GetLeases returns the union of active IPv4 and IPv6 leases. Errors on one

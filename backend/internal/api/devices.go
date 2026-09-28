@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/google/uuid"
 	ros "github.com/go-routeros/routeros/v3"
+	"github.com/google/uuid"
 	"github.com/mikrotik-nms/backend/internal/database/queries"
 	rosutil "github.com/mikrotik-nms/backend/internal/routeros"
 )

@@ -18,8 +18,8 @@ type clientState struct {
 	AP           string
 	SSID         string
 	Signal       string
-	MissedPolls  int            // how many consecutive polls the client was absent
-	PendingLeave *pendingLeave  // deferred leave awaiting registration-table confirmation
+	MissedPolls  int           // how many consecutive polls the client was absent
+	PendingLeave *pendingLeave // deferred leave awaiting registration-table confirmation
 }
 
 // pendingLeave holds a log-based disconnect that has not yet been confirmed
@@ -49,8 +49,8 @@ type WifiTracker struct {
 	clients  map[string]*clientState // mac -> state
 	// seenLogs tracks log fingerprints we have already processed, per device.
 	// Pruned periodically to bound memory.
-	seenLogs        map[string]map[string]time.Time // devID -> fingerprint -> firstSeen
-	lastLogPruneAt  time.Time
+	seenLogs       map[string]map[string]time.Time // devID -> fingerprint -> firstSeen
+	lastLogPruneAt time.Time
 }
 
 // Number of consecutive missed polls before declaring a client as "left" via

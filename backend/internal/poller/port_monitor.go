@@ -15,10 +15,10 @@ import (
 // Values are read from the app_settings table on each poll cycle so the
 // operator can adjust thresholds without restarting the backend.
 type PortMonitorSettings struct {
-	Enabled        bool
-	TypeFilter     []string      // include only interfaces whose type starts with one of these (empty = all)
-	FlapThreshold  int           // ≥N transitions in window → flap event
-	FlapWindow     time.Duration // window for flap detection
+	Enabled       bool
+	TypeFilter    []string      // include only interfaces whose type starts with one of these (empty = all)
+	FlapThreshold int           // ≥N transitions in window → flap event
+	FlapWindow    time.Duration // window for flap detection
 }
 
 // portMonitorDefaults are used when the corresponding app_settings row is
@@ -103,8 +103,8 @@ type portState struct {
 // portMonitor keeps per-device per-interface state across poll cycles.
 // Embedded into NetworkHealthPoller via a single field.
 type portMonitor struct {
-	prev      map[string]map[string]*portState // device_id → iface_name → state
-	firstRun  map[string]bool                  // device_id → first-poll-since-startup flag
+	prev     map[string]map[string]*portState // device_id → iface_name → state
+	firstRun map[string]bool                  // device_id → first-poll-since-startup flag
 }
 
 func newPortMonitor() *portMonitor {

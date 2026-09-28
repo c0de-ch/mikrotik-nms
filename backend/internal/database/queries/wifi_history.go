@@ -6,19 +6,19 @@ import (
 )
 
 type WifiHistoryEntry struct {
-	ID           int64     `json:"id"`
-	MACAddress   string    `json:"mac_address"`
-	IPAddress    string    `json:"ip_address"`
-	HostName     string    `json:"host_name"`
-	APName       string    `json:"ap_name"`
-	SSID         string    `json:"ssid"`
-	Band         string    `json:"band"`
-	Channel      string    `json:"channel"`
-	Signal       string    `json:"signal"`
-	TxRate       string    `json:"tx_rate"`
-	RxRate       string    `json:"rx_rate"`
-	Event        string    `json:"event"`
-	ControllerID string    `json:"controller_id"`
+	ID           int64  `json:"id"`
+	MACAddress   string `json:"mac_address"`
+	IPAddress    string `json:"ip_address"`
+	HostName     string `json:"host_name"`
+	APName       string `json:"ap_name"`
+	SSID         string `json:"ssid"`
+	Band         string `json:"band"`
+	Channel      string `json:"channel"`
+	Signal       string `json:"signal"`
+	TxRate       string `json:"tx_rate"`
+	RxRate       string `json:"rx_rate"`
+	Event        string `json:"event"`
+	ControllerID string `json:"controller_id"`
 	// Source identifies where this row came from:
 	//   "log"      — parsed from the controller wireless log (authoritative)
 	//   "snapshot" — inferred from registration-table polling
