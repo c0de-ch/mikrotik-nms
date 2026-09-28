@@ -499,11 +499,9 @@ func (m *Manager) resolveGatewayHosts(observations []queries.DeviceUplink) {
 	if err != nil {
 		return
 	}
-	interSwitch := make(map[string]bool, len(links)*2)
+	interSwitch := interSwitchPorts(links)
 	linkDegree := make(map[string]int)
 	for _, l := range links {
-		interSwitch[l.DeviceAID+":"+l.InterfaceA] = true
-		interSwitch[l.DeviceBID+":"+l.InterfaceB] = true
 		linkDegree[l.DeviceAID]++
 		linkDegree[l.DeviceBID]++
 	}
@@ -529,6 +527,27 @@ func (m *Manager) resolveGatewayHosts(observations []queries.DeviceUplink) {
 	if err := queries.ReplaceGatewayHosts(m.db, rows); err != nil {
 		log.Printf("poller topology: store gateway hosts: %v", err)
 	}
+}
+
+// interSwitchPorts returns the set of "deviceID:port" keys that are endpoints
+// of an inter-switch link. Link interfaces come straight from neighbor
+// discovery and may list several names ("ether1,bridge"), while the FDB
+// reports a single physical port, so each comma-separated name is keyed on
+// its own.
+func interSwitchPorts(links []queries.Link) map[string]bool {
+	out := make(map[string]bool, len(links)*2)
+	add := func(deviceID, ifaces string) {
+		for _, name := range strings.Split(ifaces, ",") {
+			if name = strings.TrimSpace(name); name != "" {
+				out[deviceID+":"+name] = true
+			}
+		}
+	}
+	for _, l := range links {
+		add(l.DeviceAID, l.InterfaceA)
+		add(l.DeviceBID, l.InterfaceB)
+	}
+	return out
 }
 
 // collectUplinks refreshes the device's egress rows: its active IPv4 default

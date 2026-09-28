@@ -3,6 +3,8 @@ package poller
 import (
 	"testing"
 	"time"
+
+	"github.com/mikrotik-nms/backend/internal/database/queries"
 )
 
 func TestStatusAfterFailedPoll(t *testing.T) {
@@ -30,5 +32,27 @@ func TestStatusAfterFailedPoll(t *testing.T) {
 				t.Errorf("statusAfterFailedPoll() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestInterSwitchPorts(t *testing.T) {
+	links := []queries.Link{
+		{DeviceAID: "sw1", InterfaceA: "ether1,bridge", DeviceBID: "sw2", InterfaceB: "sfp-sfpplus1"},
+		{DeviceAID: "sw2", InterfaceA: " ether5 , ", DeviceBID: "ap1", InterfaceB: ""},
+	}
+	got := interSwitchPorts(links)
+
+	for _, key := range []string{"sw1:ether1", "sw1:bridge", "sw2:sfp-sfpplus1", "sw2:ether5"} {
+		if !got[key] {
+			t.Errorf("interSwitchPorts() missing %q", key)
+		}
+	}
+	for _, key := range []string{"sw1:ether1,bridge", "ap1:", "sw2:"} {
+		if got[key] {
+			t.Errorf("interSwitchPorts() unexpectedly contains %q", key)
+		}
+	}
+	if len(got) != 4 {
+		t.Errorf("interSwitchPorts() has %d keys, want 4: %v", len(got), got)
 	}
 }
