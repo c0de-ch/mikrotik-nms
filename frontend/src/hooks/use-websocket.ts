@@ -39,7 +39,9 @@ export function useWebSocket(topic: string, handler: (data: unknown) => void) {
   }, []);
 
   useEffect(() => {
-    if (!token) return;
+    // An empty topic means "not subscribed right now" (e.g. a live stream
+    // that only runs for one range) — don't open or hold the connection.
+    if (!token || !topic) return;
 
     const ws = getSharedWs(token);
     const unsub = ws.subscribe(topic, stableHandler);

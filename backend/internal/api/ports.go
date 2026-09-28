@@ -2,11 +2,11 @@ package api
 
 import (
 	"net/http"
-	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/mikrotik-nms/backend/internal/database/queries"
 	"github.com/mikrotik-nms/backend/internal/routeros"
+	"github.com/mikrotik-nms/backend/internal/topology"
 )
 
 type portInfo struct {
@@ -17,21 +17,6 @@ type portInfo struct {
 	Comment  string `json:"comment"`
 	RxBps    int64  `json:"rx_bps"`
 	TxBps    int64  `json:"tx_bps"`
-}
-
-// isPhysicalPort keeps the faceplate to real switch/router ports (ethernet, SFP,
-// QSFP, combo) and drops virtual interfaces (bridge, vlan, vpn, wireless, …).
-func isPhysicalPort(name, typ string) bool {
-	if typ == "ether" {
-		return true
-	}
-	n := strings.ToLower(name)
-	for _, p := range []string{"ether", "sfp", "qsfp", "combo"} {
-		if strings.HasPrefix(n, p) {
-			return true
-		}
-	}
-	return false
 }
 
 // handleGetDevicePorts returns each physical port with its running/disabled
@@ -53,7 +38,9 @@ func (s *Server) handleGetDevicePorts(w http.ResponseWriter, r *http.Request) {
 	ports := make([]portInfo, 0, len(ifaces))
 	names := make([]string, 0, len(ifaces))
 	for _, i := range ifaces {
-		if !isPhysicalPort(i.Name, i.Type) {
+		// Faceplate ports only (ethernet, SFP, QSFP, combo); virtual
+		// interfaces (bridge, vlan, vpn, wireless, …) are dropped.
+		if !topology.IsPhysicalPort(i.Name, i.Type) {
 			continue
 		}
 		ports = append(ports, portInfo{

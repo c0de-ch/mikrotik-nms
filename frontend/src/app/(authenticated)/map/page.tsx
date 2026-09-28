@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
+import { useRouter } from "next/navigation";
 import {
   Wifi, Router as RouterIcon, Network as NetworkIcon, Server, Cpu, MemoryStick, Activity,
   ArrowDownUp, Search, Maximize2, ZoomIn, ZoomOut, Crosshair, Users, Globe, Shield, Lock,
@@ -18,7 +19,9 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { deviceStatusColor } from "@/lib/status";
-import { fmtBps, BRAND, SYNTH, SYNTH_TYPES, portLoadColor } from "@/components/graph/graph-style";
+import { fmtBps, BRAND, SYNTH, SYNTH_TYPES } from "@/components/graph/graph-style";
+import { PortHeatmap } from "@/components/traffic/port-heatmap";
+import { useDarkFlag } from "@/components/traffic/hooks";
 import type { EdgeTraffic, CanvasApi, CanvasEdge } from "@/components/graph/topology-canvas";
 
 const TopologyCanvas = dynamic(() => import("@/components/graph/topology-canvas"), {
@@ -53,8 +56,12 @@ const SYNTH_DESCRIPTION: Record<string, string> = {
 const isSynthEdge = (t: string) => t === "gateway" || t === "internet" || t === "vpn";
 
 // ---- switch port grid (live per-port traffic, coloured by load) -------------
+// Data still comes from GET /devices/{id}/ports (one-shot live sample, 3 s);
+// rendering is the shared heatmap. A cell deep-links to the port's detail on
+// /traffic.
 function PortGrid({ deviceId, dark }: { deviceId: string; dark: boolean }) {
   const { token } = useAuth();
+  const router = useRouter();
   const [ports, setPorts] = useState<DevicePort[]>([]);
   useEffect(() => {
     if (!token) return;
@@ -65,29 +72,12 @@ function PortGrid({ deviceId, dark }: { deviceId: string; dark: boolean }) {
     return () => { alive = false; clearInterval(id); };
   }, [token, deviceId]);
 
-  if (ports.length === 0) return <p className="text-xs text-muted-foreground">No physical ports.</p>;
   return (
-    <div className="grid grid-cols-6 gap-1.5">
-      {ports.map((p) => {
-        const total = p.rx_bps + p.tx_bps;
-        const down = p.disabled || !p.running;
-        return (
-          <div
-            key={p.name}
-            title={`${p.name}${p.comment ? ` (${p.comment})` : ""}\n${down ? (p.disabled ? "disabled" : "down") : `↓ ${fmtBps(p.rx_bps)}  ↑ ${fmtBps(p.tx_bps)}`}`}
-            className="rounded-sm border text-[9px] font-mono px-1 py-1 text-center overflow-hidden"
-            style={{
-              background: down ? "transparent" : portLoadColor(total, dark),
-              color: down ? "var(--muted-foreground)" : "#0b1220",
-              opacity: down ? 0.5 : 1,
-              borderStyle: p.disabled ? "dashed" : "solid",
-            }}
-          >
-            {p.name.replace(/^ether/, "e").replace(/^sfp-sfpplus/, "sfp+").replace(/^qsfpplus/, "q")}
-          </div>
-        );
-      })}
-    </div>
+    <PortHeatmap
+      ports={ports}
+      dark={dark}
+      onSelect={(iface) => router.push(`/traffic?view=devices&device=${deviceId}&iface=${encodeURIComponent(iface)}`)}
+    />
   );
 }
 
@@ -100,7 +90,9 @@ export default function MapPage() {
   const [clients, setClients] = useState<NetworkClient[]>([]);
   const [rawTraffic, setRawTraffic] = useState<Map<string, EdgeTraffic>>(new Map());
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [dark] = useState(() => typeof document !== "undefined" && document.documentElement.classList.contains("dark"));
+  // Follows the <html> "dark" class, which the layout sets only after the
+  // settings fetch — reading it once at mount got it wrong on a reload.
+  const dark = useDarkFlag();
 
   // filters
   const [search, setSearch] = useState("");

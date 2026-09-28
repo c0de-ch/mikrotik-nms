@@ -87,6 +87,13 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		"port_flap_window_seconds":      true,
 		"tcn_storm_threshold":           true,
 		"auto_follow_ip":                true,
+		// Traffic analytics (poller/portstats.go): read and clamped by the
+		// collector each cycle and by the retention sweep.
+		"port_stats_interval":   true,
+		"port_hosts_interval":   true,
+		"port_stats_1m_days":    true,
+		"port_stats_1h_days":    true,
+		"port_hosts_stale_days": true,
 		// OPNsense instances (opnsense_* primary + opnsenseN_* extra sites) are
 		// allowed via isOpnsenseSourceKey below rather than listed here, so any
 		// number of sources can be configured. Their _api_key / _api_secret keys

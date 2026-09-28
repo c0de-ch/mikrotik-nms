@@ -68,12 +68,12 @@ func (b *Builder) Build() (*Graph, error) {
 
 	// Resolve neighbors → directed edges
 	type directedEdge struct {
-		fromDeviceID   string
-		fromInterface  string
-		toDeviceID     string
-		toInterface    string
-		linkType       string
-		discoveredBy   string
+		fromDeviceID  string
+		fromInterface string
+		toDeviceID    string
+		toInterface   string
+		linkType      string
+		discoveredBy  string
 	}
 
 	var directed []directedEdge
@@ -276,6 +276,44 @@ var vpnIfaceTypes = map[string]bool{
 // IsVPNIfaceType reports whether a RouterOS interface type is a VPN tunnel.
 func IsVPNIfaceType(t string) bool { return vpnIfaceTypes[strings.ToLower(t)] }
 
+// egressKind classifies a default route by what sits beyond it. Shared by the
+// map (appendUplinks) and the traffic role graph (path.go) so both agree on
+// which device is an internet edge.
+type egressKind int
+
+const (
+	egressNone     egressKind = iota // managed next-hop (already an L2 link) or nothing to draw
+	egressInternet                   // public next-hop, or an interface-only route (LTE, PPPoE): the port IS the edge
+	egressVPN                        // interface-only route over a tunnel interface
+	egressGateway                    // private, unmanaged next-hop: a "gw:<ip>" node
+)
+
+// classifyDefaultRoute decides where a default route leads:
+//   - a managed next-hop is already on the map as an L2 link (egressNone);
+//   - an interface-only route (LTE, PPPoE, full-tunnel VPN) makes the
+//     interface itself the egress — a VPN node for tunnel types, straight to
+//     the Internet otherwise; without an interface there is nothing to draw;
+//   - a private next-hop is an unmanaged gateway, a public/CGNAT one means the
+//     device is the internet edge.
+func classifyDefaultRoute(gw, iface, ifaceType string, managedIP map[string]bool) egressKind {
+	if gw != "" && managedIP[gw] {
+		return egressNone
+	}
+	if gw == "" {
+		if iface == "" {
+			return egressNone
+		}
+		if IsVPNIfaceType(ifaceType) {
+			return egressVPN
+		}
+		return egressInternet
+	}
+	if IsPrivateIP(gw) {
+		return egressGateway
+	}
+	return egressInternet
+}
+
 // IsPrivateIP reports whether s is an RFC1918 address.
 func IsPrivateIP(s string) bool {
 	ip := net.ParseIP(s)
@@ -353,33 +391,22 @@ func (b *Builder) appendUplinks(graph *Graph, devices []queries.Device) {
 		switch u.Kind {
 		case "default-route":
 			gw := u.GatewayIP
-			if gw != "" && managedIP[gw] {
-				// Managed next-hops are already on the map as L2 links.
+			switch classifyDefaultRoute(gw, u.Interface, u.IfaceType, managedIP) {
+			case egressNone:
 				continue
-			}
-			if gw == "" {
-				// Interface-only default route (LTE, PPPoE, full-tunnel VPN):
-				// the interface IS the egress. Draw it to a VPN node for
-				// tunnel types, straight to the Internet otherwise.
-				if u.Interface == "" {
-					continue
-				}
-				if IsVPNIfaceType(u.IfaceType) {
-					vpnID := ensureVPNNode(u.DeviceID, u.Interface)
-					graph.Edges = append(graph.Edges, CyEdge{Data: Edge{
-						ID: UplinkEdgeID(u.DeviceID, u.Interface, ""), Source: u.DeviceID, Target: vpnID,
-						SourceInterface: u.Interface, LinkType: "vpn", Status: "up",
-					}})
-				} else {
-					ensureInternet()
-					graph.Edges = append(graph.Edges, CyEdge{Data: Edge{
-						ID: UplinkEdgeID(u.DeviceID, u.Interface, ""), Source: u.DeviceID, Target: "internet",
-						SourceInterface: u.Interface, LinkType: "internet", Status: "up",
-					}})
-				}
-				continue
-			}
-			if IsPrivateIP(gw) {
+			case egressVPN:
+				vpnID := ensureVPNNode(u.DeviceID, u.Interface)
+				graph.Edges = append(graph.Edges, CyEdge{Data: Edge{
+					ID: UplinkEdgeID(u.DeviceID, u.Interface, ""), Source: u.DeviceID, Target: vpnID,
+					SourceInterface: u.Interface, LinkType: "vpn", Status: "up",
+				}})
+			case egressInternet:
+				ensureInternet()
+				graph.Edges = append(graph.Edges, CyEdge{Data: Edge{
+					ID: UplinkEdgeID(u.DeviceID, u.Interface, gw), Source: u.DeviceID, Target: "internet",
+					SourceInterface: u.Interface, LinkType: "internet", Status: "up",
+				}})
+			case egressGateway:
 				if !gateways[gw] {
 					gateways[gw] = true
 					label := queries.HostnameForIP(b.db, gw)
@@ -410,12 +437,6 @@ func (b *Builder) appendUplinks(graph *Graph, devices []queries.Device) {
 				graph.Edges = append(graph.Edges, CyEdge{Data: Edge{
 					ID: UplinkEdgeID(u.DeviceID, u.Interface, gw), Source: u.DeviceID, Target: "gw:" + gw,
 					SourceInterface: u.Interface, LinkType: "gateway", Status: "up",
-				}})
-			} else {
-				ensureInternet()
-				graph.Edges = append(graph.Edges, CyEdge{Data: Edge{
-					ID: UplinkEdgeID(u.DeviceID, u.Interface, gw), Source: u.DeviceID, Target: "internet",
-					SourceInterface: u.Interface, LinkType: "internet", Status: "up",
 				}})
 			}
 

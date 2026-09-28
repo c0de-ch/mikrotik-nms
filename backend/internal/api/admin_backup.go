@@ -134,6 +134,7 @@ func (s *Server) handleImportTable(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ins, skip, err := importTableRows(s.db, table, rows)
+	s.invalidateTrafficTopo() // devices, links, uplinks, … may have changed
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("import %s: %v", table, err))
 		return
@@ -192,6 +193,7 @@ func (s *Server) handleFullRestore(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := restoreResponse{Tables: make(map[string]importResponse, len(bundle.Tables))}
+	defer s.invalidateTrafficTopo()
 	// Honour the dependency order from exportableTables, not the (random)
 	// map iteration order in the bundle.
 	for _, table := range exportableTables {

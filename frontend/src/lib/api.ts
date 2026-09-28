@@ -246,6 +246,53 @@ export const api = {
       const qs = params.toString() ? `?${params}` : "";
       return apiFetch<TrafficSample[]>(`/traffic/${deviceId}/${iface}${qs}`, { token });
     },
+
+    // Fleet-wide port counters (port-stats collector). Port-specific calls
+    // pass the interface as a query param — RouterOS names can contain
+    // spaces and slashes. The live feed is the "traffic.ports" WS topic.
+    portsLatest: (token: string) =>
+      apiFetch<PortSnapshot>("/traffic/ports/latest", { token }),
+    portsTop: (
+      token: string,
+      p: {
+        range: TrafficRange;
+        metric: TopMetric;
+        dir: TopDir;
+        limit?: number;
+        physical?: boolean;
+        device?: string;
+        sparkline?: boolean;
+      },
+    ) => {
+      const qs = new URLSearchParams({ range: p.range, metric: p.metric, dir: p.dir });
+      if (p.limit) qs.set("limit", String(p.limit));
+      if (p.physical === false) qs.set("physical", "0");
+      if (p.device) qs.set("device", p.device);
+      if (p.sparkline === false) qs.set("sparkline", "0");
+      return apiFetch<TopPortsResponse>(`/traffic/ports/top?${qs}`, { token });
+    },
+    portRoles: (token: string) =>
+      apiFetch<PortRolesResponse>("/traffic/ports/roles", { token }),
+    portHistory: (token: string, device: string, iface: string, range: TrafficRange) => {
+      const qs = new URLSearchParams({ device, iface, range });
+      return apiFetch<PortHistory>(`/traffic/ports/history?${qs}`, { token });
+    },
+    portBehind: (token: string, device: string, iface: string) => {
+      const qs = new URLSearchParams({ device, iface });
+      return apiFetch<PortBehind>(`/traffic/ports/behind?${qs}`, { token });
+    },
+    path: (token: string, device: string, iface?: string) => {
+      const qs = new URLSearchParams({ device });
+      if (iface) qs.set("iface", iface);
+      return apiFetch<TrafficPath>(`/traffic/path?${qs}`, { token });
+    },
+    // Estimated source→sink flow tree (from port counters + topology, not
+    // flow export). Always a strict forest, so Recharts' Sankey can render it.
+    sankey: (token: string, p: { range: TrafficRange; dir: FlowDirection; device?: string }) => {
+      const qs = new URLSearchParams({ range: p.range, dir: p.dir });
+      if (p.device) qs.set("device", p.device);
+      return apiFetch<TrafficSankey>(`/traffic/sankey?${qs}`, { token });
+    },
   },
 
   // Firmware
@@ -411,6 +458,7 @@ export const api = {
         wifi: boolean;
         clients: boolean;
         network_health: boolean;
+        // traffic_samples plus the port_stats_1m / port_stats_1h buckets.
         traffic: boolean;
         older_than_days: number;
       },
@@ -596,6 +644,236 @@ export interface LinkTraffic {
   target: string;
   rx_bps: number;
   tx_bps: number;
+}
+
+// ---- Traffic analytics (port-stats collector) --------------------------------
+//
+// Direction semantics: on any port rx = bits entering the device through it,
+// tx = bits leaving. Download is rx on upstream-facing roles (wan, uplink,
+// vpn) and tx on downstream-facing ones (downlink, access, wireless). peer,
+// virtual and idle ports have no download/upload reading (raw in/out).
+
+export type TrafficRange = "live" | "15m" | "1h" | "6h" | "24h" | "7d" | "30d";
+export type TopMetric = "avg" | "max" | "bytes";
+export type TopDir = "total" | "rx" | "tx";
+export type FlowDirection = "download" | "upload";
+// peer: a physical link to another managed device that is not an edge of the
+// inferred tree (anchor ↔ anchor, redundant/ring links). It carries the
+// neighbour fields like a downlink but no clients.
+export type PortRoleName = "wan" | "uplink" | "downlink" | "peer" | "access" | "wireless" | "vpn" | "virtual" | "idle";
+
+// One interface's current rates. The WS "traffic.ports" payload is raw;
+// device_name and role are only present on REST /traffic/ports/latest.
+export interface PortRate {
+  device_id: string;
+  iface: string;
+  type: string;
+  comment?: string;
+  running: boolean;
+  disabled: boolean;
+  rx_bps: number;
+  tx_bps: number;
+  rx_pps: number;
+  tx_pps: number;
+  device_name?: string;
+  role?: PortRoleName;
+}
+
+// ts is the end of the collector's last cycle (null before the first one);
+// ready latches once any port has a computed rate (two polls).
+export interface PortSnapshot {
+  ts: string | null;
+  interval_seconds: number;
+  ready: boolean;
+  ports: PortRate[];
+}
+
+export interface PortRoleInfo {
+  device_id: string;
+  iface: string;
+  role: PortRoleName;
+  neighbor_device_id?: string;
+  neighbor_name?: string;
+  neighbor_iface?: string;
+  neighbor_count: number;
+  client_count: number;
+  mac_count: number;
+  gateway_ip?: string;
+  upstream_node?: string;
+  // Bond members: the bond this port belongs to. A member carries its bond's
+  // role and neighbour, with no clients of its own.
+  master?: string;
+}
+
+// PortRoleInfo plus the device name and the server-computed "behind" summary.
+export interface PortRole extends PortRoleInfo {
+  device_name: string;
+  behind: string;
+}
+
+// A device's place in the inferred physical tree. parent_id is a device id,
+// a synthetic node id ("internet", "gw:<ip>", "vpn:<dev>:<iface>") or "".
+export interface DeviceTreeInfo {
+  device_id: string;
+  name: string;
+  parent_id: string;
+  parent_iface: string;
+  uplink_iface: string;
+  depth: number;
+  anchor: boolean;
+}
+
+export interface PortRolesResponse {
+  anchored: boolean;
+  devices: DeviceTreeInfo[];
+  roles: PortRole[];
+}
+
+// rx_bps/tx_bps are null for a step the collector did not cover (backend
+// down/restarting) — drawn as a gap, not as zero traffic.
+export interface SeriesPoint {
+  ts: string;
+  rx_bps: number | null;
+  tx_bps: number | null;
+}
+
+export interface TopPortRow {
+  rank: number;
+  device_id: string;
+  device_name: string;
+  iface: string;
+  type: string;
+  role: PortRoleName;
+  behind: string;
+  neighbor_device_id?: string;
+  client_count: number;
+  running: boolean;
+  rx_avg: number;
+  tx_avg: number;
+  rx_max: number;
+  tx_max: number;
+  rx_bytes: number;
+  tx_bytes: number;
+  // Sort key: bps for avg/max, bytes for bytes.
+  value: number;
+  sparkline: SeriesPoint[];
+}
+
+export interface TopPortsResponse {
+  range: TrafficRange;
+  metric: TopMetric;
+  dir: TopDir;
+  resolution: string;
+  from: string | null;
+  to: string | null;
+  coverage_from: string | null;
+  rows: TopPortRow[];
+}
+
+export interface SeriesStats {
+  rx_avg: number;
+  tx_avg: number;
+  rx_max: number;
+  tx_max: number;
+  rx_p95: number;
+  tx_p95: number;
+  rx_bytes: number;
+  tx_bytes: number;
+}
+
+export interface PortHistory {
+  device_id: string;
+  iface: string;
+  range: TrafficRange;
+  resolution: "1s" | "1m" | "1h";
+  step_seconds: number;
+  from: string;
+  to: string;
+  coverage_from: string | null;
+  points: SeriesPoint[];
+  stats: SeriesStats;
+}
+
+export interface BehindClient {
+  mac: string;
+  ip: string;
+  host_name: string;
+  vendor: string;
+  vid: number;
+  wireless: boolean;
+  ap: string;
+  ssid: string;
+  signal: string;
+  attached_device_id: string;
+  attached_iface: string;
+  attached_device_name: string;
+  last_seen: string;
+}
+
+export interface PortBehind {
+  device_id: string;
+  iface: string;
+  role: PortRoleName;
+  neighbor: { device_id: string; name: string; iface: string } | null;
+  uplink: { node_id: string; label: string; gateway_ip: string } | null;
+  client_count: number;
+  mac_count: number;
+  clients: BehindClient[];
+  vlans: { vid: number; name: string; tagged: boolean }[];
+}
+
+// One hop of the Internet → port path. down_bps/up_bps describe the segment
+// ENTERING this hop; hop 0 is never measured.
+export interface PathHop {
+  kind: "internet" | "gateway" | "vpn" | "device" | "clients";
+  id: string;
+  label: string;
+  device_id?: string;
+  in_iface?: string;
+  out_iface?: string;
+  client_count?: number;
+  sink: boolean;
+  down_bps: number;
+  up_bps: number;
+  measured: boolean;
+}
+
+export interface TrafficPath {
+  device_id: string;
+  iface: string;
+  // "" when the path was requested without an iface.
+  role: PortRoleName | "";
+  anchored: boolean;
+  hops: PathHop[];
+}
+
+// type "other" covers the "+N ports" fold ("other:<dev>") and the synthetic
+// "local:<dev>" source that carries a device's east-west surplus (outflow
+// beyond what it receives from its parent), so every node conserves flow.
+export interface TrafficSankeyNode {
+  id: string;
+  name: string;
+  type: "internet" | "gateway" | "vpn" | "device" | "port" | "other";
+  device_id?: string;
+  iface?: string;
+  client_count?: number;
+}
+
+export interface TrafficSankeyLink {
+  source: number;
+  target: number;
+  value: number;
+  source_iface?: string;
+}
+
+export interface TrafficSankey {
+  estimated: boolean;
+  direction: FlowDirection;
+  range: TrafficRange;
+  from: string | null;
+  to: string | null;
+  nodes: TrafficSankeyNode[];
+  links: TrafficSankeyLink[];
 }
 
 // One physical port of a device with a live throughput sample.

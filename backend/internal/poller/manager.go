@@ -27,6 +27,10 @@ type Manager struct {
 	cancel     context.CancelFunc
 	lastVacuum time.Time
 
+	// portStats is built in NewManager (not Start) because main reads it via
+	// PortStats() right after launching Start asynchronously.
+	portStats *PortStatsCollector
+
 	// ipRejectSeen rate-limits auto-follow rejection audit rows by proposed
 	// move + failure category (see ipRejectionTTL / recordIPRejection). Accessed
 	// only from the topology goroutine today, but guarded so it stays safe if
@@ -42,7 +46,14 @@ func NewManager(db *sql.DB, pool *routeros.Pool, hub *ws.Hub, cfg *config.Config
 		hub:          hub,
 		cfg:          cfg,
 		ipRejectSeen: make(map[string]time.Time),
+		portStats:    NewPortStatsCollector(db, pool, hub),
 	}
+}
+
+// PortStats returns the fleet-wide port-counter collector (non-nil right
+// after NewManager) for the API's snapshot and history endpoints.
+func (m *Manager) PortStats() *PortStatsCollector {
+	return m.portStats
 }
 
 func (m *Manager) Start() {
@@ -60,6 +71,8 @@ func (m *Manager) Start() {
 
 	liveTraffic := NewLiveTrafficCollector(m.db, m.pool, m.hub)
 	go liveTraffic.Run(ctx)
+
+	go m.portStats.Run(ctx)
 
 	wifiTracker := NewWifiTracker(m.db, m.pool, m.hub, 30*time.Second)
 	go wifiTracker.Run(ctx)
@@ -313,6 +326,7 @@ func (m *Manager) refreshDeviceInfo(dev queries.Device) {
 		res.Platform, res.Board, res.Version, "", res.Architecture)
 
 	if ifaces, err := routeros.GetInterfaces(client); err == nil {
+		names := make([]string, 0, len(ifaces))
 		for _, iface := range ifaces {
 			mtu := iface.MTU
 			_ = queries.UpsertInterface(m.db, &queries.Interface{
@@ -326,6 +340,17 @@ func (m *Manager) refreshDeviceInfo(dev queries.Device) {
 				Disabled:   iface.Disabled,
 				Comment:    iface.Comment,
 			})
+			if iface.Name != "" {
+				names = append(names, iface.Name)
+			}
+		}
+		// The print is the device's full interface list: drop rows for
+		// interfaces removed or renamed since (dynamic CAPsMAN radios come
+		// and go), which would otherwise linger as ghost ports forever.
+		if n, err := queries.DeleteInterfacesNotIn(m.db, dev.ID, names); err != nil {
+			log.Printf("poller info: prune interfaces of %s: %v", dev.Identity, err)
+		} else if n > 0 {
+			log.Printf("poller info: pruned %d stale interfaces of %s", n, dev.Identity)
 		}
 	}
 
@@ -800,8 +825,39 @@ func (m *Manager) retentionLoop(ctx context.Context) {
 				log.Printf("poller retention: deleted %d expired reset tokens", n)
 			}
 
+			sweepPortStats(m.db, time.Now())
+
 			m.reclaimSpace()
 		}
+	}
+}
+
+// sweepPortStats applies the traffic-analytics retention settings, re-read on
+// every sweep: port_stats_1m_days (default 2, clamp 1..90 — the UI reads at
+// most 24 h of 1-minute data, and the collector's hourly re-roll relies on at
+// least one day of it), port_stats_1h_days (default 365, clamp 7..1825) and
+// port_hosts_stale_days (default 7, clamp 1..365). Deletes run in bounded
+// chunks, so lowering a retention never locks the database for long.
+func sweepPortStats(db *sql.DB, now time.Time) {
+	days1m := settingIntClamped(db, "port_stats_1m_days", 2, 1, 90)
+	if n, err := queries.DeleteOldPortStats(db, queries.PortStats1m, now.AddDate(0, 0, -days1m)); err != nil {
+		log.Printf("poller retention: port stats 1m: %v", err)
+	} else if n > 0 {
+		log.Printf("poller retention: deleted %d old 1-minute port stats", n)
+	}
+
+	days1h := settingIntClamped(db, "port_stats_1h_days", 365, 7, 1825)
+	if n, err := queries.DeleteOldPortStats(db, queries.PortStats1h, now.AddDate(0, 0, -days1h)); err != nil {
+		log.Printf("poller retention: port stats 1h: %v", err)
+	} else if n > 0 {
+		log.Printf("poller retention: deleted %d old hourly port stats", n)
+	}
+
+	staleDays := settingIntClamped(db, "port_hosts_stale_days", 7, 1, 365)
+	if n, err := queries.DeleteStalePortHosts(db, now.AddDate(0, 0, -staleDays)); err != nil {
+		log.Printf("poller retention: port hosts: %v", err)
+	} else if n > 0 {
+		log.Printf("poller retention: deleted %d stale port hosts", n)
 	}
 }
 
