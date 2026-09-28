@@ -2,6 +2,7 @@ package queries
 
 import (
 	"database/sql"
+	"strings"
 	"time"
 )
 
@@ -65,6 +66,27 @@ func GetInterfaceByMAC(db *sql.DB, mac string) (*Interface, error) {
 		return nil, err
 	}
 	return i, nil
+}
+
+// DeleteInterfacesNotIn removes the device's interface rows whose name is not
+// in names — interfaces removed or renamed on the device since, and blank
+// legacy rows — after a full /interface/print. An empty names is a no-op, so
+// an empty reply never wipes a device.
+func DeleteInterfacesNotIn(db *sql.DB, deviceID string, names []string) (int64, error) {
+	if len(names) == 0 {
+		return 0, nil
+	}
+	args := make([]any, 0, len(names)+1)
+	args = append(args, deviceID)
+	for _, n := range names {
+		args = append(args, n)
+	}
+	res, err := db.Exec(`DELETE FROM interfaces WHERE device_id = ? AND name NOT IN (?`+
+		strings.Repeat(`, ?`, len(names)-1)+`)`, args...)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 func DeleteStaleInterfaces(db *sql.DB, deviceID string, cutoff time.Time) error {

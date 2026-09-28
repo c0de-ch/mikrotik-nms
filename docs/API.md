@@ -170,11 +170,86 @@ Deep-scan results carry a `source` of `neighbor`, `port-scan`, or `both`.
 
 | Method | Path | Role | Description |
 |---|---|---|---|
-| GET | `/traffic/summary` | any | One-shot rx/tx bps snapshot for each online device (`[{device_id, rx_bps, tx_bps}]`). |
-| GET | `/traffic/{deviceId}/{iface}` | any | Historical traffic samples. Query `from`/`to` (RFC3339, default last 1h), `limit` (1–10000, default 1000). |
+| GET | `/traffic/summary` | any | One rx/tx bps figure per device in the port-stats snapshot (`[{device_id, rx_bps, tx_bps}]`): its first bridge, else `ether1`, else its first interface. No device calls. |
+| GET | `/traffic/links` | any | One-shot per-link throughput for the network map's first paint (`{links: [...]}`); the continuous feed is WS `topology.traffic`. |
+| GET | `/traffic/ports/latest` | any | Fleet-wide port snapshot (`{ts, interval_seconds, ready, ports}`), each port enriched with `device_name` and `role`. `ts` is `null` before the collector's first cycle. |
+| GET | `/traffic/ports/top` | any | Top talkers. Query `range`, `metric` (`avg`\|`max`\|`bytes`, default `avg`), `dir` (`total`\|`rx`\|`tx`, default `total`), `limit` (1–200, default 20), `physical` (default on: drops only `virtual` and `vpn`, so every physical port that carried traffic — `peer` links and bond members included — is listed; `0`/`false` also lists virtual and VPN interfaces), `device` (rank every known interface of that device, idle ones as zeros), `sparkline` (default on; `0` skips). |
+| GET | `/traffic/ports/roles` | any | Inferred device tree and every port's role: `{anchored, devices: [{device_id, name, parent_id, parent_iface, uplink_iface, depth, anchor}], roles: [{device_id, device_name, iface, role, neighbor_*, client_count, mac_count, gateway_ip, upstream_node, master, behind}]}`. `master` (optional) names the bond a member port belongs to. |
+| GET | `/traffic/ports/history` | any | One port's chart + stats. Query `device`, `iface` (required), `range`. Returns `{device_id, iface, range, resolution, step_seconds, from, to, coverage_from, points: [{ts, rx_bps, tx_bps}], stats: {rx_avg, tx_avg, rx_max, tx_max, rx_p95, tx_p95, rx_bytes, tx_bytes}}`. A point's `rx_bps`/`tx_bps` are `null` for a step the collector did not cover (see *Coverage* below). `404` for an unknown device; an unknown interface returns zeros. |
+| GET | `/traffic/ports/behind` | any | What sits behind a port. Query `device`, `iface` (required). Returns `{role, neighbor, uplink, client_count, mac_count, clients: [{mac, ip, host_name, vendor, vid, wireless, ap, ssid, signal, attached_device_id, attached_iface, attached_device_name, last_seen}], vlans: [{vid, name, tagged}]}`. `neighbor` is set for `uplink`, `downlink` and `peer`; `uplink` for `wan`, `vpn` and uplinks to a synthetic node (Internet / gateway / VPN). Clients are the non-managed MACs learned on that port (at most 500, attached-here first). |
+| GET | `/traffic/path` | any | Internet → device/port path with the live rate of each segment. Query `device` (required), `iface` (optional; adds the sink hop: the child device or the clients). `{device_id, iface, role, anchored, hops: [{kind, id, label, device_id, in_iface, out_iface, client_count, sink, down_bps, up_bps, measured}]}`. A segment into a device that shares its parent port with other children is measured on the device's own uplink. `404` for an unknown device. |
+| GET | `/traffic/sankey` | any | **Estimated** source → sink flow tree from port counters + topology (not flow export). Query `range`, `dir` (`download`\|`upload`, default `download`), `device` (optional subtree root). `{estimated, direction, range, from, to, nodes: [{id, name, type, device_id, iface, client_count}], links: [{source, target, value, source_iface}]}`; integer node indices, values in bits/s. A tree, plus one `local:<device_id>` source node (type `other`, name `Local / east-west`) feeding each non-root device whose outflow exceeds its inflow by ≥ 1 kbps (east-west traffic such as a NAS), so every node conserves flow; such a device has two incoming links. Leaves are `access`/`wireless`/`idle` ports only — never `peer` links or bond members. |
+| GET | `/traffic/{deviceId}/{iface}` | any | Historical 1 s traffic samples (recorded while someone streams the interface). Query `from`/`to` (RFC3339, default last 1h), `limit` (1–10000, default 1000). |
 
-Live per-interface streaming is delivered over WebSocket — see
-[§4](#4-websocket-api).
+Port-specific endpoints take `device` + `iface` as **query parameters** (URL
+encoded): RouterOS interface names can contain spaces and slashes. All the
+`/traffic/ports/*`, `/traffic/path` and `/traffic/sankey` routes are static, so
+they never collide with `/traffic/{deviceId}/{iface}`.
+
+**Direction.** On any port `rx` is bits entering the device through it and `tx`
+bits leaving it. Download is `rx` on upstream-facing roles (`wan`, `uplink`,
+`vpn`) and `tx` on downstream-facing ones (`downlink`, `access`, `wireless`);
+`peer`, `virtual` and `idle` have no download/upload reading (raw in/out).
+Roles: `wan uplink downlink peer access wireless vpn virtual idle`.
+
+- `peer` — a physical port on an up link to another managed device that is not
+  an edge of the inferred tree: a cable between two anchored routers (each with
+  its own egress), or a redundant / ring / parallel link the tree did not
+  choose. `neighbor_device_id` / `neighbor_name` / `neighbor_iface` name the
+  far end, `behind` is `↔ <neighbor> <iface>`; no clients, never a path sink or
+  Sankey leaf.
+- A **bond member** takes its bond's role and neighbour, with `master` set to
+  the bond and no clients of its own (the bridge FDB learns on the bond);
+  `behind` is `member of <bond> · <bond's behind>`. A member of a WAN bond is an
+  `uplink` toward the same upstream.
+- The **physical carrier** of a WAN that runs over a VLAN or a PPPoE client
+  (e.g. `pppoe-out1` → `vlan-wan` → `ether1`) is an `uplink` with the WAN's
+  `upstream_node` — not a second `wan` port, since the logical interface
+  already measures the internet edge.
+- Each device's `uplink` faces its own egress: the managed device its default
+  route points at, or the device whose FDB found that gateway; only then the
+  first anchor it hears, then the port hearing the most devices.
+
+Bond membership and VLAN/PPPoE carriers are read from the devices
+(`/interface/bonding`, `/interface/vlan`, `/interface/pppoe-client`) on each
+`port_hosts_interval` pass and kept in `interface_relations`. The port list of
+a device the collector currently polls is its live `/interface/print`;
+`interfaces`-table rows it lacks are ignored (and pruned on the next info
+refresh).
+
+**Ranges** (`range`, default `1h`; anything else is `400 invalid range`).
+Windows are end-anchored at the newest complete bucket, and points/stats start
+at `coverage_from` (the first stored bucket in the window, fleet-wide; on the
+hourly table the first covered minute of that hour while 1-minute data for it
+remains) — points before coverage are omitted, `coverage_from: null` means no
+data yet.
+
+**Coverage.** A native bucket (minute or hour) without a single row fleet-wide
+means the collector was not running (restart, deploy, outage): MNDP/ARP chatter
+makes every running port non-idle each minute. Such steps are gaps — points
+with `rx_bps`/`tx_bps` `null` — and are left out of every average and of the
+p95, while an idle port in a covered step is a real `0`. Every average (history
+stats, top talkers, Sankey) is `bytes*8 / covered seconds`, and a step covered
+only in part (coverage starting mid-step) is divided by its covered seconds.
+
+| `range` | Window | Source | History step (points) | Top sparkline step |
+|---|---|---|---|---|
+| `live` | 5 min (history) / now | `traffic_samples` (history, 1 s) / collector snapshot (top, sankey) | 1 s, raw | last 30 min of 1m @ 60 s |
+| `15m` | 15 min | `port_stats_1m` | 60 s (15) | 60 s |
+| `1h` | 1 h | `port_stats_1m` | 60 s (60) | 120 s |
+| `6h` | 6 h | `port_stats_1m` | 60 s (360) | 720 s |
+| `24h` | 24 h | `port_stats_1m` | 300 s (288) | 2880 s |
+| `7d` | 7 d | `port_stats_1h` | 3600 s (168) | 21600 s |
+| `30d` | 30 d | `port_stats_1h` | 3600 s (720) | 86400 s |
+
+For `range=live`, top talkers rank the current snapshot rates (`metric=bytes`
+is treated as `avg` and echoed as such) and `from`/`to` are `null`. `*_max` are
+true poll-interval peaks, so they can exceed any plotted point. The collector
+spreads each poll interval's bytes over the minutes it overlaps, so 1-minute
+points stay flat for a steady rate at any `port_stats_interval`.
+
+Live per-interface streaming (1 s) and the fleet-wide port snapshot are
+delivered over WebSocket — see [§4](#4-websocket-api).
 
 ### Firmware
 
@@ -254,7 +329,7 @@ Valid `{type}` values: `manufacturers`, `device_types`, `device_roles`,
 |---|---|---|---|
 | GET | `/settings` | any | All `app_settings` key/value pairs. |
 | PUT | `/settings` | admin | Update settings. Body is a flat `{key: value}` map; unknown keys are silently ignored. |
-| POST | `/admin/purge-history` | admin | Wipe history tables. Body `{wifi, clients, network_health, traffic, older_than_days}`. |
+| POST | `/admin/purge-history` | admin | Wipe history tables. Body `{wifi, clients, network_health, traffic, older_than_days}`. Returns `{deleted: {<table>: rows}}`. |
 | GET | `/admin/export/{table}` | admin | Download one table as a JSON file (allowlisted tables only). |
 | POST | `/admin/import/{table}` | admin | Import rows into one table (`INSERT OR IGNORE`). Body is a JSON array of row objects. |
 | GET | `/admin/backup` | admin | Download a full multi-table JSON backup bundle. |
@@ -266,13 +341,23 @@ Settings keys accepted by `PUT /settings`: `health_interval`,
 `offline_threshold_seconds`, `info_interval`, `retention_days`, `dark_mode`,
 `kea_url`, `port_monitor_enabled`, `port_monitor_filter`,
 `port_flap_threshold`, `port_flap_window_seconds`, `tcn_storm_threshold`,
+`port_stats_interval`, `port_hosts_interval`, `port_stats_1m_days`,
+`port_stats_1h_days`, `port_hosts_stale_days`,
 `opnsense_url`, `opnsense_api_key`, `opnsense_api_secret`,
 `opnsense_verify_tls`.
 
 `older_than_days = 0` (or omitted) on purge means *delete everything* from the
-selected tables; the four purgeable tables are `wifi_history`,
-`client_history`, `loop_events`, and `traffic_samples`. Current-state tables
-are never touched.
+selected tables; the purgeable tables are `wifi_history`, `client_history`,
+`loop_events`, and — for `traffic` — `traffic_samples` plus the per-port
+traffic analytics history `port_stats_1m` and `port_stats_1h` (deleted in
+bounded chunks, so a large purge never locks out other writers). Current-state
+tables (including `port_hosts`) are never touched.
+
+Traffic-analytics settings: `port_stats_interval` (s, default 15, 5..300),
+`port_hosts_interval` (s, default 300, 60..3600), `port_stats_1m_days` (default
+2, min 1 max 90 — the UI reads at most 24 h of 1-minute data), `port_stats_1h_days`
+(default 365, 7..1825), `port_hosts_stale_days` (default 7, 1..365). Values are
+clamped when read.
 
 ### Health
 
@@ -333,6 +418,8 @@ from `data`; match the incoming `msg.topic` against the topic you subscribed to.
 | `device.health` | object | Device liveness/info updates from the health and info pollers. |
 | `topology.update` | graph object | Full topology graph (`nodes` + `edges`); the one non-`map` payload. |
 | `traffic.<deviceID>.<iface>` | object | 1s rx/tx samples; streaming starts on subscribe, stops on last unsubscribe. |
+| `traffic.ports` | object | Fleet-wide port snapshot `{ts, interval_seconds, ready, ports: [{device_id, iface, type, comment?, running, disabled, rx_bps, tx_bps, rx_pps, tx_pps}]}`, once per `port_stats_interval` (default 15 s) while anyone is subscribed. Raw: no `role`/`device_name` (join `/traffic/ports/roles`). |
+| `topology.traffic` | object | Per-link throughput for the network map, every 5 s while anyone is subscribed. |
 | `firmware.update` | object | Firmware status changed (poll cycle or triggered check). |
 | `upgrade.progress.<jobId>` | object | Per-device upgrade progress for one job. |
 | `wifi.event` | object | A WiFi join/leave/roam event. |

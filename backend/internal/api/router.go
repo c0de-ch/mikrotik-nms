@@ -4,18 +4,20 @@ import (
 	"database/sql"
 	"log"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
-	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"github.com/mikrotik-nms/backend/internal/auth"
 	"github.com/mikrotik-nms/backend/internal/config"
 	"github.com/mikrotik-nms/backend/internal/mailer"
+	"github.com/mikrotik-nms/backend/internal/poller"
 	"github.com/mikrotik-nms/backend/internal/resolver"
 	"github.com/mikrotik-nms/backend/internal/routeros"
 	"github.com/mikrotik-nms/backend/internal/ws"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 type Server struct {
@@ -25,10 +27,23 @@ type Server struct {
 	pool     *routeros.Pool
 	mailer   mailer.Sender
 	resolver *resolver.Resolver
+
+	// portStats is the fleet-wide port-counter collector behind the
+	// /traffic/ports/*, /traffic/path, /traffic/sankey and /traffic/summary
+	// endpoints. May be nil (tests); handlers then serve an empty snapshot.
+	portStats portStatsSource
+
+	// topoMu guards topo, the role graph + lookups the traffic endpoints
+	// share, rebuilt at most every trafficTopoTTL (see trafficTopology).
+	topoMu sync.Mutex
+	topo   *trafficTopo
 }
 
-func NewRouter(db *sql.DB, hub *ws.Hub, cfg *config.Config, pool *routeros.Pool, m mailer.Sender) http.Handler {
+func NewRouter(db *sql.DB, hub *ws.Hub, cfg *config.Config, pool *routeros.Pool, m mailer.Sender, portStats *poller.PortStatsCollector) http.Handler {
 	s := &Server{db: db, hub: hub, cfg: cfg, pool: pool, mailer: m, resolver: resolver.New(db)}
+	if portStats != nil {
+		s.portStats = portStats
+	}
 
 	r := chi.NewRouter()
 
@@ -127,9 +142,7 @@ func NewRouter(db *sql.DB, hub *ws.Hub, cfg *config.Config, pool *routeros.Pool,
 			r.Get("/topology", s.handleGetTopology)
 
 			// Traffic
-			r.Get("/traffic/summary", s.handleGetTrafficSummary)
-			r.Get("/traffic/links", s.handleGetTrafficLinks)
-			r.Get("/traffic/{deviceId}/{iface}", s.handleGetTraffic)
+			s.mountTrafficRoutes(r)
 
 			// Firmware
 			r.Get("/firmware", s.handleListFirmware)
@@ -211,4 +224,22 @@ func NewRouter(db *sql.DB, hub *ws.Hub, cfg *config.Config, pool *routeros.Pool,
 	})
 
 	return r
+}
+
+// mountTrafficRoutes registers the traffic endpoints. The port-specific
+// endpoints take device/iface as query params (RouterOS interface names can
+// contain spaces and slashes), so every new route is a static path; chi
+// prefers static segments over {param}, and the legacy per-interface history
+// route stays last.
+func (s *Server) mountTrafficRoutes(r chi.Router) {
+	r.Get("/traffic/summary", s.handleGetTrafficSummary)
+	r.Get("/traffic/links", s.handleGetTrafficLinks)
+	r.Get("/traffic/ports/latest", s.handleTrafficPortsLatest)
+	r.Get("/traffic/ports/top", s.handleTrafficPortsTop)
+	r.Get("/traffic/ports/roles", s.handleTrafficPortRoles)
+	r.Get("/traffic/ports/history", s.handleTrafficPortHistory)
+	r.Get("/traffic/ports/behind", s.handleTrafficPortBehind)
+	r.Get("/traffic/path", s.handleTrafficPath)
+	r.Get("/traffic/sankey", s.handleTrafficSankey)
+	r.Get("/traffic/{deviceId}/{iface}", s.handleGetTraffic) // unchanged, keep last
 }

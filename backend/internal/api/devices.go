@@ -136,6 +136,7 @@ func (s *Server) handleCreateDevice(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, fmt.Sprintf("device with address %s already exists", req.Address))
 		return
 	}
+	s.invalidateTrafficTopo()
 
 	writeJSON(w, http.StatusCreated, device)
 }
@@ -186,6 +187,7 @@ func (s *Server) handleUpdateDevice(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to update device")
 		return
 	}
+	s.invalidateTrafficTopo()
 
 	writeJSON(w, http.StatusOK, existing)
 }
@@ -200,6 +202,7 @@ func (s *Server) handleDeleteDevice(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to delete device")
 		return
 	}
+	s.invalidateTrafficTopo()
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 

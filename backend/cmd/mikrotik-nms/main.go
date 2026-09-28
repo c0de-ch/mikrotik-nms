@@ -102,7 +102,7 @@ func main() {
 	pollerMgr := poller.NewManager(db, pool, hub, cfg)
 	go pollerMgr.Start()
 
-	router := api.NewRouter(db, hub, cfg, pool, nil)
+	router := api.NewRouter(db, hub, cfg, pool, nil, pollerMgr.PortStats())
 
 	srv := &http.Server{
 		Addr:         cfg.Listen,

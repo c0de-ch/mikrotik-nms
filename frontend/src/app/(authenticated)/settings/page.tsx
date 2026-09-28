@@ -91,6 +91,26 @@ const speedtestIntervalOptions = [
   { label: "24h", value: "86400" },
 ];
 
+const portStatsIntervalOptions = [
+  { label: "5s", value: "5" },
+  { label: "10s", value: "10" },
+  { label: "15s", value: "15" },
+  { label: "30s", value: "30" },
+  { label: "1m", value: "60" },
+  { label: "2m", value: "120" },
+  { label: "5m", value: "300" },
+];
+
+const portHostsIntervalOptions = [
+  { label: "1m", value: "60" },
+  { label: "2m", value: "120" },
+  { label: "5m", value: "300" },
+  { label: "10m", value: "600" },
+  { label: "15m", value: "900" },
+  { label: "30m", value: "1800" },
+  { label: "1h", value: "3600" },
+];
+
 const retentionOptions = [
   { label: "1 day", value: "1" },
   { label: "3 days", value: "3" },
@@ -795,6 +815,107 @@ export default function SettingsPage() {
         </CardContent>
       </Card>
 
+      {/* Traffic analytics */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Traffic analytics</CardTitle>
+          <p className="text-xs text-muted-foreground">
+            Fleet-wide port counters and bridge host tables. Interval and retention changes apply on the next cycle — no restart needed.
+          </p>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex-1">
+              <p className="font-medium text-sm">Port counter interval</p>
+              <p className="text-xs text-muted-foreground">
+                How often every online device&apos;s interface counters are read to compute port rates
+                (Traffic page, top talkers, flows).
+              </p>
+            </div>
+            <select
+              className="flex h-8 w-28 rounded-md border bg-transparent px-2 text-sm"
+              value={settings.port_stats_interval || "15"}
+              onChange={(e) => updateSetting("port_stats_interval", e.target.value)}
+            >
+              {portStatsIntervalOptions.map((opt) => (
+                <option key={opt.value} value={opt.value}>{opt.label}</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex-1">
+              <p className="font-medium text-sm">Bridge host table interval</p>
+              <p className="text-xs text-muted-foreground">
+                How often each device&apos;s bridge FDB is read to learn which clients sit behind which port.
+              </p>
+            </div>
+            <select
+              className="flex h-8 w-28 rounded-md border bg-transparent px-2 text-sm"
+              value={settings.port_hosts_interval || "300"}
+              onChange={(e) => updateSetting("port_hosts_interval", e.target.value)}
+            >
+              {portHostsIntervalOptions.map((opt) => (
+                <option key={opt.value} value={opt.value}>{opt.label}</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex-1">
+              <p className="font-medium text-sm">1-minute history (days)</p>
+              <p className="text-xs text-muted-foreground">
+                Retention for per-port 1-minute buckets (1–90, default 2). The Traffic page reads at most the
+                last 24h of these (ranges up to 24h); 7d and 30d use the hourly rollups. They are the bulk of the
+                database size — roughly 60 MB per day on a ~200-port network — so keep this short.
+              </p>
+            </div>
+            <Input
+              type="number"
+              min={1}
+              max={90}
+              className="w-24"
+              value={settings.port_stats_1m_days ?? "2"}
+              onChange={(e) => updateSetting("port_stats_1m_days", e.target.value)}
+            />
+          </div>
+
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex-1">
+              <p className="font-medium text-sm">Hourly history (days)</p>
+              <p className="text-xs text-muted-foreground">
+                Retention for per-port hourly rollups (7–1825, default 365) used by the 7d and 30d ranges.
+              </p>
+            </div>
+            <Input
+              type="number"
+              min={7}
+              max={1825}
+              className="w-24"
+              value={settings.port_stats_1h_days ?? "365"}
+              onChange={(e) => updateSetting("port_stats_1h_days", e.target.value)}
+            />
+          </div>
+
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex-1">
+              <p className="font-medium text-sm">Forget stale port hosts after (days)</p>
+              <p className="text-xs text-muted-foreground">
+                Bridge host entries not seen for this long are removed (1–365).
+              </p>
+            </div>
+            <Input
+              type="number"
+              min={1}
+              max={365}
+              className="w-24"
+              value={settings.port_hosts_stale_days ?? "7"}
+              onChange={(e) => updateSetting("port_hosts_stale_days", e.target.value)}
+            />
+          </div>
+        </CardContent>
+      </Card>
+
       {/* Kea DHCP */}
       <Card>
         <CardHeader>
@@ -1309,7 +1430,7 @@ export default function SettingsPage() {
               { key: "wifi", label: "WiFi events", desc: "wifi_history — join / leave / roam" },
               { key: "clients", label: "Client history", desc: "client_history — DHCP / ARP snapshots" },
               { key: "network_health", label: "Network health events", desc: "loop_events — STP / loop / port-flap" },
-              { key: "traffic", label: "Traffic samples", desc: "traffic_samples — interface bps" },
+              { key: "traffic", label: "Traffic history", desc: "traffic_samples, port_stats_1m, port_stats_1h — interface bps and per-port 1-minute / hourly buckets" },
             ].map((t) => {
               const k = t.key as keyof typeof purgeTargets;
               const checked = purgeTargets[k];
@@ -1464,7 +1585,13 @@ export default function SettingsPage() {
               {purgeTargets.wifi && <li>wifi_history</li>}
               {purgeTargets.clients && <li>client_history</li>}
               {purgeTargets.network_health && <li>loop_events</li>}
-              {purgeTargets.traffic && <li>traffic_samples</li>}
+              {purgeTargets.traffic && (
+                <>
+                  <li>traffic_samples</li>
+                  <li>port_stats_1m</li>
+                  <li>port_stats_1h</li>
+                </>
+              )}
             </ul>
             <p>
               {purgeAgeDays === "0"

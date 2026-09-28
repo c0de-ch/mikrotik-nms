@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"time"
+
+	"github.com/mikrotik-nms/backend/internal/database/queries"
 )
 
 // purgeRequest selects which history tables to purge and how far back.
@@ -13,7 +15,7 @@ type purgeRequest struct {
 	WiFi          bool `json:"wifi"`            // wifi_history
 	Clients       bool `json:"clients"`         // client_history
 	NetworkHealth bool `json:"network_health"`  // loop_events
-	Traffic       bool `json:"traffic"`         // traffic_samples
+	Traffic       bool `json:"traffic"`         // traffic_samples + port_stats_1m + port_stats_1h
 	OlderThanDays int  `json:"older_than_days"` // 0 = everything
 }
 
@@ -55,7 +57,7 @@ func (s *Server) handlePurgeHistory(w http.ResponseWriter, r *http.Request) {
 		{req.Traffic, "traffic_samples", "collected_at"},
 	}
 
-	deleted := make(map[string]int64, 4)
+	deleted := make(map[string]int64, 6)
 	for _, t := range targets {
 		if !t.enabled {
 			continue
@@ -67,8 +69,30 @@ func (s *Server) handlePurgeHistory(w http.ResponseWriter, r *http.Request) {
 		}
 		deleted[t.table] = n
 	}
+	if req.Traffic {
+		// The per-port traffic analytics history (1-minute buckets and their
+		// hourly rollup). Deleted in bounded chunks: a full purge can be
+		// millions of rows, and one DELETE would lock out every other writer.
+		for _, table := range []queries.PortStatsTable{queries.PortStats1m, queries.PortStats1h} {
+			n, err := queries.DeleteOldPortStats(s.db, table, purgeCutoff(req.OlderThanDays))
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, fmt.Sprintf("purge %s: %v", table, err))
+				return
+			}
+			deleted[string(table)] = n
+		}
+	}
 
 	writeJSON(w, http.StatusOK, purgeResponse{Deleted: deleted})
+}
+
+// purgeCutoff is the bucket cutoff for the port-stats tables: everything
+// older than olderThanDays, or every row when it is 0.
+func purgeCutoff(olderThanDays int) time.Time {
+	if olderThanDays == 0 {
+		return time.Date(9999, 12, 31, 0, 0, 0, 0, time.UTC)
+	}
+	return time.Now().UTC().AddDate(0, 0, -olderThanDays)
 }
 
 func purgeTable(db *sql.DB, table, column string, olderThanDays int) (int64, error) {

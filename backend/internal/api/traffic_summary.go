@@ -3,8 +3,7 @@ package api
 import (
 	"net/http"
 
-	"github.com/mikrotik-nms/backend/internal/database/queries"
-	"github.com/mikrotik-nms/backend/internal/routeros"
+	"github.com/mikrotik-nms/backend/internal/poller"
 )
 
 type deviceTrafficSummary struct {
@@ -13,65 +12,41 @@ type deviceTrafficSummary struct {
 	TxBps    int64  `json:"tx_bps"`
 }
 
-// handleGetTrafficSummary returns a one-shot aggregate traffic snapshot for all online devices.
+// handleGetTrafficSummary returns one rx/tx figure per device, served from the
+// port-stats collector's snapshot (no device calls). Each device reports its
+// main interface: the first bridge, else ether1, else its first interface.
 func (s *Server) handleGetTrafficSummary(w http.ResponseWriter, r *http.Request) {
-	devices, err := queries.ListDevices(s.db)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list devices")
-		return
+	writeJSON(w, http.StatusOK, summarizeSnapshot(s.portSnapshot()))
+}
+
+// summarizeSnapshot picks each device's main interface from a snapshot whose
+// ports are sorted by device, then interface name. Devices keep snapshot order.
+func summarizeSnapshot(snap poller.PortSnapshot) []deviceTrafficSummary {
+	results := []deviceTrafficSummary{}
+	for i := 0; i < len(snap.Ports); {
+		j := i
+		for j < len(snap.Ports) && snap.Ports[j].DeviceID == snap.Ports[i].DeviceID {
+			j++
+		}
+		p := mainInterface(snap.Ports[i:j])
+		results = append(results, deviceTrafficSummary{DeviceID: p.DeviceID, RxBps: p.RxBps, TxBps: p.TxBps})
+		i = j
 	}
+	return results
+}
 
-	var results []deviceTrafficSummary
-	for _, dev := range devices {
-		if dev.Status != "online" {
-			continue
+// mainInterface keeps the old summary semantics: prefer a bridge, then ether1,
+// then the first interface by name. ports is non-empty and sorted by name.
+func mainInterface(ports []poller.PortRate) poller.PortRate {
+	for _, p := range ports {
+		if p.Type == "bridge" || p.Iface == "bridge" || p.Iface == "bridge1" {
+			return p
 		}
-		client := s.pool.GetLive(dev.ID)
-		if client == nil {
-			continue
-		}
-
-		// Get traffic on the first bridge or main interface
-		ifaces, _ := queries.ListInterfacesByDevice(s.db, dev.ID)
-		ifaceName := ""
-		// Prefer bridge, then ether1
-		for _, i := range ifaces {
-			if i.Type == "bridge" || i.Name == "bridge" || i.Name == "bridge1" {
-				ifaceName = i.Name
-				break
-			}
-		}
-		if ifaceName == "" {
-			for _, i := range ifaces {
-				if i.Name == "ether1" {
-					ifaceName = i.Name
-					break
-				}
-			}
-		}
-		if ifaceName == "" && len(ifaces) > 0 {
-			ifaceName = ifaces[0].Name
-		}
-		if ifaceName == "" {
-			continue
-		}
-
-		func() {
-			defer func() { recover() }()
-			data, err := routeros.GetTrafficSnapshot(client, ifaceName)
-			if err != nil {
-				return
-			}
-			results = append(results, deviceTrafficSummary{
-				DeviceID: dev.ID,
-				RxBps:    data.RxBitsPerSec,
-				TxBps:    data.TxBitsPerSec,
-			})
-		}()
 	}
-
-	if results == nil {
-		results = []deviceTrafficSummary{}
+	for _, p := range ports {
+		if p.Iface == "ether1" {
+			return p
+		}
 	}
-	writeJSON(w, http.StatusOK, results)
+	return ports[0]
 }

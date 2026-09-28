@@ -18,6 +18,13 @@ export const SYNTH = {
 
 export const SYNTH_TYPES = new Set(["internet", "gateway", "vpn"]);
 
+// Traffic direction colours for charts and bars: RX / download is the brand
+// blue, TX / upload the warm orange (the /traffic page's long-standing pair).
+export const TRAFFIC = {
+  rx: BRAND.primary,
+  tx: "#FAAC68",
+};
+
 export function fmtBps(n: number): string {
   if (!n || n < 0) return "0";
   if (n >= 1e9) return `${(n / 1e9).toFixed(2)} Gbps`;
@@ -39,6 +46,12 @@ export function portLoadColor(bps: number, dark: boolean): string {
   if (mbps < 20) return BRAND.primary;
   if (mbps < 200) return BRAND.amber;
   return BRAND.red;
+}
+
+// Label colour for a portLoadColor cell: the dark idle fill (#334155) needs a
+// light label (dark text on it is ~1.8:1); every other fill takes dark text.
+export function portLoadTextColor(bps: number, dark: boolean): string {
+  return dark && (bps || 0) / 1e6 < 0.05 ? "#e2e8f0" : "#0b1220";
 }
 
 // Per-edge visual encoding from live throughput (both directions summed).
