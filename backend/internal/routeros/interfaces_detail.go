@@ -18,7 +18,7 @@ type InterfaceDetail struct {
 	Type              string
 	Running           bool
 	Disabled          bool
-	Slave             bool   // true when RouterOS marks the interface as bond/bridge slave (`S` flag)
+	Slave             bool // true when RouterOS marks the interface as bond/bridge slave (`S` flag)
 	LastLinkUp        string
 	LastLinkDown      string
 	Comment           string

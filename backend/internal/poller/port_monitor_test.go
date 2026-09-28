@@ -179,11 +179,11 @@ func TestPruneDevices_RemovesStale(t *testing.T) {
 
 func TestIncludeInterface_Filter(t *testing.T) {
 	cases := []struct {
-		name    string
-		filter  []string
-		ifName  string
-		ifType  string
-		want    bool
+		name   string
+		filter []string
+		ifName string
+		ifType string
+		want   bool
 	}{
 		{"empty filter matches everything", nil, "veth-something", "veth", true},
 		{"exact type match", []string{"ether"}, "ether1", "ether", true},

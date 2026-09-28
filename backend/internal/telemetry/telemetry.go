@@ -36,13 +36,13 @@ import (
 
 // Config is the resolved OTLP export configuration.
 type Config struct {
-	Enabled     bool
-	Endpoint    string            // host:port, no scheme (e.g. "obs.lan:4317")
-	Protocol    string            // "grpc" (default, :4317) or "http" (:4318)
-	Insecure    bool              // plaintext OTLP (true for a no-TLS collector)
-	Headers     map[string]string // optional per-export headers (auth/tenant)
-	ServiceName string
-	SampleRatio float64       // trace head-sampling ratio (1.0 = all)
+	Enabled        bool
+	Endpoint       string            // host:port, no scheme (e.g. "obs.lan:4317")
+	Protocol       string            // "grpc" (default, :4317) or "http" (:4318)
+	Insecure       bool              // plaintext OTLP (true for a no-TLS collector)
+	Headers        map[string]string // optional per-export headers (auth/tenant)
+	ServiceName    string
+	SampleRatio    float64       // trace head-sampling ratio (1.0 = all)
 	ExportInterval time.Duration // metric push interval
 }
 

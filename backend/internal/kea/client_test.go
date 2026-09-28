@@ -11,12 +11,12 @@ import (
 
 func TestGetLeases4(t *testing.T) {
 	cases := []struct {
-		name        string
-		body        string
-		status      int
-		wantErr     bool
-		wantCount   int
-		wantFirstIP string
+		name         string
+		body         string
+		status       int
+		wantErr      bool
+		wantCount    int
+		wantFirstIP  string
 		wantFirstMAC string
 	}{
 		{

@@ -16,15 +16,15 @@ type WirelessLogEvent struct {
 
 	// Parsed fields. Event is one of "connected", "disconnected", "roamed",
 	// "reconnecting", or "" if the message could not be parsed.
-	Event   string
-	MAC     string
-	AP      string
-	SSID    string
-	Reason  string // e.g. "connection lost", "not responding"
-	Signal  string // dBm string, e.g. "-30"
-	ToMAC   string // populated for "roamed" events
-	ToAP    string // populated for "roamed" events
-	ToSSID  string // populated for "roamed" events
+	Event  string
+	MAC    string
+	AP     string
+	SSID   string
+	Reason string // e.g. "connection lost", "not responding"
+	Signal string // dBm string, e.g. "-30"
+	ToMAC  string // populated for "roamed" events
+	ToAP   string // populated for "roamed" events
+	ToSSID string // populated for "roamed" events
 }
 
 // Fingerprint returns a stable string identifying this log entry within a
@@ -36,8 +36,8 @@ func (e *WirelessLogEvent) Fingerprint() string {
 // Regexes are compiled once. The AP name can contain dashes/letters/digits but
 // no parens; the SSID is captured separately inside the parens.
 var (
-	logHeaderRe = regexp.MustCompile(`^([0-9A-Fa-f:]{17})@([^()]+)\(([^)]*)\)\s+(.*)$`)
-	roamTailRe  = regexp.MustCompile(`^roamed to\s+([0-9A-Fa-f:]{17})@([^()]+)\(([^)]*)\)(?:,\s*signal strength\s*(-?\d+))?\s*$`)
+	logHeaderRe  = regexp.MustCompile(`^([0-9A-Fa-f:]{17})@([^()]+)\(([^)]*)\)\s+(.*)$`)
+	roamTailRe   = regexp.MustCompile(`^roamed to\s+([0-9A-Fa-f:]{17})@([^()]+)\(([^)]*)\)(?:,\s*signal strength\s*(-?\d+))?\s*$`)
 	signalTailRe = regexp.MustCompile(`,\s*signal strength\s*(-?\d+)\s*$`)
 )
 

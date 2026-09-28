@@ -9,8 +9,8 @@ import (
 
 type bridgeWithPorts struct {
 	queries.BridgeStatus
-	DeviceName string                      `json:"device_name"`
-	Ports      []queries.BridgePortStatus  `json:"ports"`
+	DeviceName string                     `json:"device_name"`
+	Ports      []queries.BridgePortStatus `json:"ports"`
 }
 
 type networkHealthResponse struct {

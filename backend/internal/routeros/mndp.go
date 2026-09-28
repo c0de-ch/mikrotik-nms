@@ -29,17 +29,17 @@ const (
 
 // DiscoveredDevice represents a MikroTik device found via MNDP.
 type DiscoveredDevice struct {
-	MACAddress string `json:"mac_address"`
-	Identity   string `json:"identity"`
-	Version    string `json:"version"`
-	Platform   string `json:"platform"`
-	Board      string `json:"board"`
-	IPAddress  string `json:"ip_address"`
+	MACAddress  string `json:"mac_address"`
+	Identity    string `json:"identity"`
+	Version     string `json:"version"`
+	Platform    string `json:"platform"`
+	Board       string `json:"board"`
+	IPAddress   string `json:"ip_address"`
 	IPv6Address string `json:"ipv6_address"`
-	Interface  string `json:"interface"`
-	Uptime     string `json:"uptime"`
-	SoftwareID string `json:"software_id"`
-	SourceAddr string `json:"source_addr"`
+	Interface   string `json:"interface"`
+	Uptime      string `json:"uptime"`
+	SoftwareID  string `json:"software_id"`
+	SourceAddr  string `json:"source_addr"`
 }
 
 // ScanMNDP listens for MNDP broadcasts on UDP port 5678 for the given duration.

@@ -4,8 +4,8 @@ package topology
 type Node struct {
 	ID         string `json:"id"`
 	Label      string `json:"label"`
-	Type       string `json:"type"`    // router, switch, ap, unknown; synthetic: internet, gateway, vpn
-	Status     string `json:"status"`  // online, offline, unknown; synthetic nodes: up
+	Type       string `json:"type"`   // router, switch, ap, unknown; synthetic: internet, gateway, vpn
+	Status     string `json:"status"` // online, offline, unknown; synthetic nodes: up
 	Model      string `json:"model"`
 	ROSVersion string `json:"ros_version"`
 	CPULoad    *int   `json:"cpu_load"`

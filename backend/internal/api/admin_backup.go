@@ -80,8 +80,8 @@ func tableAllowed(name string) bool {
 }
 
 type backupBundle struct {
-	Version    int                        `json:"version"`
-	ExportedAt time.Time                  `json:"exported_at"`
+	Version    int                         `json:"version"`
+	ExportedAt time.Time                   `json:"exported_at"`
 	Tables     map[string][]map[string]any `json:"tables"`
 }
 
