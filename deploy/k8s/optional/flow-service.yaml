@@ -1,0 +1,29 @@
+# Optional: exposes the backend's flow collector (NetFlow v5/v9, IPFIX, sFlow)
+# on UDP 2055. NOT applied by `kubectl apply -f deploy/k8s/` (that command does
+# not recurse into this directory) — apply it explicitly once the collector is
+# enabled (MIKROTIK_NMS_FLOW_LISTEN in configmap.yaml):
+#
+#   kubectl apply -f deploy/k8s/optional/flow-service.yaml
+#
+# The collector identifies exporters by their UDP source IP, so it must see
+# the router's real address. externalTrafficPolicy: Local keeps it; the
+# default (Cluster) SNATs every datagram to a node IP and all exporters
+# collapse into one unknown sender. Point exporters at the Service's external
+# IP (MetalLB or a cloud load balancer), port 2055/udp. Do not route flows
+# through an ingress controller's udp-services map: it SNATs as well.
+apiVersion: v1
+kind: Service
+metadata:
+  name: mikrotik-nms-flow
+  namespace: mikrotik-nms
+spec:
+  type: LoadBalancer
+  externalTrafficPolicy: Local
+  selector:
+    app: mikrotik-nms
+    component: backend
+  ports:
+    - name: flow
+      port: 2055
+      targetPort: 2055
+      protocol: UDP

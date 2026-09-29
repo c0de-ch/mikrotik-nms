@@ -3,9 +3,12 @@ package api
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -66,6 +69,11 @@ var exportableTables = []string{
 	"bridge_port_status",
 	"interface_state",
 	"loop_events",
+	// Flow export configuration (exporters → their interfaces and points).
+	// The flow fact tables are never exported: too big, and regenerated.
+	"flow_exporters",
+	"flow_exporter_ifaces",
+	"flow_points",
 }
 
 // tableAllowed is the security gate for any caller-supplied table name.
@@ -133,8 +141,21 @@ func (s *Server) handleImportTable(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "decode JSON: "+err.Error())
 		return
 	}
+	var dropped int64
+	if flowExporterChild(table) {
+		// No bundle to map exporter ids through: keep only rows whose
+		// exporter exists (a foreign-key failure would abort the import).
+		if rows, dropped, err = remapFlowExporterIDs(s.db, rows, nil); err != nil {
+			writeError(w, http.StatusInternalServerError, fmt.Sprintf("import %s: %v", table, err))
+			return
+		}
+	}
 	ins, skip, err := importTableRows(s.db, table, rows)
+	skip += dropped
 	s.invalidateTrafficTopo() // devices, links, uplinks, … may have changed
+	if strings.HasPrefix(table, "flow_") {
+		s.flowChanged()
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("import %s: %v", table, err))
 		return
@@ -194,12 +215,38 @@ func (s *Server) handleFullRestore(w http.ResponseWriter, r *http.Request) {
 
 	resp := restoreResponse{Tables: make(map[string]importResponse, len(bundle.Tables))}
 	defer s.invalidateTrafficTopo()
+	flowTouched := false
+	defer func() {
+		if flowTouched {
+			s.flowChanged()
+		}
+	}()
 	// Honour the dependency order from exportableTables, not the (random)
 	// map iteration order in the bundle.
+	var exporterIDs map[int64]int64 // bundle exporter id → current id (by address)
 	for _, table := range exportableTables {
 		rows, ok := bundle.Tables[table]
 		if !ok || len(rows) == 0 {
 			continue
+		}
+		var dropped int64
+		if flowExporterChild(table) {
+			// The bundle's exporter ids may name other (or no) exporters
+			// now: an exporter re-created since the backup got a new id, and
+			// its old id may belong to another one. Map through the address.
+			if _, has := bundle.Tables["flow_exporters"]; has && exporterIDs == nil {
+				if exporterIDs, err = flowExporterIDMap(s.db, bundle.Tables["flow_exporters"]); err != nil {
+					writeError(w, http.StatusInternalServerError, fmt.Sprintf("restore %s: %v", table, err))
+					return
+				}
+			}
+			if rows, dropped, err = remapFlowExporterIDs(s.db, rows, exporterIDs); err != nil {
+				writeError(w, http.StatusInternalServerError, fmt.Sprintf("restore %s: %v", table, err))
+				return
+			}
+		}
+		if strings.HasPrefix(table, "flow_") {
+			flowTouched = true
 		}
 		ins, skip, err := importTableRows(s.db, table, rows)
 		if err != nil {
@@ -207,9 +254,101 @@ func (s *Server) handleFullRestore(w http.ResponseWriter, r *http.Request) {
 				fmt.Sprintf("restore %s: %v", table, err))
 			return
 		}
-		resp.Tables[table] = importResponse{Inserted: ins, Skipped: skip}
+		resp.Tables[table] = importResponse{Inserted: ins, Skipped: skip + dropped}
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// flowExporterChild reports a table whose rows reference flow_exporters by
+// its integer id.
+func flowExporterChild(table string) bool {
+	return table == "flow_exporter_ifaces" || table == "flow_points"
+}
+
+// jsonInt64 reads an integer column value of a decoded JSON row.
+func jsonInt64(v any) (int64, bool) {
+	switch n := v.(type) {
+	case float64:
+		if n != math.Trunc(n) {
+			return 0, false
+		}
+		return int64(n), true
+	case int64:
+		return n, true
+	case json.Number:
+		i, err := n.Int64()
+		return i, err == nil
+	case string:
+		i, err := strconv.ParseInt(n, 10, 64)
+		return i, err == nil
+	}
+	return 0, false
+}
+
+// flowExporterIDMap maps the bundle's flow_exporters ids to the ids the
+// exporters with the same address have now (after they were restored or
+// found present). Exporters without a current row are left out.
+func flowExporterIDMap(db *sql.DB, exporters []map[string]any) (map[int64]int64, error) {
+	out := map[int64]int64{}
+	for _, row := range exporters {
+		old, ok := jsonInt64(row["id"])
+		addr, _ := row["address"].(string)
+		if !ok || addr == "" {
+			continue
+		}
+		var id int64
+		err := db.QueryRow(`SELECT id FROM flow_exporters WHERE address = ?`, addr).Scan(&id)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		out[old] = id
+	}
+	return out, nil
+}
+
+// remapFlowExporterIDs rewrites each row's exporter_id through idMap and
+// drops rows without a mapping; with a nil idMap it keeps the rows whose
+// exporter_id exists in flow_exporters. The input rows are not modified.
+func remapFlowExporterIDs(db *sql.DB, rows []map[string]any, idMap map[int64]int64) ([]map[string]any, int64, error) {
+	if idMap == nil {
+		idMap = map[int64]int64{}
+		r, err := db.Query(`SELECT id FROM flow_exporters`)
+		if err != nil {
+			return nil, 0, err
+		}
+		for r.Next() {
+			var id int64
+			if err := r.Scan(&id); err != nil {
+				r.Close()
+				return nil, 0, err
+			}
+			idMap[id] = id
+		}
+		r.Close()
+		if err := r.Err(); err != nil {
+			return nil, 0, err
+		}
+	}
+	out := make([]map[string]any, 0, len(rows))
+	var dropped int64
+	for _, row := range rows {
+		old, ok := jsonInt64(row["exporter_id"])
+		cur, mapped := idMap[old]
+		if !ok || !mapped {
+			dropped++
+			continue
+		}
+		c := make(map[string]any, len(row))
+		for k, v := range row {
+			c[k] = v
+		}
+		c["exporter_id"] = cur
+		out = append(out, c)
+	}
+	return out, dropped, nil
 }
 
 // ---------- generic helpers ----------

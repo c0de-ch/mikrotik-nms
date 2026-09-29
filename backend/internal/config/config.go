@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -67,6 +68,15 @@ type Config struct {
 	OTelHeaders     string
 	OTelServiceName string
 	OTelSampleRatio float64
+
+	// FlowListen are the UDP bind addresses of the flow collector (NetFlow
+	// v5/v9, IPFIX, sFlow), e.g. [":2055"]. Empty (the default) keeps the
+	// collector off: UDP input is unauthenticated, so it is opt-in. Changes
+	// need a restart.
+	FlowListen []string
+	// FlowCaptureDir (dev only) makes the collector write the first raw
+	// datagrams of each exporter to this directory for replay; "" = off.
+	FlowCaptureDir string
 }
 
 func Load() (*Config, error) {
@@ -103,6 +113,8 @@ func Load() (*Config, error) {
 		OTelHeaders:           os.Getenv("MIKROTIK_NMS_OTEL_HEADERS"),
 		OTelServiceName:       envOr("MIKROTIK_NMS_OTEL_SERVICE_NAME", "mikrotik-nms"),
 		OTelSampleRatio:       envFloatOr("MIKROTIK_NMS_OTEL_SAMPLE_RATIO", 1.0),
+		FlowListen:            parseFlowListen(os.Getenv("MIKROTIK_NMS_FLOW_LISTEN")),
+		FlowCaptureDir:        os.Getenv("MIKROTIK_NMS_FLOW_CAPTURE_DIR"),
 	}
 
 	if cfg.JWTSecret == "" {
@@ -129,6 +141,36 @@ func Load() (*Config, error) {
 // never built from an untrusted request Host header).
 func (c *Config) SMTPEnabled() bool {
 	return c.SMTPHost != "" && c.SMTPPort > 0 && c.PublicBaseURL != ""
+}
+
+// parseFlowListen parses MIKROTIK_NMS_FLOW_LISTEN: comma-separated UDP bind
+// addresses (":2055", "0.0.0.0:2055", ":2055,:6343"). Each entry must be
+// host:port with a port in 1..65535; an invalid entry is logged and skipped,
+// duplicates are removed. Empty input yields nil (collector off).
+func parseFlowListen(v string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, part := range strings.Split(v, ",") {
+		entry := strings.TrimSpace(part)
+		if entry == "" {
+			continue
+		}
+		_, port, err := net.SplitHostPort(entry)
+		if err == nil {
+			if n, perr := strconv.Atoi(port); perr != nil || n < 1 || n > 65535 {
+				err = fmt.Errorf("port %q is not in 1..65535", port)
+			}
+		}
+		if err != nil {
+			log.Printf("warning: MIKROTIK_NMS_FLOW_LISTEN entry %q ignored: %v", entry, err)
+			continue
+		}
+		if !seen[entry] {
+			seen[entry] = true
+			out = append(out, entry)
+		}
+	}
+	return out
 }
 
 // envListOr parses a comma-separated env var into a trimmed, non-empty slice.

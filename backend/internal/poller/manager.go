@@ -13,6 +13,7 @@ import (
 	ros "github.com/go-routeros/routeros/v3"
 	"github.com/mikrotik-nms/backend/internal/config"
 	"github.com/mikrotik-nms/backend/internal/database/queries"
+	"github.com/mikrotik-nms/backend/internal/flow"
 	"github.com/mikrotik-nms/backend/internal/resolver"
 	"github.com/mikrotik-nms/backend/internal/routeros"
 	"github.com/mikrotik-nms/backend/internal/topology"
@@ -31,6 +32,11 @@ type Manager struct {
 	// PortStats() right after launching Start asynchronously.
 	portStats *PortStatsCollector
 
+	// flows is the NetFlow/IPFIX/sFlow collector (disabled unless
+	// MIKROTIK_NMS_FLOW_LISTEN is set), built in NewManager for the same
+	// reason as portStats.
+	flows *flow.Collector
+
 	// ipRejectSeen rate-limits auto-follow rejection audit rows by proposed
 	// move + failure category (see ipRejectionTTL / recordIPRejection). Accessed
 	// only from the topology goroutine today, but guarded so it stays safe if
@@ -47,6 +53,7 @@ func NewManager(db *sql.DB, pool *routeros.Pool, hub *ws.Hub, cfg *config.Config
 		cfg:          cfg,
 		ipRejectSeen: make(map[string]time.Time),
 		portStats:    NewPortStatsCollector(db, pool, hub),
+		flows:        flow.New(db, pool, hub, flow.Config{Listen: cfg.FlowListen, CaptureDir: cfg.FlowCaptureDir}),
 	}
 }
 
@@ -54,6 +61,12 @@ func NewManager(db *sql.DB, pool *routeros.Pool, hub *ws.Hub, cfg *config.Config
 // after NewManager) for the API's snapshot and history endpoints.
 func (m *Manager) PortStats() *PortStatsCollector {
 	return m.portStats
+}
+
+// Flows returns the flow collector (non-nil right after NewManager; disabled
+// when no listen address is configured) for the API's /flows endpoints.
+func (m *Manager) Flows() *flow.Collector {
+	return m.flows
 }
 
 func (m *Manager) Start() {
@@ -73,6 +86,8 @@ func (m *Manager) Start() {
 	go liveTraffic.Run(ctx)
 
 	go m.portStats.Run(ctx)
+
+	go m.flows.Run(ctx)
 
 	wifiTracker := NewWifiTracker(m.db, m.pool, m.hub, 30*time.Second)
 	go wifiTracker.Run(ctx)
@@ -826,6 +841,8 @@ func (m *Manager) retentionLoop(ctx context.Context) {
 			}
 
 			sweepPortStats(m.db, time.Now())
+
+			flow.Sweep(m.db, time.Now())
 
 			m.reclaimSpace()
 		}

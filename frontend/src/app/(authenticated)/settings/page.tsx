@@ -24,7 +24,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { useAuth } from "@/context/auth";
-import { api, type DNSServer } from "@/lib/api";
+import { api, type DNSServer, type FlowStatus } from "@/lib/api";
 import { toast } from "sonner";
 
 const intervalOptions = [
@@ -111,6 +111,21 @@ const portHostsIntervalOptions = [
   { label: "1h", value: "3600" },
 ];
 
+const flowTopNOptions = ["20", "50", "100", "200"];
+const flowTopNHourlyOptions = ["50", "100", "200", "500"];
+
+// "Listening on udp/2055 · 2 exporters" / "Off — set MIKROTIK_NMS_FLOW_LISTEN".
+function flowStatusLine(s: FlowStatus | null | undefined): string {
+  if (s === undefined) return "Checking the flow collector…";
+  if (s === null) return "Flow collector status unavailable.";
+  if (!s.enabled) return "Off — set MIKROTIK_NMS_FLOW_LISTEN in the backend environment and restart the backend.";
+  const ports = Array.from(new Set(s.listen.map((l) => /:(\d+)$/.exec(l)?.[1]).filter(Boolean)));
+  const n = s.exporters.length;
+  const listen = ports.length ? `Listening on udp/${ports.join(", udp/")}` : "Listening";
+  const errs = s.listen_errors.length ? ` · ${s.listen_errors.length} listen error${s.listen_errors.length === 1 ? "" : "s"}` : "";
+  return `${listen} · ${n} exporter${n === 1 ? "" : "s"}${errs}`;
+}
+
 const retentionOptions = [
   { label: "1 day", value: "1" },
   { label: "3 days", value: "3" },
@@ -157,12 +172,16 @@ export default function SettingsPage() {
   const [testIP, setTestIP] = useState("");
   const [testResult, setTestResult] = useState<string | null>(null);
 
+  // Flow collector status line (undefined = loading, null = unavailable).
+  const [flowStatus, setFlowStatus] = useState<FlowStatus | null | undefined>(undefined);
+
   // History purge state
   const [purgeTargets, setPurgeTargets] = useState({
     wifi: false,
     clients: false,
     network_health: false,
     traffic: false,
+    flows: false,
   });
   const [purgeAgeDays, setPurgeAgeDays] = useState("0");
   const [purgeConfirmOpen, setPurgeConfirmOpen] = useState(false);
@@ -248,7 +267,7 @@ export default function SettingsPage() {
         .join(", ");
       toast.success(`Purged — ${totals || "nothing matched"}`);
       setPurgeConfirmOpen(false);
-      setPurgeTargets({ wifi: false, clients: false, network_health: false, traffic: false });
+      setPurgeTargets({ wifi: false, clients: false, network_health: false, traffic: false, flows: false });
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Purge failed");
     } finally {
@@ -368,6 +387,18 @@ export default function SettingsPage() {
   }, [token]);
 
   useEffect(() => { loadSettings(); loadDNS(); }, [loadSettings, loadDNS]);
+
+  useEffect(() => {
+    if (!token) return;
+    let alive = true;
+    api.flows
+      .status(token)
+      .then((s) => alive && setFlowStatus(s))
+      .catch(() => alive && setFlowStatus(null));
+    return () => {
+      alive = false;
+    };
+  }, [token]);
 
   const updateSetting = (key: string, value: string) => {
     setSettings((prev) => ({ ...prev, [key]: value }));
@@ -916,6 +947,202 @@ export default function SettingsPage() {
         </CardContent>
       </Card>
 
+      {/* Flow collector */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Flow collector (NetFlow / IPFIX)</CardTitle>
+          <p className="text-xs font-medium">{flowStatusLine(flowStatus)}</p>
+          <p className="text-xs text-muted-foreground">
+            Measured per-conversation traffic from devices that export flows (Traffic → Flows → Measured). These settings
+            apply within 30 s — no restart needed. The UDP listen address itself is the <code>MIKROTIK_NMS_FLOW_LISTEN</code>{" "}
+            environment variable and needs a restart.
+          </p>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex-1">
+              <p className="font-medium text-sm">Conversations kept per minute</p>
+              <p className="text-xs text-muted-foreground">
+                Top conversations stored per interface pair and minute (default 50); the rest is summed into one
+                &quot;other&quot; row, so totals stay exact.
+              </p>
+            </div>
+            <select
+              className="flex h-8 w-28 rounded-md border bg-transparent px-2 text-sm"
+              value={settings.flow_top_n || "50"}
+              onChange={(e) => updateSetting("flow_top_n", e.target.value)}
+            >
+              {Array.from(new Set([...flowTopNOptions, settings.flow_top_n || "50"])).map((v) => (
+                <option key={v} value={v}>{v}</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex-1">
+              <p className="font-medium text-sm">Conversations kept per hour</p>
+              <p className="text-xs text-muted-foreground">Same for the hourly rollups used by 7d and 30d (default 100).</p>
+            </div>
+            <select
+              className="flex h-8 w-28 rounded-md border bg-transparent px-2 text-sm"
+              value={settings.flow_top_n_hourly || "100"}
+              onChange={(e) => updateSetting("flow_top_n_hourly", e.target.value)}
+            >
+              {Array.from(new Set([...flowTopNHourlyOptions, settings.flow_top_n_hourly || "100"])).map((v) => (
+                <option key={v} value={v}>{v}</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex-1">
+              <p className="font-medium text-sm">Row cap per exporter-minute</p>
+              <p className="text-xs text-muted-foreground">
+                Upper bound on stored rows per exporter and minute across all interfaces (200–10000, default 1500).
+              </p>
+            </div>
+            <Input
+              type="number"
+              min={200}
+              max={10000}
+              className="w-24"
+              value={settings.flow_max_rows_per_minute ?? "1500"}
+              onChange={(e) => updateSetting("flow_max_rows_per_minute", e.target.value)}
+            />
+          </div>
+
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex-1">
+              <p className="font-medium text-sm">1-minute flow history (days)</p>
+              <p className="text-xs text-muted-foreground">
+                Retention for 1-minute flow buckets (1–14, default 3) — ranges up to 24h. The bulk of the flow data; keep it
+                short on small disks.
+              </p>
+            </div>
+            <Input
+              type="number"
+              min={1}
+              max={14}
+              className="w-24"
+              value={settings.flow_1m_days ?? "3"}
+              onChange={(e) => updateSetting("flow_1m_days", e.target.value)}
+            />
+          </div>
+
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex-1">
+              <p className="font-medium text-sm">Hourly flow history (days)</p>
+              <p className="text-xs text-muted-foreground">Retention for hourly flow rollups (7–730, default 90) — the 7d and 30d ranges.</p>
+            </div>
+            <Input
+              type="number"
+              min={7}
+              max={730}
+              className="w-24"
+              value={settings.flow_1h_days ?? "90"}
+              onChange={(e) => updateSetting("flow_1h_days", e.target.value)}
+            />
+          </div>
+
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex-1">
+              <p className="font-medium text-sm">Rate limit (datagrams/s per exporter)</p>
+              <p className="text-xs text-muted-foreground">
+                Datagrams above this rate are dropped and counted (100–50000, default 2000).
+              </p>
+            </div>
+            <Input
+              type="number"
+              min={100}
+              max={50000}
+              className="w-24"
+              value={settings.flow_rate_limit_pps ?? "2000"}
+              onChange={(e) => updateSetting("flow_rate_limit_pps", e.target.value)}
+            />
+          </div>
+
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex-1">
+              <p className="font-medium text-sm">Accept managed devices automatically</p>
+              <p className="text-xs text-muted-foreground">
+                Flows from a managed device&apos;s own address are accepted as an exporter without an admin adding it. Off:
+                they are listed as unknown senders until added.
+              </p>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() =>
+                updateSetting("flow_auto_accept_devices", settings.flow_auto_accept_devices === "false" ? "true" : "false")
+              }
+            >
+              {settings.flow_auto_accept_devices === "false" ? "Off" : "On"}
+            </Button>
+          </div>
+
+          <div className="space-y-1">
+            <p className="font-medium text-sm">Internal prefixes</p>
+            <p className="text-xs text-muted-foreground">
+              Extra addresses to treat as inside your network (CIDR or IP, comma-separated). Device addresses and ARP/DHCP
+              hosts are already internal.
+            </p>
+            <Textarea
+              rows={2}
+              className="font-mono text-xs"
+              placeholder="10.20.0.0/16, 192.168.50.0/24"
+              value={settings.flow_internal_prefixes ?? ""}
+              onChange={(e) => updateSetting("flow_internal_prefixes", e.target.value)}
+            />
+          </div>
+
+          <div className="space-y-1">
+            <p className="font-medium text-sm">External prefixes</p>
+            <p className="text-xs text-muted-foreground">
+              Addresses to always treat as outside, even when a device has an address in them (CIDR or IP,
+              comma-separated), e.g. LTE transit 192.168.23.0/24.
+            </p>
+            <Textarea
+              rows={2}
+              className="font-mono text-xs"
+              placeholder="192.168.23.0/24"
+              value={settings.flow_external_prefixes ?? ""}
+              onChange={(e) => updateSetting("flow_external_prefixes", e.target.value)}
+            />
+          </div>
+
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex-1">
+              <p className="font-medium text-sm">Resolve external names</p>
+              <p className="text-xs text-muted-foreground">
+                Sends reverse-DNS queries for the external IPs shown in the flow top lists. Off by default.
+              </p>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => updateSetting("flow_resolve_ptr", settings.flow_resolve_ptr === "true" ? "false" : "true")}
+            >
+              {settings.flow_resolve_ptr === "true" ? "On" : "Off"}
+            </Button>
+          </div>
+
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex-1">
+              <p className="font-medium text-sm">Advertise address</p>
+              <p className="text-xs text-muted-foreground">
+                The NMS address devices should send flows to, used in the setup commands. Empty = detected automatically.
+              </p>
+            </div>
+            <Input
+              className="w-40 font-mono"
+              placeholder="auto"
+              value={settings.flow_advertise_address ?? ""}
+              onChange={(e) => updateSetting("flow_advertise_address", e.target.value)}
+            />
+          </div>
+        </CardContent>
+      </Card>
+
       {/* Kea DHCP */}
       <Card>
         <CardHeader>
@@ -1431,6 +1658,7 @@ export default function SettingsPage() {
               { key: "clients", label: "Client history", desc: "client_history — DHCP / ARP snapshots" },
               { key: "network_health", label: "Network health events", desc: "loop_events — STP / loop / port-flap" },
               { key: "traffic", label: "Traffic history", desc: "traffic_samples, port_stats_1m, port_stats_1h — interface bps and per-port 1-minute / hourly buckets" },
+              { key: "flows", label: "Flow history", desc: "flow_1m, flow_1h — measured flow-export buckets (exporters and views are kept)" },
             ].map((t) => {
               const k = t.key as keyof typeof purgeTargets;
               const checked = purgeTargets[k];
@@ -1590,6 +1818,12 @@ export default function SettingsPage() {
                   <li>traffic_samples</li>
                   <li>port_stats_1m</li>
                   <li>port_stats_1h</li>
+                </>
+              )}
+              {purgeTargets.flows && (
+                <>
+                  <li>flow_1m</li>
+                  <li>flow_1h</li>
                 </>
               )}
             </ul>

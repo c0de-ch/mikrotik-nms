@@ -10,5 +10,5 @@ RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /mikrotik-nms ./cmd/mikrotik-nms
 FROM alpine:3.21
 RUN apk add --no-cache ca-certificates tzdata
 COPY --from=builder /mikrotik-nms /usr/local/bin/mikrotik-nms
-EXPOSE 8080
+EXPOSE 8080 2055/udp
 ENTRYPOINT ["mikrotik-nms"]

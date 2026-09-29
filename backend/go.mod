@@ -8,6 +8,7 @@ require (
 	github.com/go-routeros/routeros/v3 v3.0.1
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
+	github.com/netsampler/goflow2/v2 v2.2.6
 	github.com/pressly/goose/v3 v3.27.0
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.69.0
 	go.opentelemetry.io/otel v1.44.0

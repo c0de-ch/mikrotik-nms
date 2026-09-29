@@ -27,6 +27,11 @@ spec:
           ports:
             - containerPort: 8080
               name: http
+            # Flow collector; only bound when MIKROTIK_NMS_FLOW_LISTEN is set
+            # (configmap.yaml). Exposed by optional/flow-service.yaml.
+            - containerPort: 2055
+              protocol: UDP
+              name: flow
           volumeMounts:
             - name: data
               mountPath: /data

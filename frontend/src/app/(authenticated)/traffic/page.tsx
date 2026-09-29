@@ -15,7 +15,7 @@ import {
 import { deviceName } from "@/components/traffic/lib";
 import { DeviceList } from "@/components/traffic/device-list";
 import { DeviceView } from "@/components/traffic/device-view";
-import { FlowSankey } from "@/components/traffic/flow-sankey";
+import { FlowsTab } from "@/components/traffic/flows/flows-tab";
 import { KpiRow } from "@/components/traffic/kpi-row";
 import { Notice } from "@/components/traffic/notice";
 import { PortDetail } from "@/components/traffic/port-detail";
@@ -24,6 +24,7 @@ import { TopTalkers } from "@/components/traffic/top-talkers-table";
 
 // /traffic — fleet-wide port analytics with a URL-addressable drill-down:
 // ?view=top|devices|flows &device= &iface= &range= &metric= &dir= &flow= &physical=
+// &fsrc=flows|counters &point= &remote=host|app (Flows tab)
 // useSearchParams needs a Suspense boundary (Next 16), hence the wrapper.
 export default function TrafficPage() {
   return (
@@ -212,7 +213,7 @@ function TrafficPageInner() {
       )}
 
       {view === "flows" && (
-        <FlowSankey params={params} update={update} devices={devices} onOpenPort={openPort} onOpenDevice={openDevice} />
+        <FlowsTab params={params} update={update} devices={devices} onOpenPort={openPort} onOpenDevice={openDevice} />
       )}
     </div>
   );

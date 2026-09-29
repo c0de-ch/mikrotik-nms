@@ -1,0 +1,55 @@
+[
+  {
+    "file": "sflow_switch.hex",
+    "kind": "sflow5",
+    "error": "",
+    "rejected": false,
+    "rebooted": false,
+    "export_time": "",
+    "clock_skew_ms": 0,
+    "flows": [
+      {
+        "kind": "sflow5",
+        "obs_domain": 1,
+        "proto": 6,
+        "src": "192.168.28.25",
+        "dst": "142.250.203.100",
+        "src_port": 50514,
+        "dst_port": 443,
+        "in_if": 1,
+        "out_if": 2,
+        "vlan": 28,
+        "direction": 255,
+        "tcp_flags": 16,
+        "bytes": 777216,
+        "packets": 512,
+        "raw_bytes": 1518,
+        "raw_packets": 1,
+        "sampling_rate": 512,
+        "start": "2026-09-21T14:13:20.5Z",
+        "end": "2026-09-21T14:13:20.5Z",
+        "time_source": "export",
+        "post_nat_src": "",
+        "post_nat_dst": "",
+        "post_nat_src_port": 0,
+        "post_nat_dst_port": 0
+      }
+    ],
+    "counters": 1,
+    "learned": [],
+    "templates": 0,
+    "pending_sets": 0,
+    "stats": {
+      "datagrams": 1,
+      "decode_errors": 0,
+      "flows": 1,
+      "panics": 0,
+      "pending_dropped": 0,
+      "reboots": 0,
+      "rejected": 0,
+      "replayed": 0,
+      "seq_lost": 0,
+      "template_misses": 0
+    }
+  }
+]

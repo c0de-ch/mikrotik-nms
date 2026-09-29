@@ -4,6 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { fmtBps } from "@/components/graph/graph-style";
 import type { Device, PortRate, PortRole, PortSnapshot, TrafficRange } from "@/lib/api";
 import { BehindPort } from "./behind-port";
+import { PortConversations } from "./flows/port-conversations";
 import { RX_COLOR, TX_COLOR, collectingText, dirLabels, portKey, roleFor, roleHint, snapshotReady, splitDirection } from "./lib";
 import { Notice } from "./notice";
 import { PathStrip } from "./path-strip";
@@ -105,6 +106,8 @@ export function PortDetail({
       </Card>
 
       <PortHistoryCard deviceId={deviceId} iface={iface} range={range} role={role} />
+
+      <PortConversations deviceId={deviceId} iface={iface} range={range} onOpenPort={onOpenPort} />
 
       <BehindPort deviceId={deviceId} iface={iface} roleInfo={roleInfo} onOpenDevice={onOpenDevice} onOpenPort={onOpenPort} />
     </div>

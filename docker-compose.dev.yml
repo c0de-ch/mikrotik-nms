@@ -5,6 +5,13 @@ services:
       dockerfile: ../deploy/docker/Dockerfile.backend
     ports:
       - "8080:8080"
+      # Flow collector: off unless FLOW_LISTEN is set. Exporters are identified
+      # by their UDP source IP. Rootful Docker, default iptables: kept, just
+      # uncomment below. Rootful with "iptables": false: `network_mode: host`.
+      # Rootless: `network_mode: host` does NOT reach the real host — keep the
+      # mapping and set DOCKERD_ROOTLESS_ROOTLESSKIT_PORT_DRIVER=slirp4netns
+      # (or use pasta). Details in docker-compose.yml.
+      # - "2055:2055/udp"   # uncomment with FLOW_LISTEN=:2055
     volumes:
       - ./backend:/app
       - mikrotik-data:/data
@@ -12,6 +19,7 @@ services:
       - MIKROTIK_NMS_DB_PATH=/data/mikrotik-nms.db
       - MIKROTIK_NMS_LISTEN=:8080
       - MIKROTIK_NMS_JWT_SECRET=dev-secret-change-me
+      - MIKROTIK_NMS_FLOW_LISTEN=${FLOW_LISTEN:-}
     command: ["mikrotik-nms"]
 
   frontend:

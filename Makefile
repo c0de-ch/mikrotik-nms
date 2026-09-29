@@ -1,4 +1,4 @@
-.PHONY: dev dev-backend dev-frontend build build-backend build-frontend test lint docker-build docker-up docker-down
+.PHONY: dev dev-backend dev-frontend build build-backend build-frontend test fuzz-flow lint docker-build docker-up docker-down
 
 # Development
 dev: dev-backend dev-frontend
@@ -24,6 +24,11 @@ test:
 
 test-verbose:
 	cd backend && go test -v ./...
+
+# Fuzz the guarded flow decoder (goflow2 v2.2.6 has remote DoS bugs the
+# guards neutralise); `go test ./...` only replays the seed corpus.
+fuzz-flow:
+	cd backend && go test ./internal/flow/decode -run '^$$' -fuzz FuzzDecode -fuzztime=60s
 
 # Lint
 lint:

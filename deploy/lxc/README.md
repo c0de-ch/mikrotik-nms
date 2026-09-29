@@ -218,6 +218,66 @@ sensible defaults including a random `MIKROTIK_NMS_JWT_SECRET` and
 > re-run `install.sh` after changing it to rebuild the frontend. A stale
 > baked hostname makes every page fail with "Failed to fetch".
 
+## Flow collector (NetFlow / IPFIX / sFlow)
+
+The backend has an optional built-in flow collector (NetFlow v5/v9, IPFIX,
+sFlow v5 over UDP). It is **off** until `MIKROTIK_NMS_FLOW_LISTEN` is set.
+`install.sh` writes the key **commented out** into `/etc/mikrotik-nms/env` —
+into new env files, and appended to existing ones that don't mention it yet —
+and never touches a line that is already there (active, empty or commented).
+Flow input is unauthenticated UDP, so enabling it is always an explicit step:
+
+```sh
+sudo sed -i 's|^#[[:space:]]*MIKROTIK_NMS_FLOW_LISTEN=.*|MIKROTIK_NMS_FLOW_LISTEN=:2055|' /etc/mikrotik-nms/env
+sudo systemctl restart mikrotik-nms-backend
+sudo ss -lunp | grep ':2055 '                      # mikrotik-nms on *:2055
+sudo journalctl -u mikrotik-nms-backend --since '-5min' | grep 'flow collector:'
+```
+
+To turn it off again, re-comment the line (or set it empty) and restart the
+backend. Stored flow history stays readable.
+
+What the LXC needs:
+
+- **Reachability.** Exporters (routers, firewalls) send to `<LXC_IP>:2055/udp`.
+  Caddy only proxies HTTP, so the backend binds the UDP port itself on all
+  addresses (`:2055` is dual-stack). The systemd unit needs no change: it
+  restricts neither address families nor IPs, and a port above 1024 needs no
+  capability. If the **Proxmox firewall** is enabled for the container with a
+  default-drop input policy, allow the exporters in
+  `/etc/pve/firewall/<vmid>.fw`, e.g.
+  `IN ACCEPT -p udp -dport 2055 -source 192.0.2.0/24`.
+- **A stable address.** Exporters are configured with a literal IP, not a
+  hostname. With DHCP (the default here), add a **DHCP reservation** for the
+  container's MAC (`pct config <vmid> | grep net0` shows `hwaddr=`) on your
+  DHCP server, or give the container a static IP (`LXC_NETWORK=ip=…,gw=…` in
+  `proxmox-create.env`, or `pct set <vmid> --net0 …,hwaddr=<same MAC>,ip=…/24,gw=…`
+  on an existing one — keep the `hwaddr` so the MAC doesn't change).
+- **Source IPs intact.** The collector identifies each exporter by its UDP
+  source address (a managed RouterOS device whose export source equals its
+  NMS address is accepted automatically; others are added under
+  Traffic → Flows). Nothing on the path may SNAT the exports.
+- **Disk.** At the default retention (1-minute detail for 3 days, hourly for
+  90 days) flows add roughly 150 MB for a few exporters, about 500 MB worst
+  case; the daily `VACUUM` needs free space about the size of the DB. Lower
+  `flow_1m_days` / `flow_1h_days` on the Settings page if space is tight.
+
+**Optional nftables allow-list** (defence in depth: the collector already
+drops datagrams from unknown senders before decoding them, and rate-limits
+each exporter). In `/etc/nftables.conf`, inside `table inet filter` →
+`chain input`:
+
+```
+udp dport 2055 ip saddr != { 192.0.2.1, 192.0.2.2 } drop   # your exporters
+udp dport 2055 meta nfproto ipv6 drop                       # no IPv6 exporters
+```
+
+then `sudo nft -c -f /etc/nftables.conf && sudo systemctl reload nftables`.
+
+Device-side configuration (RouterOS traffic-flow, OPNsense NetFlow), derived
+views for switches that cannot export, and verification are in
+[`docs/FLOW-EXPORT.md`](../../docs/FLOW-EXPORT.md).
+
 ## First-run setup
 
 Open the public URL in a browser and create the initial admin user via the
@@ -241,6 +301,9 @@ systemctl restart mikrotik-nms-backend
 
 # Backup the database
 sqlite3 /var/lib/mikrotik-nms/mikrotik-nms.db ".backup '/root/nms-$(date +%F).db'"
+
+# Flow collector listening? (only when MIKROTIK_NMS_FLOW_LISTEN is set)
+ss -lunp | grep ':2055 '
 ```
 
 ## Updating to a new version
@@ -250,6 +313,11 @@ cd /opt/src/mikrotik-nms
 git pull
 ./deploy/lxc/install.sh --skip-deps
 ```
+
+The existing `/etc/mikrotik-nms/env` is kept (apart from blanking a baked
+`NEXT_PUBLIC_*` URL, see [Configuration](#configuration)). If it lacks the
+flow-collector key, `# MIKROTIK_NMS_FLOW_LISTEN=:2055` is appended once,
+commented out, so an update never switches the collector on by itself.
 
 ## Continuous deploy via a self-hosted GitHub Actions runner
 

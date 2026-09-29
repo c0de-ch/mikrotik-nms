@@ -202,3 +202,61 @@ func TestSMTPDisabledWhenHostUnset(t *testing.T) {
 		t.Error("SMTPEnabled() should be false without an SMTP host")
 	}
 }
+
+func TestFlowListen(t *testing.T) {
+	prevSecret := os.Getenv("MIKROTIK_NMS_JWT_SECRET")
+	os.Setenv("MIKROTIK_NMS_JWT_SECRET", "test-secret")
+	t.Cleanup(func() { os.Setenv("MIKROTIK_NMS_JWT_SECRET", prevSecret) })
+	for _, k := range []string{"MIKROTIK_NMS_FLOW_LISTEN", "MIKROTIK_NMS_FLOW_CAPTURE_DIR"} {
+		prev, had := os.LookupEnv(k)
+		os.Unsetenv(k)
+		key := k
+		t.Cleanup(func() {
+			if had {
+				os.Setenv(key, prev)
+			} else {
+				os.Unsetenv(key)
+			}
+		})
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.FlowListen) != 0 || cfg.FlowCaptureDir != "" {
+		t.Fatalf("defaults: FlowListen = %q, FlowCaptureDir = %q; want collector off", cfg.FlowListen, cfg.FlowCaptureDir)
+	}
+
+	cases := []struct {
+		in   string
+		want []string
+	}{
+		{":2055", []string{":2055"}},
+		{" :2055 , bogus, :0, :2055", []string{":2055"}},
+		{"0.0.0.0:2055,:6343", []string{"0.0.0.0:2055", ":6343"}},
+		{"[::1]:2055, :65536, :http", []string{"[::1]:2055"}},
+		{" , ", nil},
+	}
+	for _, c := range cases {
+		os.Setenv("MIKROTIK_NMS_FLOW_LISTEN", c.in)
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("Load(%q): %v", c.in, err)
+		}
+		if len(cfg.FlowListen) != len(c.want) {
+			t.Errorf("FlowListen(%q) = %q, want %q", c.in, cfg.FlowListen, c.want)
+			continue
+		}
+		for i := range c.want {
+			if cfg.FlowListen[i] != c.want[i] {
+				t.Errorf("FlowListen(%q) = %q, want %q", c.in, cfg.FlowListen, c.want)
+			}
+		}
+	}
+
+	os.Setenv("MIKROTIK_NMS_FLOW_CAPTURE_DIR", "/tmp/cap")
+	if cfg, _ := Load(); cfg.FlowCaptureDir != "/tmp/cap" {
+		t.Errorf("FlowCaptureDir = %q", cfg.FlowCaptureDir)
+	}
+}
