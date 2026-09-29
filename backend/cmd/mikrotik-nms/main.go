@@ -14,6 +14,7 @@ import (
 	"github.com/mikrotik-nms/backend/internal/crypto"
 	"github.com/mikrotik-nms/backend/internal/database"
 	"github.com/mikrotik-nms/backend/internal/database/queries"
+	"github.com/mikrotik-nms/backend/internal/flow"
 	"github.com/mikrotik-nms/backend/internal/mailer"
 	"github.com/mikrotik-nms/backend/internal/poller"
 	"github.com/mikrotik-nms/backend/internal/routeros"
@@ -102,7 +103,12 @@ func main() {
 	pollerMgr := poller.NewManager(db, pool, hub, cfg)
 	go pollerMgr.Start()
 
-	router := api.NewRouter(db, hub, cfg, pool, nil, pollerMgr.PortStats())
+	// Flow collector counters → OTel gauges (read on each export cycle; a
+	// cheap in-memory snapshot, no DB I/O).
+	flows := pollerMgr.Flows()
+	telemetry.SetFlowMetricsSource(func() telemetry.FlowMetrics { return flowMetrics(flows.Status(), time.Now()) })
+
+	router := api.NewRouter(db, hub, cfg, pool, nil, pollerMgr.PortStats(), flows)
 
 	srv := &http.Server{
 		Addr:         cfg.Listen,
@@ -127,6 +133,11 @@ func main() {
 	log.Println("shutting down...")
 
 	pollerMgr.Stop()
+	// The flow collector flushes its open minutes on shutdown; let it finish
+	// before the pool and (deferred) the database close. Bounded: 5 s.
+	if !flows.Wait(5 * time.Second) {
+		log.Println("warning: flow collector did not finish its final flush within 5 s")
+	}
 	pool.CloseAll()
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -142,4 +153,43 @@ func main() {
 			log.Printf("otel shutdown error: %v", err)
 		}
 	}
+}
+
+// flowMetrics adapts the flow collector's status to the telemetry snapshot
+// (the flow package never imports telemetry).
+func flowMetrics(st flow.Status, now time.Time) telemetry.FlowMetrics {
+	g := st.Global
+	m := telemetry.FlowMetrics{
+		Dropped: map[string]int64{
+			"queue":        g.QueueDropped,
+			"kernel":       g.KernelDropped,
+			"rate_limited": g.RateLimited,
+			"writer":       g.WriterDropped,
+			"unknown":      g.UnknownDatagrams,
+			"overflow":     g.OverflowRecords,
+			"late":         g.LateRecords,
+			"dup":          g.DupDropped,
+			"self_export":  g.SelfExportDropped,
+			"rejected":     g.Rejected,
+		},
+		Exporters: make([]telemetry.FlowExporterMetrics, 0, len(st.Exporters)),
+	}
+	for _, e := range st.Exporters {
+		age := -1.0
+		if e.LastSeen != nil {
+			age = max(now.Sub(*e.LastSeen).Seconds(), 0)
+		}
+		m.Exporters = append(m.Exporters, telemetry.FlowExporterMetrics{
+			Name:               e.Name,
+			Address:            e.Address,
+			Datagrams:          e.Counters["datagrams"],
+			Flows:              e.Counters["flows"],
+			Bytes:              e.Counters["bytes"],
+			DecodeErrors:       e.Counters["decode_errors"],
+			TemplateMisses:     e.Counters["template_misses"],
+			SeqLost:            e.Counters["seq_lost"],
+			LastSeenAgeSeconds: age,
+		})
+	}
+	return m
 }

@@ -1,34 +1,38 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ResponsiveContainer, Sankey, Tooltip, type TooltipContentProps } from "recharts";
-import { ArrowRight, GitFork, RotateCcw, Server } from "lucide-react";
+import { useCallback, useMemo } from "react";
+import { ResponsiveContainer, Sankey, Tooltip } from "recharts";
+import { GitFork, RotateCcw, Server } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { BRAND, SYNTH, fmtBps } from "@/components/graph/graph-style";
+import { BRAND, SYNTH } from "@/components/graph/graph-style";
 import { useAuth } from "@/context/auth";
-import { api, type Device, type TrafficSankey, type TrafficSankeyNode } from "@/lib/api";
+import { api, type Device, type TrafficSankeyNode } from "@/lib/api";
 import type { TrafficParams, UpdateParams } from "./hooks";
 import { usePolledFetch } from "./hooks";
 import { RANGE_LABEL, deviceName } from "./lib";
 import { EmptyState, Notice } from "./notice";
+import {
+  MARGIN,
+  NODE_PADDING,
+  NODE_WIDTH,
+  SankeyLegend,
+  SankeyLinkShape,
+  SankeyNodeShape,
+  SankeyScroll,
+  SankeyTip,
+  sankeyDims,
+  type LinkShapeProps,
+  type NodeColors,
+  type NodeShapeProps,
+} from "./sankey-shared";
 import { Segmented } from "./segmented";
 
 const LIVE_REFRESH_MS = 15_000;
 const RANGE_REFRESH_MS = 300_000;
-// Recharts spaces columns (contentWidth - NODE_WIDTH) / maxDepth apart; the
-// chart's min width keeps that ≥ COL_WIDTH so a label truncated to
-// LABEL_CHARS ends before the next column's nodes.
-const COL_WIDTH = 220;
-const NODE_WIDTH = 10;
-const NODE_PADDING = 12;
-const CHAR_PX = 6.4; // average glyph width of the 11px label font
-const LABEL_CHARS = Math.floor((COL_WIDTH - NODE_WIDTH - 22) / CHAR_PX);
-const ROW_HEIGHT = 30;
-const MARGIN = { top: 10, bottom: 10, left: 4 };
 
-const NODE_COLOR: Record<TrafficSankeyNode["type"], string> = {
+const NODE_COLOR: NodeColors = {
   internet: SYNTH.internet,
   gateway: SYNTH.gateway,
   vpn: SYNTH.vpn,
@@ -37,172 +41,8 @@ const NODE_COLOR: Record<TrafficSankeyNode["type"], string> = {
   other: BRAND.grey,
 };
 
-function truncate(s: string, n: number): string {
-  return s.length > n ? `${s.slice(0, Math.max(1, n - 1))}…` : s;
-}
-
-// "name · value" on one line, the name shortened so the whole label fits in
-// LABEL_CHARS (the space before the next column).
-function oneLineLabel(name: string, value: string): string {
-  return `${truncate(name, Math.max(8, LABEL_CHARS - value.length - 3))} · ${value}`;
-}
-
 function isLocal(n: Pick<TrafficSankeyNode, "id">): boolean {
   return n.id.startsWith("local:");
-}
-
-interface Shape {
-  depth: number; // deepest column index
-  leaves: number;
-  maxCol: number; // most nodes in any one column
-  lastColChars: number; // longest label in the last column
-}
-
-// Column layout the way Recharts computes it — depth = longest path from any
-// source (the "local:" east-west sources make this a DAG, not a forest) — so
-// the chart can be sized to give every column and row enough room.
-function shape(data: TrafficSankey): Shape {
-  const n = data.nodes.length;
-  const out: number[][] = Array.from({ length: n }, () => []);
-  const indeg = new Array<number>(n).fill(0);
-  const inSum = new Array<number>(n).fill(0);
-  const outSum = new Array<number>(n).fill(0);
-  for (const l of data.links) {
-    if (l.source < 0 || l.source >= n || l.target < 0 || l.target >= n) continue;
-    out[l.source].push(l.target);
-    indeg[l.target]++;
-    inSum[l.target] += l.value;
-    outSum[l.source] += l.value;
-  }
-  // Kahn's order; a node in a cycle (the server guarantees none) keeps depth 0.
-  const depth = new Array<number>(n).fill(0);
-  const queue: number[] = [];
-  indeg.forEach((d, i) => {
-    if (d === 0) queue.push(i);
-  });
-  for (let head = 0; head < queue.length; head++) {
-    const u = queue[head];
-    for (const v of out[u]) {
-      depth[v] = Math.max(depth[v], depth[u] + 1);
-      if (--indeg[v] === 0) queue.push(v);
-    }
-  }
-  const maxDepth = n ? Math.max(...depth) : 0;
-  const perDepth = new Map<number, number>();
-  let leaves = 0;
-  let lastColChars = 0;
-  for (let i = 0; i < n; i++) {
-    perDepth.set(depth[i], (perDepth.get(depth[i]) ?? 0) + 1);
-    if (out[i].length === 0) leaves++;
-    if (depth[i] === maxDepth) {
-      const label = oneLineLabel(data.nodes[i].name, fmtBps(Math.max(inSum[i], outSum[i])));
-      lastColChars = Math.max(lastColChars, label.length);
-    }
-  }
-  return { depth: maxDepth, leaves, maxCol: Math.max(0, ...perDepth.values()), lastColChars };
-}
-
-interface NodeShapeProps {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  payload: TrafficSankeyNode & { value: number; targetNodes: number[] };
-}
-
-function SankeyNodeShape({ x, y, width, height, payload }: NodeShapeProps) {
-  const color = NODE_COLOR[payload.type] ?? BRAND.grey;
-  const value = fmtBps(payload.value);
-  const clickable = payload.type === "device" || payload.type === "port";
-  const tx = x + width + 6;
-  const cy = y + height / 2;
-  const twoLines = height >= 26;
-  return (
-    <g style={{ cursor: clickable ? "pointer" : "default" }}>
-      <rect x={x} y={y} width={width} height={Math.max(height, 1)} rx={2} fill={color} />
-      <text
-        x={tx}
-        y={twoLines ? cy - 3 : cy}
-        dominantBaseline={twoLines ? "auto" : "middle"}
-        fontSize={11}
-        fontWeight={500}
-        fill="var(--foreground)"
-        stroke="var(--card)"
-        strokeWidth={3}
-        paintOrder="stroke"
-      >
-        {twoLines ? truncate(payload.name, LABEL_CHARS) : oneLineLabel(payload.name, value)}
-      </text>
-      {twoLines && (
-        <text
-          x={tx}
-          y={cy + 11}
-          fontSize={10}
-          fill="var(--muted-foreground)"
-          stroke="var(--card)"
-          strokeWidth={3}
-          paintOrder="stroke"
-        >
-          {value}
-          {payload.client_count ? ` · ${payload.client_count} client${payload.client_count === 1 ? "" : "s"}` : ""}
-        </text>
-      )}
-    </g>
-  );
-}
-
-interface LinkShapeProps {
-  sourceX: number;
-  targetX: number;
-  sourceY: number;
-  targetY: number;
-  sourceControlX: number;
-  targetControlX: number;
-  linkWidth: number;
-  payload: { source: TrafficSankeyNode };
-}
-
-// Links are filled ribbons between the top and bottom edge curves. A stroked
-// centre line of width linkWidth bulges far outside its end slots when the
-// link is wide and steep (it swept over the Internet node); a ribbon never
-// leaves the vertical span of its two ends.
-function SankeyLinkShape({ sourceX, targetX, sourceY, targetY, sourceControlX, targetControlX, linkWidth, payload }: LinkShapeProps) {
-  const color = NODE_COLOR[payload.source?.type] ?? BRAND.grey;
-  const h = Math.max(1, linkWidth) / 2;
-  const d =
-    `M${sourceX},${sourceY - h} C${sourceControlX},${sourceY - h} ${targetControlX},${targetY - h} ${targetX},${targetY - h}` +
-    ` L${targetX},${targetY + h} C${targetControlX},${targetY + h} ${sourceControlX},${sourceY + h} ${sourceX},${sourceY + h} Z`;
-  return (
-    <path
-      d={d}
-      fill={color}
-      fillOpacity={payload.source && isLocal(payload.source) ? 0.12 : 0.22}
-      stroke="none"
-      className="transition-[fill-opacity] hover:[fill-opacity:0.5]"
-    />
-  );
-}
-
-function SankeyTip({ active, payload }: TooltipContentProps) {
-  if (!active || !payload?.length) return null;
-  const item = payload[0];
-  const p = item.payload as { source?: TrafficSankeyNode; target?: TrafficSankeyNode; source_iface?: string } | undefined;
-  const isLink = !!p?.source && !!p?.target;
-  return (
-    <div className="rounded-md border bg-popover px-3 py-2 text-xs text-popover-foreground shadow-md">
-      {isLink ? (
-        <>
-          <div className="font-medium">
-            {p!.source!.name} → {p!.target!.name}
-          </div>
-          {p!.source_iface && <div className="font-mono text-muted-foreground">via {p!.source_iface}</div>}
-        </>
-      ) : (
-        <div className="font-medium">{String(item.name ?? "")}</div>
-      )}
-      <div className="font-mono tabular-nums">{fmtBps(Number(item.value ?? 0))}</div>
-    </div>
-  );
 }
 
 // FlowSankey: the Flows tab — an ESTIMATED source→sink tree built by the
@@ -233,35 +73,9 @@ export function FlowSankey({
   const { data, error, loading } = usePolledFetch(key, fetcher, live ? LIVE_REFRESH_MS : RANGE_REFRESH_MS);
 
   const sortedDevices = useMemo(() => [...devices].sort((a, b) => deviceName(a).localeCompare(deviceName(b))), [devices]);
-  const dims = useMemo(() => {
-    if (!data || data.nodes.length === 0) return null;
-    const { depth, leaves, maxCol, lastColChars } = shape(data);
-    const right = Math.max(48, Math.ceil(lastColChars * CHAR_PX) + 16);
-    // No fixed height cap: Recharts' yRatio goes negative (garbled layout)
-    // once a column's padding exceeds the height, so the chart grows with its
-    // fullest column instead and the page scrolls.
-    const rows = Math.max(leaves, maxCol);
-    return {
-      right,
-      minWidth: Math.max(640, MARGIN.left + depth * COL_WIDTH + NODE_WIDTH + right),
-      height: Math.max(320, rows * ROW_HEIGHT + MARGIN.top + MARGIN.bottom + 20),
-    };
-  }, [data]);
+  const dims = useMemo(() => sankeyDims(data), [data]);
   const hasLocal = useMemo(() => !!data?.nodes.some(isLocal), [data]);
 
-  // Deep trees are wider than the card and scroll sideways; say so, since
-  // nothing else hints that the last columns are off-screen.
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const [overflows, setOverflows] = useState(false);
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    // The observer fires once on observe(), so no synchronous check is needed.
-    const ro = new ResizeObserver(() => setOverflows(el.scrollWidth > el.clientWidth + 1));
-    ro.observe(el);
-    if (el.firstElementChild) ro.observe(el.firstElementChild);
-    return () => ro.disconnect();
-  }, [dims]);
   // Every east-west source is named "Local / east-west" by the server and
   // they all sit in the first column, far from the device each one feeds —
   // name them after that device ("Local → switch001") so they can be told apart.
@@ -278,8 +92,14 @@ export function FlowSankey({
     };
   }, [data]);
 
-  const renderNode = useCallback((props: unknown) => <SankeyNodeShape {...(props as NodeShapeProps)} />, []);
-  const renderLink = useCallback((props: unknown) => <SankeyLinkShape {...(props as LinkShapeProps)} />, []);
+  const renderNode = useCallback((props: unknown) => {
+    const p = props as NodeShapeProps;
+    return <SankeyNodeShape {...p} colors={NODE_COLOR} clickable={p.payload.type === "device" || p.payload.type === "port"} />;
+  }, []);
+  const renderLink = useCallback(
+    (props: unknown) => <SankeyLinkShape {...(props as LinkShapeProps)} colors={NODE_COLOR} faint={isLocal} />,
+    [],
+  );
   const onClick = useCallback(
     (item: unknown, type: string) => {
       if (type !== "node") return;
@@ -366,33 +186,26 @@ export function FlowSankey({
           <EmptyState icon={GitFork}>No flows above 1 kbps (or topology not discovered yet).</EmptyState>
         ) : chartData && dims ? (
           <>
-            {overflows && (
-              <p className="flex items-center justify-end gap-1 text-[11px] text-muted-foreground">
-                Deeper levels continue to the right — scroll sideways <ArrowRight className="h-3 w-3" />
-              </p>
-            )}
-            <div ref={scrollRef} className="overflow-x-auto">
-              <div style={{ minWidth: dims.minWidth, height: dims.height }} className={loading ? "opacity-60" : undefined}>
-                <ResponsiveContainer width="100%" height="100%">
-                  <Sankey
-                    data={chartData}
-                    node={renderNode}
-                    link={renderLink}
-                    nodeWidth={NODE_WIDTH}
-                    nodePadding={NODE_PADDING}
-                    linkCurvature={0.5}
-                    iterations={48}
-                    align="left"
-                    margin={{ ...MARGIN, right: dims.right }}
-                    onClick={onClick}
-                  >
-                    <Tooltip content={SankeyTip} />
-                  </Sankey>
-                </ResponsiveContainer>
-              </div>
-            </div>
-            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
-              {(
+            <SankeyScroll dims={dims} loading={loading}>
+              <ResponsiveContainer width="100%" height="100%">
+                <Sankey
+                  data={chartData}
+                  node={renderNode}
+                  link={renderLink}
+                  nodeWidth={NODE_WIDTH}
+                  nodePadding={NODE_PADDING}
+                  linkCurvature={0.5}
+                  iterations={48}
+                  align="left"
+                  margin={{ ...MARGIN, right: dims.right }}
+                  onClick={onClick}
+                >
+                  <Tooltip content={SankeyTip} />
+                </Sankey>
+              </ResponsiveContainer>
+            </SankeyScroll>
+            <SankeyLegend
+              items={(
                 [
                   ["internet", "Internet"],
                   ["gateway", "Gateway"],
@@ -400,14 +213,9 @@ export function FlowSankey({
                   ["device", "Device"],
                   ["port", hasLocal ? "Edge port / local / other" : "Edge port / other"],
                 ] as [TrafficSankeyNode["type"], string][]
-              ).map(([t, l]) => (
-                <span key={t} className="inline-flex items-center gap-1.5">
-                  <span className="h-2.5 w-2.5 rounded-sm" style={{ background: NODE_COLOR[t] }} />
-                  {l}
-                </span>
-              ))}
-              <span>· edge width = bits/s</span>
-            </div>
+              ).map(([t, l]) => [NODE_COLOR[t] ?? BRAND.grey, l])}
+              suffix={<span>· edge width = bits/s</span>}
+            />
           </>
         ) : null}
       </CardContent>

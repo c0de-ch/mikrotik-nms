@@ -16,6 +16,7 @@ type purgeRequest struct {
 	Clients       bool `json:"clients"`         // client_history
 	NetworkHealth bool `json:"network_health"`  // loop_events
 	Traffic       bool `json:"traffic"`         // traffic_samples + port_stats_1m + port_stats_1h
+	Flows         bool `json:"flows"`           // flow_1m + flow_1h (+ their meta rows)
 	OlderThanDays int  `json:"older_than_days"` // 0 = everything
 }
 
@@ -34,7 +35,7 @@ func (s *Server) handlePurgeHistory(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if !req.WiFi && !req.Clients && !req.NetworkHealth && !req.Traffic {
+	if !req.WiFi && !req.Clients && !req.NetworkHealth && !req.Traffic && !req.Flows {
 		writeError(w, http.StatusBadRequest, "no targets selected")
 		return
 	}
@@ -42,6 +43,10 @@ func (s *Server) handlePurgeHistory(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "older_than_days must be >= 0")
 		return
 	}
+	// A full traffic / flow purge deletes millions of rows in bounded
+	// chunks and can outlast the server's 15 s write timeout: extend this
+	// response's deadline (ErrNotSupported under test recorders is fine).
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(10 * time.Minute))
 
 	// targets maps the API toggle to the underlying SQL table + the column
 	// used to filter by age. All four tables have a column whose default is
@@ -82,11 +87,26 @@ func (s *Server) handlePurgeHistory(w http.ResponseWriter, r *http.Request) {
 			deleted[string(table)] = n
 		}
 	}
+	if req.Flows {
+		// Flow export history (per-minute conversations and the hourly
+		// rollup, each with its covered-bucket meta rows; the counts include
+		// the meta rows). Chunked like port stats. Exporter / point
+		// configuration is kept.
+		for _, table := range []queries.FlowTable{queries.Flows1m, queries.Flows1h} {
+			n, err := queries.DeleteOldFlows(s.db, table, purgeCutoff(req.OlderThanDays))
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, fmt.Sprintf("purge %s: %v", table, err))
+				return
+			}
+			deleted[string(table)] = n
+		}
+		s.flowCache.clear()
+	}
 
 	writeJSON(w, http.StatusOK, purgeResponse{Deleted: deleted})
 }
 
-// purgeCutoff is the bucket cutoff for the port-stats tables: everything
+// purgeCutoff is the bucket cutoff for the port-stats and flow tables: everything
 // older than olderThanDays, or every row when it is 0.
 func purgeCutoff(olderThanDays int) time.Time {
 	if olderThanDays == 0 {

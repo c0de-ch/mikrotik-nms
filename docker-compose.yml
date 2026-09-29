@@ -5,11 +5,26 @@ services:
       dockerfile: ../deploy/docker/Dockerfile.backend
     ports:
       - "8080:8080"
+      # Flow collector (NetFlow/IPFIX/sFlow). Off unless FLOW_LISTEN is set in
+      # .env. The collector identifies exporters by their UDP source IP:
+      # - rootful Docker, default iptables: DNAT keeps it — just uncomment below.
+      # - rootful with "iptables": false (userland proxy for all traffic): use
+      #   `network_mode: host` for the backend.
+      # - rootless Docker: `network_mode: host` does NOT reach the real host.
+      #   Keep this mapping and set DOCKERD_ROOTLESS_ROOTLESSKIT_PORT_DRIVER=slirp4netns
+      #   in the rootless daemon's environment
+      #   (~/.config/systemd/user/docker.service.d/override.conf, then restart
+      #   the user service), or use the pasta network driver with the implicit
+      #   port driver.
+      # Check: the exporter's real IP (not the Docker gateway) appears under
+      # `unknown_senders` or `exporters` in GET /api/v1/flows/status.
+      # - "2055:2055/udp"   # uncomment with FLOW_LISTEN=:2055
     volumes:
       - mikrotik-data:/data
     environment:
       - MIKROTIK_NMS_DB_PATH=/data/mikrotik-nms.db
       - MIKROTIK_NMS_LISTEN=:8080
+      - MIKROTIK_NMS_FLOW_LISTEN=${FLOW_LISTEN:-}
       - MIKROTIK_NMS_JWT_SECRET=${JWT_SECRET:-change-me-in-production}
       - MIKROTIK_NMS_ENCRYPTION_KEY=${ENCRYPTION_KEY:-}
       - MIKROTIK_NMS_DEFAULT_ROS_USER=${DEFAULT_ROS_USER:-admin}

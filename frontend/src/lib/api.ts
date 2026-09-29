@@ -125,6 +125,8 @@ async function apiFetch<T>(path: string, options: FetchOptions = {}): Promise<T>
     throw new ApiError(res.status, message);
   }
 
+  // 204 No Content (e.g. DELETE /flows/points/{id}) has no body to parse.
+  if (res.status === 204) return undefined as T;
   return res.json();
 }
 
@@ -286,13 +288,82 @@ export const api = {
       if (iface) qs.set("iface", iface);
       return apiFetch<TrafficPath>(`/traffic/path?${qs}`, { token });
     },
-    // Estimated source→sink flow tree (from port counters + topology, not
-    // flow export). Always a strict forest, so Recharts' Sankey can render it.
-    sankey: (token: string, p: { range: TrafficRange; dir: FlowDirection; device?: string }) => {
+    // source "counters" (default): the ESTIMATED source→sink tree from port
+    // counters + topology (a strict forest). source "flows": the MEASURED
+    // graph of one flow observation point (remote|app → point → host → port
+    // for download, reversed for upload) — needs point.
+    sankey: (
+      token: string,
+      p: {
+        range: TrafficRange;
+        dir: FlowDirection;
+        device?: string;
+        source?: FlowSource;
+        point?: number;
+        remote?: FlowRemoteGrouping;
+      },
+    ) => {
       const qs = new URLSearchParams({ range: p.range, dir: p.dir });
       if (p.device) qs.set("device", p.device);
+      if (p.source) qs.set("source", p.source);
+      if (p.point !== undefined) qs.set("point", String(p.point));
+      if (p.remote) qs.set("remote", p.remote);
       return apiFetch<TrafficSankey>(`/traffic/sankey?${qs}`, { token });
     },
+  },
+
+  // Flow export (NetFlow / IPFIX). Reads are open to every logged-in user;
+  // exporter / interface / point writes are admin-only.
+  flows: {
+    status: (token: string) => apiFetch<FlowStatus>("/flows/status", { token }),
+    setup: (token: string, device?: string) => {
+      const qs = new URLSearchParams();
+      if (device) qs.set("device", device);
+      const q = qs.toString() ? `?${qs}` : "";
+      return apiFetch<FlowSetup>(`/flows/setup${q}`, { token });
+    },
+    points: (token: string) => apiFetch<{ points: FlowPoint[] }>("/flows/points", { token }),
+    suggestions: (token: string) =>
+      apiFetch<{ suggestions: FlowPointSuggestion[] }>("/flows/points/suggestions", { token }),
+    ifaces: (token: string, exporterId: number) =>
+      apiFetch<FlowIfacesResponse>(`/flows/exporters/${exporterId}/interfaces`, { token }),
+    top: (
+      token: string,
+      p: { point: number; range: TrafficRange; dir: FlowDirection; group: FlowGroup; limit?: number; resolve?: boolean },
+    ) => {
+      const qs = new URLSearchParams({ point: String(p.point), range: p.range, dir: p.dir, group: p.group });
+      if (p.limit) qs.set("limit", String(p.limit));
+      if (p.resolve) qs.set("resolve", "1");
+      return apiFetch<FlowTopResponse>(`/flows/top?${qs}`, { token });
+    },
+    port: (token: string, p: { device: string; iface: string; range: TrafficRange; limit?: number; point?: number }) => {
+      const qs = new URLSearchParams({ device: p.device, iface: p.iface, range: p.range });
+      if (p.limit) qs.set("limit", String(p.limit));
+      if (p.point !== undefined) qs.set("point", String(p.point));
+      return apiFetch<FlowPortResponse>(`/flows/port?${qs}`, { token });
+    },
+    coverage: (token: string, p: { point: number; range: TrafficRange }) => {
+      const qs = new URLSearchParams({ point: String(p.point), range: p.range });
+      return apiFetch<FlowCoverageResponse>(`/flows/coverage?${qs}`, { token });
+    },
+    createExporter: (token: string, body: FlowExporterBody) =>
+      apiFetch<FlowExporterStatus>("/flows/exporters", { method: "POST", token, body: JSON.stringify(body) }),
+    updateExporter: (token: string, id: number, body: FlowExporterBody) =>
+      apiFetch<FlowExporterStatus>(`/flows/exporters/${id}`, { method: "PUT", token, body: JSON.stringify(body) }),
+    deleteExporter: (token: string, id: number) =>
+      apiFetch<void>(`/flows/exporters/${id}`, { method: "DELETE", token }),
+    updateIface: (token: string, exporterId: number, ifIndex: number, body: { name: string; role: FlowIfaceRole }) =>
+      apiFetch<FlowIface>(`/flows/exporters/${exporterId}/interfaces/${ifIndex}`, {
+        method: "PUT",
+        token,
+        body: JSON.stringify(body),
+      }),
+    createPoint: (token: string, body: FlowPointBody) =>
+      apiFetch<FlowPoint>("/flows/points", { method: "POST", token, body: JSON.stringify(body) }),
+    updatePoint: (token: string, id: number, body: FlowPointBody) =>
+      apiFetch<FlowPoint>(`/flows/points/${id}`, { method: "PUT", token, body: JSON.stringify(body) }),
+    deletePoint: (token: string, id: number) =>
+      apiFetch<void>(`/flows/points/${id}`, { method: "DELETE", token }),
   },
 
   // Firmware
@@ -460,6 +531,8 @@ export const api = {
         network_health: boolean;
         // traffic_samples plus the port_stats_1m / port_stats_1h buckets.
         traffic: boolean;
+        // flow_1m / flow_1h (flow-export facts and their meta rows).
+        flows?: boolean;
         older_than_days: number;
       },
     ) =>
@@ -850,13 +923,18 @@ export interface TrafficPath {
 // type "other" covers the "+N ports" fold ("other:<dev>") and the synthetic
 // "local:<dev>" source that carries a device's east-west surplus (outflow
 // beyond what it receives from its parent), so every node conserves flow.
+// remote / app / point / host only occur in the measured (source=flows)
+// graph, whose "other:remote" / "other:local" folds are type "other" too.
 export interface TrafficSankeyNode {
   id: string;
   name: string;
-  type: "internet" | "gateway" | "vpn" | "device" | "port" | "other";
+  type: "internet" | "gateway" | "vpn" | "device" | "port" | "other" | "remote" | "app" | "point" | "host";
   device_id?: string;
   iface?: string;
   client_count?: number;
+  // Measured graph: remote / host endpoints.
+  ip?: string;
+  class?: FlowEndpointClass;
 }
 
 export interface TrafficSankeyLink {
@@ -867,6 +945,8 @@ export interface TrafficSankeyLink {
 }
 
 export interface TrafficSankey {
+  // "counters" on the Phase 1 path; older backends omit it.
+  source?: FlowSource;
   estimated: boolean;
   direction: FlowDirection;
   range: TrafficRange;
@@ -874,6 +954,325 @@ export interface TrafficSankey {
   to: string | null;
   nodes: TrafficSankeyNode[];
   links: TrafficSankeyLink[];
+  // Measured graph only.
+  point?: FlowPoint;
+  sampling_rate?: number;
+  coverage?: number | null;
+  total_bps?: number;
+}
+
+// ---- Flow export (NetFlow / IPFIX) -------------------------------------------
+//
+// Measured per-conversation traffic from flow exporters (RouterOS IPFIX,
+// OPNsense NetFlow v9). Everything is scoped to ONE observation point (a set
+// of one exporter's interfaces, "facing" the internet or the hosts); rows of
+// two exporters are never added together. Times are RFC 3339 UTC.
+
+export type FlowSource = "counters" | "flows";
+export type FlowRemoteGrouping = "host" | "app";
+export type FlowGroup = "src" | "dst" | "pair" | "conv" | "app";
+export type FlowExporterKind = "routeros" | "opnsense" | "other";
+export type FlowExporterState = "ok" | "stale" | "never" | "disabled";
+export type FlowProtocol = "netflow5" | "netflow9" | "ipfix" | "sflow5" | "";
+export type FlowTemplateState = "ok" | "waiting" | "persisted" | "n/a";
+export type FlowEndpointClass = "internal" | "external" | "self" | "multicast" | "vpn";
+export type FlowIfaceRole = "" | "lan" | "wan" | "vpn" | "other";
+
+// Cumulative since process start.
+export interface FlowGlobalStats {
+  datagrams: number;
+  unknown_datagrams: number;
+  rejected: number;
+  rate_limited: number;
+  queue_dropped: number;
+  kernel_dropped: number;
+  writer_dropped: number;
+  late_records: number;
+  overflow_records: number;
+  self_export_dropped: number;
+  dup_dropped: number;
+  panics: number;
+}
+
+export interface FlowRates {
+  datagrams: number;
+  flows: number;
+  bytes: number;
+}
+
+export interface FlowExporterStatus {
+  id: number;
+  name: string;
+  address: string;
+  kind: FlowExporterKind;
+  device_id: string | null;
+  enabled: boolean;
+  auto: boolean;
+  sampling_override: number;
+  nat_addresses: string[];
+  state: FlowExporterState;
+  last_seen: string | null;
+  protocol: FlowProtocol;
+  sampling_rate: number;
+  templates: number;
+  template_state: FlowTemplateState;
+  // Average over the last 5 min (0 when the collector is off).
+  per_minute: FlowRates;
+  // datagrams, flows, bytes, decode_errors, template_misses, replayed,
+  // pending_dropped, seq_lost, rate_limited, dup_dropped,
+  // self_export_dropped, nat_dst_records, reboots, iface_overflow,
+  // oversized.
+  counters: Record<string, number>;
+  // sysuptime / absolute / uptime_est / export.
+  time_source: Record<string, number>;
+  clock_skew_ms: number;
+  last_error: string;
+  last_error_at: string | null;
+  interfaces_seen: number;
+}
+
+export interface FlowUnknownSender {
+  address: string;
+  first_seen: string;
+  last_seen: string;
+  datagrams: number;
+  protocol: FlowProtocol;
+  device_id: string | null;
+  device_name: string;
+}
+
+export interface FlowSuggestedExporter {
+  address: string;
+  name: string;
+  kind: FlowExporterKind;
+  reason: string;
+}
+
+export interface FlowStatus {
+  enabled: boolean;
+  listen: string[];
+  listen_errors: string[];
+  started_at: string | null;
+  flushed_through: string | null;
+  rolled_through: string | null;
+  rcvbuf_bytes: number;
+  global: FlowGlobalStats;
+  exporters: FlowExporterStatus[];
+  unknown_senders: FlowUnknownSender[];
+  // REST only (the "flows.status" WS payload omits it).
+  suggested_exporters?: FlowSuggestedExporter[];
+}
+
+export interface FlowSetup {
+  enabled: boolean;
+  port: number;
+  advertise_address: string;
+  advertise_source: "setting" | "auto" | "unknown";
+  routeros: { device_id: string | null; apply: string[]; rollback: string[] };
+  opnsense: {
+    destination: string;
+    version: string;
+    active_timeout: number;
+    inactive_timeout: number;
+    steps: string[];
+  };
+}
+
+export interface FlowIface {
+  if_index: number;
+  name: string;
+  type: string;
+  vlan_id: number;
+  parent: string;
+  role: FlowIfaceRole;
+  source: string;
+  // Learned address prefixes seen on the interface (CSV).
+  hint: string;
+  first_seen: string | null;
+  last_seen: string | null;
+}
+
+export interface FlowIfacesResponse {
+  exporter_id: number;
+  interfaces: FlowIface[];
+}
+
+export interface FlowAttach {
+  device_id: string;
+  iface: string;
+}
+
+// FlowPointView: one observation point.
+export interface FlowPoint {
+  id: number;
+  name: string;
+  kind: "native" | "derived";
+  exporter_id: number;
+  exporter_name: string;
+  exporter_kind: FlowExporterKind;
+  exporter_state: FlowExporterState;
+  protocol: FlowProtocol;
+  if_indexes: number[];
+  if_names: string[];
+  facing: "up" | "down";
+  // "" when the point has no managed port.
+  port_side: "" | "same" | "peer";
+  device_id: string | null;
+  device_name: string;
+  iface: string;
+  local_internal: boolean;
+  exclude_attach: FlowAttach[];
+  note: string;
+  auto: boolean;
+  enabled: boolean;
+  sampling_rate: number;
+  coverage_capable: boolean;
+  last_data: string | null;
+}
+
+// POST / PUT body of /flows/points (also the `point` of a suggestion).
+export interface FlowPointBody {
+  exporter_id: number;
+  name: string;
+  kind: "native" | "derived";
+  if_indexes: number[];
+  facing: "up" | "down";
+  port_side: "" | "same" | "peer";
+  device_id: string | null;
+  iface: string;
+  local_internal: boolean;
+  exclude_attach: FlowAttach[];
+  note: string;
+  enabled: boolean;
+}
+
+export interface FlowPointSuggestion {
+  rule: "gateway-host" | "trunk";
+  reason: string;
+  exists: boolean;
+  point: FlowPointBody | null;
+}
+
+export interface FlowEndpoint {
+  ip: string;
+  class: FlowEndpointClass;
+  name: string;
+  mac: string;
+  vendor: string;
+  device_id: string | null;
+  attached: { device_id: string; device_name: string; iface: string } | null;
+  // Name of the exporter whose NAT address this is (its traffic, NATed).
+  nat_of: string | null;
+}
+
+export interface FlowApp {
+  proto: number;
+  proto_name: string;
+  port: number;
+  // "" when the port is not a known service.
+  label: string;
+}
+
+export interface FlowOther {
+  bytes: number;
+  packets: number;
+  flows: number;
+  avg_bps: number;
+  share: number;
+}
+
+export interface FlowTopRow extends FlowOther {
+  rank: number;
+  key: string;
+  src: FlowEndpoint | null;
+  dst: FlowEndpoint | null;
+  app: FlowApp | null;
+}
+
+export interface FlowTopResponse {
+  point: FlowPoint;
+  range: TrafficRange;
+  dir: FlowDirection;
+  group: FlowGroup;
+  resolution: "1m" | "1h";
+  from: string;
+  to: string;
+  coverage_from: string | null;
+  seconds: number;
+  total_bytes: number;
+  total_bps: number;
+  sampling_rate: number;
+  overflow: number;
+  rows: FlowTopRow[];
+  other: FlowOther;
+}
+
+export interface FlowPortDirection {
+  rows: FlowTopRow[];
+  total_bytes: number;
+  other: FlowOther;
+}
+
+export interface FlowPortCoverage {
+  download: number | null;
+  upload: number | null;
+  flow_down_bytes: number;
+  flow_up_bytes: number;
+  counter_down_bytes: number;
+  counter_up_bytes: number;
+}
+
+export interface FlowPortResponse {
+  reason: "ok" | "no_point" | "collector_disabled";
+  point: FlowPoint | null;
+  alternatives: FlowPoint[];
+  range: TrafficRange;
+  resolution: "1m" | "1h";
+  from: string | null;
+  to: string | null;
+  coverage_from: string | null;
+  seconds: number;
+  coverage: FlowPortCoverage;
+  download: FlowPortDirection;
+  upload: FlowPortDirection;
+}
+
+// Flow values are null where the step has no flow meta; counter values null
+// where Phase 1 has no bucket or the point has no managed port.
+export interface FlowCoveragePoint {
+  ts: string;
+  flow_down_bps: number | null;
+  flow_up_bps: number | null;
+  counter_down_bps: number | null;
+  counter_up_bps: number | null;
+}
+
+export interface FlowCoverageResponse {
+  point: FlowPoint;
+  range: TrafficRange;
+  step_seconds: number;
+  from: string;
+  to: string;
+  coverage_from: string | null;
+  points: FlowCoveragePoint[];
+  ratio: { download: number | null; upload: number | null };
+}
+
+// WS "flows.flushed": after each minute flush.
+export interface FlowFlushedEvent {
+  exporter_ids: number[];
+  bucket: string;
+  flushed_through: string;
+}
+
+export interface FlowExporterBody {
+  name: string;
+  address: string;
+  kind: FlowExporterKind;
+  device_id: string | null;
+  enabled: boolean;
+  sampling_override: number;
+  nat_addresses: string[];
 }
 
 // One physical port of a device with a live throughput sample.

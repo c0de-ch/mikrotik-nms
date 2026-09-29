@@ -8,6 +8,8 @@ import {
   api,
   type Device,
   type FlowDirection,
+  type FlowRemoteGrouping,
+  type FlowSource,
   type PortRate,
   type PortRole,
   type PortRolesResponse,
@@ -31,6 +33,12 @@ export interface TrafficParams {
   dir: TopDir;
   flow: FlowDirection;
   physical: boolean;
+  // Flows tab: null = auto (measured when a flow point has recent data).
+  fsrc: FlowSource | null;
+  // Flows tab (measured): the observation point id; null = default choice.
+  point: number | null;
+  // Measured Sankey: group the remote side by host or by app.
+  remote: FlowRemoteGrouping;
 }
 
 export type TrafficParamsPatch = Partial<TrafficParams>;
@@ -40,6 +48,14 @@ const VIEWS: TrafficView[] = ["top", "devices", "flows"];
 const METRICS: TopMetric[] = ["avg", "max", "bytes"];
 const DIRS: TopDir[] = ["total", "rx", "tx"];
 const FLOWS: FlowDirection[] = ["download", "upload"];
+const FSRCS: FlowSource[] = ["flows", "counters"];
+const REMOTES: FlowRemoteGrouping[] = ["host", "app"];
+
+function pickId(v: string | null): number | null {
+  if (!v || !/^\d+$/.test(v)) return null;
+  const n = Number(v);
+  return n > 0 && Number.isSafeInteger(n) ? n : null;
+}
 
 function pick<T extends string>(v: string | null, allowed: T[], fallback: T): T {
   return v && (allowed as string[]).includes(v) ? (v as T) : fallback;
@@ -62,6 +78,9 @@ export function useTrafficParams(): [TrafficParams, UpdateParams] {
       dir: pick(sp.get("dir"), DIRS, "total"),
       flow: pick(sp.get("flow"), FLOWS, "download"),
       physical: sp.get("physical") !== "0",
+      fsrc: (FSRCS as string[]).includes(sp.get("fsrc") ?? "") ? (sp.get("fsrc") as FlowSource) : null,
+      point: pickId(sp.get("point")),
+      remote: pick(sp.get("remote"), REMOTES, "host"),
     };
   }, [sp]);
 
@@ -81,6 +100,9 @@ export function useTrafficParams(): [TrafficParams, UpdateParams] {
     set("dir", patch.dir, "total");
     set("flow", patch.flow, "download");
     if (patch.physical !== undefined) set("physical", patch.physical ? null : "0");
+    set("fsrc", patch.fsrc);
+    if (patch.point !== undefined) set("point", patch.point === null ? null : String(patch.point));
+    set("remote", patch.remote, "host");
     if (url.href === window.location.href) return;
     if (opts?.push) window.history.pushState(null, "", url);
     else window.history.replaceState(null, "", url);

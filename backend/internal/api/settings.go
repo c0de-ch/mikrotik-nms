@@ -94,6 +94,20 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		"port_stats_1m_days":    true,
 		"port_stats_1h_days":    true,
 		"port_hosts_stale_days": true,
+		// Flow collector (internal/flow): read and clamped by the collector
+		// on its 30 s reconcile, by the retention sweep and by the /flows
+		// handlers per request. MIKROTIK_NMS_FLOW_LISTEN is env-only.
+		"flow_top_n":               true,
+		"flow_top_n_hourly":        true,
+		"flow_max_rows_per_minute": true,
+		"flow_1m_days":             true,
+		"flow_1h_days":             true,
+		"flow_rate_limit_pps":      true,
+		"flow_auto_accept_devices": true,
+		"flow_internal_prefixes":   true,
+		"flow_external_prefixes":   true,
+		"flow_resolve_ptr":         true,
+		"flow_advertise_address":   true,
 		// OPNsense instances (opnsense_* primary + opnsenseN_* extra sites) are
 		// allowed via isOpnsenseSourceKey below rather than listed here, so any
 		// number of sources can be configured. Their _api_key / _api_secret keys

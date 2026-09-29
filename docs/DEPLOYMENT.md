@@ -13,7 +13,9 @@ The stack is two services:
                  │  backend  (Go, chi, :8080)                │
                  │   • SQLite (WAL) at MIKROTIK_NMS_DB_PATH  │
                  │   • RouterOS API pollers                  │
-                 └───────────────────────────────────────────┘
+   exporters ──► │   • flow collector (optional, udp/2055)   │
+   (NetFlow /    └───────────────────────────────────────────┘
+    IPFIX / sFlow)
 ```
 
 The backend owns all state in a single SQLite file. There is **no external database**.
@@ -30,7 +32,7 @@ The backend owns all state in a single SQLite file. There is **no external datab
 | LXC / bare-metal | Debian 13 (trixie) container or VM, run as root. The installer pulls Go, Node.js, and Caddy automatically |
 | Development | Go 1.25+, Node.js 22+ |
 
-Network: the backend must be able to reach your RouterOS devices on the API port (`8728` plaintext, `8729` TLS). MNDP discovery uses UDP `5678`.
+Network: the backend must be able to reach your RouterOS devices on the API port (`8728` plaintext, `8729` TLS). MNDP discovery uses UDP `5678`. The optional **flow collector** works the other way round: routers and firewalls send NetFlow / IPFIX / sFlow to the backend on UDP `2055` (`MIKROTIK_NMS_FLOW_LISTEN`, off by default). The backend binds that port itself — HTTP reverse proxies (Caddy, an ingress) cannot carry UDP — and identifies each exporter by its **source IP**, so nothing between exporter and backend may SNAT it. Device-side setup is in [FLOW-EXPORT.md](FLOW-EXPORT.md).
 
 ---
 
@@ -63,6 +65,7 @@ Open **http://localhost:3000** and create the first admin account (the setup scr
 | `ENCRYPTION_KEY` | `MIKROTIK_NMS_ENCRYPTION_KEY` | Optional (see [§10](#10-security-hardening-checklist)) |
 | `DEFAULT_ROS_USER` | `MIKROTIK_NMS_DEFAULT_ROS_USER` | Defaults to `admin` |
 | `DEFAULT_ROS_PASS` | `MIKROTIK_NMS_DEFAULT_ROS_PASS` | Optional |
+| `FLOW_LISTEN` | `MIKROTIK_NMS_FLOW_LISTEN` | Optional, empty = flow collector off. Set `:2055` **and** uncomment the `- "2055:2055/udp"` port mapping of the backend. Exporters are identified by their UDP source IP. Rootful Docker, default iptables: kept, nothing else to do. Rootful with `"iptables": false` (userland proxy for all traffic): use `network_mode: host` for the backend. Rootless Docker: `network_mode: host` does **not** reach the real host — keep the port mapping and set `DOCKERD_ROOTLESS_ROOTLESSKIT_PORT_DRIVER=slirp4netns` in the rootless daemon's environment (`~/.config/systemd/user/docker.service.d/override.conf`, then restart the user service), or use the pasta network driver with the implicit port driver. Check that the exporter's real IP, not the Docker gateway, appears under `unknown_senders` or `exporters` in `/api/v1/flows/status` |
 
 > The frontend's `NEXT_PUBLIC_API_URL` / `NEXT_PUBLIC_WS_URL` are **baked into the JS bundle at build time**. The default Compose values point at `http://backend:8080` / `ws://backend:8080` (the in-network service name). If you put a reverse proxy in front, change these in `docker-compose.yml` and rebuild the frontend image.
 
@@ -85,7 +88,7 @@ Tags applied: `latest` (default branch only), `vX.Y.Z` + `vX.Y` (semver tags), a
 
 | Service | Container port | Volume | Healthcheck |
 |---|---|---|---|
-| backend | `8080` | `/data` (SQLite DB lives here) | `wget --spider http://localhost:8080/api/v1/health`, every 30s |
+| backend | `8080` (+ `2055/udp` when the flow collector is on) | `/data` (SQLite DB lives here) | `wget --spider http://localhost:8080/api/v1/health`, every 30s |
 | frontend | `3000` | — | none in Compose; `depends_on: backend healthy` |
 
 The backend Dockerfile produces a static `CGO_ENABLED=0` binary on `alpine:3.21`. The frontend Dockerfile builds the Next.js **standalone** output and runs `node server.js`.
@@ -119,6 +122,7 @@ Key facts:
 - Non-secret config (intervals, ports, RouterOS defaults) is in `configmap.yaml`; secrets in `secret.yaml`. Both are mounted via `envFrom`.
 - Persistence: a **1 GiB `ReadWriteOnce` PVC** (`mikrotik-nms-data`) is mounted at `/data`; the DB path is `/data/mikrotik-nms.db`.
 - Liveness and readiness probes hit `GET /api/v1/health`.
+- **Flow collector (optional, off by default).** Uncomment `MIKROTIK_NMS_FLOW_LISTEN: ":2055"` in `configmap.yaml` and apply [`optional/flow-service.yaml`](../deploy/k8s/optional/flow-service.yaml) explicitly (`kubectl apply -f deploy/k8s/` does not recurse into `optional/`). It is a UDP `LoadBalancer` (MetalLB or a cloud LB) with **`externalTrafficPolicy: Local`**: the default `Cluster` policy SNATs every datagram to a node IP and all exporters collapse into one unknown sender. Point exporters at the Service's external IP, port 2055/udp. With a `NodePort` instead, the port is in 30000–32767. Don't use an ingress controller's `udp-services` map (it SNATs too). The backend stays at `replicas: 1`, so there is exactly one collector.
 - The frontend `Deployment` sets `NEXT_PUBLIC_*` as runtime env — but because these are inlined at **build** time, the values only take effect if the image was built with them. To change the browser-facing URLs you must rebuild the frontend image, not just edit the manifest.
 
 ---
@@ -142,7 +146,9 @@ What lands on disk:
 | `/etc/systemd/system/mikrotik-nms-{backend,frontend}.service` | Hardened systemd units |
 | `/etc/caddy/Caddyfile` | Reverse proxy config |
 
-Both services run as the unprivileged `mikrotik-nms` user under a strict systemd hardening matrix (`NoNewPrivileges`, `ProtectSystem=strict`, `SystemCallFilter=@system-service`, etc.). The backend binds `127.0.0.1:8080`, the frontend `127.0.0.1:3000`, and Caddy fronts both.
+Both services run as the unprivileged `mikrotik-nms` user under a strict systemd hardening matrix (`NoNewPrivileges`, `ProtectSystem=strict`, `SystemCallFilter=@system-service`, etc.). The backend binds `127.0.0.1:8080` and, when the flow collector is enabled, `:2055/udp` on all addresses (Caddy only proxies HTTP, so exporters talk to the backend directly); the frontend binds `127.0.0.1:3000`, and Caddy fronts both.
+
+**Flow collector.** The installer writes `# MIKROTIK_NMS_FLOW_LISTEN=:2055` **commented out** into `/etc/mikrotik-nms/env` — on new installs and, if the key is missing, on existing ones — and never changes a line that is already there. To turn it on, uncomment the line, `systemctl restart mikrotik-nms-backend`, and check `ss -lunp | grep ':2055 '`. The LXC's address must be stable (DHCP reservation or static IP), because exporters target a literal IP. Details, including an optional nftables allow-list, are in [`deploy/lxc/README.md`](../deploy/lxc/README.md#flow-collector-netflow--ipfix--sflow).
 
 ### TLS options
 
@@ -235,6 +241,8 @@ The backend is configured **entirely** via `MIKROTIK_NMS_*` environment variable
 | `MIKROTIK_NMS_DEFAULT_ROS_PASS` | Default RouterOS password for new devices | — | No |
 | `MIKROTIK_NMS_DEFAULT_ROS_PORT` | Default RouterOS API port | `8728` | No |
 | `MIKROTIK_NMS_DEFAULT_ROS_TLS` | Default new devices to API-TLS (`8729`) | `false` | No |
+| `MIKROTIK_NMS_FLOW_LISTEN` | Flow collector UDP bind address(es), comma-separated (e.g. `:2055`, `0.0.0.0:2055`, `:2055,:6343`). `:2055` is dual-stack. Invalid entries are logged and skipped. Empty = collector off | — (off) | No |
+| `MIKROTIK_NMS_FLOW_CAPTURE_DIR` | **Development only:** write the first 20 raw datagrams per exporter to this directory (replay them with `go run ./cmd/flowreplay -dir …`) | — (off) | No |
 
 Frontend (build-time only, inlined into the bundle):
 
@@ -245,8 +253,8 @@ Frontend (build-time only, inlined into the bundle):
 
 ### Restart required vs. runtime-tunable
 
-- **Env-var pollers (restart required):** every `MIKROTIK_NMS_*` interval above (`HEALTH`, `TOPOLOGY`, `FIRMWARE`, `NETWORK_HEALTH`, `RETENTION`) is read once at startup. Changing them means editing the env/ConfigMap/Secret and restarting the backend.
-- **Runtime-tunable via the Settings page (no restart):** settings stored in the `app_settings` table are picked up on the next poll cycle. These include the WiFi-tracking interval (`wifi_interval`), the client-discovery interval (`client_discovery_interval`), the Kea DHCP Control Agent URL, the OPNsense lease integration (`opnsense_*`), DNS resolvers for client lookups, the offline threshold (`offline_threshold_seconds`), the heavy info-refresh interval (`info_interval`), the TCN storm threshold (`tcn_storm_threshold`), and the port-monitoring filter/thresholds (`port_monitor_*`). Admins edit them on the **Settings** page; nothing in `.env` controls them.
+- **Env-var pollers (restart required):** every `MIKROTIK_NMS_*` interval above (`HEALTH`, `TOPOLOGY`, `FIRMWARE`, `NETWORK_HEALTH`, `RETENTION`) is read once at startup, and so is the flow collector's `MIKROTIK_NMS_FLOW_LISTEN`. Changing them means editing the env/ConfigMap/Secret and restarting the backend.
+- **Runtime-tunable via the Settings page (no restart):** settings stored in the `app_settings` table are picked up on the next poll cycle. These include the WiFi-tracking interval (`wifi_interval`), the client-discovery interval (`client_discovery_interval`), the Kea DHCP Control Agent URL, the OPNsense lease integration (`opnsense_*`), DNS resolvers for client lookups, the offline threshold (`offline_threshold_seconds`), the heavy info-refresh interval (`info_interval`), the TCN storm threshold (`tcn_storm_threshold`), the port-monitoring filter/thresholds (`port_monitor_*`), the traffic-analytics intervals and retention (`port_stats_*`, `port_hosts_*`), and the flow collector's knobs (`flow_*`: top-N per minute/hour, row cap, retention `flow_1m_days` / `flow_1h_days`, per-exporter rate limit, device auto-accept, internal/external prefixes, PTR lookups, advertised collector address — re-read within 30 s). Admins edit them on the **Settings** page; nothing in `.env` controls them.
 
 ---
 
@@ -288,6 +296,8 @@ kubectl -n mikrotik-nms exec deploy/mikrotik-nms-backend -- \
 
 Copy the resulting file off-box (`docker cp`, `kubectl cp`, `scp`).
 
+Flow history (`flow_1m`, `flow_1h` and their `_meta` tables) lives in the same file and is part of a `.backup`. The JSON full backup on the Settings page (`GET /api/v1/admin/backup`) only carries the flow *configuration* (`flow_exporters`, `flow_exporter_ifaces`, `flow_points`), never the flow facts.
+
 ### Restore
 
 Stop the backend, replace the DB file (and remove stale `-wal` / `-shm` sidecars), then start:
@@ -302,7 +312,7 @@ systemctl start mikrotik-nms-backend
 
 ### Migrations
 
-Schema migrations (`001_init.sql` … `013_loop_event_ack.sql`) are **embedded in the binary** and applied automatically with **goose** (`goose.Up`) on every startup. Upgrading is just: deploy the new image/binary and restart — the backend brings the schema forward. Migrations are forward-only; **take a backup before upgrading** so you can roll back by restoring the file if needed.
+Schema migrations (`001_init.sql` … `022_flows.sql`) are **embedded in the binary** and applied automatically with **goose** (`goose.Up`) on every startup. Upgrading is just: deploy the new image/binary and restart — the backend brings the schema forward. Migrations are forward-only; **take a backup before upgrading** so you can roll back by restoring the file if needed.
 
 ---
 
@@ -325,6 +335,7 @@ MikroTik NMS is read-only monitoring intended for a trusted network. Most of the
 - [ ] **Set `MIKROTIK_NMS_ENCRYPTION_KEY`** (see above). *(HIGH)*
 - [ ] **Terminate TLS at the proxy** and consider `MIKROTIK_NMS_ROS_TLS_VERIFY=true` if your devices present trusted certs (RouterOS self-signed certs are not verified by default). *(MEDIUM)*
 - [ ] **Treat backup files as secrets.** Even with redaction/encryption they contain inventory and bcrypt user hashes; store them encrypted and restrict distribution. *(MEDIUM)*
+- [ ] **If the flow collector is on, restrict UDP 2055 to your exporters** (host firewall, LB `loadBalancerSourceRanges`, or an nftables allow-list — see [`deploy/lxc/README.md`](../deploy/lxc/README.md#flow-collector-netflow--ipfix--sflow)). Flow export is unauthenticated UDP: the collector already drops unknown senders before decoding them and rate-limits each exporter, but an on-link spoofer can still inject false statistics. Per-host flow details (who talked to whom) are visible to **every logged-in user**, like the Clients page. *(LOW)*
 
 **Known residual gap (tracked in [../IMPROVEMENTS.md](../IMPROVEMENTS.md)):** the frontend still keeps tokens in `localStorage` (XSS-readable). The short-lived access token and `SameSite=Strict` httpOnly refresh cookie limit the blast radius; a strict CSP at your proxy and same-origin hosting are the recommended mitigations until tokens move out of JS reach.
 

@@ -12,6 +12,7 @@ A web-based network management system for MikroTik devices. Provides real-time t
 | [ARCHITECTURE.md](ARCHITECTURE.md) | System overview, components, polling model, WebSocket topics, data flow, schema, design tradeoffs |
 | [docs/API.md](docs/API.md) | Complete REST + WebSocket API reference (auth, every endpoint, topic catalog, examples) |
 | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Docker, Kubernetes, LXC/bare-metal, continuous deploy, config reference, backups, hardening |
+| [docs/FLOW-EXPORT.md](docs/FLOW-EXPORT.md) | Turning on flow export (RouterOS IPFIX, OPNsense NetFlow), derived views for switches that can't export, verification |
 | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | Local setup, build/test/lint, and how-tos for adding migrations, endpoints, pollers, WS topics, and pages |
 | [IMPROVEMENTS.md](IMPROVEMENTS.md) | Prioritized review backlog (security, performance, correctness, testing, UX) |
 
@@ -20,6 +21,7 @@ A web-based network management system for MikroTik devices. Provides real-time t
 - **Topology Map** — device/link view built from MNDP neighbor discovery (card-grid layout)
 - **Device Discovery** — automatic scanning via MNDP (UDP 5678)
 - **Traffic Monitoring** — real-time interface bandwidth graphs with Recharts
+- **Traffic Flows** — who talks to whom: an optional built-in NetFlow v5/v9 / IPFIX / sFlow collector turns router and firewall flow exports into **measured** per-host, per-conversation and per-app views (top talkers, Sankey, "Top conversations" on a port) next to the **estimated** view derived from port counters + topology; ports on switches that cannot export flows get *derived* views from the neighbouring exporter, with coverage against the port counters
 - **Firmware Management** — view and upgrade RouterOS across your fleet
 - **Network Health** — bridge/STP poller with L2 loop detection (`stp_disabled`, `tcn_storm`, `loop_detected`, `mac_flap`, `bpdu_on_edge`) plus per-interface port monitoring (`port_disabled`, `port_link_down`, `port_link_flap`)
 - **WiFi Tracking** — per-client AP positions, roam history and live join/leave events from CAPsMAN/WiFi logs
@@ -104,6 +106,7 @@ The backend is configured entirely via `MIKROTIK_NMS_*` environment variables. T
 | `MIKROTIK_NMS_DEFAULT_ROS_PASS` | No | — | Default RouterOS password for discovered devices |
 | `MIKROTIK_NMS_DEFAULT_ROS_PORT` | No | `8728` | Default RouterOS API port |
 | `MIKROTIK_NMS_DEFAULT_ROS_TLS` | No | `false` | Default to TLS (`8729`) for new devices |
+| `MIKROTIK_NMS_FLOW_LISTEN` | No | *(empty = off)* | UDP address(es) for the flow collector, e.g. `:2055` (comma-separated for several). Exporters must reach this port; see [docs/FLOW-EXPORT.md](docs/FLOW-EXPORT.md). Restart to change |
 
 WiFi tracking and client discovery intervals, the Kea DHCP Control Agent URL, and DNS resolvers for client lookups are configured via the **Settings** page in the UI (stored in the `app_settings` table) rather than env vars, so they can be changed without a restart.
 
@@ -148,6 +151,8 @@ deploy/k8s/
   deployment.yaml
   service.yaml
   ingress.yaml
+  optional/
+    flow-service.yaml   # UDP 2055 for the flow collector, applied explicitly
 ```
 
 Apply them in order:
@@ -164,6 +169,8 @@ Before applying:
 - The deployment pulls images from `ghcr.io/c0de-ch/mikrotik-nms/{backend,frontend}:latest` (published by the `Build & Push Docker Images` workflow). If you fork, change those references to your fork's GHCR path.
 
 The backend `Deployment` is fixed at `replicas: 1` because SQLite does not support multiple writers. Liveness/readiness probes hit `/api/v1/health` and a 1 GiB PVC backs `/data`.
+
+The flow collector is off by default. To enable it, uncomment `MIKROTIK_NMS_FLOW_LISTEN` in `configmap.yaml` and run `kubectl apply -f deploy/k8s/optional/flow-service.yaml`: a UDP `LoadBalancer` with `externalTrafficPolicy: Local`, so exporters keep their source IP (the collector's key for identifying them).
 
 ## Container Images & GitHub Workflow
 
@@ -240,6 +247,14 @@ RouterOS v7.4+ supports running Docker containers directly on MikroTik devices v
 
 The backend API will be available at `http://172.17.0.2:8080`. You can add NAT rules or a web proxy to expose it on the router's management IP.
 
+**Optional: flow collector in the container.** Add `/container/envs/add name=nms-env key=MIKROTIK_NMS_FLOW_LISTEN value=":2055"` and forward the UDP port to the container with a plain dst-nat (`<router-IP>` = the address other exporters send to; the `dst-address` match keeps the rule from grabbing UDP/2055 traffic that only passes through the router):
+
+```routeros
+/ip/firewall/nat add chain=dstnat dst-address=<router-IP> protocol=udp dst-port=2055 action=dst-nat to-addresses=172.17.0.2 to-ports=2055
+```
+
+Do **not** masquerade traffic towards the container: the collector identifies each exporter by its UDP source address, and srcnat would make every exporter look like `172.17.0.1`. If the host router exports its own flows, point its target at `172.17.0.2` directly and pin `src-address=` to the address the NMS manages it by.
+
 > **Note:** For the frontend, it's recommended to run it on a separate host or VM since Node.js containers need more resources. Alternatively, build the frontend as a static export and serve it from any web server.
 
 ## Tech Stack
@@ -251,6 +266,7 @@ The backend API will be available at `http://172.17.0.2:8080`. You can add NAT r
 | Auth | JWT (access + refresh), admin/viewer roles |
 | Real-time | WebSocket |
 | Discovery | MNDP (UDP 5678) |
+| Flow export | NetFlow v5/v9, IPFIX, sFlow v5 (UDP, default port 2055) via the [goflow2](https://github.com/netsampler/goflow2) decoders behind bounds-checking guards |
 | Containers | Docker, Docker Compose |
 | Orchestration | Kubernetes |
 

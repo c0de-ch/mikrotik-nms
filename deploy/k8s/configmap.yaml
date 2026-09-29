@@ -15,3 +15,8 @@ data:
   MIKROTIK_NMS_DEFAULT_ROS_USER: "admin"
   MIKROTIK_NMS_DEFAULT_ROS_PORT: "8728"
   MIKROTIK_NMS_DEFAULT_ROS_TLS: "false"
+  # Flow collector (NetFlow v5/v9, IPFIX, sFlow over UDP) — off unless set.
+  # To enable, uncomment and also apply optional/flow-service.yaml (a UDP
+  # LoadBalancer with externalTrafficPolicy: Local, so exporters keep their
+  # source IP), then point exporters at its external IP, port 2055/udp.
+  # MIKROTIK_NMS_FLOW_LISTEN: ":2055"

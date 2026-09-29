@@ -423,6 +423,10 @@ type Coverage struct {
 	Native  time.Duration  // bucket length of the table
 	Present map[int64]bool // covered bucket starts, Unix seconds
 	Start   time.Time      // nothing is covered before it; may fall inside the first covered bucket
+	// Secs optionally overrides how many seconds of a present bucket were
+	// covered (e.g. flow_1h_meta.minutes·60 for a partially covered hour);
+	// buckets without an entry count in full.
+	Secs map[int64]float64
 }
 
 // NewCoverage builds a Coverage from the present buckets (see
@@ -444,6 +448,9 @@ func (c *Coverage) Seconds(b time.Time) float64 {
 	secs := c.Native.Seconds()
 	if c.Start.After(b) {
 		secs -= c.Start.Sub(b).Seconds()
+	}
+	if o, ok := c.Secs[b.Unix()]; ok {
+		secs = min(secs, o)
 	}
 	return max(secs, 0)
 }

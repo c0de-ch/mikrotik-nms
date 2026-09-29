@@ -12,6 +12,7 @@ import (
 	"github.com/go-chi/cors"
 	"github.com/mikrotik-nms/backend/internal/auth"
 	"github.com/mikrotik-nms/backend/internal/config"
+	"github.com/mikrotik-nms/backend/internal/flow"
 	"github.com/mikrotik-nms/backend/internal/mailer"
 	"github.com/mikrotik-nms/backend/internal/poller"
 	"github.com/mikrotik-nms/backend/internal/resolver"
@@ -33,16 +34,38 @@ type Server struct {
 	// endpoints. May be nil (tests); handlers then serve an empty snapshot.
 	portStats portStatsSource
 
+	// flows is the flow collector behind the /flows/* endpoints. nil = not
+	// wired (tests); handlers then serve DB state only.
+	flows flowSource
+
+	// flowCache holds aggregated flow rows of recent /flows/* queries;
+	// cleared by every flow admin write (see flowChanged).
+	flowCache flowAggCache
+
 	// topoMu guards topo, the role graph + lookups the traffic endpoints
 	// share, rebuilt at most every trafficTopoTTL (see trafficTopology).
 	topoMu sync.Mutex
 	topo   *trafficTopo
 }
 
-func NewRouter(db *sql.DB, hub *ws.Hub, cfg *config.Config, pool *routeros.Pool, m mailer.Sender, portStats *poller.PortStatsCollector) http.Handler {
+// flowSource is the part of *flow.Collector the flow handlers read; tests
+// substitute a fake. nil = collector not wired.
+type flowSource interface {
+	Enabled() bool
+	Status() flow.Status
+	FlushedThrough() time.Time
+	RolledThrough() time.Time
+	Reload()
+}
+
+func NewRouter(db *sql.DB, hub *ws.Hub, cfg *config.Config, pool *routeros.Pool, m mailer.Sender,
+	portStats *poller.PortStatsCollector, flows *flow.Collector) http.Handler {
 	s := &Server{db: db, hub: hub, cfg: cfg, pool: pool, mailer: m, resolver: resolver.New(db)}
 	if portStats != nil {
 		s.portStats = portStats
+	}
+	if flows != nil { // avoid a typed-nil interface
+		s.flows = flows
 	}
 
 	r := chi.NewRouter()
@@ -143,6 +166,10 @@ func NewRouter(db *sql.DB, hub *ws.Hub, cfg *config.Config, pool *routeros.Pool,
 
 			// Traffic
 			s.mountTrafficRoutes(r)
+
+			// Flow export (NetFlow / IPFIX / sFlow): reads for every user,
+			// configuration writes admin-only.
+			s.mountFlowRoutes(r)
 
 			// Firmware
 			r.Get("/firmware", s.handleListFirmware)

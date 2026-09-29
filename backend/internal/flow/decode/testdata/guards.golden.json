@@ -1,0 +1,80 @@
+[
+  {
+    "file": "ipfix_zero_field_template.hex",
+    "kind": "ipfix",
+    "error": "",
+    "rejected": false,
+    "rebooted": false,
+    "export_time": "2026-09-21T14:13:20Z",
+    "clock_skew_ms": 500,
+    "flows": [],
+    "counters": 0,
+    "learned": [],
+    "templates": 0,
+    "pending_sets": 1,
+    "stats": {
+      "datagrams": 1,
+      "decode_errors": 0,
+      "flows": 0,
+      "panics": 0,
+      "pending_dropped": 0,
+      "reboots": 0,
+      "rejected": 0,
+      "replayed": 0,
+      "seq_lost": 0,
+      "template_misses": 1
+    }
+  },
+  {
+    "file": "ipfix_degenerate_template.hex",
+    "kind": "ipfix",
+    "error": "IPFIX IPFIX [version:10 type:IPFIX TemplateSet obsDomainId:0: templateId:2] decode: template has no decodable width",
+    "rejected": false,
+    "rebooted": false,
+    "export_time": "2026-09-21T14:13:20Z",
+    "clock_skew_ms": 500,
+    "flows": [],
+    "counters": 0,
+    "learned": [],
+    "templates": 0,
+    "pending_sets": 1,
+    "stats": {
+      "datagrams": 2,
+      "decode_errors": 1,
+      "flows": 0,
+      "panics": 0,
+      "pending_dropped": 0,
+      "reboots": 0,
+      "rejected": 0,
+      "replayed": 0,
+      "seq_lost": 0,
+      "template_misses": 1
+    }
+  },
+  {
+    "file": "sflow_expanded_huge_count.hex",
+    "kind": "sflow5",
+    "error": "decode: sflow sample record count too large",
+    "rejected": true,
+    "rebooted": false,
+    "export_time": "",
+    "clock_skew_ms": 0,
+    "flows": [],
+    "counters": 0,
+    "learned": [],
+    "templates": 0,
+    "pending_sets": 1,
+    "stats": {
+      "datagrams": 3,
+      "decode_errors": 1,
+      "flows": 0,
+      "panics": 0,
+      "pending_dropped": 0,
+      "reboots": 0,
+      "rejected": 1,
+      "replayed": 0,
+      "seq_lost": 0,
+      "template_misses": 1
+    }
+  }
+]

@@ -537,17 +537,29 @@ func (s *Server) handleTrafficPath(w http.ResponseWriter, r *http.Request) {
 
 type trafficSankeyResponse struct {
 	topology.Sankey
-	Range string     `json:"range"`
-	From  *time.Time `json:"from"` // null for live
-	To    *time.Time `json:"to"`
+	Source string     `json:"source"` // "counters" (estimated); source=flows is flowSankeyResponse
+	Range  string     `json:"range"`
+	From   *time.Time `json:"from"` // null for live
+	To     *time.Time `json:"to"`
 }
 
 // handleTrafficSankey returns the estimated source → sink flow forest for one
 // direction. Query: range (default 1h), dir = download|upload (default
 // download), device (optional subtree root). live uses the snapshot rates,
-// other ranges the average over the effective window.
+// other ranges the average over the effective window. source=flows serves
+// the measured Sankey of one flow observation point instead
+// (handleFlowSankey); source "" / "counters" is this estimated graph.
 func (s *Server) handleTrafficSankey(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
+	switch q.Get("source") {
+	case "", "counters":
+	case "flows":
+		s.handleFlowSankey(w, r)
+		return
+	default:
+		writeError(w, http.StatusBadRequest, "invalid source")
+		return
+	}
 	rng, ok := parseTrafficRange(q.Get("range"))
 	if !ok {
 		writeError(w, http.StatusBadRequest, "invalid range")
@@ -567,7 +579,7 @@ func (s *Server) handleTrafficSankey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := trafficSankeyResponse{Range: rng.key}
+	resp := trafficSankeyResponse{Source: "counters", Range: rng.key}
 	var rates topology.RateFunc
 	if rng.key == rangeLive {
 		rates = liveRates(indexSnapshot(s.portSnapshot()))

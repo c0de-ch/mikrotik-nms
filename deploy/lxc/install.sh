@@ -255,6 +255,10 @@ MIKROTIK_NMS_DEFAULT_ROS_PASS=
 MIKROTIK_NMS_DEFAULT_ROS_PORT=8728
 MIKROTIK_NMS_DEFAULT_ROS_TLS=false
 
+# --- flow collector (NetFlow v5/v9, IPFIX, sFlow over UDP) ---
+# Uncomment to accept flow exports (exporters must reach this host on udp/2055):
+# MIKROTIK_NMS_FLOW_LISTEN=:2055
+
 # --- frontend (Next.js standalone) ---
 PORT=3000
 HOSTNAME=127.0.0.1
@@ -278,6 +282,15 @@ EOF
 else
     log "$ENV_FILE already exists, leaving it untouched"
     log "  (delete it if you want install.sh to regenerate)"
+fi
+
+# Make the flow-collector key discoverable on EXISTING installs too, but never
+# enable it: UDP flow input is unauthenticated, so the operator opts in by
+# uncommenting the line. Any existing line (active, empty or commented) is
+# left exactly as it is.
+if ! grep -Eq '^[#[:space:]]*MIKROTIK_NMS_FLOW_LISTEN=' "$ENV_FILE"; then
+    printf '\n# --- flow collector (NetFlow v5/v9, IPFIX, sFlow over UDP) ---\n# Uncomment to accept flow exports (exporters must reach this host on udp/2055):\n# MIKROTIK_NMS_FLOW_LISTEN=:2055\n' >> "$ENV_FILE"
+    log "added commented MIKROTIK_NMS_FLOW_LISTEN to $ENV_FILE (flow collector stays off until uncommented)"
 fi
 
 # Source the file so we can use its values during build.
@@ -418,6 +431,7 @@ cat <<EOF
   Backend    : 127.0.0.1:8080  (systemd: mikrotik-nms-backend)
   Frontend   : 127.0.0.1:3000  (systemd: mikrotik-nms-frontend)
   Reverse pr.: caddy           (config: /etc/caddy/Caddyfile)
+  Flow in    : ${MIKROTIK_NMS_FLOW_LISTEN:-off} (udp, MIKROTIK_NMS_FLOW_LISTEN)
 
   Config     : $ENV_FILE
   Database   : $DATA_DIR/mikrotik-nms.db
