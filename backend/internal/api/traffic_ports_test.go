@@ -195,6 +195,7 @@ func TestTrafficRoutesStaticBeforeParam(t *testing.T) {
 		"/traffic/path?device=r":                      `"hops"`,
 		"/traffic/sankey":                             `"estimated"`,
 		"/traffic/summary":                            `"device_id"`,
+		"/traffic/links":                              `"source":"snapshot"`,
 		"/traffic/r/" + url.PathEscape("eth1-wan"):    `[]`,
 		"/traffic/ports/history?device=r&iface=a%2Fb": `"iface":"a/b"`,
 	} {
