@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"math"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -18,13 +19,16 @@ import (
 // NetworkHealthPoller tracks bridge / STP state and surfaces L2 loop signals.
 //
 // Per cycle it does, for each online device:
-//  1. /interface/bridge/print + monitor → bridge state
-//  2. /interface/bridge/port/print + monitor → port roles
+//  1. /interface/bridge/print → the bridges (proplisted)
+//  2. /interface/bridge/port/print → ports with their STP runtime state on
+//     RouterOS >= 7.24, else one batched (or, last resort, per-port) monitor;
+//     one batched /interface/bridge/monitor for the bridge summary
+//     (routeros.ReadBridgeState learns what each device accepts)
 //  3. /log/print filtered to bridge,info → loop / mac flap events
 //
 // Anomaly detection writes rows to loop_events:
 //   - stp_disabled: bridge has STP off and >1 non-edge port
-//   - tcn_storm:    topology-changes counter rose by >= tcn_storm_threshold in one cycle
+//   - tcn_storm:    the ports' topology-changes counters rose by >= tcn_storm_threshold per minute
 //   - loop_detected / mac_flap / bpdu_on_edge: directly from parsed bridge log
 type NetworkHealthPoller struct {
 	db       *sql.DB
@@ -32,8 +36,17 @@ type NetworkHealthPoller struct {
 	hub      *ws.Hub
 	interval time.Duration
 
-	// previous topology_changes per bridge — used to compute deltas.
-	prevTC map[string]int // key = device_id|bridge_name
+	// previous per-port topology_changes (key device|bridge|interface) and the
+	// time of each bridge's previous sample: TCN deltas are summed per bridge
+	// and normalised per elapsed minute, so a slower per-device cadence does
+	// not read as a storm.
+	prevPortTC map[string]int
+	prevTCAt   map[string]time.Time // key = device_id|bridge_name
+	// per-device RouterOS capabilities learned by the bridge reader (which
+	// print / monitor forms give STP state), and the path last logged so a
+	// change is reported once.
+	bridgeCaps map[string]routeros.BridgeCaps
+	bridgePath map[string]string
 	// bridges ever observed running STP — used to suppress false stp_disabled
 	// when RouterOS 7.23 intermittently reports an rstp bridge as protocol=none.
 	bridgeSTPSeen map[string]bool // key = device_id|bridge_name
@@ -123,24 +136,99 @@ func nonBridgeInterfaceNames(db *sql.DB, deviceID string) map[string]bool {
 	return set
 }
 
-// tcnStormSeverity decides whether a bridge's per-cycle topology-change delta is a
-// TCN storm and at what severity. Topology-change notifications are an STP concept,
-// so only an STP-running bridge can storm — a non-STP "bridge" (incl. any interface
-// mis-reported as a bridge) never fires, which is the definitive guard against the
-// false positives. Returns the delta for the event message.
-func tcnStormSeverity(b routeros.BridgeInfo, prev, threshold int) (severity string, delta int, fire bool) {
+// tcnStormSeverity decides whether a bridge's topology-change rate (the ports'
+// counter deltas per minute, see bridgeTCNDelta) is a TCN storm and at what
+// severity. Topology-change notifications are an STP concept, so only an
+// STP-running bridge can storm — a non-STP "bridge" (incl. any interface
+// mis-reported as a bridge) never fires, which is the definitive guard against
+// the false positives.
+func tcnStormSeverity(b routeros.BridgeInfo, deltaPerMinute, threshold int) (severity string, fire bool) {
 	if !b.STPEnabled() {
-		return "", 0, false
+		return "", false
 	}
-	delta = b.TopologyChanges - prev
-	if delta < threshold {
-		return "", delta, false
+	if deltaPerMinute < threshold {
+		return "", false
 	}
-	if delta >= tcnStormCriticalDelta {
-		return "critical", delta, true
+	if deltaPerMinute >= tcnStormCriticalDelta {
+		return "critical", true
 	}
-	return "warn", delta, true
+	return "warn", true
 }
+
+// normalizeTCNDelta converts a raw topology-change delta into a per-minute
+// rate, so tcn_storm_threshold keeps its meaning at any poll cadence. Gaps
+// up to a minute count as one minute: a fast cycle must not inflate a
+// handful of changes into a storm.
+func normalizeTCNDelta(delta int, elapsed time.Duration) int {
+	if delta <= 0 {
+		return 0
+	}
+	if minutes := elapsed.Minutes(); minutes > 1 {
+		return int(math.Round(float64(delta) / minutes))
+	}
+	return delta
+}
+
+// bridgeTCNDelta sums the member ports' topology-changes deltas since the
+// previous cycle and normalises the sum per elapsed minute. ok is false on a
+// bridge's first sample (nothing to compare) and when no port carries a
+// counter (RouterOS without the field). A port seen for the first time
+// contributes nothing, so a port joining with a large counter is not a storm;
+// neither is a counter that went backwards (a reboot).
+func (n *NetworkHealthPoller) bridgeTCNDelta(key string, ports []routeros.BridgePortInfo, now time.Time) (perMinute int, ok bool) {
+	sum, compared := 0, false
+	for i := range ports {
+		p := &ports[i]
+		if !p.HasTopologyChanges {
+			continue
+		}
+		pk := key + "|" + p.Interface
+		prev, had := n.prevPortTC[pk]
+		n.prevPortTC[pk] = p.TopologyChanges
+		if !had {
+			continue
+		}
+		compared = true
+		if p.TopologyChanges > prev {
+			sum += p.TopologyChanges - prev
+		}
+	}
+	last, hadLast := n.prevTCAt[key]
+	n.prevTCAt[key] = now
+	if !hadLast || !compared {
+		return 0, false
+	}
+	return normalizeTCNDelta(sum, now.Sub(last)), true
+}
+
+// pruneTCState forgets the TCN samples and reader capabilities of devices
+// that no longer exist.
+func (n *NetworkHealthPoller) pruneTCState(active map[string]struct{}) {
+	deviceOf := func(key string) string {
+		if i := strings.IndexByte(key, '|'); i >= 0 {
+			return key[:i]
+		}
+		return key
+	}
+	for k := range n.prevPortTC {
+		if _, ok := active[deviceOf(k)]; !ok {
+			delete(n.prevPortTC, k)
+		}
+	}
+	for k := range n.prevTCAt {
+		if _, ok := active[deviceOf(k)]; !ok {
+			delete(n.prevTCAt, k)
+		}
+	}
+	for id := range n.bridgeCaps {
+		if _, ok := active[id]; !ok {
+			delete(n.bridgeCaps, id)
+			delete(n.bridgePath, id)
+		}
+	}
+}
+
+func ptr[T any](v T) *T { return &v }
 
 func NewNetworkHealthPoller(db *sql.DB, pool *routeros.Pool, hub *ws.Hub, interval time.Duration) *NetworkHealthPoller {
 	if interval <= 0 {
@@ -151,7 +239,10 @@ func NewNetworkHealthPoller(db *sql.DB, pool *routeros.Pool, hub *ws.Hub, interv
 		pool:          pool,
 		hub:           hub,
 		interval:      interval,
-		prevTC:        make(map[string]int),
+		prevPortTC:    make(map[string]int),
+		prevTCAt:      make(map[string]time.Time),
+		bridgeCaps:    make(map[string]routeros.BridgeCaps),
+		bridgePath:    make(map[string]string),
 		bridgeSTPSeen: make(map[string]bool),
 		seenLogs:      make(map[string]map[string]time.Time),
 		ports:         newPortMonitor(),
@@ -223,6 +314,7 @@ func (n *NetworkHealthPoller) poll(ctx context.Context) {
 		activeDevices[dev.ID] = struct{}{}
 	}
 	n.ports.pruneDevices(activeDevices)
+	n.pruneTCState(activeDevices)
 
 	for _, dev := range devices {
 		select {
@@ -247,19 +339,26 @@ func (n *NetworkHealthPoller) poll(ctx context.Context) {
 				}
 			}()
 
-			bridges, err := routeros.GetBridges(client)
+			bridges, err := routeros.ListBridges(client)
 			if err != nil {
 				return
 			}
 			// Keep only genuine bridges — some RouterOS versions report
 			// non-bridge interfaces via /interface/bridge/print, which would
-			// otherwise be tracked as bridges and drive false TCN storms. Use
-			// cached interface types (a live fetch can fail on 7.23).
+			// otherwise be tracked as bridges, monitored, and drive false TCN
+			// storms. Use cached interface types (a live fetch can fail on 7.23).
 			bridges = filterRealBridges(bridges, nonBridgeInterfaceNames(n.db, dev.ID))
-			ports, err := routeros.GetBridgePorts(client)
+			state, err := routeros.ReadBridgeState(client, bridges, n.bridgeCaps[dev.ID], dev.ROSVersion, cycleStart)
 			if err != nil {
-				ports = nil
+				return
 			}
+			n.bridgeCaps[dev.ID] = state.Caps
+			if prev := n.bridgePath[dev.ID]; prev != state.Path {
+				n.bridgePath[dev.ID] = state.Path
+				log.Printf("network health: %s: STP state via %s (%d commands for %d bridges, %d ports)",
+					nonempty(dev.Identity, dev.Address), state.Path, 1+state.Commands, len(state.Bridges), len(state.Ports))
+			}
+			bridges, ports := state.Bridges, state.Ports
 
 			// Group ports by bridge for port_count and stp_disabled detection.
 			portsByBridge := make(map[string][]routeros.BridgePortInfo)
@@ -282,12 +381,14 @@ func (n *NetworkHealthPoller) poll(ctx context.Context) {
 					TopologyChanges:    b.TopologyChanges,
 					LastTopologyChange: b.LastTopologyChange,
 					PortCount:          len(portsByBridge[b.Name]),
+					STPSource:          state.Path,
 				}
 				_ = queries.UpsertBridgeStatus(n.db, bs)
 
 				key := dev.ID + "|" + b.Name
-				prev, hadPrev := n.prevTC[key]
-				n.prevTC[key] = b.TopologyChanges
+				// The bridge monitor has no topology-changes field: the TCN
+				// rate is the sum of the ports' counter deltas, per minute.
+				tcnDelta, hadPrev := n.bridgeTCNDelta(key, portsByBridge[b.Name], cycleStart)
 
 				// Remember bridges that run STP so a later flickering "none" read
 				// (RouterOS 7.23) doesn't produce a false stp_disabled warning.
@@ -308,15 +409,15 @@ func (n *NetworkHealthPoller) poll(ctx context.Context) {
 					}
 				}
 
-				// tcn_storm: topology changes rising fast within one cycle. Only
-				// STP-running bridges can storm (see tcnStormSeverity); the
-				// threshold is runtime-tunable and escalates to critical past a
-				// hard ceiling regardless of the configured warn threshold.
+				// tcn_storm: topology changes rising fast. Only STP-running
+				// bridges can storm (see tcnStormSeverity); the threshold is
+				// runtime-tunable, per minute, and escalates to critical past
+				// a hard ceiling regardless of the configured warn threshold.
 				if hadPrev {
-					if severity, delta, fire := tcnStormSeverity(b, prev, tcnThreshold); fire {
+					if severity, fire := tcnStormSeverity(b, tcnDelta, tcnThreshold); fire {
 						if n.recordEvent(dev.ID, "tcn_storm", severity, b.Name, "", "",
-							fmt.Sprintf("bridge %q topology-changes rose by %d in last poll (now %d)",
-								b.Name, delta, b.TopologyChanges)) {
+							fmt.Sprintf("bridge %q topology-changes rose by %d/min since last poll (now %d)",
+								b.Name, tcnDelta, b.TopologyChanges)) {
 							evCount++
 						}
 					}
@@ -335,6 +436,25 @@ func (n *NetworkHealthPoller) poll(ctx context.Context) {
 					PointToPoint:     p.PointToPoint,
 					PathCost:         p.PathCost,
 					DesignatedBridge: p.DesignatedBridge,
+					Inactive:         ptr(p.Inactive),
+					Disabled:         ptr(p.Disabled),
+					HWOffloadGroup:   p.HWOffloadGroup,
+					PortState:        p.PortState,
+					EdgeConfig:       p.EdgeConfig,
+				}
+				// Unknown stays NULL: a device that reports no runtime state
+				// or counter must not look like "not forwarding, 0 changes".
+				if p.HasRuntime {
+					ps.Forwarding, ps.Learning = ptr(p.Forwarding), ptr(p.Learning)
+				}
+				if p.HasTopologyChanges {
+					ps.TopologyChanges = ptr(p.TopologyChanges)
+				}
+				if p.HWOffloadReported {
+					ps.HWOffload = ptr(p.HWOffload)
+				}
+				if p.PVID > 0 {
+					ps.PVID = ptr(p.PVID)
 				}
 				_ = queries.UpsertBridgePortStatus(n.db, ps)
 			}
