@@ -128,6 +128,8 @@ user), **admin** (admin role required).
 | GET | `/devices/{id}` | any | Get one device. `404` if absent. |
 | GET | `/devices/{id}/interfaces` | any | Cached interface list for the device. |
 | GET | `/devices/{id}/neighbors` | any | Cached `/ip/neighbor` neighbors for the device. |
+| GET | `/devices/{id}/ports` | any | The device's faceplate ports (ethernet, SFP, QSFP, combo) with their rates from the port-stats snapshot — **no device call** (the map's port grid). `{device_id, source: "snapshot", sampled_at, age_seconds, interval_seconds, ready, ports: [{name, type, running, disabled, comment, rx_bps, tx_bps}]}`. Inventory order, then any port the snapshot has but the hourly inventory does not yet; running/disabled come from the snapshot when it has the port. `sampled_at`/`age_seconds` are `null` (and rates 0) while the snapshot has none of the device's interfaces. `404` for an unknown device. |
+| GET | `/devices/{id}/live-limits` | any | What a per-port live stream (WS `traffic.<id>.<iface>`) of the device may do for the caller: `{device_id, class, profile, min_period_seconds, max_ifaces, leases, admin_only, snapshot_interval_seconds, allowed, reason?, message?}`. `class` is the one the caps follow (`C1` on the `light` profile). `allowed` covers role, an admin pause and the polling mode (`reason`: `admin_only`, `polling_paused`, `pollers_off`); the interface and viewer ceilings depend on other viewers and are decided on subscribe. Database only. See [Live streams](#live-streams). |
 | GET | `/devices/{id}/audit` | any | Operator actions on the device (pauses, profile and class changes), newest first. Query `limit` (default 50, max 500). `[{id, at, user_id, username, action, device_id, detail}]`. |
 | POST | `/devices` | admin | Add a device. Tests the RouterOS connection first; `400` if unreachable. |
 | PUT | `/devices/{id}` | admin | Update device fields (only non-empty fields override). |
@@ -185,7 +187,7 @@ Deep-scan results carry a `source` of `neighbor`, `port-scan`, or `both`.
 | Method | Path | Role | Description |
 |---|---|---|---|
 | GET | `/traffic/summary` | any | One rx/tx bps figure per device in the port-stats snapshot (`[{device_id, rx_bps, tx_bps}]`): its first bridge, else `ether1`, else its first interface. No device calls. |
-| GET | `/traffic/links` | any | One-shot per-link throughput for the network map's first paint (`{links: [...]}`); the continuous feed is WS `topology.traffic`. |
+| GET | `/traffic/links` | any | Per-link throughput for the network map's first paint, derived from the port-stats snapshot — **no device call**; the continuous feed is WS `topology.traffic`. `{source: "snapshot", sampled_at, age_seconds, interval_seconds, ready, links: [{id, source, target, rx_bps, tx_bps, device_id, iface}]}`: `id` is the `/topology` edge id (an up link, an egress edge `up:<dev>:<iface>:<gw>`, or a gateway's FDB edge `gwhost:<ip>`), rates are in `source`'s frame (rx enters `source`), and `device_id`/`iface` name the end whose counters were read — the fresher end, on a tie the online one, then the one on the shorter counter cadence, then the A end. A bridge interface is never read for a link (it counts the device's whole bridged traffic). `age_seconds` is the data's age when the response was built. |
 | GET | `/traffic/ports/latest` | any | Fleet-wide port snapshot (`{ts, interval_seconds, ready, ports}`), each port enriched with `device_name` and `role`. `ts` is `null` before the collector's first cycle. |
 | GET | `/traffic/ports/top` | any | Top talkers. Query `range`, `metric` (`avg`\|`max`\|`bytes`, default `avg`), `dir` (`total`\|`rx`\|`tx`, default `total`), `limit` (1–200, default 20), `physical` (default on: drops only `virtual` and `vpn`, so every physical port that carried traffic — `peer` links and bond members included — is listed; `0`/`false` also lists virtual and VPN interfaces), `device` (rank every known interface of that device, idle ones as zeros), `sparkline` (default on; `0` skips). |
 | GET | `/traffic/ports/roles` | any | Inferred device tree and every port's role: `{anchored, devices: [{device_id, name, parent_id, parent_iface, uplink_iface, depth, anchor}], roles: [{device_id, device_name, iface, role, neighbor_*, client_count, mac_count, gateway_ip, upstream_node, master, behind}]}`. `master` (optional) names the bond a member port belongs to. |
@@ -248,7 +250,7 @@ only in part (coverage starting mid-step) is divided by its covered seconds.
 
 | `range` | Window | Source | History step (points) | Top sparkline step |
 |---|---|---|---|---|
-| `live` | 5 min (history) / now | `traffic_samples` (history, 1 s) / collector snapshot (top, sankey) | 1 s, raw | last 30 min of 1m @ 60 s |
+| `live` | 5 min (history) / now | `traffic_samples` (history: the stream's samples, 1 s or the class period) / collector snapshot (top, sankey) | stream period, raw | last 30 min of 1m @ 60 s |
 | `15m` | 15 min | `port_stats_1m` | 60 s (15) | 60 s |
 | `1h` | 1 h | `port_stats_1m` | 60 s (60) | 120 s |
 | `6h` | 6 h | `port_stats_1m` | 60 s (360) | 720 s |
@@ -262,7 +264,8 @@ true poll-interval peaks, so they can exceed any plotted point. The collector
 spreads each poll interval's bytes over the minutes it overlaps, so 1-minute
 points stay flat for a steady rate at any `port_stats_interval`.
 
-Live per-interface streaming (1 s) and the fleet-wide port snapshot are
+Live per-interface streaming (1 s on capable devices, capped by class — see
+[Live streams](#live-streams)) and the fleet-wide port snapshot are
 delivered over WebSocket — see [§4](#4-websocket-api).
 
 ### Flows
@@ -753,7 +756,8 @@ subscriptions per topic and only forwards messages for topics you subscribed to
 ```
 
 `action` must be `subscribe` or `unsubscribe`; an empty `topic` is ignored. The
-server pings every 30s and limits inbound frames to 4096 bytes.
+server pings every 30s and limits inbound frames to 4096 bytes. A client's
+subscribes and unsubscribes are applied in the order it sent them.
 
 ### Server message envelope
 
@@ -770,15 +774,28 @@ Every broadcast is a `Message` ([`ws/hub.go`](../backend/internal/ws/hub.go)):
 `timestamp` is the RFC 3339 publish time. Route on `topic` and read the payload
 from `data`; match the incoming `msg.topic` against the topic you subscribed to.
 
+**Control frames.** A topic whose server-side owner vets subscribers (today
+only the per-port live stream) answers each subscribe with a frame that has a
+`type` — data frames never carry one:
+
+```json
+{ "topic": "traffic.<uuid>.ether1", "type": "subscribe.ack",   "timestamp": "…", "data": { "period_seconds": 15, "class": "C1", … } }
+{ "topic": "traffic.<uuid>.ether1", "type": "subscribe.error", "timestamp": "…", "data": { "code": "admin_only", "error": "Live view is limited on weak devices — showing 15 s snapshot data", "fallback": "traffic.ports", … } }
+```
+
+After a `subscribe.error` the server has dropped the subscription. A later
+`subscribe.ack` on the same topic (new period after a class change) replaces
+the earlier one.
+
 ### Topic catalog
 
 | Topic pattern | Payload | Description |
 |---|---|---|
 | `device.health` | object | Device liveness/info updates from the health and info pollers. |
 | `topology.update` | graph object | Full topology graph (`nodes` + `edges`); the one non-`map` payload. |
-| `traffic.<deviceID>.<iface>` | object | 1s rx/tx samples; streaming starts on subscribe, stops on last unsubscribe. |
+| `traffic.<deviceID>.<iface>` | object | Live `/interface/monitor-traffic` samples of one interface `{device_id, interface_name, rx_bps, tx_bps, rx_pps, tx_pps, period_seconds, timestamp}`, within the device class's caps (see below). Vetted: every subscribe gets a `subscribe.ack` or `subscribe.error`. Sampling starts once granted and stops on the last unsubscribe. |
 | `traffic.ports` | object | Fleet-wide port snapshot `{ts, interval_seconds, ready, ports: [{device_id, iface, type, comment?, running, disabled, rx_bps, tx_bps, rx_pps, tx_pps}]}`, once per `port_stats_interval` (default 15 s) while anyone is subscribed. Raw: no `role`/`device_name` (join `/traffic/ports/roles`). |
-| `topology.traffic` | object | Per-link throughput for the network map, every 5 s while anyone is subscribed. |
+| `topology.traffic` | object | Per-link throughput for the network map — the `GET /traffic/links` payload — once per port-counter cycle while anyone is subscribed. Derived from the snapshot: no device call. |
 | `firmware.update` | object | Firmware status changed (poll cycle or triggered check). |
 | `upgrade.progress.<jobId>` | object | Per-device upgrade progress for one job. |
 | `wifi.event` | object | A WiFi join/leave/roam event. |
@@ -790,6 +807,30 @@ from `data`; match the incoming `msg.topic` against the topic you subscribed to.
 The `<deviceID>`, `<iface>`, and `<jobId>` placeholders are substituted with the
 concrete IDs you want to follow, e.g. `traffic.<uuid>.ether1` or
 `upgrade.progress.<jobId>`.
+
+### Live streams
+
+The per-port stream (`traffic.<deviceID>.<iface>`) is the one UI view that
+reads a device on demand, so its cost is capped by the device's CPU class
+(`internal/devclass` `LiveCaps`; the class is the effective one, `C1` on the
+`light` profile and for an unprobed device). A lease is one connection
+streaming from the device; all of a device's granted interfaces are read
+together in one `monitor-traffic` call per period.
+
+| Class | Period | Interfaces per device | Leases | Who |
+|---|---|---|---|---|
+| `C1` (and unprobed / `light`) | ≥ 15 s | 4 | 1 | admins only |
+| `C2` | ≥ 5 s | 8 | 2 | any user |
+| `C3` | ≥ 1 s | 16 | 4 | any user |
+
+A refused subscribe gets a `subscribe.error` whose `code` is `admin_only`,
+`iface_limit`, `lease_limit`, `polling_paused`, `unknown_interface` or
+`unknown_device`, with `error` (what to show) and `fallback: "traffic.ports"`
+— the port-counter snapshot, which still carries the port's rate. Granted
+subscriptions keep their slot; a class override, pause or profile change is
+applied within 30 s (re-vetting may then refuse or re-ack). `GET
+/devices/{id}/live-limits` answers the role/pause question before
+subscribing.
 
 ## 5. Examples
 
