@@ -12,6 +12,7 @@ A web-based network management system for MikroTik devices. Provides real-time t
 | [ARCHITECTURE.md](ARCHITECTURE.md) | System overview, components, polling model, WebSocket topics, data flow, schema, design tradeoffs |
 | [docs/API.md](docs/API.md) | Complete REST + WebSocket API reference (auth, every endpoint, topic catalog, examples) |
 | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Docker, Kubernetes, LXC/bare-metal, continuous deploy, config reference, backups, hardening |
+| [docs/CI-CD.md](docs/CI-CD.md) | GitHub Actions workflows (CI, multi-arch image build, LXC deploy), GHCR packages/tags/visibility, releases, troubleshooting |
 | [docs/FLOW-EXPORT.md](docs/FLOW-EXPORT.md) | Turning on flow export (RouterOS IPFIX, OPNsense NetFlow), derived views for switches that can't export, verification |
 | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | Local setup, build/test/lint, and how-tos for adding migrations, endpoints, pollers, WS topics, and pages |
 | [IMPROVEMENTS.md](IMPROVEMENTS.md) | Prioritized review backlog (security, performance, correctness, testing, UX) |
@@ -187,7 +188,7 @@ Tags applied per build:
 - `v1.2.3` and `v1.2` (on semver tag pushes)
 - `sha-<short>` (on every push)
 
-The workflow uses Buildx with GitHub Actions cache (`type=gha`) so subsequent builds are incremental.
+The workflow uses Buildx with GitHub Actions cache (`type=gha`) so subsequent builds are incremental. Full details — the CI jobs, how the images are built and tagged, GHCR package ownership/visibility, cutting a release and fixing `permission_denied` pushes — are in [docs/CI-CD.md](docs/CI-CD.md).
 
 ## Deploy on MikroTik CHR (Container)
 

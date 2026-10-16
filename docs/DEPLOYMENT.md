@@ -79,12 +79,12 @@ Pre-built multi-arch images (`linux/amd64`, `linux/arm64`) are published to GHCR
 
 | Image | Registry path |
 |---|---|
-| Backend | `ghcr.io/c0de-ch/mikrotik-c0de/backend` |
-| Frontend | `ghcr.io/c0de-ch/mikrotik-c0de/frontend` |
+| Backend | `ghcr.io/c0de-ch/mikrotik-nms/backend` |
+| Frontend | `ghcr.io/c0de-ch/mikrotik-nms/frontend` |
 
 > The image path is derived from `ghcr.io/${{ github.repository }}/{backend,frontend}` in the workflow. If you fork, your images live under your fork's path; the upstream K8s manifests reference `ghcr.io/c0de-ch/mikrotik-nms/...`, so adjust accordingly.
 
-Tags applied: `latest` (default branch only), `vX.Y.Z` + `vX.Y` (semver tags), and `sha-<short>` (every push).
+Tags applied: `latest` (default branch only), `vX.Y.Z` + `vX.Y` (semver tags), and `sha-<short>` (every push). How the workflow builds and tags the images, how GHCR package ownership and visibility work, and what to do when a push is denied are covered in [CI-CD.md](CI-CD.md).
 
 | Service | Container port | Volume | Healthcheck |
 |---|---|---|---|
@@ -176,7 +176,7 @@ A one-shot Proxmox API bootstrap ([`deploy/lxc/proxmox-create.sh`](../deploy/lxc
 
 ## 6. Continuous deployment
 
-Two independent paths ship in the box. **Pick one.**
+Two independent paths ship in the box. **Pick one.** (The Actions-side details of the runner path — triggers, the `DEPLOY_ON_PUSH` switch, what happens with no runner online — are in [CI-CD.md §6](CI-CD.md#6-deploy-to-lxc-deploy-lxcyml).)
 
 | Path | What it is | Use when… |
 |---|---|---|
