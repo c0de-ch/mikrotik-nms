@@ -55,37 +55,36 @@ func GetSystemResource(client *ros.Client) (*SystemResource, error) {
 	return r, nil
 }
 
+// InterfaceInfo is the identity slice of an interface: its name, type and
+// MAC.
 type InterfaceInfo struct {
 	Name       string
 	Type       string
 	MACAddress string
-	MTU        int
-	Running    bool
-	Disabled   bool
-	Comment    string
 }
 
-func GetInterfaces(client *ros.Client) ([]InterfaceInfo, error) {
-	reply, err := RunCommand(client, "/interface/print")
+// interfaceIdentityProplist limits GetInterfaces to what identity checks read.
+const interfaceIdentityProplist = "=.proplist=name,type,mac-address"
+
+// GetInterfaces lists the device's interfaces with name, type and MAC only.
+// It is not a poll: the scheduled interface read is Tier 0
+// (GetInterfaceStats), which every consumer gets from the port-stats
+// collector's snapshot. This one confirms the identity of a device answering
+// at a candidate address (IP auto-follow), which no snapshot covers yet.
+func GetInterfaces(run Runner) ([]InterfaceInfo, error) {
+	reply, err := run.Run("/interface/print", interfaceIdentityProplist)
 	if err != nil {
 		return nil, err
 	}
 
-	var ifaces []InterfaceInfo
+	ifaces := make([]InterfaceInfo, 0, len(reply.Re))
 	for _, re := range reply.Re {
 		m := GetSentenceMap(re)
-		iface := InterfaceInfo{
+		ifaces = append(ifaces, InterfaceInfo{
 			Name:       m["name"],
 			Type:       m["type"],
 			MACAddress: m["mac-address"],
-			Comment:    m["comment"],
-			Running:    m["running"] == "true",
-			Disabled:   m["disabled"] == "true",
-		}
-		if v, err := strconv.Atoi(m["mtu"]); err == nil {
-			iface.MTU = v
-		}
-		ifaces = append(ifaces, iface)
+		})
 	}
 	return ifaces, nil
 }

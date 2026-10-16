@@ -10,7 +10,6 @@ import (
 	"sync"
 	"time"
 
-	ros "github.com/go-routeros/routeros/v3"
 	"github.com/mikrotik-nms/backend/internal/config"
 	"github.com/mikrotik-nms/backend/internal/database/queries"
 	"github.com/mikrotik-nms/backend/internal/flow"
@@ -52,7 +51,7 @@ func NewManager(db *sql.DB, pool *routeros.Pool, hub *ws.Hub, cfg *config.Config
 		// even when a listen address is configured.
 		flowCfg.Listen = nil
 	}
-	return &Manager{
+	m := &Manager{
 		db:           db,
 		pool:         pool,
 		hub:          hub,
@@ -61,6 +60,11 @@ func NewManager(db *sql.DB, pool *routeros.Pool, hub *ws.Hub, cfg *config.Config
 		portStats:    NewPortStatsCollector(db, pool, hub),
 		flows:        flow.New(db, pool, hub, flowCfg),
 	}
+	// The port-stats collector's Tier 0 read is the one interface print:
+	// the flow ifIndex sync (here), the port monitor and the uplink pass
+	// (Start, topology) read its snapshot instead of printing again.
+	m.flows.UseIfaceSource(m.portStats)
+	return m
 }
 
 // PortStats returns the fleet-wide port-counter collector (non-nil right
@@ -122,6 +126,7 @@ func (m *Manager) Start() {
 
 	netHealth := NewNetworkHealthPoller(m.db, m.pool, m.hub, m.cfg.NetworkHealthInterval)
 	netHealth.UseLogReader(logs)
+	netHealth.UseInterfaceSnapshots(m.portStats)
 	go netHealth.Run(ctx)
 
 	connectivity := NewConnectivityPoller(m.db, m.pool, m.hub, defaultConnectivityInterval, m.cfg.ROSTLSVerify)
@@ -343,9 +348,13 @@ func (m *Manager) safeRefreshInfo(dev queries.Device) {
 }
 
 // refreshDeviceInfo does the heavy lifting: a full RouterOS API session to read
-// system resources (cpu/memory/uptime), static details (version/board/platform/
-// arch) and the interface list, caching them in the DB. Status stays owned by
-// the liveness poll — on a connection failure here we leave status alone.
+// system resources (cpu/memory/uptime) and static details (version/board/
+// platform/arch), caching them in the DB. The interface inventory is not read
+// here: the port-stats collector's Tier 0 print keeps the interfaces table
+// current (PortStatsCollector.syncInventory). Dialling the pooled connection
+// here is still what lets that collector reach a freshly added device. Status
+// stays owned by the liveness poll — on a connection failure here we leave
+// status alone.
 func (m *Manager) refreshDeviceInfo(dev queries.Device) {
 	client, err := m.pool.EnsureConnection(
 		dev.ID, dev.Address, dev.APIPort, dev.Username, dev.PasswordEnc, dev.UseTLS,
@@ -365,35 +374,6 @@ func (m *Manager) refreshDeviceInfo(dev queries.Device) {
 		&res.CPULoad, &memUsed, &res.MemoryTotal, &res.Uptime, nil)
 	_ = queries.UpdateDeviceInfo(m.db, dev.ID,
 		res.Platform, res.Board, res.Version, "", res.Architecture)
-
-	if ifaces, err := routeros.GetInterfaces(client); err == nil {
-		names := make([]string, 0, len(ifaces))
-		for _, iface := range ifaces {
-			mtu := iface.MTU
-			_ = queries.UpsertInterface(m.db, &queries.Interface{
-				ID:         dev.ID + ":" + iface.Name,
-				DeviceID:   dev.ID,
-				Name:       iface.Name,
-				Type:       iface.Type,
-				MACAddress: iface.MACAddress,
-				MTU:        &mtu,
-				Running:    iface.Running,
-				Disabled:   iface.Disabled,
-				Comment:    iface.Comment,
-			})
-			if iface.Name != "" {
-				names = append(names, iface.Name)
-			}
-		}
-		// The print is the device's full interface list: drop rows for
-		// interfaces removed or renamed since (dynamic CAPsMAN radios come
-		// and go), which would otherwise linger as ghost ports forever.
-		if n, err := queries.DeleteInterfacesNotIn(m.db, dev.ID, names); err != nil {
-			log.Printf("poller info: prune interfaces of %s: %v", dev.Identity, err)
-		} else if n > 0 {
-			log.Printf("poller info: pruned %d stale interfaces of %s", n, dev.Identity)
-		}
-	}
 
 	memPct := 0
 	if res.MemoryTotal > 0 {
@@ -443,11 +423,10 @@ func (m *Manager) pollTopology(ctx context.Context) {
 		return
 	}
 
-	// Gateway MACs (from the previous cycle's uplink rows) to look up in each
-	// device's bridge FDB — locates the switch+port a gateway is physically
+	// Gateway MACs (from the previous cycle's uplink rows) to look up in the
+	// devices' bridge FDBs — locates the switch+port a gateway is physically
 	// attached to instead of guessing.
 	gwMACs := m.gatewayMACs(devices)
-	var gwObservations []queries.DeviceUplink
 
 	for _, dev := range devices {
 		select {
@@ -490,21 +469,13 @@ func (m *Manager) pollTopology(ctx context.Context) {
 			})
 		}
 
-		m.collectUplinks(dev, client)
-
-		for mac, ip := range gwMACs {
-			if port, ferr := routeros.FindBridgeHostPort(client, mac); ferr == nil && port != "" {
-				gwObservations = append(gwObservations, queries.DeviceUplink{
-					DeviceID: dev.ID, Interface: port, GatewayIP: ip,
-				})
-			}
-		}
+		m.collectUplinks(dev, routeros.ClientRunner{Client: client})
 
 		// Stagger between devices
 		time.Sleep(time.Second)
 	}
 
-	m.resolveGatewayHosts(gwObservations)
+	m.resolveGatewayHosts(m.gatewayObservations(devices, gwMACs, time.Now()))
 
 	// Auto-follow IP changes: opt-in reconcile of devices that moved to a new IP,
 	// using the neighbors just upserted above. Runs before the rebuild so a
@@ -547,6 +518,43 @@ func (m *Manager) gatewayMACs(devices []queries.Device) map[string]string {
 		if mac := queries.MACForIP(m.db, gw); mac != "" {
 			out[strings.ToUpper(mac)] = gw
 		}
+	}
+	return out
+}
+
+// gatewayObservations locates the gateway MACs in the bridge FDB dumps the
+// port-stats collector stores in port_hosts — each online device's latest
+// dump only — so attachment costs no device command of its own (it used to
+// be one FDB query per gateway MAC per device per cycle). A gateway whose
+// MAC no dump holds yet (a new gateway, or a cold start before the first
+// dump) stays unattached until the next dump, port_hosts_interval later;
+// resolveGatewayHosts keeps the previous rows meanwhile.
+func (m *Manager) gatewayObservations(devices []queries.Device, gwMACs map[string]string, now time.Time) []queries.DeviceUplink {
+	if len(gwMACs) == 0 {
+		return nil
+	}
+	online := make(map[string]bool, len(devices))
+	for _, d := range devices {
+		if d.Status == "online" {
+			online[d.ID] = true
+		}
+	}
+	macs := make([]string, 0, len(gwMACs))
+	for mac := range gwMACs {
+		macs = append(macs, mac)
+	}
+	hosts, err := queries.ListLatestPortHostsForMACs(m.db, now.Add(-PortHostsFreshness(m.db)), macs)
+	if err != nil {
+		log.Printf("poller topology: gateway hosts from port_hosts: %v", err)
+		return nil
+	}
+	var out []queries.DeviceUplink
+	for _, h := range hosts {
+		ip, ok := gwMACs[strings.ToUpper(h.MACAddress)]
+		if !ok || !online[h.DeviceID] {
+			continue
+		}
+		out = append(out, queries.DeviceUplink{DeviceID: h.DeviceID, Interface: h.InterfaceName, GatewayIP: ip})
 	}
 	return out
 }
@@ -617,11 +625,12 @@ func interSwitchPorts(links []queries.Link) map[string]bool {
 }
 
 // collectUplinks refreshes the device's egress rows: its active IPv4 default
-// routes (one cheap /ip/route query) plus running VPN tunnel interfaces read
-// live in the same cycle (DB cache only as fallback — it can be up to
-// info_interval old).
-func (m *Manager) collectUplinks(dev queries.Device, client *ros.Client) {
-	routes, err := routeros.GetDefaultRoutes(client)
+// routes (one cheap /ip/route query) plus running VPN tunnel interfaces. The
+// interface types and running state come from the port-stats collector's
+// interface snapshot (at most a few counter intervals old), the interfaces
+// table only when there is none — no interface print of its own.
+func (m *Manager) collectUplinks(dev queries.Device, run routeros.Runner) {
+	routes, err := routeros.GetDefaultRoutes(run)
 	if err != nil {
 		// Keep the previous rows: a transient API failure must not flap the
 		// map's egress edges. Rows age out via the builder's freshness window
@@ -632,19 +641,19 @@ func (m *Manager) collectUplinks(dev queries.Device, client *ros.Client) {
 
 	typeByName := make(map[string]string)
 	var vpnNames []string
-	if live, lerr := routeros.GetInterfaces(client); lerr == nil {
-		for _, i := range live {
-			typeByName[i.Name] = i.Type
-			if i.Running && !i.Disabled && topology.IsVPNIfaceType(i.Type) {
-				vpnNames = append(vpnNames, i.Name)
-			}
+	add := func(name, typ string, running, disabled bool) {
+		typeByName[name] = typ
+		if running && !disabled && topology.IsVPNIfaceType(typ) {
+			vpnNames = append(vpnNames, name)
+		}
+	}
+	if rows, _, ok := m.portStats.DeviceSnapshot(dev.ID); ok {
+		for _, i := range rows {
+			add(i.Name, i.Type, i.Running, i.Disabled)
 		}
 	} else if cached, cerr := queries.ListInterfacesByDevice(m.db, dev.ID); cerr == nil {
 		for _, i := range cached {
-			typeByName[i.Name] = i.Type
-			if i.Running && !i.Disabled && topology.IsVPNIfaceType(i.Type) {
-				vpnNames = append(vpnNames, i.Name)
-			}
+			add(i.Name, i.Type, i.Running, i.Disabled)
 		}
 	}
 

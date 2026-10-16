@@ -3,6 +3,7 @@ package poller
 import (
 	"database/sql"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -17,7 +18,7 @@ import (
 type PortMonitorSettings struct {
 	Enabled       bool
 	TypeFilter    []string      // include only interfaces whose type starts with one of these (empty = all)
-	FlapThreshold int           // ≥N transitions in window → flap event
+	FlapThreshold int           // ≥N flaps (link-downs) in window → flap event
 	FlapWindow    time.Duration // window for flap detection
 }
 
@@ -66,7 +67,7 @@ func loadPortMonitorSettings(db *sql.DB) PortMonitorSettings {
 
 // includeInterface returns true when the interface should be monitored
 // according to the type-filter setting. An empty filter means everything.
-func (s *PortMonitorSettings) includeInterface(iface routeros.InterfaceDetail) bool {
+func (s *PortMonitorSettings) includeInterface(iface routeros.InterfaceSnapshot) bool {
 	if len(s.TypeFilter) == 0 {
 		return true
 	}
@@ -88,16 +89,64 @@ func (s *PortMonitorSettings) includeInterface(iface routeros.InterfaceDetail) b
 // portState is the per-interface in-memory state tracked by the poller.
 //
 // The exported `interface_state` row mirrors `running` / `disabled` /
-// `lastUp` / `lastDown` / `flapWindow size` for the UI. The rest is needed
-// only across cycles to detect transitions.
+// `lastUp` / `lastDown` / the flaps in the window for the UI. The rest is
+// needed only across cycles to detect transitions.
 type portState struct {
 	running           bool
 	disabled          bool
 	lastUp            string
 	lastDown          string
-	loopProtectStatus string      // "" / "none" / "on-loop" / "in-loop"
-	transitions       []time.Time // running-state transitions within the flap window
-	flappedFiring     bool        // true while the interface is over the flap threshold (suppress duplicate critical events)
+	loopProtectStatus string // "" / "none" / "on-loop" / "in-loop"
+	// linkDowns is the link-downs counter at the previous observation, a
+	// baseline only while hasLinkDowns (not after a restart: the counter
+	// is not persisted, so the first observation re-baselines).
+	linkDowns     int64
+	hasLinkDowns  bool
+	flaps         []flapMark // flaps within the flap window, oldest first
+	flappedFiring bool       // true while the interface is over the flap threshold (suppress duplicate critical events)
+	firedAt       time.Time  // when the current port_link_flap fired
+}
+
+// flapMark records n flaps (link-downs) observed at one observation.
+type flapMark struct {
+	at time.Time
+	n  int
+}
+
+// flapsInWindow drops the marks older than window before now and returns
+// how many flaps remain.
+func (p *portState) flapsInWindow(now time.Time, window time.Duration) int {
+	cutoff := now.Add(-window)
+	kept := p.flaps[:0]
+	total := 0
+	for _, f := range p.flaps {
+		if !f.at.Before(cutoff) {
+			kept = append(kept, f)
+			total += f.n
+		}
+	}
+	p.flaps = kept
+	return total
+}
+
+// observedFlaps is how many times iface lost link since the previous
+// observation prev: the link-downs delta while both readings carry the
+// counter (every RouterOS 7 interface does) — which also catches a flap
+// that came and went between two reads — else, without a baseline, a running
+// → not running transition. A counter that went backwards (reboot, reset)
+// counts as 0. It moves prev's counter baseline to the current reading.
+func observedFlaps(prev *portState, hadPrev bool, iface routeros.InterfaceSnapshot) int {
+	n := 0
+	switch {
+	case iface.HasLinkDowns && prev.hasLinkDowns:
+		if iface.LinkDowns > prev.linkDowns {
+			n = int(min(iface.LinkDowns-prev.linkDowns, math.MaxInt32))
+		}
+	case hadPrev && prev.running && !iface.Running:
+		n = 1
+	}
+	prev.linkDowns, prev.hasLinkDowns = iface.LinkDowns, iface.HasLinkDowns
+	return n
 }
 
 // portMonitor keeps per-device per-interface state across poll cycles.
@@ -114,21 +163,6 @@ func newPortMonitor() *portMonitor {
 	}
 }
 
-// trackTransition records a transition timestamp and returns the count of
-// transitions within the flap window.
-func trackTransition(p *portState, now time.Time, window time.Duration) int {
-	cutoff := now.Add(-window)
-	out := p.transitions[:0]
-	for _, t := range p.transitions {
-		if !t.Before(cutoff) {
-			out = append(out, t)
-		}
-	}
-	out = append(out, now)
-	p.transitions = out
-	return len(out)
-}
-
 // portEvent describes a transition that should be emitted as a loop_events row.
 type portEvent struct {
 	Kind      string // port_disabled | port_link_down | port_link_flap
@@ -137,16 +171,18 @@ type portEvent struct {
 	Message   string
 }
 
-// processInterface compares the current snapshot against the previous one and
-// returns events to emit. It also updates the in-memory state and returns the
-// up-to-date interface_state row for persistence.
+// processInterface compares the current snapshot row against the previous
+// observation and returns events to emit. It also updates the in-memory
+// state and returns the up-to-date interface_state row for persistence. now
+// is the observation time — the snapshot's read time — so processing the
+// same snapshot twice changes nothing.
 //
 // On the first poll for a device, no events are returned (firstRun guard) —
 // otherwise a backend restart would replay every "port disabled" /
 // "link down" condition that already existed at startup.
 func (m *portMonitor) processInterface(
 	devID string,
-	iface routeros.InterfaceDetail,
+	iface routeros.InterfaceSnapshot,
 	settings PortMonitorSettings,
 	now time.Time,
 ) (events []portEvent, state *queries.InterfaceState) {
@@ -184,24 +220,40 @@ func (m *portMonitor) processInterface(
 		}
 	}
 
-	// loop-protect transition: any value → "on-loop" / "in-loop"
+	// loop-protect transition: any value → "on-loop" / "in-loop". The status
+	// comes from the Tier 4a ethernet read merged into the snapshot; a row
+	// without one (non-ethernet, or no fresh ethernet read yet) keeps the
+	// last known status instead of reading as "" — so the first read after
+	// a restart cannot re-fire a loop that the restored state already knew.
+	loopProtect := prev.loopProtectStatus
+	if iface.HasEthernet {
+		loopProtect = iface.Ethernet.LoopProtectStatus
+	}
 	if hadPrev && !first {
 		wasInLoop := isInLoop(prev.loopProtectStatus)
-		isInLoopNow := isInLoop(iface.LoopProtectStatus)
+		isInLoopNow := isInLoop(loopProtect)
 		if !wasInLoop && isInLoopNow {
 			events = append(events, portEvent{
 				Kind:      "port_loop_protect",
 				Severity:  "critical",
 				Interface: iface.Name,
 				Message: fmt.Sprintf("interface %q tripped loop-protect (status=%s)",
-					iface.Name, iface.LoopProtectStatus),
+					iface.Name, loopProtect),
 			})
 		}
 	}
 
-	// flap detection on running-state transition
-	if hadPrev && prev.running != iface.Running {
-		count := trackTransition(prev, now, settings.FlapWindow)
+	// Flap detection: port_flap_threshold flaps (link-downs) within
+	// port_flap_window_seconds fire one critical port_link_flap. Re-armed
+	// once the window drops below the threshold, or a whole window after
+	// the event while the storm goes on.
+	count := prev.flapsInWindow(now, settings.FlapWindow)
+	if prev.flappedFiring && (count < settings.FlapThreshold || now.Sub(prev.firedAt) > settings.FlapWindow) {
+		prev.flappedFiring = false
+	}
+	if n := observedFlaps(prev, hadPrev, iface); n > 0 {
+		prev.flaps = append(prev.flaps, flapMark{at: now, n: n})
+		count += n
 		if count >= settings.FlapThreshold && !prev.flappedFiring && !first {
 			events = append(events, portEvent{
 				Kind:      "port_link_flap",
@@ -210,14 +262,7 @@ func (m *portMonitor) processInterface(
 				Message: fmt.Sprintf("interface %q link flapped %d× in last %s",
 					iface.Name, count, settings.FlapWindow),
 			})
-			prev.flappedFiring = true
-		}
-	}
-	// Once the flap window ages out, allow firing again on the next storm.
-	if len(prev.transitions) > 0 {
-		oldest := prev.transitions[0]
-		if now.Sub(oldest) > settings.FlapWindow {
-			prev.flappedFiring = false
+			prev.flappedFiring, prev.firedAt = true, now
 		}
 	}
 
@@ -225,7 +270,7 @@ func (m *portMonitor) processInterface(
 	prev.disabled = iface.Disabled
 	prev.lastUp = iface.LastLinkUp
 	prev.lastDown = iface.LastLinkDown
-	prev.loopProtectStatus = iface.LoopProtectStatus
+	prev.loopProtectStatus = loopProtect
 
 	state = &queries.InterfaceState{
 		ID:                devID + ":" + iface.Name,
@@ -237,8 +282,8 @@ func (m *portMonitor) processInterface(
 		Slave:             iface.Slave,
 		LastLinkUp:        iface.LastLinkUp,
 		LastLinkDown:      iface.LastLinkDown,
-		FlapCountWindow:   len(prev.transitions),
-		LoopProtectStatus: iface.LoopProtectStatus,
+		FlapCountWindow:   count,
+		LoopProtectStatus: loopProtect,
 		Comment:           iface.Comment,
 	}
 	return events, state

@@ -22,10 +22,42 @@ const (
 
 var errNoClient = errors.New("no pooled connection")
 
-// syncExporterIfaces maps a RouterOS exporter's ifIndexes to names: the
-// hex .id of /interface/print is the flow-export ifIndex, and
-// /interface/vlan adds vlan-id and parent. Manual names survive.
-func syncExporterIfaces(db *sql.DB, pool *routeros.Pool, exp queries.FlowExporter) error {
+// IfaceSource serves a managed device's latest scheduled interface read
+// from memory — the port-stats collector's Tier 0 snapshot — so the ifIndex
+// sync needs no interface print of its own.
+type IfaceSource interface {
+	DeviceSnapshot(deviceID string) (rows []routeros.InterfaceSnapshot, at time.Time, ok bool)
+}
+
+// UseIfaceSource makes the ifIndex sync take interface names from src; the
+// device's interface table is printed only while src has no snapshot of it
+// (cold start, a device the collector cannot read). Call before Run.
+func (c *Collector) UseIfaceSource(src IfaceSource) {
+	if c != nil {
+		c.ifaceSrc = src
+	}
+}
+
+// exporterIfaces returns deviceID's interface rows: src's snapshot when it
+// holds one, else one Tier 0 print on run.
+func exporterIfaces(src IfaceSource, run routeros.Runner, deviceID string) ([]routeros.InterfaceStats, error) {
+	if src != nil {
+		if rows, _, ok := src.DeviceSnapshot(deviceID); ok {
+			stats := make([]routeros.InterfaceStats, len(rows))
+			for i, r := range rows {
+				stats[i] = r.InterfaceStats
+			}
+			return stats, nil
+		}
+	}
+	return routeros.GetInterfaceStats(run)
+}
+
+// syncExporterIfaces maps a RouterOS exporter's ifIndexes to names: the hex
+// .id of /interface/print is the flow-export ifIndex — taken from src's
+// snapshot when it has one, else printed — and /interface/vlan adds vlan-id
+// and parent. Manual names survive.
+func syncExporterIfaces(db *sql.DB, pool *routeros.Pool, src IfaceSource, exp queries.FlowExporter) error {
 	if pool == nil || exp.DeviceID == "" {
 		return errNoClient
 	}
@@ -33,7 +65,7 @@ func syncExporterIfaces(db *sql.DB, pool *routeros.Pool, exp queries.FlowExporte
 	if client == nil {
 		return errNoClient
 	}
-	stats, err := routeros.GetInterfaceStats(client)
+	stats, err := exporterIfaces(src, routeros.ClientRunner{Client: client}, exp.DeviceID)
 	if err != nil {
 		return err
 	}
@@ -75,7 +107,7 @@ func (c *Collector) ifsyncAll() {
 		if e.DeviceID == "" || !e.Enabled {
 			continue
 		}
-		if err := syncExporterIfaces(c.db, c.pool, e); err != nil && !errors.Is(err, errNoClient) {
+		if err := syncExporterIfaces(c.db, c.pool, c.ifaceSrc, e); err != nil && !errors.Is(err, errNoClient) {
 			log.Printf("flow ifsync: %s: %v", e.Name, err)
 		}
 	}
@@ -87,7 +119,7 @@ func (c *Collector) ifsyncOne(id int64) {
 	if err != nil || e == nil || e.DeviceID == "" {
 		return
 	}
-	if err := syncExporterIfaces(c.db, c.pool, *e); err != nil && !errors.Is(err, errNoClient) {
+	if err := syncExporterIfaces(c.db, c.pool, c.ifaceSrc, *e); err != nil && !errors.Is(err, errNoClient) {
 		log.Printf("flow ifsync: %s: %v", e.Name, err)
 	}
 }

@@ -336,9 +336,11 @@ func (m *Manager) verifyAndCommitMove(mv addressMove) {
 	// we matched on. A board string ("cAP ax") is shared across every unit of a
 	// model, but the burned-in interface MAC is globally unique. Best-effort —
 	// a present-but-missing MAC is a hard reject; if interfaces can't be read we
-	// fall back to the board/version match already verified above.
+	// fall back to the board/version match already verified above. One
+	// proplisted print (name, type, MAC) on the verify connection: no
+	// snapshot covers a device answering at an address it is not known at.
 	if mv.MAC != "" {
-		if ifaces, ierr := routeros.GetInterfaces(client); ierr != nil {
+		if ifaces, ierr := routeros.GetInterfaces(routeros.ClientRunner{Client: client}); ierr != nil {
 			log.Printf("poller: auto-follow: %s could not list interfaces at %s to confirm MAC: %v (proceeding on board/version)", dev.Identity, mv.NewAddr, ierr)
 		} else if !interfacesContainMAC(ifaces, mv.MAC) {
 			m.recordIPRejection(dev.ID, "mac_mismatch", mv, fmt.Sprintf("matched MAC %s not present on the device answering at %s", mv.MAC, mv.NewAddr))

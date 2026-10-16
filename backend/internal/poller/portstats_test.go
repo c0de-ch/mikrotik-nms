@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -252,7 +253,9 @@ func TestPortStatsConstantRateChartsFlat(t *testing.T) {
 				} else {
 					ts = ts.Add(-tc.jitter)
 				}
-				if ts.After(end.Add(tc.iv)) {
+				// Run two intervals past the end: a sample just before a
+				// minute boundary holds that minute open for the next one.
+				if ts.After(end.Add(2 * tc.iv)) {
 					break
 				}
 				bytes := int64(ts.Sub(at(9, 0, 0)).Seconds() * rateBps / 8)
@@ -355,19 +358,135 @@ func TestPortStatsRuntimeRollupAfterStall(t *testing.T) {
 	}
 }
 
-func TestPortStatsLateSampleCarriedIntoOpenMinute(t *testing.T) {
+// A flush keeps the minute a device's open interval starts in: a reply taken
+// at 12:00:59 but ingested after the 12:01:00 flush still lands in 12:00.
+func TestPortStatsFlushHoldsMinuteOfOpenInterval(t *testing.T) {
 	c := NewPortStatsCollector(pollerTestDB(t), nil, nil)
 	const iv = 15 * time.Second
 	c.ingest("d1", []routeros.InterfaceStats{ifStats("ether1", 0, 0, 0, 0)}, at(12, 0, 40), iv)
-	c.finishCycle(at(12, 1, 0), iv) // FlushedThrough = 12:01 (nothing accumulated yet)
-
-	// Reply taken at 12:00:59 but ingested after the flush.
-	c.ingest("d1", []routeros.InterfaceStats{ifStats("ether1", 1_000, 0, 0, 0)}, at(12, 0, 59), iv)
-	if minuteSamples(c, at(12, 0, 0), "d1", "ether1") != 0 {
-		t.Error("late sample must not reopen a flushed minute")
+	c.finishCycle(at(12, 1, 0), iv)
+	if got := c.FlushedThrough(); !got.Equal(at(12, 0, 0)) {
+		t.Fatalf("FlushedThrough = %v, want 12:00 held for d1's open interval", got)
 	}
-	if minuteSamples(c, at(12, 1, 0), "d1", "ether1") != 1 {
-		t.Error("late sample must be carried into the first open minute")
+
+	c.ingest("d1", []routeros.InterfaceStats{ifStats("ether1", 1_000, 0, 0, 0)}, at(12, 0, 59), iv)
+	if minuteSamples(c, at(12, 0, 0), "d1", "ether1") != 1 {
+		t.Error("the late reply must land in its own minute")
+	}
+	c.ingest("d1", []routeros.InterfaceStats{ifStats("ether1", 2_500, 0, 0, 0)}, at(12, 1, 14), iv)
+	c.finishCycle(at(12, 1, 15), iv)
+	if got := c.FlushedThrough(); !got.Equal(at(12, 1, 0)) {
+		t.Fatalf("FlushedThrough = %v, want 12:01 once d1 moved on", got)
+	}
+}
+
+// The hold is capped at a minute. A share for a minute older than that — a
+// device on a long interval — is carried into the first open minute, so
+// the bytes still add up exactly.
+func TestPortStatsShareBeyondHoldCarriedIntoOpenMinute(t *testing.T) {
+	c := NewPortStatsCollector(pollerTestDB(t), nil, nil)
+	const iv = 5 * time.Minute
+	c.ingest("d1", []routeros.InterfaceStats{ifStats("ether1", 0, 0, 0, 0)}, at(12, 0, 10), iv)
+	c.finishCycle(at(12, 3, 0), iv) // another device's cycle
+	if got := c.FlushedThrough(); !got.Equal(at(12, 2, 0)) {
+		t.Fatalf("FlushedThrough = %v, want 12:02 (held at most a minute)", got)
+	}
+
+	c.ingest("d1", []routeros.InterfaceStats{ifStats("ether1", 30_000, 0, 0, 0)}, at(12, 5, 10), iv) // 100 B/s
+	if minuteSamples(c, at(12, 0, 0), "d1", "ether1") != 0 {
+		t.Error("a flushed minute must not be reopened")
+	}
+	c.mu.Lock()
+	carried := *c.minutes[at(12, 2, 0).Unix()][portStatsKey{"d1", "ether1"}]
+	c.mu.Unlock()
+	// 12:00 (50 s) and 12:01 (60 s) carried into 12:02, plus its own 60 s.
+	if carried.seconds != 170 || carried.rxBytes != 17_000 {
+		t.Errorf("12:02 = %+v, want 170 s and 17000 B", carried)
+	}
+	var total int64
+	c.mu.Lock()
+	for _, ports := range c.minutes {
+		total += ports[portStatsKey{"d1", "ether1"}].rxBytes
+	}
+	c.mu.Unlock()
+	if total != 30_000 {
+		t.Errorf("accumulated %d B, want the whole 30000 B delta", total)
+	}
+}
+
+// Devices on different Tier 0 intervals interleave their cycles, so the
+// fast device's flushes happen while the slow device's interval is open.
+// Each minute must still hold exactly the shares of the intervals that
+// overlap it (proration by overlap), not a share pushed into a later minute.
+// The rate steps up mid-run, which is what tells the two apart.
+func TestPortStatsPerDeviceIntervalsProrateExactly(t *testing.T) {
+	db := pollerTestDB(t)
+	mustCreateDevice(t, db, &queries.Device{ID: "fast", Identity: "fast", Address: "192.0.2.10"})
+	mustCreateDevice(t, db, &queries.Device{ID: "slow", Identity: "slow", Address: "192.0.2.11"})
+	c := NewPortStatsCollector(db, nil, nil)
+
+	// Idle until 10:30, 1 MB/s until 10:45, 3 MB/s after.
+	bytesAt := func(ts time.Time) int64 {
+		s := ts.Sub(at(10, 30, 0)).Seconds()
+		switch {
+		case s <= 0:
+			return 0
+		case s <= 900:
+			return int64(s * 1e6)
+		}
+		return int64(900e6 + (s-900)*3e6)
+	}
+	type poll struct {
+		dev string
+		iv  time.Duration
+		t   time.Time
+	}
+	var polls []poll
+	for ts := at(10, 0, 5); !ts.After(at(11, 2, 0)); ts = ts.Add(15 * time.Second) {
+		polls = append(polls, poll{"fast", 15 * time.Second, ts})
+	}
+	for ts := at(10, 0, 30); !ts.After(at(11, 2, 0)); ts = ts.Add(time.Minute) {
+		polls = append(polls, poll{"slow", time.Minute, ts})
+	}
+	sort.Slice(polls, func(i, j int) bool { return polls[i].t.Before(polls[j].t) })
+
+	want := map[string]map[time.Time]float64{"fast": {}, "slow": {}}
+	last := map[string]time.Time{}
+	for _, p := range polls {
+		c.ingest(p.dev, []routeros.InterfaceStats{ifStats("ether1", bytesAt(p.t), 0, 0, 0)}, p.t, p.iv)
+		c.finishCycle(p.t.Add(50*time.Millisecond), 15*time.Second)
+
+		// The reference: this interval's delta spread over its minutes by
+		// overlap.
+		if from, ok := last[p.dev]; ok {
+			delta := float64(bytesAt(p.t) - bytesAt(from))
+			for m := from.Truncate(time.Minute); m.Before(p.t); m = m.Add(time.Minute) {
+				overlap := minTime(p.t, m.Add(time.Minute)).Sub(maxTime(from, m))
+				want[p.dev][m] += delta * overlap.Seconds() / p.t.Sub(from).Seconds()
+			}
+		}
+		last[p.dev] = p.t
+	}
+
+	for _, dev := range []string{"fast", "slow"} {
+		rows, err := queries.GetPortStatsSeries(db, queries.PortStats1m, dev, "ether1", at(10, 2, 0), at(11, 0, 0))
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := map[time.Time]int64{}
+		for _, r := range rows {
+			got[r.Bucket] = r.RxBytes
+		}
+		for m := at(10, 2, 0); m.Before(at(11, 0, 0)); m = m.Add(time.Minute) {
+			if d := float64(got[m]) - want[dev][m]; d > 2 || d < -2 {
+				t.Errorf("%s %s: %d B, want %.0f B", dev, m.Format("15:04"), got[m], want[dev][m])
+			}
+		}
+	}
+	// The step at 10:30 straddles the slow device's 10:29:30–10:30:30
+	// interval: half of its 30 MB belongs to 10:29.
+	if w := want["slow"][at(10, 29, 0)]; w != 15e6 {
+		t.Fatalf("reference for slow 10:29 = %.0f, the fixture no longer exercises the hold", w)
 	}
 }
 

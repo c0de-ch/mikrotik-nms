@@ -3,32 +3,7 @@ package routeros
 import (
 	"strconv"
 	"strings"
-
-	ros "github.com/go-routeros/routeros/v3"
 )
-
-// FindBridgeHostPort looks a MAC up in the device's bridge host (FDB) table
-// and returns the port it was dynamically learned on, or "" when absent.
-// Local entries (the bridge's own MACs) are ignored.
-func FindBridgeHostPort(client *ros.Client, mac string) (string, error) {
-	reply, err := RunCommand(client, "/interface/bridge/host/print", "?mac-address="+mac)
-	if err != nil {
-		return "", err
-	}
-	for _, re := range reply.Re {
-		m := GetSentenceMap(re)
-		if m["local"] == "true" {
-			continue
-		}
-		if iface := m["on-interface"]; iface != "" {
-			return iface, nil
-		}
-		if iface := m["interface"]; iface != "" {
-			return iface, nil
-		}
-	}
-	return "", nil
-}
 
 // BridgeHost is one learned (non-local) bridge FDB entry: a MAC seen behind a
 // bridge port. Switch-chip-learned entries (External) are included — on CRS
@@ -49,9 +24,11 @@ const bridgeHostProplist = "=.proplist=mac-address,on-interface,interface,bridge
 
 // GetBridgeHosts dumps the device's bridge FDB (local=false) in one print on
 // the pooled client. The first print after boot can take a few seconds (4 s
-// cold on an RB5009, ~40 ms after); CommandTimeout covers it.
-func GetBridgeHosts(client *ros.Client) ([]BridgeHost, error) {
-	reply, err := RunCommand(client, "/interface/bridge/host/print", "?local=false", bridgeHostProplist)
+// cold on an RB5009, ~40 ms after); CommandTimeout covers it. The dump lands
+// in port_hosts, which is also where gateway attachment looks MACs up: the
+// NMS never queries a device's FDB per MAC.
+func GetBridgeHosts(run Runner) ([]BridgeHost, error) {
+	reply, err := run.Run("/interface/bridge/host/print", "?local=false", bridgeHostProplist)
 	if err != nil {
 		return nil, err
 	}
@@ -114,7 +91,7 @@ type InterfaceRelation struct {
 // (/interface/bonding slaves), VLAN parents and PPPoE-client carriers
 // (interface=) on the pooled client — three short prints. Any failing print
 // fails the whole read, so a partial answer never replaces a complete one.
-func GetInterfaceRelations(client *ros.Client) ([]InterfaceRelation, error) {
+func GetInterfaceRelations(run Runner) ([]InterfaceRelation, error) {
 	var out []InterfaceRelation
 	for _, q := range []struct {
 		cmd, proplist string
@@ -128,7 +105,7 @@ func GetInterfaceRelations(client *ros.Client) ([]InterfaceRelation, error) {
 			return parseCarrier(m, RelationPPPoE)
 		}},
 	} {
-		reply, err := RunCommand(client, q.cmd, q.proplist)
+		reply, err := run.Run(q.cmd, q.proplist)
 		if err != nil {
 			return nil, err
 		}

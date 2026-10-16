@@ -25,11 +25,14 @@ import (
 //     one batched /interface/bridge/monitor for the bridge summary
 //     (routeros.ReadBridgeState learns what each device accepts)
 //  3. /log/print filtered to bridge,info → loop / mac flap events
+//  4. the port monitor over the port-stats collector's interface snapshot
+//     (Tier 0 + the Tier 4a loop-protect state) — no command of its own
 //
 // Anomaly detection writes rows to loop_events:
 //   - stp_disabled: bridge has STP off and >1 non-edge port
 //   - tcn_storm:    the ports' topology-changes counters rose by >= tcn_storm_threshold per minute
 //   - loop_detected / mac_flap / bpdu_on_edge: directly from parsed bridge log
+//   - port_link_down / port_disabled / port_link_flap / port_loop_protect: the port monitor
 type NetworkHealthPoller struct {
 	db       *sql.DB
 	pool     *routeros.Pool
@@ -55,11 +58,19 @@ type NetworkHealthPoller struct {
 	lastLogPruneAt time.Time
 	// per-device per-interface state for port-deactivation / flap detection.
 	ports *portMonitor
+	// ifaces serves the port monitor's input (UseInterfaceSnapshots).
+	ifaces InterfaceSnapshots
 
 	// logs is the shared per-device log read (UseLogReader); logins turns
 	// its account lines into device_findings.
 	logs   *LogReader
 	logins *LoginWatch
+}
+
+// InterfaceSnapshots serves each device's latest scheduled interface read:
+// PortStatsCollector.DeviceSnapshot.
+type InterfaceSnapshots interface {
+	DeviceSnapshot(deviceID string) (rows []routeros.InterfaceSnapshot, at time.Time, ok bool)
 }
 
 // UseLogReader shares one log reader with the other pollers, so a device's
@@ -68,6 +79,13 @@ func (n *NetworkHealthPoller) UseLogReader(r *LogReader) {
 	if r != nil {
 		n.logs = r
 	}
+}
+
+// UseInterfaceSnapshots feeds the port monitor from src instead of a device
+// read. Without a source the port monitor does not run: it never prints the
+// interface table itself.
+func (n *NetworkHealthPoller) UseInterfaceSnapshots(src InterfaceSnapshots) {
+	n.ifaces = src
 }
 
 // defaultTCNStormThreshold is the topology-changes-per-cycle delta above which a
@@ -341,13 +359,27 @@ func (n *NetworkHealthPoller) poll(ctx context.Context) {
 		if dev.Status != "online" {
 			continue
 		}
-		client := n.pool.GetLive(dev.ID)
-		if client == nil {
-			continue
-		}
 
 		evCount := 0
 		brCount := 0
+
+		// Port monitoring: link down / admin disable / flap / loop-protect
+		// on every matching interface. This is independent of bridge state
+		// because it surfaces issues on uplink interfaces and unbridged WAN
+		// ports too, and it reads the shared interface snapshot — no device
+		// command, so neither a pooled connection nor a successful bridge
+		// read is needed.
+		if portSettings.Enabled {
+			added, ports := n.monitorPorts(dev, portSettings)
+			evCount += added
+			totalPorts += ports
+		}
+
+		client := n.pool.GetLive(dev.ID)
+		if client == nil {
+			totalEvents += evCount
+			continue
+		}
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
@@ -505,31 +537,6 @@ func (n *NetworkHealthPoller) poll(ctx context.Context) {
 				evCount += added
 				n.logins.Process(&dev, run, entries, firstSight, cycleStart)
 			}
-
-			// Port monitoring: link down / admin disable / flap on every
-			// matching interface. This is independent of bridge state because
-			// it surfaces issues on uplink interfaces and unbridged WAN
-			// ports too.
-			if portSettings.Enabled {
-				ifaces, err := routeros.GetInterfacesDetail(client)
-				if err == nil {
-					n.ports.rememberFirstRun(dev.ID)
-					for _, iface := range ifaces {
-						if !portSettings.includeInterface(iface) {
-							continue
-						}
-						pevents, state := n.ports.processInterface(dev.ID, iface, portSettings, cycleStart)
-						_ = queries.UpsertInterfaceState(n.db, state)
-						for _, pe := range pevents {
-							if n.recordEvent(dev.ID, pe.Kind, pe.Severity, "", pe.Interface, "", pe.Message) {
-								evCount++
-							}
-						}
-						totalPorts++
-					}
-					n.ports.markDeviceProcessed(dev.ID)
-				}
-			}
 		}()
 
 		totalBridges += brCount
@@ -614,6 +621,44 @@ func (n *NetworkHealthPoller) processBridgeLogs(devID string, events []routeros.
 		}
 	}
 	return added
+}
+
+// monitorPorts runs the port monitor over dev's latest interface snapshot —
+// the port-stats collector's Tier 0 read with the Tier 4a loop-protect state
+// merged in — and returns how many events it recorded and how many ports it
+// looked at. The rows are processed as of the snapshot's read time, so a
+// snapshot seen on two cycles counts its link-downs once. A device without a
+// fresh snapshot (offline, or not read since startup) is skipped this cycle,
+// as a failed interface print was before.
+func (n *NetworkHealthPoller) monitorPorts(dev queries.Device, settings PortMonitorSettings) (events, ports int) {
+	if n.ifaces == nil {
+		return 0, 0
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("network health: panic monitoring ports of %s: %v\n%s", dev.Identity, r, debug.Stack())
+		}
+	}()
+	rows, at, ok := n.ifaces.DeviceSnapshot(dev.ID)
+	if !ok {
+		return 0, 0
+	}
+	n.ports.rememberFirstRun(dev.ID)
+	for _, iface := range rows {
+		if !settings.includeInterface(iface) {
+			continue
+		}
+		pevents, state := n.ports.processInterface(dev.ID, iface, settings, at)
+		_ = queries.UpsertInterfaceState(n.db, state)
+		for _, pe := range pevents {
+			if n.recordEvent(dev.ID, pe.Kind, pe.Severity, "", pe.Interface, "", pe.Message) {
+				events++
+			}
+		}
+		ports++
+	}
+	n.ports.markDeviceProcessed(dev.ID)
+	return events, ports
 }
 
 // recordEvent writes a loop_events row and broadcasts it.
