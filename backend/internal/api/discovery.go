@@ -20,6 +20,9 @@ func (s *Server) handleDiscoverDevices(w http.ResponseWriter, r *http.Request) {
 
 	devices, err := routeros.ScanMNDP(time.Duration(durationSec) * time.Second)
 	if err != nil {
+		if writeDialPolicyError(w, err) {
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "discovery failed: "+err.Error())
 		return
 	}
@@ -86,6 +89,9 @@ func (s *Server) handleDeepScan(w http.ResponseWriter, r *http.Request) {
 	if cidr != "" {
 		scanned, err := routeros.ScanSubnet(ctx, cidr, deepScanPorts, 800*time.Millisecond, 64)
 		if err != nil {
+			if writeDialPolicyError(w, err) {
+				return
+			}
 			writeError(w, http.StatusBadRequest, "subnet scan failed: "+err.Error())
 			return
 		}

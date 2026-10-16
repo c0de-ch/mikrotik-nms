@@ -28,6 +28,9 @@ func (s *Server) handleListFirmware(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCheckFirmware(w http.ResponseWriter, r *http.Request) {
+	if writeDialPolicyError(w, routeros.PollingAllowed()) {
+		return
+	}
 	// Run a real check across all online devices in the background (reuses the
 	// shared connection pool). Previously this was a no-op that just relied on
 	// the 6h poller, so "Check All" appeared to do nothing.
@@ -46,6 +49,10 @@ func (s *Server) handleUpgradeFirmware(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(req.DeviceIDs) == 0 {
 		writeError(w, http.StatusBadRequest, "device_ids required")
+		return
+	}
+	// A job that could never reach a device must not be created at all.
+	if writeDialPolicyError(w, routeros.PollingAllowed()) {
 		return
 	}
 
@@ -204,9 +211,14 @@ var instanceID = func() string {
 	return hex.EncodeToString(b)
 }()
 
+// handleHealth is unauthenticated, so it carries only what every visitor may
+// know: liveness, the instance id the version watchdog compares, and whether
+// this instance polls at all (the UI shows a banner when it does not). The
+// allow-list of subnets is on the authenticated /system endpoint.
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{
 		"status":      "ok",
 		"instance_id": instanceID,
+		"pollers":     s.pollersMode(),
 	})
 }

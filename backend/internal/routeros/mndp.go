@@ -45,6 +45,11 @@ type DiscoveredDevice struct {
 // ScanMNDP listens for MNDP broadcasts on UDP port 5678 for the given duration.
 // It sends a discovery request and collects responses.
 func ScanMNDP(duration time.Duration) ([]DiscoveredDevice, error) {
+	// A broadcast reaches every segment this host is on, so the allow-list
+	// cannot apply; the polling switch does.
+	if err := PollingAllowed(); err != nil {
+		return nil, err
+	}
 	if duration == 0 {
 		duration = mndpTimeout
 	}

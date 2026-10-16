@@ -4,10 +4,17 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
 	"time"
+)
+
+// Values of MIKROTIK_NMS_POLLERS.
+const (
+	PollersLocal = "local"
+	PollersOff   = "off"
 )
 
 type Config struct {
@@ -15,6 +22,17 @@ type Config struct {
 	DBPath        string
 	EncryptionKey string
 	JWTSecret     string
+
+	// Pollers is MIKROTIK_NMS_POLLERS: "local" polls the devices from this
+	// process, "off" (the code default) does no device or UDP I/O at all — a
+	// checkout started against a copy of a production database then shows
+	// history but never contacts the fleet. Database-only jobs (retention,
+	// rollups) run either way. Restart to change.
+	Pollers string
+	// AllowedTargetCIDRs is MIKROTIK_NMS_ALLOWED_TARGET_CIDRS: the prefixes a
+	// device dial may resolve into. Required with Pollers=local (the process
+	// refuses to start otherwise); ignored while polling is off.
+	AllowedTargetCIDRs []netip.Prefix
 
 	// AllowedOrigins is the CORS / WebSocket origin allow-list. When empty the
 	// server reflects any origin (backwards-compatible) but logs a warning.
@@ -85,6 +103,7 @@ func Load() (*Config, error) {
 		DBPath:                envOr("MIKROTIK_NMS_DB_PATH", "mikrotik-nms.db"),
 		EncryptionKey:         os.Getenv("MIKROTIK_NMS_ENCRYPTION_KEY"),
 		JWTSecret:             os.Getenv("MIKROTIK_NMS_JWT_SECRET"),
+		Pollers:               strings.ToLower(strings.TrimSpace(envOr("MIKROTIK_NMS_POLLERS", PollersOff))),
 		HealthInterval:        envDurationOr("MIKROTIK_NMS_HEALTH_INTERVAL", 30*time.Second),
 		TopologyInterval:      envDurationOr("MIKROTIK_NMS_TOPOLOGY_INTERVAL", 60*time.Second),
 		FirmwareInterval:      envDurationOr("MIKROTIK_NMS_FIRMWARE_INTERVAL", 6*time.Hour),
@@ -121,6 +140,24 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("MIKROTIK_NMS_JWT_SECRET is required")
 	}
 
+	switch cfg.Pollers {
+	case PollersLocal, PollersOff:
+	default:
+		return nil, fmt.Errorf("MIKROTIK_NMS_POLLERS must be %q or %q (got %q)", PollersLocal, PollersOff, cfg.Pollers)
+	}
+	cidrs, err := parseTargetCIDRs(os.Getenv("MIKROTIK_NMS_ALLOWED_TARGET_CIDRS"))
+	if err != nil {
+		return nil, fmt.Errorf("MIKROTIK_NMS_ALLOWED_TARGET_CIDRS: %w", err)
+	}
+	cfg.AllowedTargetCIDRs = cidrs
+	// Fail closed: an instance that polls must say where. Starting with an
+	// empty fence would be the old behaviour (dial anything the DB names).
+	if cfg.PollersEnabled() && len(cidrs) == 0 {
+		return nil, fmt.Errorf("MIKROTIK_NMS_POLLERS=local requires MIKROTIK_NMS_ALLOWED_TARGET_CIDRS: " +
+			"list the subnet(s) the devices live in (comma-separated CIDRs) so this backend can only reach them, " +
+			"or set MIKROTIK_NMS_POLLERS=off for an instance that must never contact a device")
+	}
+
 	// From falls back to the SMTP auth user when not explicitly set.
 	if cfg.SMTPFrom == "" {
 		cfg.SMTPFrom = cfg.SMTPUser
@@ -134,6 +171,74 @@ func Load() (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// PollersEnabled reports whether this process polls devices (Pollers=local).
+// A zero Config (tests) polls nothing.
+func (c *Config) PollersEnabled() bool {
+	return c.Pollers == PollersLocal
+}
+
+// PollersMode is the effective MIKROTIK_NMS_POLLERS value, "local" or "off".
+func (c *Config) PollersMode() string {
+	if c.PollersEnabled() {
+		return PollersLocal
+	}
+	return PollersOff
+}
+
+// AllowedTargetCIDRStrings renders the allow-list for logs and the API
+// (never nil, so it encodes as an empty JSON array).
+func (c *Config) AllowedTargetCIDRStrings() []string {
+	out := make([]string, 0, len(c.AllowedTargetCIDRs))
+	for _, p := range c.AllowedTargetCIDRs {
+		out = append(out, p.String())
+	}
+	return out
+}
+
+// parseTargetCIDRs parses MIKROTIK_NMS_ALLOWED_TARGET_CIDRS: comma-separated
+// prefixes ("192.0.2.0/24, 2001:db8::/48"); a bare address stands for itself
+// (/32, /128). Unlike the flow listen list an invalid entry is an error, not a
+// skip — an allow-list that silently lost an entry would refuse devices with
+// a confusing error later. Prefixes are normalised: masked, IPv4-mapped IPv6
+// unmapped, zones dropped, duplicates removed.
+func parseTargetCIDRs(v string) ([]netip.Prefix, error) {
+	var out []netip.Prefix
+	seen := map[netip.Prefix]bool{}
+	for _, part := range strings.Split(v, ",") {
+		entry := strings.TrimSpace(part)
+		if entry == "" {
+			continue
+		}
+		var p netip.Prefix
+		if strings.Contains(entry, "/") {
+			pp, err := netip.ParsePrefix(entry)
+			if err != nil {
+				return nil, fmt.Errorf("entry %q: %w", entry, err)
+			}
+			p = pp
+		} else {
+			a, err := netip.ParseAddr(entry)
+			if err != nil {
+				return nil, fmt.Errorf("entry %q is neither a CIDR nor an address: %w", entry, err)
+			}
+			a = a.WithZone("")
+			p = netip.PrefixFrom(a, a.BitLen())
+		}
+		if a := p.Addr(); a.Is4In6() {
+			if p.Bits() < 96 {
+				return nil, fmt.Errorf("entry %q: an IPv4-mapped prefix needs at least /96", entry)
+			}
+			p = netip.PrefixFrom(a.Unmap(), p.Bits()-96)
+		}
+		p = p.Masked()
+		if !seen[p] {
+			seen[p] = true
+			out = append(out, p)
+		}
+	}
+	return out, nil
 }
 
 // SMTPEnabled reports whether self-service password-reset email can be sent.

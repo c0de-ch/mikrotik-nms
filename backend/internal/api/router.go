@@ -125,6 +125,9 @@ func NewRouter(db *sql.DB, hub *ws.Hub, cfg *config.Config, pool *routeros.Pool,
 			r.Post("/auth/logout", s.handleLogout)
 			r.Get("/auth/me", s.handleMe)
 
+			// How this instance runs: polling mode + the subnets it may reach.
+			r.Get("/system", s.handleSystemInfo)
+
 			// Users (admin only)
 			r.Route("/users", func(r chi.Router) {
 				r.Use(auth.RequireRole("admin"))

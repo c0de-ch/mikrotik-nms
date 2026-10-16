@@ -109,8 +109,14 @@ func JoinHostPort(host string, port int) string {
 	return net.JoinHostPort(h, strconv.Itoa(port))
 }
 
-// Dial connects to a RouterOS device and stores the connection.
+// Dial connects to a RouterOS device and stores the connection. The dial
+// policy is consulted first (outside the pool lock — a hostname check may
+// resolve), so a refused target never evicts the existing connection.
 func (p *Pool) Dial(deviceID, address string, port int, username, password string, useTLS bool) (*ros.Client, error) {
+	if err := CheckTarget(address); err != nil {
+		return nil, err
+	}
+
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -159,6 +165,9 @@ func (p *Pool) Dial(deviceID, address string, port int, username, password strin
 // CommandTimeout and force-close the pooled connection out from under every
 // other poller.
 func DialOnce(address string, port int, username, password string, useTLS, verifyTLS bool) (*ros.Client, error) {
+	if err := CheckTarget(address); err != nil {
+		return nil, err
+	}
 	addr := JoinHostPort(address, port)
 
 	var client *ros.Client

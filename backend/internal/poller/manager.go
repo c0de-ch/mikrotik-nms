@@ -46,6 +46,12 @@ type Manager struct {
 }
 
 func NewManager(db *sql.DB, pool *routeros.Pool, hub *ws.Hub, cfg *config.Config) *Manager {
+	flowCfg := flow.Config{Listen: cfg.FlowListen, CaptureDir: cfg.FlowCaptureDir}
+	if !cfg.PollersEnabled() {
+		// Polling off means no UDP I/O either: the collector stays disabled
+		// even when a listen address is configured.
+		flowCfg.Listen = nil
+	}
 	return &Manager{
 		db:           db,
 		pool:         pool,
@@ -53,7 +59,7 @@ func NewManager(db *sql.DB, pool *routeros.Pool, hub *ws.Hub, cfg *config.Config
 		cfg:          cfg,
 		ipRejectSeen: make(map[string]time.Time),
 		portStats:    NewPortStatsCollector(db, pool, hub),
-		flows:        flow.New(db, pool, hub, flow.Config{Listen: cfg.FlowListen, CaptureDir: cfg.FlowCaptureDir}),
+		flows:        flow.New(db, pool, hub, flowCfg),
 	}
 }
 
@@ -69,15 +75,27 @@ func (m *Manager) Flows() *flow.Collector {
 	return m.flows
 }
 
+// Start launches the background loops. Database-only jobs — retention and
+// the port-stats hourly rollup — run on every instance; everything that
+// reaches a device or binds UDP runs only with MIKROTIK_NMS_POLLERS=local, so
+// an instance started against a copy of the production database still shows
+// and maintains its history without contacting a single device.
 func (m *Manager) Start() {
 	ctx, cancel := context.WithCancel(context.Background())
 	m.cancel = cancel
+
+	go m.retentionLoop(ctx)
+
+	if !m.cfg.PollersEnabled() {
+		m.portStats.startupRollup()
+		log.Println("poller: device polling is off (MIKROTIK_NMS_POLLERS=off) — only database maintenance runs")
+		return
+	}
 
 	go m.healthLoop(ctx)
 	go m.infoLoop(ctx)
 	go m.topologyLoop(ctx)
 	go m.firmwareLoop(ctx)
-	go m.retentionLoop(ctx)
 
 	trafficMgr := NewTrafficManager(m.db, m.pool, m.hub)
 	go trafficMgr.Run(ctx)
