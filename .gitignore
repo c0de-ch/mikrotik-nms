@@ -31,3 +31,7 @@ frontend/out/
 .DS_Store
 Thumbs.db
 backend/mikrotik-nms
+
+# Claude Code local state (skills are shared, the rest is per-machine)
+.claude/*
+!.claude/skills/
