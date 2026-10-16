@@ -73,6 +73,15 @@ func GetInterfaceByMAC(db *sql.DB, mac string) (*Interface, error) {
 // legacy rows — after a full /interface/print. An empty names is a no-op, so
 // an empty reply never wipes a device.
 func DeleteInterfacesNotIn(db *sql.DB, deviceID string, names []string) (int64, error) {
+	return deleteInterfacesNotIn(db, deviceID, names)
+}
+
+// execer is the part of *sql.DB and *sql.Tx the interface writers need.
+type execer interface {
+	Exec(query string, args ...any) (sql.Result, error)
+}
+
+func deleteInterfacesNotIn(db execer, deviceID string, names []string) (int64, error) {
 	if len(names) == 0 {
 		return 0, nil
 	}
@@ -87,6 +96,41 @@ func DeleteInterfacesNotIn(db *sql.DB, deviceID string, names []string) (int64, 
 		return 0, err
 	}
 	return res.RowsAffected()
+}
+
+// SyncInterfaces applies one device's interface inventory in ONE
+// transaction: every row in upserts is written like UpsertInterface (its
+// DeviceID is forced to deviceID), then, when keep is non-empty, the device's
+// rows whose name is not in keep are deleted (DeleteInterfacesNotIn's rule,
+// including its empty-list guard). It returns how many rows were pruned.
+func SyncInterfaces(db *sql.DB, deviceID string, upserts []Interface, keep []string) (int64, error) {
+	if len(upserts) == 0 && len(keep) == 0 {
+		return 0, nil
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	for i := range upserts {
+		r := upserts[i]
+		if _, err := tx.Exec(
+			`INSERT INTO interfaces (id, device_id, name, type, mac_address, mtu, running, disabled, comment, last_updated)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+			 ON CONFLICT(device_id, name) DO UPDATE SET
+			    type=excluded.type, mac_address=excluded.mac_address, mtu=excluded.mtu,
+			    running=excluded.running, disabled=excluded.disabled, comment=excluded.comment,
+			    last_updated=CURRENT_TIMESTAMP`,
+			r.ID, deviceID, r.Name, r.Type, r.MACAddress, r.MTU, r.Running, r.Disabled, r.Comment,
+		); err != nil {
+			return 0, err
+		}
+	}
+	pruned, err := deleteInterfacesNotIn(tx, deviceID, keep)
+	if err != nil {
+		return 0, err
+	}
+	return pruned, tx.Commit()
 }
 
 func DeleteStaleInterfaces(db *sql.DB, deviceID string, cutoff time.Time) error {

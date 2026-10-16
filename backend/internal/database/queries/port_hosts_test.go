@@ -101,3 +101,40 @@ func TestDeleteStalePortHosts(t *testing.T) {
 		t.Errorf("left = %+v", left)
 	}
 }
+
+func TestListLatestPortHostsForMACs(t *testing.T) {
+	db := testDB(t)
+	seedPortStatsDevice(t, db, "1")
+	seedPortStatsDevice(t, db, "2")
+	const gw, other = "AA:BB:CC:00:00:01", "AA:BB:CC:00:00:09"
+
+	// Device 1, dump at 10:00: the gateway on ether7. Dump at 10:05: it moved
+	// to ether8 (the ether7 row keeps its 10:00 last_seen).
+	if err := UpsertPortHosts(db, "1", []PortHost{{InterfaceName: "ether7", MACAddress: gw}, {InterfaceName: "ether2", MACAddress: other}}, minute(10, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if err := UpsertPortHosts(db, "1", []PortHost{{InterfaceName: "ether8", MACAddress: gw}, {InterfaceName: "ether2", MACAddress: other}}, minute(10, 5)); err != nil {
+		t.Fatal(err)
+	}
+	// Device 2 learned it on its uplink at 10:03 (its only dump).
+	if err := UpsertPortHosts(db, "2", []PortHost{{InterfaceName: "sfp1", MACAddress: gw}}, minute(10, 3)); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := ListLatestPortHostsForMACs(db, minute(9, 0), []string{"aa:bb:cc:00:00:01"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].DeviceID != "1" || got[0].InterfaceName != "ether8" || !got[0].LastSeen.Equal(minute(10, 5)) ||
+		got[1].DeviceID != "2" || got[1].InterfaceName != "sfp1" {
+		t.Fatalf("rows = %+v, want 1/ether8 (latest dump only) and 2/sfp1", got)
+	}
+
+	// The freshness floor still applies.
+	if got, _ := ListLatestPortHostsForMACs(db, minute(10, 4), []string{gw}); len(got) != 1 || got[0].DeviceID != "1" {
+		t.Errorf("fresh since 10:04 = %+v, want only device 1", got)
+	}
+	if got, err := ListLatestPortHostsForMACs(db, minute(9, 0), nil); err != nil || got != nil {
+		t.Errorf("no MACs = %+v err %v", got, err)
+	}
+}
