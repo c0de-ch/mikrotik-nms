@@ -89,13 +89,21 @@ func (m *Manager) Start() {
 
 	go m.flows.Run(ctx)
 
+	// One /log/print per device per window, shared by the wifi and
+	// network-health pollers, and one capability probe per device for all.
+	logs := NewLogReader()
+	caps := NewCapabilityCache()
+
 	wifiTracker := NewWifiTracker(m.db, m.pool, m.hub, 30*time.Second)
+	wifiTracker.UseLogReader(logs)
+	wifiTracker.UseCapabilities(caps)
 	go wifiTracker.Run(ctx)
 
 	clientDisc := NewClientDiscoveryPoller(m.db, m.pool, resolver.New(m.db), 15*time.Minute)
 	go clientDisc.Run(ctx)
 
 	netHealth := NewNetworkHealthPoller(m.db, m.pool, m.hub, m.cfg.NetworkHealthInterval)
+	netHealth.UseLogReader(logs)
 	go netHealth.Run(ctx)
 
 	connectivity := NewConnectivityPoller(m.db, m.pool, m.hub, defaultConnectivityInterval, m.cfg.ROSTLSVerify)

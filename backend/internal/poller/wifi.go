@@ -36,11 +36,15 @@ type pendingLeave struct {
 //
 // Sources of truth, in priority order:
 //  1. RouterOS wireless log entries (authoritative for join/leave/roam) —
-//     parsed via routeros.GetWirelessLogEvents.
+//     the shared per-device log read, parsed by routeros.WirelessLogEventsFrom.
 //  2. Registration table snapshots — used to enrich state with signal/rate
 //     and to catch clients that the log missed.
 //  3. Absence from the registration table for >= missedPollThreshold cycles —
 //     a safety net only, in case logging is disabled on the controller.
+//
+// Only devices with a wireless package (CapabilityCache) are read at all: a
+// switch has no wireless log lines and no registration table, and asking it
+// anyway cost a log dump plus three trapping prints every cycle.
 type WifiTracker struct {
 	db       *sql.DB
 	pool     *routeros.Pool
@@ -51,6 +55,24 @@ type WifiTracker struct {
 	// Pruned periodically to bound memory.
 	seenLogs       map[string]map[string]time.Time // devID -> fingerprint -> firstSeen
 	lastLogPruneAt time.Time
+
+	logs *LogReader       // shared with the network-health poller (UseLogReader)
+	caps *CapabilityCache // shared fleet-wide (UseCapabilities)
+}
+
+// UseLogReader shares one log reader with the other pollers, so a device's
+// buffer is read once per window for all of them.
+func (wt *WifiTracker) UseLogReader(r *LogReader) {
+	if r != nil {
+		wt.logs = r
+	}
+}
+
+// UseCapabilities shares one capability cache with the other pollers.
+func (wt *WifiTracker) UseCapabilities(c *CapabilityCache) {
+	if c != nil {
+		wt.caps = c
+	}
 }
 
 // Number of consecutive missed polls before declaring a client as "left" via
@@ -72,6 +94,8 @@ func NewWifiTracker(db *sql.DB, pool *routeros.Pool, hub *ws.Hub, interval time.
 		interval: interval,
 		clients:  make(map[string]*clientState),
 		seenLogs: make(map[string]map[string]time.Time),
+		logs:     NewLogReader(),
+		caps:     NewCapabilityCache(),
 	}
 }
 
@@ -128,7 +152,9 @@ func (wt *WifiTracker) poll(ctx context.Context) {
 	now := time.Now()
 
 	// Phase 1: drain wireless logs from each controller. This is the
-	// authoritative source for join / leave / roam events.
+	// authoritative source for join / leave / roam events. Devices without a
+	// wireless package are skipped entirely — nothing to read there.
+	wireless := make(map[string]Caps, len(devices))
 	for _, dev := range devices {
 		select {
 		case <-ctx.Done():
@@ -144,16 +170,22 @@ func (wt *WifiTracker) poll(ctx context.Context) {
 		}
 		func() {
 			defer func() { recover() }()
-			events, err := routeros.GetWirelessLogEvents(client)
+			run := routeros.ClientRunner{Client: client}
+			caps := wt.caps.Ensure(dev.ID, dev.ROSVersion, run, now)
+			if !caps.HasWifiRole() {
+				return
+			}
+			wireless[dev.ID] = caps
+			entries, _, err := wt.logs.Entries(logConsumerWifi, dev.ID, run, now)
 			if err != nil {
 				return
 			}
-			wt.processDeviceLogs(dev.ID, events, macLookups, now)
+			wt.processDeviceLogs(dev.ID, routeros.WirelessLogEventsFrom(entries), macLookups, now)
 		}()
 	}
 
 	// Phase 2: snapshot registration tables (for signal/rate enrichment and
-	// the absence safety net).
+	// the absence safety net), reading only the menus the probe found.
 	currentClients := make(map[string]*wifiSnapshot)
 	for _, dev := range devices {
 		select {
@@ -161,7 +193,8 @@ func (wt *WifiTracker) poll(ctx context.Context) {
 			return
 		default:
 		}
-		if dev.Status != "online" {
+		caps, ok := wireless[dev.ID]
+		if !ok {
 			continue
 		}
 		client := wt.pool.GetLive(dev.ID)
@@ -170,9 +203,14 @@ func (wt *WifiTracker) poll(ctx context.Context) {
 		}
 		func() {
 			defer func() { recover() }()
-			regs, err := routeros.GetCAPsMANRegistrations(client)
-			if err != nil {
-				return
+			run := routeros.ClientRunner{Client: client}
+			var regs []routeros.WifiRegistration
+			for _, menu := range caps.RegistrationMenus() {
+				rows, err := routeros.GetRegistrations(run, menu)
+				if err != nil {
+					continue
+				}
+				regs = append(regs, rows...)
 			}
 			for _, reg := range regs {
 				mac := strings.ToUpper(reg.MAC)

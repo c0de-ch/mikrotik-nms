@@ -55,6 +55,19 @@ type NetworkHealthPoller struct {
 	lastLogPruneAt time.Time
 	// per-device per-interface state for port-deactivation / flap detection.
 	ports *portMonitor
+
+	// logs is the shared per-device log read (UseLogReader); logins turns
+	// its account lines into device_findings.
+	logs   *LogReader
+	logins *LoginWatch
+}
+
+// UseLogReader shares one log reader with the other pollers, so a device's
+// buffer is read once per window for all of them.
+func (n *NetworkHealthPoller) UseLogReader(r *LogReader) {
+	if r != nil {
+		n.logs = r
+	}
 }
 
 // defaultTCNStormThreshold is the topology-changes-per-cycle delta above which a
@@ -246,6 +259,8 @@ func NewNetworkHealthPoller(db *sql.DB, pool *routeros.Pool, hub *ws.Hub, interv
 		bridgeSTPSeen: make(map[string]bool),
 		seenLogs:      make(map[string]map[string]time.Time),
 		ports:         newPortMonitor(),
+		logs:          NewLogReader(),
+		logins:        NewLoginWatch(db),
 	}
 }
 
@@ -315,6 +330,7 @@ func (n *NetworkHealthPoller) poll(ctx context.Context) {
 	}
 	n.ports.pruneDevices(activeDevices)
 	n.pruneTCState(activeDevices)
+	n.logs.Prune(activeDevices)
 
 	for _, dev := range devices {
 		select {
@@ -480,11 +496,14 @@ func (n *NetworkHealthPoller) poll(ctx context.Context) {
 				}
 			}
 
-			// Bridge log events: loop / mac flap / bpdu on edge.
-			logEvents, err := routeros.GetBridgeLogEvents(client)
+			// Bridge log events (loop / mac flap / bpdu on edge) and account
+			// lines, from the shared per-device log read.
+			run := routeros.ClientRunner{Client: client}
+			entries, firstSight, err := n.logs.Entries(logConsumerBridge, dev.ID, run, cycleStart)
 			if err == nil {
-				added := n.processBridgeLogs(dev.ID, logEvents, cycleStart)
+				added := n.processBridgeLogs(dev.ID, routeros.BridgeLogEventsFrom(entries), cycleStart)
 				evCount += added
+				n.logins.Process(&dev, run, entries, firstSight, cycleStart)
 			}
 
 			// Port monitoring: link down / admin disable / flap on every
