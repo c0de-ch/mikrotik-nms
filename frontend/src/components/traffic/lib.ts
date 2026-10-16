@@ -2,7 +2,7 @@
 // Colours and bps formatting come from graph-style so the map and traffic
 // views read as one system.
 
-import type { Device, PortRate, PortRole, PortRoleName, PortSnapshot, SeriesPoint, TopDir, TopMetric, TrafficRange } from "@/lib/api";
+import type { Device, DeviceClass, PortRate, PortRole, PortRoleName, PortSnapshot, SeriesPoint, TopDir, TopMetric, TrafficRange } from "@/lib/api";
 import { TRAFFIC, fmtBps } from "@/components/graph/graph-style";
 
 export const RX_COLOR = TRAFFIC.rx;
@@ -239,6 +239,24 @@ export function collectingText(snapshot: PortSnapshot | null): string {
 
 export function snapshotReady(snapshot: PortSnapshot | null): boolean {
   return !!snapshot && snapshot.ready && snapshot.ts !== null;
+}
+
+// A CPU class in plain words, as the device page's polling card says it.
+export const CLASS_WORD: Record<DeviceClass, string> = { C0: "unprobed", C1: "weak", C2: "small", C3: "capable" };
+
+// "just now", "12 s ago", "4 min ago" for snapshot-derived rates.
+export function fmtAge(seconds: number): string {
+  if (seconds < 2) return "just now";
+  if (seconds < 120) return `${Math.round(seconds)} s ago`;
+  if (seconds < 7200) return `${Math.round(seconds / 60)} min ago`;
+  return `${Math.round(seconds / 3600)} h ago`;
+}
+
+// The age of snapshot data now: the age the server reported plus the time
+// since the response arrived (never the local clock against sampled_at,
+// which may be skewed).
+export function ageNow(ageAtReceipt: number, receivedAt: number, now: number): number {
+  return ageAtReceipt + Math.max(0, now - receivedAt) / 1000;
 }
 
 // ---- formatting -------------------------------------------------------------

@@ -105,7 +105,7 @@ export function PortDetail({
         </CardContent>
       </Card>
 
-      <PortHistoryCard deviceId={deviceId} iface={iface} range={range} role={role} />
+      <PortHistoryCard deviceId={deviceId} iface={iface} range={range} role={role} snapshot={snapshot} rate={rate} />
 
       <PortConversations deviceId={deviceId} iface={iface} range={range} onOpenPort={onOpenPort} />
 

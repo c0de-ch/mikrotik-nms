@@ -333,6 +333,54 @@ export function useDevices(): DevicesState {
   return { devices, byId, loaded, error, reload };
 }
 
+// ---- live-stream limits -----------------------------------------------------
+
+// useLiveLimits fetches what a per-port live stream of the device may do for
+// this user (null deviceId = not needed); a new session number asks again.
+// A failed fetch leaves data null and the caller subscribes anyway — the
+// server vets every subscription.
+export function useLiveLimits(deviceId: string | null, session = 0) {
+  const { token } = useAuth();
+  const fetcher = useCallback(() => api.devices.liveLimits(token!, deviceId!), [token, deviceId]);
+  return usePolledFetch(token && deviceId ? `live-limits|${deviceId}|${session}` : null, fetcher, null);
+}
+
+// ---- clock ------------------------------------------------------------------
+
+// One shared 1 s clock for "updated 12 s ago" hints, however many components
+// read it; it only ticks while something is subscribed. Reading the time in
+// the store rather than during render keeps renders pure.
+let clockNow = 0;
+let clockTimer: ReturnType<typeof setInterval> | null = null;
+const clockListeners = new Set<() => void>();
+
+function subscribeClock(onChange: () => void): () => void {
+  clockListeners.add(onChange);
+  if (!clockTimer) {
+    clockNow = Date.now();
+    clockTimer = setInterval(() => {
+      clockNow = Date.now();
+      for (const l of clockListeners) l();
+    }, 1000);
+  }
+  return () => {
+    clockListeners.delete(onChange);
+    if (clockListeners.size === 0 && clockTimer) {
+      clearInterval(clockTimer);
+      clockTimer = null;
+    }
+  };
+}
+
+// useNow returns the current time (ms), refreshed every second.
+export function useNow(): number {
+  return useSyncExternalStore(
+    subscribeClock,
+    () => clockNow,
+    () => 0,
+  );
+}
+
 // Dark-mode flag. The authenticated layout toggles the "dark" class on <html>
 // only after the settings fetch resolves — after the page's first render on a
 // reload or deep link — so the flag follows the class instead of reading it

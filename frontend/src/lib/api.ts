@@ -216,10 +216,14 @@ export const api = {
       apiFetch(`/devices/${id}`, { method: "DELETE", token }),
     interfaces: (token: string, id: string) =>
       apiFetch<DeviceInterface[]>(`/devices/${id}/interfaces`, { token }),
-    // Physical ports with a one-shot live rx/tx sample — powers the switch
-    // port-grid on the map.
+    // Physical ports with their rx/tx from the port-counter snapshot (no
+    // device call) — powers the switch port grid on the map.
     ports: (token: string, id: string) =>
-      apiFetch<DevicePort[]>(`/devices/${id}/ports`, { token }),
+      apiFetch<DevicePortsResponse>(`/devices/${id}/ports`, { token }),
+    // What a live per-port stream of this device may do for the caller
+    // (class caps, admin-only, pause) — checked before subscribing.
+    liveLimits: (token: string, id: string) =>
+      apiFetch<LiveLimits>(`/devices/${id}/live-limits`, { token }),
     neighbors: (token: string, id: string) =>
       apiFetch<Neighbor[]>(`/devices/${id}/neighbors`, { token }),
     // Live from the device: configured IPv4/IPv6 addresses annotated with the
@@ -252,10 +256,10 @@ export const api = {
   traffic: {
     summary: (token: string) =>
       apiFetch<{ device_id: string; rx_bps: number; tx_bps: number }[]>("/traffic/summary", { token }),
-    // One-shot per-link throughput snapshot for the map's initial paint; the
-    // continuous feed is the "topology.traffic" WS topic.
+    // Per-link throughput from the port-counter snapshot for the map's
+    // initial paint; the continuous feed is the "topology.traffic" WS topic.
     links: (token: string) =>
-      apiFetch<{ links: LinkTraffic[] }>("/traffic/links", { token }),
+      apiFetch<LinkTrafficResponse>("/traffic/links", { token }),
     get: (token: string, deviceId: string, iface: string, from?: string, to?: string) => {
       const params = new URLSearchParams();
       if (from) params.set("from", from);
@@ -765,14 +769,70 @@ export interface TrafficSample {
   collected_at: string;
 }
 
-// Live per-link throughput for the network map. id == the topology edge id
-// (links.id), so it merges straight onto the corresponding graph edge.
+// Per-link throughput for the network map. id == the topology edge id
+// (links.id, or a synthetic egress edge id), so it merges straight onto the
+// corresponding graph edge. Rates are in source's frame (rx enters source);
+// device_id/iface name the end whose port counters were read.
 export interface LinkTraffic {
   id: string;
   source: string;
   target: string;
   rx_bps: number;
   tx_bps: number;
+  device_id: string;
+  iface: string;
+}
+
+// Freshness of rates derived from the port-counter snapshot. sampled_at is
+// the end of the counter cycle the rates come from (null before the first
+// cycle, or for a device the snapshot has nothing of); age_seconds is its
+// age when the server answered — add the time since the response arrived
+// rather than comparing sampled_at with the local clock.
+export interface SnapshotMeta {
+  source: "snapshot";
+  sampled_at: string | null;
+  age_seconds: number | null;
+  interval_seconds: number;
+  ready: boolean;
+}
+
+// REST /traffic/links and the WS "topology.traffic" payload.
+export interface LinkTrafficResponse extends SnapshotMeta {
+  links: LinkTraffic[];
+}
+
+// A device's live-stream ceilings (backend devclass.LiveCaps): the class
+// they follow (C1 on the light profile), the shortest sampling period, how
+// many ports and viewers may stream at once, and whether only admins may.
+export interface LiveCaps {
+  class: DeviceClass;
+  profile: PollProfile;
+  min_period_seconds: number;
+  max_ifaces: number;
+  leases: number;
+  admin_only: boolean;
+  // How often the port-counter snapshot — the fallback view — refreshes.
+  snapshot_interval_seconds: number;
+}
+
+// GET /devices/{id}/live-limits: whether the caller may stream at all (role,
+// pause, polling mode); interface and viewer ceilings are decided on
+// subscribe (subscribe.error).
+export interface LiveLimits extends LiveCaps {
+  device_id: string;
+  allowed: boolean;
+  reason?: string;
+  message?: string;
+}
+
+// Data of the subscribe.ack / subscribe.error control frame on a
+// "traffic.<device>.<iface>" topic: the effective period when granted, the
+// refusal code and message (and the fallback topic) when not.
+export interface LiveStreamStatus extends LiveCaps {
+  period_seconds?: number;
+  code?: string;
+  error?: string;
+  fallback?: string;
 }
 
 // ---- Traffic analytics (port-stats collector) --------------------------------
@@ -1331,7 +1391,7 @@ export interface FlowExporterBody {
   nat_addresses: string[];
 }
 
-// One physical port of a device with a live throughput sample.
+// One physical port of a device with its rate from the port-counter snapshot.
 export interface DevicePort {
   name: string;
   type: string;
@@ -1340,6 +1400,13 @@ export interface DevicePort {
   comment: string;
   rx_bps: number;
   tx_bps: number;
+}
+
+// GET /devices/{id}/ports. sampled_at is null while the snapshot has none
+// of the device's interfaces (offline or not polled yet): rates are 0 then.
+export interface DevicePortsResponse extends SnapshotMeta {
+  device_id: string;
+  ports: DevicePort[];
 }
 
 export interface FirmwareStatus {
