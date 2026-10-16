@@ -517,17 +517,40 @@ func TestCollectorRunSocketAndGracefulShutdown(t *testing.T) {
 	up := uint32(900_000_000)
 	unix := uint32(now.Unix())
 	deadline := time.Now().Add(5 * time.Second)
+	// Status carries StartedAt only once Run has bound its sockets: a write
+	// before that is refused on loopback and would be lost.
+	for c.Status().StartedAt == nil {
+		if time.Now().After(deadline) {
+			cancel()
+			t.Fatal("collector never started")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// The template datagram is re-sent until the reader has counted one; a
+	// slow runner may count several, so every later wait is relative to the
+	// number actually sent — cancelling before the reader has pulled the data
+	// datagram off the socket would discard it with the socket.
+	var sent int64
 	for c.Status().Global.Datagrams == 0 {
 		if time.Now().After(deadline) {
 			cancel()
 			t.Fatal("collector never received a datagram")
 		}
 		_, _ = src.Write(pktgen.OPNsenseV9Templates(unix, up, 1))
+		sent++
 		time.Sleep(20 * time.Millisecond)
+	}
+	for c.Status().Global.Datagrams < sent && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
 	}
 	flows := pktgen.LabOPNsense(up, "127.0.0.1", "127.0.0.1", uint16(port))
 	_, _ = src.Write(pktgen.OPNsenseV9Data(unix, up, 2, flows...))
-	for c.Status().Global.Datagrams < 2 && time.Now().Before(deadline) {
+	sent++
+	for c.Status().Global.Datagrams < sent {
+		if time.Now().After(deadline) {
+			cancel()
+			t.Fatalf("collector received %d of %d datagrams", c.Status().Global.Datagrams, sent)
+		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	cancel()
