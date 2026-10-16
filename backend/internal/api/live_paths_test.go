@@ -6,12 +6,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/mikrotik-nms/backend/internal/auth"
 	"github.com/mikrotik-nms/backend/internal/config"
 	"github.com/mikrotik-nms/backend/internal/database/queries"
+	"github.com/mikrotik-nms/backend/internal/devclass"
 	"github.com/mikrotik-nms/backend/internal/poller"
 	"github.com/mikrotik-nms/backend/internal/routeros"
 	"github.com/mikrotik-nms/backend/internal/routeros/routerostest"
@@ -30,6 +32,7 @@ func liveRouter(s *Server, role string) http.Handler {
 	r.Get("/topology", s.handleGetTopology)
 	r.Get("/devices", s.handleListDevices)
 	r.Get("/devices/{id}/ports", s.handleGetDevicePorts)
+	r.Get("/devices/{id}/live-limits", s.handleDeviceLiveLimits)
 	r.Get("/wifi/current", s.handleWifiCurrent)
 	r.Get("/vlans", s.handleListVLANs)
 	r.Get("/clients/cached", s.handleCachedClients)
@@ -68,7 +71,7 @@ func TestMapReadPathsNeverTouchDevices(t *testing.T) {
 		h := liveRouter(f.s, role)
 		paths := []string{"/topology", "/devices", "/wifi/current", "/vlans", "/clients/cached", "/traffic/links"}
 		for _, id := range ids {
-			paths = append(paths, "/devices/"+id+"/ports")
+			paths = append(paths, "/devices/"+id+"/ports", "/devices/"+id+"/live-limits")
 		}
 		for _, p := range paths {
 			if code := liveGet(t, h, p, nil); code != http.StatusOK {
@@ -196,5 +199,58 @@ func TestTrafficLinksFromSnapshot(t *testing.T) {
 	}
 	if resp.SampledAt != nil || resp.Ready || resp.Links == nil || len(resp.Links) != 0 {
 		t.Errorf("without a collector = %+v", resp)
+	}
+}
+
+func TestDeviceLiveLimits(t *testing.T) {
+	f := newTrafficFixture(t)
+	f.s.cfg = &config.Config{Pollers: config.PollersLocal}
+	if err := queries.SetDeviceClass(f.db, "r", devclass.C3, devclass.ResourceFacts{}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := queries.SetDeviceClass(f.db, "s", devclass.C1, devclass.ResourceFacts{}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := queries.PauseDevicePolling(f.db, "a2", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name, role, device string
+		s                  *Server
+		allowed            bool
+		reason             string
+		class              devclass.Class
+		minPeriod          int
+	}{
+		{"C1 viewer", "viewer", "s", f.s, false, poller.LiveRefusedAdminOnly, devclass.C1, 15},
+		{"C1 admin", "admin", "s", f.s, true, "", devclass.C1, 15},
+		{"unprobed viewer", "viewer", "c", f.s, false, poller.LiveRefusedAdminOnly, devclass.C1, 15},
+		{"C3 viewer", "viewer", "r", f.s, true, "", devclass.C3, 1},
+		{"paused", "admin", "a2", f.s, false, poller.LiveRefusedPaused, devclass.C1, 15},
+		{"polling off", "admin", "r", &Server{db: f.db, portStats: f.fake}, false, poller.LiveRefusedPollersOff, devclass.C3, 1},
+	}
+	for _, tt := range tests {
+		var resp liveLimitsResponse
+		if code := liveGet(t, liveRouter(tt.s, tt.role), "/devices/"+tt.device+"/live-limits", &resp); code != http.StatusOK {
+			t.Fatalf("%s: status %d", tt.name, code)
+		}
+		if resp.Allowed != tt.allowed || resp.Reason != tt.reason || resp.Class != tt.class || resp.MinPeriodSeconds != tt.minPeriod {
+			t.Errorf("%s: %+v", tt.name, resp)
+		}
+		if !tt.allowed && resp.Message == "" {
+			t.Errorf("%s: refused without a message", tt.name)
+		}
+		if resp.SnapshotIntervalSeconds != 15 {
+			t.Errorf("%s: snapshot interval %d", tt.name, resp.SnapshotIntervalSeconds)
+		}
+	}
+	var resp liveLimitsResponse
+	_ = liveGet(t, liveRouter(f.s, "viewer"), "/devices/s/live-limits", &resp)
+	if resp.Message != "Live view is limited on weak devices — showing 15 s snapshot data" {
+		t.Errorf("C1 viewer message = %q", resp.Message)
+	}
+	if code := liveGet(t, liveRouter(f.s, "viewer"), "/devices/nope/live-limits", nil); code != http.StatusNotFound {
+		t.Errorf("unknown device = %d, want 404", code)
 	}
 }
