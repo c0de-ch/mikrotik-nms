@@ -704,7 +704,7 @@ export default function SettingsPage() {
           <div className="flex items-center justify-between gap-4">
             <div className="flex-1">
               <p className="font-medium text-sm">Flap threshold</p>
-              <p className="text-xs text-muted-foreground">Transitions within the window required to fire a critical port-flap event.</p>
+              <p className="text-xs text-muted-foreground">Link-downs within the window required to fire a critical port-flap event.</p>
             </div>
             <Input
               type="number"
@@ -719,7 +719,7 @@ export default function SettingsPage() {
           <div className="flex items-center justify-between gap-4">
             <div className="flex-1">
               <p className="font-medium text-sm">Flap window</p>
-              <p className="text-xs text-muted-foreground">Sliding window in seconds used to count transitions.</p>
+              <p className="text-xs text-muted-foreground">Sliding window in seconds used to count link-downs.</p>
             </div>
             <Input
               type="number"
