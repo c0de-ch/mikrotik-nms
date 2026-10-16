@@ -10,16 +10,16 @@ import (
 	"github.com/go-routeros/routeros/v3/proto"
 )
 
-// scriptedDevice answers RunArgs from a handler and records every call, so a
+// scriptedDevice answers Run from a handler and records every call, so a
 // test can assert both the parsed result and the exact command sequence.
 type scriptedDevice struct {
 	calls  []string
 	handle func(cmd string, args []string) (*ros.Reply, error)
 }
 
-func (d *scriptedDevice) RunArgs(s []string) (*ros.Reply, error) {
-	d.calls = append(d.calls, strings.Join(s, " "))
-	return d.handle(s[0], s[1:])
+func (d *scriptedDevice) Run(command string, args ...string) (*ros.Reply, error) {
+	d.calls = append(d.calls, strings.Join(append([]string{command}, args...), " "))
+	return d.handle(command, args)
 }
 
 // count returns how many recorded calls start with prefix.

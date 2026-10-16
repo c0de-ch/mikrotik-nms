@@ -166,7 +166,7 @@ type BridgeState struct {
 // interfaces here) before passing it to ReadBridgeState, which then reads and
 // monitors only genuine bridges.
 func ListBridges(client *ros.Client) ([]BridgeInfo, error) {
-	return listBridges(runnerFor(client))
+	return listBridges(ClientRunner{Client: client})
 }
 
 // ReadBridgeState reads the ports of the given bridges and their STP runtime
@@ -175,11 +175,11 @@ func ListBridges(client *ros.Client) ([]BridgeInfo, error) {
 // record (zero = unprobed) and version its RouterOS version; the returned
 // state carries the updated caps for the caller to keep.
 func ReadBridgeState(client *ros.Client, bridges []BridgeInfo, caps BridgeCaps, version string, now time.Time) (*BridgeState, error) {
-	return readBridgeState(runnerFor(client), bridges, caps, version, now)
+	return readBridgeState(ClientRunner{Client: client}, bridges, caps, version, now)
 }
 
 func listBridges(r Runner) ([]BridgeInfo, error) {
-	reply, err := r.RunArgs([]string{"/interface/bridge/print", "=.proplist=" + bridgeProplist})
+	reply, err := r.Run("/interface/bridge/print", "=.proplist="+bridgeProplist)
 	if err != nil {
 		return nil, err
 	}
@@ -259,7 +259,7 @@ func readBridgeState(r Runner, bridges []BridgeInfo, caps BridgeCaps, version st
 // printBridgePorts is the one proplisted port print, restricted to the ports
 // of the bridges the caller kept.
 func printBridgePorts(r Runner, keep map[string]bool) ([]BridgePortInfo, error) {
-	reply, err := r.RunArgs([]string{"/interface/bridge/port/print", "=.proplist=" + bridgePortProplist})
+	reply, err := r.Run("/interface/bridge/port/print", "=.proplist="+bridgePortProplist)
 	if err != nil {
 		return nil, err
 	}
@@ -453,7 +453,7 @@ func monitorPorts(r Runner, ports []BridgePortInfo, caps *BridgeCaps, commands *
 	got := false
 	for _, i := range active {
 		*commands++
-		reply, err := r.RunArgs([]string{"/interface/bridge/port/monitor", "=numbers=" + ports[i].ID, "=once="})
+		reply, err := r.Run("/interface/bridge/port/monitor", "=numbers="+ports[i].ID, "=once=")
 		if err != nil || reply == nil || len(reply.Re) == 0 {
 			continue
 		}
@@ -478,7 +478,7 @@ func monitorPortsBatched(r Runner, ports []BridgePortInfo, active []int, proplis
 	if proplist {
 		args = append(args, "=.proplist="+bridgePortMonitorProplist)
 	}
-	reply, err := r.RunArgs(args)
+	reply, err := r.Run(args[0], args[1:]...)
 	if err != nil {
 		return monitorRejected
 	}
@@ -539,7 +539,7 @@ func monitorBridges(r Runner, bridges []BridgeInfo, caps *BridgeCaps, commands *
 	}
 	for i := range out {
 		*commands++
-		reply, err := r.RunArgs([]string{"/interface/bridge/monitor", "=numbers=" + bridgeNumber(out[i]), "=once="})
+		reply, err := r.Run("/interface/bridge/monitor", "=numbers="+bridgeNumber(out[i]), "=once=")
 		if err != nil || reply == nil || len(reply.Re) == 0 {
 			continue
 		}
@@ -557,7 +557,7 @@ func monitorBridgesBatched(r Runner, bridges []BridgeInfo, proplist bool) monito
 	if proplist {
 		args = append(args, "=.proplist="+bridgeMonitorProplist)
 	}
-	reply, err := r.RunArgs(args)
+	reply, err := r.Run(args[0], args[1:]...)
 	if err != nil {
 		return monitorRejected
 	}
