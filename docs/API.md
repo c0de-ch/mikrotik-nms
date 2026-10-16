@@ -128,9 +128,23 @@ user), **admin** (admin role required).
 | GET | `/devices/{id}` | any | Get one device. `404` if absent. |
 | GET | `/devices/{id}/interfaces` | any | Cached interface list for the device. |
 | GET | `/devices/{id}/neighbors` | any | Cached `/ip/neighbor` neighbors for the device. |
+| GET | `/devices/{id}/audit` | any | Operator actions on the device (pauses, profile and class changes), newest first. Query `limit` (default 50, max 500). `[{id, at, user_id, username, action, device_id, detail}]`. |
 | POST | `/devices` | admin | Add a device. Tests the RouterOS connection first; `400` if unreachable. |
 | PUT | `/devices/{id}` | admin | Update device fields (only non-empty fields override). |
 | DELETE | `/devices/{id}` | admin | Remove a device. |
+| POST | `/devices/{id}/polling/pause` | admin | Pause every poller but liveness for `{"hours": 1…168}` (the UI offers 1 h and 24 h). Returns the device. |
+| POST | `/devices/{id}/polling/resume` | admin | Clear a pause. Returns the device. |
+| PUT | `/devices/{id}/polling` | admin | `{"profile": "auto"\|"light", "class_override": "C1"\|"C2"\|"C3"\|null}`; omitted keys are kept, `null` clears the override. `400` when the override is more capable than the probed class (overrides may only make polling gentler). Returns the device. |
+
+Every device carries its CPU class (`internal/devclass`): `device_class` is
+what the last `/system/resource` probe derived (`""` until probed, then
+`C1` weak — MIPS or ≤ 128 MiB, `C2` small ARM, `C3` capable arm64/x86_64),
+`class_override` an admin's gentler-only override, and `effective_class` the
+class the pollers budget the device as (an unprobed device counts as `C1`).
+`poll_profile` is `auto` (the class cadences) or `light` (the `C1` cadences
+whatever the class); `polling_paused_until` / `polling_paused` show an
+active pause. Pauses and profile/override changes are written to the audit
+log with the acting user.
 
 Create/update body fields:
 

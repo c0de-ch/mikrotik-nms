@@ -151,6 +151,7 @@ func NewRouter(db *sql.DB, hub *ws.Hub, cfg *config.Config, pool *routeros.Pool,
 			r.Get("/devices/{id}/ports", s.handleGetDevicePorts)
 			r.Get("/devices/{id}/neighbors", s.handleListNeighbors)
 			r.Get("/devices/{id}/addresses", s.handleDeviceAddresses)
+			r.Get("/devices/{id}/audit", s.handleDeviceAudit)
 
 			// Device write operations + deep discovery (admin only)
 			r.Group(func(r chi.Router) {
@@ -158,6 +159,10 @@ func NewRouter(db *sql.DB, hub *ws.Hub, cfg *config.Config, pool *routeros.Pool,
 				r.Post("/devices", s.handleCreateDevice)
 				r.Put("/devices/{id}", s.handleUpdateDevice)
 				r.Delete("/devices/{id}", s.handleDeleteDevice)
+				// Polling controls: pause, profile and class override.
+				r.Post("/devices/{id}/polling/pause", s.handlePausePolling)
+				r.Post("/devices/{id}/polling/resume", s.handleResumePolling)
+				r.Put("/devices/{id}/polling", s.handleUpdatePolling)
 				r.Get("/discovery/deep", s.handleDeepScan)
 			})
 
