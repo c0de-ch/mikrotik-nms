@@ -20,10 +20,11 @@ import { useAuth } from "@/context/auth";
 import { api, type Device, type DeviceInterface, type Neighbor } from "@/lib/api";
 import { deviceStatusBadgeClass, deviceStatusLabel } from "@/lib/status";
 import { useWebSocket } from "@/hooks/use-websocket";
+import { PollingCard } from "@/components/devices/polling-card";
 
 export default function DeviceDetailPage() {
   const { id } = useParams<{ id: string }>();
-  const { token } = useAuth();
+  const { token, user } = useAuth();
   const [device, setDevice] = useState<Device | null>(null);
   const [interfaces, setInterfaces] = useState<DeviceInterface[]>([]);
   const [neighbors, setNeighbors] = useState<Neighbor[]>([]);
@@ -124,6 +125,15 @@ export default function DeviceDetailPage() {
           <CardContent><div className="text-sm">{device.platform || "—"}</div></CardContent>
         </Card>
       </div>
+
+      {token && (
+        <PollingCard
+          device={device}
+          token={token}
+          isAdmin={user?.role === "admin"}
+          onChange={setDevice}
+        />
+      )}
 
       <Tabs defaultValue="interfaces">
         <TabsList>

@@ -226,6 +226,21 @@ export const api = {
     // VLAN id when the interface is an /interface/vlan. 409 when offline.
     addresses: (token: string, id: string) =>
       apiFetch<DeviceAddress[]>(`/devices/${id}/addresses`, { token }),
+    // Polling controls (admin): pause every poller but liveness, switch to
+    // the light (C1) cadences, or override the CPU class with a gentler one.
+    pausePolling: (token: string, id: string, hours: number) =>
+      apiFetch<Device>(`/devices/${id}/polling/pause`, {
+        method: "POST",
+        token,
+        body: JSON.stringify({ hours }),
+      }),
+    resumePolling: (token: string, id: string) =>
+      apiFetch<Device>(`/devices/${id}/polling/resume`, { method: "POST", token }),
+    updatePolling: (token: string, id: string, data: UpdatePollingRequest) =>
+      apiFetch<Device>(`/devices/${id}/polling`, { method: "PUT", token, body: JSON.stringify(data) }),
+    // Operator actions on the device (pauses, profile and class changes), newest first.
+    audit: (token: string, id: string, limit = 20) =>
+      apiFetch<DeviceAuditEntry[]>(`/devices/${id}/audit?limit=${limit}`, { token }),
   },
 
   // Topology
@@ -626,6 +641,38 @@ export interface Device {
   notes: string;
   created_at: string;
   updated_at: string;
+  // CPU class and polling controls. device_class is what the last
+  // /system/resource probe derived ("" until probed); class_override an
+  // admin's gentler-only override; effective_class what the pollers budget
+  // the device as (an unprobed device counts as C1).
+  device_class: DeviceClass | "";
+  class_override: DeviceClass | "";
+  effective_class: DeviceClass;
+  class_probed_at: string | null;
+  poll_profile: PollProfile;
+  polling_paused_until: string | null;
+  polling_paused: boolean;
+  cpu_count: number | null;
+  cpu_mhz_max: number | null;
+}
+
+export type DeviceClass = "C0" | "C1" | "C2" | "C3";
+export type PollProfile = "auto" | "light";
+
+export interface UpdatePollingRequest {
+  profile?: PollProfile;
+  // null clears the override; omit to leave it alone.
+  class_override?: DeviceClass | null;
+}
+
+export interface DeviceAuditEntry {
+  id: number;
+  at: string;
+  user_id: string;
+  username: string;
+  action: string;
+  device_id: string;
+  detail: string;
 }
 
 export interface CreateDeviceRequest {
