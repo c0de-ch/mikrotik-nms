@@ -152,6 +152,7 @@ func NewRouter(db *sql.DB, hub *ws.Hub, cfg *config.Config, pool *routeros.Pool,
 			r.Get("/devices/{id}/neighbors", s.handleListNeighbors)
 			r.Get("/devices/{id}/addresses", s.handleDeviceAddresses)
 			r.Get("/devices/{id}/audit", s.handleDeviceAudit)
+			r.Get("/devices/{id}/findings", s.handleListDeviceFindings)
 
 			// Device write operations + deep discovery (admin only)
 			r.Group(func(r chi.Router) {
