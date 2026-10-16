@@ -24,6 +24,11 @@ services:
     environment:
       - MIKROTIK_NMS_DB_PATH=/data/mikrotik-nms.db
       - MIKROTIK_NMS_LISTEN=:8080
+      # Device polling: local polls the devices (ALLOWED_TARGET_CIDRS must then
+      # name their subnet(s) in .env — the backend refuses to start while it is
+      # empty), off does no device or UDP I/O at all.
+      - MIKROTIK_NMS_POLLERS=${POLLERS:-local}
+      - MIKROTIK_NMS_ALLOWED_TARGET_CIDRS=${ALLOWED_TARGET_CIDRS:-}
       - MIKROTIK_NMS_FLOW_LISTEN=${FLOW_LISTEN:-}
       - MIKROTIK_NMS_JWT_SECRET=${JWT_SECRET:-change-me-in-production}
       - MIKROTIK_NMS_ENCRYPTION_KEY=${ENCRYPTION_KEY:-}

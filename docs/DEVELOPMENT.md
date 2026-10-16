@@ -99,6 +99,30 @@ that, use the normal login. New users are created from the **Users** page
 > `NEXT_PUBLIC_*` values are inlined into the bundle at build time — changing
 > them requires a frontend rebuild.
 
+### A dev backend never polls production
+
+`MIKROTIK_NMS_POLLERS` defaults to **`off`**, and `make dev-backend` /
+`scripts/dev.sh` leave it there: the backend does no device or UDP I/O at all
+(no RouterOS dials, no flow socket), while retention and the hourly rollups
+keep running. A copied production database therefore shows its history and
+nothing else — the UI shows a "Polling is off on this instance" banner, and
+every on-demand device action (add-device test, discovery, run-now probes,
+firmware jobs) answers `503`.
+
+To poll real **lab** devices from a checkout, opt in and name their subnets:
+
+```bash
+MIKROTIK_NMS_ALLOWED_TARGET_CIDRS=192.0.2.0/24 make dev-backend-poll
+# == MIKROTIK_NMS_POLLERS=local plus the dev secret/DB vars
+```
+
+With `local`, the backend refuses to start while `MIKROTIK_NMS_ALLOWED_TARGET_CIDRS`
+is empty and refuses any dial outside it (`403` from the API, `routeros.ErrTargetNotAllowed`
+in Go). The fence is `routeros.SetDialPolicy` / `CheckTarget`, consulted by
+`Pool.Dial`, `DialOnce`, `Ping`, `ScanSubnet` and `ScanMNDP` — new code that
+reaches a device must go through one of those, never `net.Dial` or the
+go-routeros dialers directly.
+
 ## 4. Build / test / lint
 
 | Target | Runs |

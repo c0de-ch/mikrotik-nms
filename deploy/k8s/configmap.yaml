@@ -6,6 +6,12 @@ metadata:
 data:
   MIKROTIK_NMS_LISTEN: ":8080"
   MIKROTIK_NMS_DB_PATH: "/data/mikrotik-nms.db"
+  # Device polling: "local" polls the devices, "off" does no device/UDP I/O.
+  MIKROTIK_NMS_POLLERS: "local"
+  # Subnet(s) the devices live in (comma-separated CIDRs). REQUIRED with
+  # MIKROTIK_NMS_POLLERS=local: the backend refuses to start while it is empty
+  # and never dials outside it. The pods must be able to reach them.
+  MIKROTIK_NMS_ALLOWED_TARGET_CIDRS: ""
   MIKROTIK_NMS_HEALTH_INTERVAL: "30s"
   MIKROTIK_NMS_TOPOLOGY_INTERVAL: "60s"
   MIKROTIK_NMS_FIRMWARE_INTERVAL: "6h"
