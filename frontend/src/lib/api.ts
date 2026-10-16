@@ -613,11 +613,20 @@ export const api = {
       apiFetch(`/users/${id}`, { method: "DELETE", token }),
   },
 
-  // Health
-  health: () => apiFetch<{ status: string }>("/health"),
+  // Health (public): liveness, the instance id the version watchdog compares,
+  // and whether this instance polls devices at all.
+  health: () => apiFetch<{ status: string; instance_id?: string; pollers?: "local" | "off" }>("/health"),
+  // How this instance runs (logged-in users): polling mode + the subnets it may reach.
+  system: (token: string) => apiFetch<SystemInfo>("/system", { token }),
 };
 
 // Types
+export interface SystemInfo {
+  instance_id: string;
+  pollers: "local" | "off";
+  allowed_target_cidrs: string[];
+}
+
 export interface Device {
   id: string;
   address: string;
