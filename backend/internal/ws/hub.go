@@ -44,12 +44,23 @@ type hubOp struct {
 	kind   opKind
 	client *Client
 	topic  string
+	seq    uint64 // opUnsubscribe: drop only this subscription (0 = any)
+}
+
+// Subscription is one client's subscription to a topic as the hub applied
+// it. Seq numbers every subscribe the hub applies, so a topic owner that
+// answers subscriptions can tell a client that subscribed again — a fresh
+// request — from the subscription it has already answered.
+type Subscription struct {
+	Client *Client
+	Seq    uint64
 }
 
 type Hub struct {
 	mu          sync.RWMutex
-	clients     map[*Client]struct{} // registered or subscribed, not yet unregistered
-	subscribers map[string]map[*Client]struct{}
+	clients     map[*Client]struct{}          // registered or subscribed, not yet unregistered
+	subscribers map[string]map[*Client]uint64 // topic → client → Seq of its subscribe
+	nextSeq     uint64
 
 	// listeners are in-process subscribers (see Listen), keyed by topic and
 	// listener id.
@@ -66,7 +77,7 @@ type Hub struct {
 func NewHub() *Hub {
 	return &Hub{
 		clients:     make(map[*Client]struct{}),
-		subscribers: make(map[string]map[*Client]struct{}),
+		subscribers: make(map[string]map[*Client]uint64),
 		listeners:   make(map[string]map[uint64]func(any)),
 		ops:         make(chan hubOp, 256),
 	}
@@ -98,13 +109,18 @@ func (h *Hub) Run() {
 			}
 			h.clients[op.client] = struct{}{}
 			if h.subscribers[op.topic] == nil {
-				h.subscribers[op.topic] = make(map[*Client]struct{})
+				h.subscribers[op.topic] = make(map[*Client]uint64)
 			}
-			h.subscribers[op.topic][op.client] = struct{}{}
+			// Every subscribe gets a new number, a repeated one included:
+			// it is a new request for the topic's owner to answer.
+			h.nextSeq++
+			h.subscribers[op.topic][op.client] = h.nextSeq
 
 		case opUnsubscribe:
 			if clients, ok := h.subscribers[op.topic]; ok {
-				delete(clients, op.client)
+				if seq, ok := clients[op.client]; ok && (op.seq == 0 || op.seq == seq) {
+					delete(clients, op.client)
+				}
 				if len(clients) == 0 {
 					delete(h.subscribers, op.topic)
 				}
@@ -128,6 +144,13 @@ func (h *Hub) Subscribe(client *Client, topic string) {
 
 func (h *Hub) Unsubscribe(client *Client, topic string) {
 	h.ops <- hubOp{kind: opUnsubscribe, client: client, topic: topic}
+}
+
+// UnsubscribeSeq drops the client's subscription to topic only while it is
+// still the one numbered seq. A topic owner refusing a subscription uses it,
+// so the refusal can never take out a subscribe the client sent after it.
+func (h *Hub) UnsubscribeSeq(client *Client, topic string, seq uint64) {
+	h.ops <- hubOp{kind: opUnsubscribe, client: client, topic: topic, seq: seq}
 }
 
 // Publish sends a message to all clients subscribed to the topic, after
@@ -178,10 +201,11 @@ func (h *Hub) Publish(topic string, data interface{}) {
 	}
 }
 
-// Notify sends a control frame about topic to one client. It is dropped when
-// the client has disconnected or its send buffer is full, like any frame to a
-// slow client.
-func (h *Hub) Notify(client *Client, typ, topic string, data interface{}) {
+// Notify sends a control frame about topic to one client and reports whether
+// it was queued. It is not when the client has disconnected or its send
+// buffer is full — like any frame to a slow client — so a caller that must be
+// heard (a refusal) can try again later.
+func (h *Hub) Notify(client *Client, typ, topic string, data interface{}) bool {
 	payload, err := json.Marshal(Message{
 		Topic:     topic,
 		Type:      typ,
@@ -190,18 +214,20 @@ func (h *Hub) Notify(client *Client, typ, topic string, data interface{}) {
 	})
 	if err != nil {
 		log.Printf("ws hub: marshal error: %v", err)
-		return
+		return false
 	}
 	// Same reason as Publish: the read lock keeps Run from closing send
 	// between the membership check and the send.
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	if _, ok := h.clients[client]; !ok || client.closed {
-		return
+		return false
 	}
 	select {
 	case client.send <- payload:
+		return true
 	default:
+		return false
 	}
 }
 
@@ -242,20 +268,20 @@ func (h *Hub) TopicSubscriberCount(topic string) int {
 	return len(h.subscribers[topic]) + len(h.listeners[topic])
 }
 
-// SubscribersWithPrefix returns the WS clients of every topic that starts
-// with prefix and has at least one, keyed by topic. Owners of a topic family
-// use it to vet subscriptions (see the Type* control frames).
-func (h *Hub) SubscribersWithPrefix(prefix string) map[string][]*Client {
+// SubscribersWithPrefix returns the WS subscriptions of every topic that
+// starts with prefix and has at least one, keyed by topic. Owners of a topic
+// family use it to vet subscriptions (see the Type* control frames).
+func (h *Hub) SubscribersWithPrefix(prefix string) map[string][]Subscription {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
-	out := make(map[string][]*Client)
+	out := make(map[string][]Subscription)
 	for topic, clients := range h.subscribers {
 		if !strings.HasPrefix(topic, prefix) || len(clients) == 0 {
 			continue
 		}
-		list := make([]*Client, 0, len(clients))
-		for c := range clients {
-			list = append(list, c)
+		list := make([]Subscription, 0, len(clients))
+		for c, seq := range clients {
+			list = append(list, Subscription{Client: c, Seq: seq})
 		}
 		out[topic] = list
 	}

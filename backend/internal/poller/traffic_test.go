@@ -184,6 +184,12 @@ type liveRecorder struct {
 	mu      sync.Mutex
 	notices []recordedNotice
 	reads   map[string][][]string // by device id
+	full    bool                  // the client's send buffer is full: frames are not queued
+
+	// stampedBeforeRead reports, at each read, whether the manager had
+	// already recorded that read's start (nil: not checked).
+	stampedBeforeRead func(dev string) bool
+	unstamped         int
 }
 
 type recordedNotice struct {
@@ -193,15 +199,32 @@ type recordedNotice struct {
 	status liveStatus
 }
 
-func (r *liveRecorder) notify(c *ws.Client, typ, topic string, data any) {
+func (r *liveRecorder) notify(c *ws.Client, typ, topic string, data any) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.full {
+		return false
+	}
 	r.notices = append(r.notices, recordedNotice{c.ID(), typ, topic, data.(liveStatus)})
+	return true
+}
+
+func (r *liveRecorder) setFull(full bool) {
+	r.mu.Lock()
+	r.full = full
+	r.mu.Unlock()
 }
 
 func (r *liveRecorder) sample(dev queries.Device, ifaces []string) (map[string]routeros.TrafficData, error) {
+	stamped := true
+	if r.stampedBeforeRead != nil {
+		stamped = r.stampedBeforeRead(dev.ID)
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if !stamped {
+		r.unstamped++
+	}
 	if r.reads == nil {
 		r.reads = make(map[string][][]string)
 	}
@@ -277,6 +300,13 @@ func TestTrafficManagerVetsAndStreams(t *testing.T) {
 	tm.notify, tm.sample = rec.notify, rec.sample
 	var skew atomic.Int64
 	tm.now = func() time.Time { return time.Now().Add(time.Duration(skew.Load())) }
+	// Every read must be stamped before it goes out (see runStream).
+	rec.stampedBeforeRead = func(dev string) bool {
+		tm.mu.Lock()
+		defer tm.mu.Unlock()
+		last := tm.lastRead[dev]
+		return !last.IsZero() && tm.now().Sub(last) < time.Second
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(func() { cancel(); tm.stopAll() })
 
@@ -386,6 +416,123 @@ func TestTrafficManagerVetsAndStreams(t *testing.T) {
 	if n := wantNotice(t, rec.take(), viewer.ID(), ws.TypeSubscribeError, rtEther1); n.status.Code != LiveRefusedAdminOnly {
 		t.Errorf("after reclassification = %+v", n.status)
 	}
+
+	rec.mu.Lock()
+	unstamped := rec.unstamped
+	rec.mu.Unlock()
+	if unstamped != 0 {
+		t.Errorf("%d reads went out before their start was recorded", unstamped)
+	}
+}
+
+// liveManager wires a manager to a fresh hub with the recorder's seams.
+func liveManager(t *testing.T) (*TrafficManager, *ws.Hub, *liveRecorder, context.Context) {
+	t.Helper()
+	db := liveDB(t)
+	liveDevice(t, db, "sw", devclass.C1, ports(6)...)
+	hub := ws.NewHub()
+	go hub.Run()
+	rec := &liveRecorder{}
+	tm := NewTrafficManager(db, nil, hub)
+	tm.notify, tm.sample = rec.notify, rec.sample
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(func() { cancel(); tm.stopAll() })
+	return tm, hub, rec, ctx
+}
+
+// Every subscribe gets its own answer: a refused viewer that asks again is
+// told again rather than ignored, and a viewer that left and came back
+// between two rounds gets a fresh ack for its new subscription.
+func TestTrafficManagerAnswersEverySubscribe(t *testing.T) {
+	tm, hub, rec, ctx := liveManager(t)
+	viewer := ws.NewClientFor(hub, nil, ws.ClientInfo{Role: "viewer"})
+	admin := ws.NewClientFor(hub, nil, ws.ClientInfo{Role: "admin"})
+	topic := TrafficTopic("sw", "ether1")
+
+	subscribe(t, hub, viewer, topic)
+	tm.reconcile(ctx)
+	wantNotice(t, rec.take(), viewer.ID(), ws.TypeSubscribeError, topic)
+	waitUntil(t, func() bool { return hub.TopicSubscriberCount(topic) == 0 })
+	subscribe(t, hub, viewer, topic) // asks again at once
+	tm.reconcile(ctx)
+	wantNotice(t, rec.take(), viewer.ID(), ws.TypeSubscribeError, topic)
+	waitUntil(t, func() bool { return hub.TopicSubscriberCount(topic) == 0 })
+
+	subscribe(t, hub, admin, topic)
+	tm.reconcile(ctx)
+	wantNotice(t, rec.take(), admin.ID(), ws.TypeSubscribeAck, topic)
+	// Live → 15m → live within one round: the new subscribe is answered.
+	unsubscribe(t, hub, admin, topic)
+	subscribe(t, hub, admin, topic)
+	tm.reconcile(ctx)
+	wantNotice(t, rec.take(), admin.ID(), ws.TypeSubscribeAck, topic)
+}
+
+// A refusal the client never received (its send buffer was full) does not
+// count: the subscription stays until the error gets through, so the page
+// is never left waiting for an answer that was dropped.
+func TestTrafficManagerRetriesUnheardRefusal(t *testing.T) {
+	tm, hub, rec, ctx := liveManager(t)
+	viewer := ws.NewClientFor(hub, nil, ws.ClientInfo{Role: "viewer"})
+	topic := TrafficTopic("sw", "ether1")
+	subscribe(t, hub, viewer, topic)
+
+	rec.setFull(true)
+	tm.reconcile(ctx)
+	time.Sleep(20 * time.Millisecond)
+	if n := hub.TopicSubscriberCount(topic); n != 1 {
+		t.Fatalf("an unheard refusal dropped the subscription (%d subscribers)", n)
+	}
+
+	rec.setFull(false)
+	tm.reconcile(ctx)
+	wantNotice(t, rec.take(), viewer.ID(), ws.TypeSubscribeError, topic)
+	waitUntil(t, func() bool { return hub.TopicSubscriberCount(topic) == 0 })
+}
+
+// The policy cache follows the subscriptions — topics name client-chosen
+// device ids — and a failed read is never cached.
+func TestTrafficManagerPolicyCache(t *testing.T) {
+	tm, hub, rec, ctx := liveManager(t)
+	c := ws.NewClientFor(hub, nil, ws.ClientInfo{Role: "admin"})
+	bogus := []string{TrafficTopic("nope1", "x"), TrafficTopic("nope2", "x"), TrafficTopic("sw", "ether1")}
+	for _, topic := range bogus {
+		subscribe(t, hub, c, topic)
+	}
+	tm.reconcile(ctx)
+	got := rec.take()
+	wantNotice(t, got, c.ID(), ws.TypeSubscribeError, bogus[0])
+	wantNotice(t, got, c.ID(), ws.TypeSubscribeAck, bogus[2])
+	if n := policyCount(tm); n != 3 {
+		t.Fatalf("policies cached = %d, want 3", n)
+	}
+
+	// The refused ones are dropped, the granted one is left: so is its policy.
+	waitUntil(t, func() bool { return hub.TopicSubscriberCount(bogus[0]) == 0 && hub.TopicSubscriberCount(bogus[1]) == 0 })
+	tm.reconcile(ctx)
+	if n := policyCount(tm); n != 1 {
+		t.Errorf("policies after the refused topics left = %d, want 1", n)
+	}
+	unsubscribe(t, hub, c, bogus[2])
+	tm.reconcile(ctx)
+	if n := policyCount(tm); n != 0 {
+		t.Errorf("policies after every viewer left = %d, want 0", n)
+	}
+
+	// A device that cannot be read is retried next round, not cached.
+	tm.db.Close()
+	if p := tm.policy("sw", time.Now()); !p.unavailable {
+		t.Fatalf("policy on a closed database = %+v, want unavailable", p)
+	}
+	if n := policyCount(tm); n != 0 {
+		t.Errorf("a failed read was cached (%d policies)", n)
+	}
+}
+
+func policyCount(tm *TrafficManager) int {
+	tm.policyMu.Lock()
+	defer tm.policyMu.Unlock()
+	return len(tm.policies)
 }
 
 // A database error must not read as "device gone": the grants stand.

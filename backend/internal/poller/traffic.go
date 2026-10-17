@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"slices"
 	"sort"
 	"strings"
@@ -33,10 +34,6 @@ const (
 	// liveRequestedPeriod is what every viewer asks for: the 1 s the port
 	// detail has always streamed. The class caps stretch it (LiveCaps.Period).
 	liveRequestedPeriod = time.Second
-	// liveRefusalRetry is how long a refused subscription is left alone for
-	// the hub to drop it; one still there after that (the viewer subscribed
-	// again) is vetted afresh.
-	liveRefusalRetry = 5 * time.Second
 	// liveLogEvery rate-limits a failing stream's log line.
 	liveLogEvery = time.Minute
 )
@@ -218,10 +215,12 @@ func vetLive(p livePolicy, leases *liveLeases, viewer uint64, admin bool, iface 
 	return ""
 }
 
-// grantKey is one viewer's subscription to one stream topic.
+// grantKey is one subscribe of one viewer to one stream topic: a viewer that
+// subscribes again (new Seq) is a new request and gets its own answer.
 type grantKey struct {
 	viewer uint64
 	topic  string
+	seq    uint64
 }
 
 // deviceStream is the one sampling loop of a device: every granted interface
@@ -232,42 +231,39 @@ type deviceStream struct {
 	ifaces []string // sorted union; replaced by reconcile under tm.mu
 }
 
-// liveNotice is a control frame reconcile sends once it has let go of tm.mu.
-type liveNotice struct {
-	client      *ws.Client
-	typ, topic  string
-	data        liveStatus
-	unsubscribe bool
-}
-
 // TrafficManager runs the per-interface live streams (WS topics
 // traffic.<deviceID>.<iface>) the traffic page's port detail opens, within
 // the class caps of devclass.LiveCaps: on a weak device (C1, and every
-// unprobed or light-profile device) only admins may stream, at most four
-// interfaces from one viewer, sampled every 15 s instead of every second.
-// Each subscription is answered with a subscribe.ack (with the effective
-// period) or a subscribe.error (and dropped); a refused view shows the
-// port-stats snapshot (traffic.ports) instead. A device's granted
+// unprobed or light-profile device) only admins may stream, one viewer at a
+// time and at most four interfaces, sampled every 15 s instead of every
+// second. Each subscription is answered with a subscribe.ack (with the
+// effective period) or a subscribe.error (and dropped); a refused view shows
+// the port-stats snapshot (traffic.ports) instead. A device's granted
 // interfaces share one sampling loop and one monitor-traffic call per
 // period, and nothing is read while nobody is subscribed.
+//
+// The caps bound device load, not who may see a port's rate (every user
+// sees it on the snapshot), so a subscriber may receive the samples of an
+// interface someone else streams in the second before it is vetted.
 type TrafficManager struct {
 	db   *sql.DB
 	pool *routeros.Pool
 	hub  *ws.Hub
 
-	// Test seams: the device read, control frames and the clock.
+	// Test seams: the device read, control frames (true = queued) and the
+	// clock.
 	sample func(dev queries.Device, ifaces []string) (map[string]routeros.TrafficData, error)
-	notify func(c *ws.Client, typ, topic string, data any)
+	notify func(c *ws.Client, typ, topic string, data any) bool
 	now    func() time.Time
 
 	policyMu sync.Mutex
-	policies map[string]livePolicy
+	policies map[string]livePolicy // only devices someone subscribes to
 
 	mu       sync.Mutex
-	grants   map[grantKey]time.Duration // granted subscription → the period it was acked with
-	refused  map[grantKey]time.Time     // refused subscription → when
+	grants   map[grantKey]time.Duration // granted → the period acked (0: ack not queued yet)
+	refused  map[grantKey]bool          // refused and told; the hub is dropping it
 	streams  map[string]*deviceStream   // by device id
-	lastRead map[string]time.Time       // by device id; outlives a stream restart
+	lastRead map[string]time.Time       // by device id: when the last read began
 	lastLog  map[string]time.Time
 }
 
@@ -279,7 +275,7 @@ func NewTrafficManager(db *sql.DB, pool *routeros.Pool, hub *ws.Hub) *TrafficMan
 		now:      time.Now,
 		policies: make(map[string]livePolicy),
 		grants:   make(map[grantKey]time.Duration),
-		refused:  make(map[grantKey]time.Time),
+		refused:  make(map[grantKey]bool),
 		streams:  make(map[string]*deviceStream),
 		lastRead: make(map[string]time.Time),
 		lastLog:  make(map[string]time.Time),
@@ -306,11 +302,15 @@ func (tm *TrafficManager) Run(ctx context.Context) {
 	}
 }
 
-// liveRequest is one viewer subscribed to one stream topic.
+// liveRequest is one viewer's subscribe to one stream topic.
 type liveRequest struct {
-	client *ws.Client
-	topic  string
-	iface  string
+	sub   ws.Subscription
+	topic string
+	iface string
+}
+
+func (rq liveRequest) key() grantKey {
+	return grantKey{rq.sub.Client.ID(), rq.topic, rq.sub.Seq}
 }
 
 // reconcile vets every stream subscription the hub holds and starts, retunes
@@ -319,30 +319,38 @@ type liveRequest struct {
 // connection order (oldest first). A policy change (pause, class override,
 // light profile) re-vets everyone within livePolicyTTL: a viewer refused now
 // gets a subscribe.error, one whose period changed a fresh subscribe.ack.
+//
+// A refusal counts only once the client was told: the hub then drops that
+// subscribe (UnsubscribeSeq, so a newer subscribe of the same topic is left
+// to be answered on its own). An error the client's full send buffer
+// swallowed is retried next round instead, and an ack that was not queued
+// keeps the grant but is sent again.
 func (tm *TrafficManager) reconcile(ctx context.Context) {
 	now := tm.now()
 	byDevice := make(map[string][]liveRequest)
 	current := make(map[grantKey]bool)
-	for topic, clients := range tm.hub.SubscribersWithPrefix(trafficTopicPrefix) {
+	for topic, subs := range tm.hub.SubscribersWithPrefix(trafficTopicPrefix) {
 		dev, iface, ok := ParseTrafficTopic(topic)
 		if !ok {
 			continue
 		}
-		for _, c := range clients {
-			byDevice[dev] = append(byDevice[dev], liveRequest{client: c, topic: topic, iface: iface})
-			current[grantKey{c.ID(), topic}] = true
+		for _, sub := range subs {
+			rq := liveRequest{sub: sub, topic: topic, iface: iface}
+			byDevice[dev] = append(byDevice[dev], rq)
+			current[rq.key()] = true
 		}
 	}
 	policies := make(map[string]livePolicy, len(byDevice))
 	for dev := range byDevice {
 		policies[dev] = tm.policy(dev, now)
 	}
+	tm.prunePolicies(byDevice)
 
-	var notices []liveNotice
+	var drops []liveRequest // refused and told: unsubscribed after tm.mu
 	tm.mu.Lock()
 	for k := range tm.grants {
 		if !current[k] {
-			delete(tm.grants, k) // unsubscribed or disconnected
+			delete(tm.grants, k) // unsubscribed, re-subscribed or disconnected
 		}
 	}
 	for k := range tm.refused {
@@ -363,7 +371,7 @@ func (tm *TrafficManager) reconcile(ctx context.Context) {
 			if st := tm.streams[dev]; st != nil {
 				d := want{period: st.period, ifaces: map[string]bool{}}
 				for _, rq := range reqs {
-					if _, ok := tm.grants[grantKey{rq.client.ID(), rq.topic}]; ok {
+					if _, ok := tm.grants[rq.key()]; ok {
 						d.ifaces[rq.iface] = true
 					}
 				}
@@ -372,12 +380,12 @@ func (tm *TrafficManager) reconcile(ctx context.Context) {
 			continue
 		}
 		sort.Slice(reqs, func(i, j int) bool {
-			_, gi := tm.grants[grantKey{reqs[i].client.ID(), reqs[i].topic}]
-			_, gj := tm.grants[grantKey{reqs[j].client.ID(), reqs[j].topic}]
+			_, gi := tm.grants[reqs[i].key()]
+			_, gj := tm.grants[reqs[j].key()]
 			if gi != gj {
 				return gi
 			}
-			if a, b := reqs[i].client.ID(), reqs[j].client.ID(); a != b {
+			if a, b := reqs[i].sub.Client.ID(), reqs[j].sub.Client.ID(); a != b {
 				return a < b
 			}
 			return reqs[i].topic < reqs[j].topic
@@ -385,24 +393,27 @@ func (tm *TrafficManager) reconcile(ctx context.Context) {
 		period := p.caps.Period(liveRequestedPeriod)
 		leases := newLiveLeases()
 		for _, rq := range reqs {
-			k := grantKey{rq.client.ID(), rq.topic}
-			if at, ok := tm.refused[k]; ok && now.Sub(at) < liveRefusalRetry {
-				continue // the hub is dropping it
+			k, c := rq.key(), rq.sub.Client
+			if tm.refused[k] {
+				continue // told; the hub is dropping it
 			}
-			code := vetLive(p, leases, rq.client.ID(), rq.client.Info().Role == "admin", rq.iface, now)
+			code := vetLive(p, leases, c.ID(), c.Info().Role == "admin", rq.iface, now)
 			if code != "" {
 				delete(tm.grants, k)
-				tm.refused[k] = now
-				notices = append(notices, liveNotice{client: rq.client, typ: ws.TypeSubscribeError, topic: rq.topic,
-					unsubscribe: true, data: liveStatus{LiveLimits: p.limits, Code: code,
-						Error: LiveRefusalMessage(code, p.limits), Fallback: PortRatesTopic}})
+				// notify only queues (never blocks), so it may run under tm.mu.
+				if tm.notify(c, ws.TypeSubscribeError, rq.topic, liveStatus{LiveLimits: p.limits, Code: code,
+					Error: LiveRefusalMessage(code, p.limits), Fallback: PortRatesTopic}) {
+					tm.refused[k] = true
+					drops = append(drops, rq)
+				}
 				continue
 			}
-			delete(tm.refused, k)
 			if acked, ok := tm.grants[k]; !ok || acked != period {
-				tm.grants[k] = period
-				notices = append(notices, liveNotice{client: rq.client, typ: ws.TypeSubscribeAck, topic: rq.topic,
-					data: liveStatus{LiveLimits: p.limits, PeriodSeconds: int(period / time.Second)}})
+				tm.grants[k] = 0
+				if tm.notify(c, ws.TypeSubscribeAck, rq.topic, liveStatus{LiveLimits: p.limits,
+					PeriodSeconds: int(period / time.Second)}) {
+					tm.grants[k] = period
+				}
 			}
 			d, ok := desired[dev]
 			if !ok {
@@ -430,31 +441,21 @@ func (tm *TrafficManager) reconcile(ctx context.Context) {
 			tm.streams[dev] = st
 			go tm.runStream(sctx, dev, st)
 		}
-		st.ifaces = sortedKeys(d.ifaces)
+		st.ifaces = slices.Sorted(maps.Keys(d.ifaces))
 	}
 	tm.mu.Unlock()
 
-	// Hub calls only after letting go of tm.mu: Unsubscribe blocks while
-	// the hub's queue is full, and nothing may wait on the hub holding it.
-	for _, n := range notices {
-		tm.notify(n.client, n.typ, n.topic, n.data)
-		if n.unsubscribe {
-			tm.hub.Unsubscribe(n.client, n.topic)
-		}
+	// Hub ops only after letting go of tm.mu: they block while the hub's
+	// queue is full, and nothing may wait on the hub holding it.
+	for _, rq := range drops {
+		tm.hub.UnsubscribeSeq(rq.sub.Client, rq.topic, rq.sub.Seq)
 	}
-}
-
-func sortedKeys(m map[string]bool) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
 }
 
 // policy returns the device's cached policy, reading the database when it
-// is older than livePolicyTTL.
+// is older than livePolicyTTL. A failed read is never cached: the last good
+// answer stands (or "unavailable" when there is none) and the next round
+// reads again.
 func (tm *TrafficManager) policy(deviceID string, now time.Time) livePolicy {
 	tm.policyMu.Lock()
 	p, ok := tm.policies[deviceID]
@@ -463,14 +464,30 @@ func (tm *TrafficManager) policy(deviceID string, now time.Time) livePolicy {
 		return p
 	}
 	fresh := tm.loadPolicy(deviceID, now)
-	if fresh.unavailable && ok {
-		// A failed read keeps the last good answer (retried next round).
-		return p
+	if fresh.unavailable {
+		if ok {
+			return p
+		}
+		return fresh
 	}
 	tm.policyMu.Lock()
 	tm.policies[deviceID] = fresh
 	tm.policyMu.Unlock()
 	return fresh
+}
+
+// prunePolicies forgets the devices nobody subscribes to any more. The
+// cache is keyed by device ids taken from client-chosen topic names, so it
+// must not outlive the subscriptions (a stream only runs for a subscribed
+// device, and one that finds its policy gone simply skips the read).
+func (tm *TrafficManager) prunePolicies(subscribed map[string][]liveRequest) {
+	tm.policyMu.Lock()
+	defer tm.policyMu.Unlock()
+	for dev := range tm.policies {
+		if _, ok := subscribed[dev]; !ok {
+			delete(tm.policies, dev)
+		}
+	}
 }
 
 // cachedPolicy is the last policy read for the device, however old; the
@@ -510,11 +527,12 @@ func (tm *TrafficManager) loadPolicy(deviceID string, now time.Time) livePolicy 
 
 // runStream samples the device's granted interfaces once per period until
 // ctx is done. The first read waits for one period since the device's
-// previous one, so closing and reopening a view cannot outpace the class's
-// period.
+// previous one began — that may still be in flight on the loop this one
+// replaced — so reopening a view or a period change cannot outpace the
+// class's period.
 func (tm *TrafficManager) runStream(ctx context.Context, deviceID string, st *deviceStream) {
 	tm.mu.Lock()
-	first := time.Until(tm.lastRead[deviceID].Add(st.period))
+	first := tm.lastRead[deviceID].Add(st.period).Sub(tm.now())
 	tm.mu.Unlock()
 	timer := time.NewTimer(max(first, 0))
 	defer timer.Stop()
@@ -540,11 +558,13 @@ func (tm *TrafficManager) sampleOnce(ctx context.Context, deviceID string, st *d
 		return // nothing granted, or nothing to read from: no dial
 	}
 
+	// Stamped before the call, so a loop started while it is in flight
+	// waits a full period from it (runStream).
+	tm.mu.Lock()
+	tm.lastRead[deviceID] = tm.now()
+	tm.mu.Unlock()
 	data, err := tm.sample(p.device, ifaces)
 	at := tm.now()
-	tm.mu.Lock()
-	tm.lastRead[deviceID] = at
-	tm.mu.Unlock()
 	if err != nil {
 		if !errors.Is(err, errNoClient) {
 			tm.logThrottled(deviceID, "poller traffic: monitor-traffic on %s: %v", p.device.Identity, err)

@@ -106,7 +106,9 @@ func TestHubNotifyReachesOnlyThatLiveClient(t *testing.T) {
 	h.Subscribe(b, "x")
 	waitFor(t, func() bool { return h.TopicSubscriberCount("x") == 2 })
 
-	h.Notify(a, TypeSubscribeError, "x", map[string]string{"code": "admin_only"})
+	if !h.Notify(a, TypeSubscribeError, "x", map[string]string{"code": "admin_only"}) {
+		t.Fatal("Notify to a live client reported not queued")
+	}
 	select {
 	case payload := <-a.send:
 		var msg Message
@@ -130,7 +132,17 @@ func TestHubNotifyReachesOnlyThatLiveClient(t *testing.T) {
 	h.Unregister(a)
 	h.Unregister(a)
 	waitFor(t, func() bool { return h.TopicSubscriberCount("x") == 1 })
-	h.Notify(a, TypeSubscribeAck, "x", nil)
+	if h.Notify(a, TypeSubscribeAck, "x", nil) {
+		t.Error("Notify to a disconnected client reported queued")
+	}
+
+	// A full send buffer is reported, so a refusal can be retried.
+	for range sendBufLen {
+		b.send <- []byte("{}")
+	}
+	if h.Notify(b, TypeSubscribeError, "x", nil) {
+		t.Error("Notify into a full buffer reported queued")
+	}
 
 	if got := a.Info().Username; got != "alice" {
 		t.Errorf("Info().Username = %q", got)
@@ -227,4 +239,37 @@ func TestHubSubscribersWithPrefix(t *testing.T) {
 	if _, ok := got["device.health"]; ok {
 		t.Fatal("a topic outside the prefix was returned")
 	}
+}
+
+// A repeated subscribe is a new request (new Seq), and a refusal dropping
+// the old one must not take the new one with it.
+func TestHubSubscriptionSeq(t *testing.T) {
+	h := NewHub()
+	go h.Run()
+	c := NewClient(h, nil)
+	seqOf := func() uint64 {
+		subs := h.SubscribersWithPrefix("s")["s"]
+		if len(subs) != 1 {
+			return 0
+		}
+		return subs[0].Seq
+	}
+	h.Subscribe(c, "s")
+	waitFor(t, func() bool { return seqOf() != 0 })
+	first := seqOf()
+
+	h.Subscribe(c, "s") // the client asks again
+	waitFor(t, func() bool { return seqOf() != first })
+	second := seqOf()
+
+	// The owner refuses the first request: the second must survive.
+	h.UnsubscribeSeq(c, "s", first)
+	h.Subscribe(c, "sentinel")
+	waitFor(t, func() bool { return h.TopicSubscriberCount("sentinel") == 1 })
+	if got := seqOf(); got != second {
+		t.Fatalf("subscription after a stale drop = seq %d, want %d", got, second)
+	}
+
+	h.UnsubscribeSeq(c, "s", second)
+	waitFor(t, func() bool { return h.TopicSubscriberCount("s") == 0 })
 }
