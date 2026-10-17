@@ -653,12 +653,12 @@ func (n *NetworkHealthPoller) readVLANs(dev queries.Device, run routeros.Runner)
 // account lines from the shared per-device log read, whose window follows the
 // device's log cadence.
 func (n *NetworkHealthPoller) readLogs(dev queries.Device, run routeros.Runner, now time.Time, interval time.Duration) {
-	entries, firstSight, err := n.logs.Entries(logConsumerBridge, dev.ID, run, now, logReadWindow(interval))
+	entries, err := n.logs.Entries(logConsumerBridge, dev.ID, run, now, logReadWindow(interval))
 	if err != nil {
 		return
 	}
 	n.newEvents += n.processBridgeLogs(dev.ID, routeros.BridgeLogEventsFrom(entries), now)
-	n.logins.Process(&dev, run, entries, firstSight, now)
+	n.logins.Process(&dev, run, entries, now)
 }
 
 // staleReads is how many of its own reads a row may miss before it is
@@ -741,13 +741,13 @@ func (n *NetworkHealthPoller) maintain(devices []queries.Device, now time.Time) 
 }
 
 // processBridgeLogs applies new bridge log events from one device. Returns
-// how many new events were recorded. On the very first poll for a device, the
-// existing log buffer is marked seen without firing events — otherwise a
-// backend restart would replay the entire log buffer as new events.
+// how many new events were recorded. Every line the shared LogReader hands
+// out is new — the buffer it found on its first read of the device is handed
+// to nobody, so a backend restart does not replay old loops — and the
+// fingerprints only guard against a line delivered twice.
 func (n *NetworkHealthPoller) processBridgeLogs(devID string, events []routeros.BridgeLogEvent, now time.Time) int {
-	seen, exists := n.seenLogs[devID]
-	firstRun := !exists
-	if !exists {
+	seen := n.seenLogs[devID]
+	if seen == nil {
 		seen = make(map[string]time.Time)
 		n.seenLogs[devID] = seen
 	}
@@ -761,9 +761,6 @@ func (n *NetworkHealthPoller) processBridgeLogs(devID string, events []routeros.
 			continue
 		}
 		seen[fp] = now
-		if firstRun {
-			continue
-		}
 
 		severity := "warn"
 		switch ev.Kind {

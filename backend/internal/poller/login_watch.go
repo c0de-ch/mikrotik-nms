@@ -71,11 +71,12 @@ func NewLoginWatch(db *sql.DB) *LoginWatch {
 }
 
 // Process applies the account lines among entries (one device's new log
-// lines) to the findings. firstSight suppresses the lines of a buffer we
-// see for the first time — a backend restart must not report every login of
-// the past weeks as happening now.
-func (w *LoginWatch) Process(dev *queries.Device, run routeros.Runner, entries []routeros.LogEntry, firstSight bool, now time.Time) {
-	if firstSight || len(entries) == 0 {
+// lines, from the shared LogReader — which never hands out the buffer it
+// found on its first read, so a backend restart does not report every login
+// of the past weeks as happening now, while the lines a device logs right
+// after a reboot are news like any) to the findings.
+func (w *LoginWatch) Process(dev *queries.Device, run routeros.Runner, entries []routeros.LogEntry, now time.Time) {
+	if len(entries) == 0 {
 		return
 	}
 	events := routeros.LoginEventsFrom(entries)

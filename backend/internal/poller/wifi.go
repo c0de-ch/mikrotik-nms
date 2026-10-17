@@ -343,7 +343,7 @@ func (wt *WifiTracker) readController(dev queries.Device, run routeros.Runner, n
 		return false
 	}
 	window := logReadWindow(wt.cadence.Interval(dev, devclass.TierLogs, now))
-	if entries, _, err := wt.logs.Entries(logConsumerWifi, dev.ID, run, now, window); err == nil {
+	if entries, err := wt.logs.Entries(logConsumerWifi, dev.ID, run, now, window); err == nil {
 		wt.processDeviceLogs(dev.ID, routeros.WirelessLogEventsFrom(entries), lookups(), now)
 	}
 
@@ -410,14 +410,13 @@ func (wt *WifiTracker) absenceGrace(state *clientState, devices map[string]queri
 
 // processDeviceLogs applies a batch of wireless log events from one
 // controller, deduping against fingerprints already seen in this process.
-//
-// On the very first poll for a device, all current log entries are marked as
-// seen WITHOUT emitting events — otherwise a backend restart would replay
-// the entire in-memory log buffer into wifi_history.
+// Every line the shared LogReader hands out is new — the buffer it found on
+// its first read of the device is handed to nobody, so a backend restart does
+// not replay the log into wifi_history — and the fingerprints only guard
+// against a line delivered twice.
 func (wt *WifiTracker) processDeviceLogs(devID string, events []routeros.WirelessLogEvent, macLookups map[string]*queries.MACLookup, now time.Time) {
-	seen, exists := wt.seenLogs[devID]
-	firstRun := !exists
-	if !exists {
+	seen := wt.seenLogs[devID]
+	if seen == nil {
 		seen = make(map[string]time.Time)
 		wt.seenLogs[devID] = seen
 	}
@@ -426,13 +425,10 @@ func (wt *WifiTracker) processDeviceLogs(devID string, events []routeros.Wireles
 		ev := &events[i]
 		fp := ev.Fingerprint()
 		if _, already := seen[fp]; already {
-			seen[fp] = now // refresh so it stays alive while in source buffer
+			seen[fp] = now
 			continue
 		}
 		seen[fp] = now
-		if firstRun {
-			continue
-		}
 		wt.handleLogEvent(ev, devID, macLookups, now)
 	}
 }

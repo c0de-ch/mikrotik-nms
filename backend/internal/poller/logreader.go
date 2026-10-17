@@ -37,15 +37,17 @@ type logLine struct {
 }
 
 type logDeviceState struct {
-	mu       sync.Mutex
-	cursor   routeros.LogCursor
-	lines    []logLine // seq ascending; see trim for what is kept
-	nextSeq  uint64
-	readSeq  uint64 // seq of the first line of the latest read: kept until the next read
-	resetSeq uint64 // seq of the first line of the latest reset that brought lines (see LogCursor)
-	readAt   time.Time
-	lastErr  error
-	marks    map[string]uint64 // consumer → seq of its next unseen line
+	mu     sync.Mutex
+	cursor routeros.LogCursor
+	// primed is set by the first successful read: the buffer that read
+	// found is the device's history, not news (see Entries).
+	primed  bool
+	lines   []logLine // seq ascending; see trim for what is kept
+	nextSeq uint64
+	readSeq uint64 // seq of the first line of the latest read: kept until the next read
+	readAt  time.Time
+	lastErr error
+	marks   map[string]uint64 // consumer → seq of its next unseen line
 }
 
 // LogReader hands every poller that wants a device's log lines the same
@@ -93,10 +95,15 @@ func logReadWindow(interval time.Duration) time.Duration {
 // only when it left the consumer with nothing new; buffered lines are served
 // regardless.
 //
-// reset is true on the consumer's first call for the device and after the
-// device's buffer restarted: the lines may have been processed before, so
-// callers keep their fingerprint dedupe (and first-run suppression) for them.
-func (r *LogReader) Entries(consumer, deviceID string, run routeros.Runner, now time.Time, window time.Duration) (entries []routeros.LogEntry, reset bool, err error) {
+// Every line returned is news: it was logged after the reader's first
+// successful read of the device. That read only primes the cursor — the
+// buffer it finds predates this process, and a backend restart must not
+// replay it as new events — and is handed to nobody. A buffer the device
+// restarted (a reboot) is all news and is handed out like any read. So a
+// consumer applies whatever it gets, whenever it first asks, and needs no
+// first-run suppression of its own (one keyed on its own dedupe state would
+// silently drop real events once that state is pruned).
+func (r *LogReader) Entries(consumer, deviceID string, run routeros.Runner, now time.Time, window time.Duration) ([]routeros.LogEntry, error) {
 	if window <= 0 {
 		window = r.minInterval
 	}
@@ -105,14 +112,15 @@ func (r *LogReader) Entries(consumer, deviceID string, run routeros.Runner, now 
 	defer st.mu.Unlock()
 
 	if st.readAt.IsZero() || now.Sub(st.readAt) >= window {
-		fresh, cursorReset, rerr := st.cursor.ReadNew(run)
+		fresh, _, rerr := st.cursor.ReadNew(run)
 		st.readAt = now
 		st.lastErr = rerr
 		if rerr == nil {
-			st.readSeq = st.nextSeq
-			if cursorReset && len(fresh) > 0 {
-				st.resetSeq = st.nextSeq
+			if !st.primed {
+				st.primed = true
+				fresh = nil // the device's history: primes the cursor only
 			}
+			st.readSeq = st.nextSeq
 			for i := range fresh {
 				st.lines = append(st.lines, logLine{seq: st.nextSeq, e: fresh[i]})
 				st.nextSeq++
@@ -125,15 +133,14 @@ func (r *LogReader) Entries(consumer, deviceID string, run routeros.Runner, now 
 
 	mark, known := st.marks[consumer]
 	if !known {
-		reset = true
-		mark = 0
+		// A consumer new to the device gets what is still buffered — all
+		// of it logged since the reader primed.
+		mark = st.nextSeq
 		if len(st.lines) > 0 {
 			mark = st.lines[0].seq
 		}
 	}
-	if st.resetSeq > 0 && mark <= st.resetSeq {
-		reset = true
-	}
+	var entries []routeros.LogEntry
 	for i := range st.lines {
 		if st.lines[i].seq >= mark {
 			entries = append(entries, st.lines[i].e)
@@ -143,9 +150,9 @@ func (r *LogReader) Entries(consumer, deviceID string, run routeros.Runner, now 
 	st.trim()
 
 	if len(entries) == 0 && st.lastErr != nil {
-		return nil, reset, st.lastErr
+		return nil, st.lastErr
 	}
-	return entries, reset, nil
+	return entries, nil
 }
 
 // trim drops the lines of earlier reads that every known consumer has seen.
