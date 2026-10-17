@@ -37,7 +37,19 @@ const logProplist = "=.proplist=.id,time,topics,message"
 type LogCursor struct {
 	primed  bool
 	last    uint64 // numeric .id of the newest line returned so far
-	lastKey string // that line's fingerprint: detects a restarted buffer reusing ids
+	lastKey string // that line's cursorKey: detects a restarted buffer reusing ids
+}
+
+// cursorKey identifies the line at an id across reads: its topics and
+// message, not its time. RouterOS prints the time of today's lines as
+// "23:58:50" and of older ones with the date ("oct/16 23:58:50", or
+// "2026-10-16 23:58:50"), so the same line changes its time field at the
+// device's midnight — and a DST or time-zone change shifts it — which would
+// read as a rebooted buffer and replay the whole log every night. A buffer
+// that really restarted holds a different line at that id (ids restart at
+// *1 with the boot messages); the id going backwards catches the rest.
+func cursorKey(e *LogEntry) string {
+	return e.Topics + "\x1f" + e.Message
 }
 
 // parseLogID turns "*1A3" into 0x1A3. ok is false for anything else.
@@ -56,11 +68,11 @@ func parseLogID(id string) (uint64, bool) {
 // ReadNew reads the device's log buffer and returns the lines after the
 // cursor, oldest first.
 //
-// reset is true when every returned line may have been seen before: on the
-// first read (the buffer predates us) and after a buffer restart (the device
-// rebooted: ids went backwards, or the id we stopped at now holds a different
-// line). Callers keep their own fingerprint dedupe for those cases; the
-// cursor only promises that with reset=false nothing is returned twice.
+// reset is true on the first read (the buffer predates us) and after a
+// buffer restart (the device rebooted: ids went backwards, or the id we
+// stopped at now holds a different line — compared by cursorKey, so a line
+// whose printed time gains a date at midnight is still the same line). With
+// reset=false nothing is returned twice.
 // Lines whose id does not parse disable the cursor for that read: everything
 // is returned and the position does not move.
 func (c *LogCursor) ReadNew(run Runner) (entries []LogEntry, reset bool, err error) {
@@ -95,19 +107,19 @@ func (c *LogCursor) ReadNew(run Runner) (entries []LogEntry, reset bool, err err
 	}
 	maxID := ids[maxIdx]
 	if first {
-		c.last, c.lastKey = maxID, all[maxIdx].Fingerprint()
+		c.last, c.lastKey = maxID, cursorKey(&all[maxIdx])
 		return all, true, nil
 	}
 
 	restart := maxID < c.last
 	for i, id := range ids {
 		if id == c.last {
-			restart = restart || all[i].Fingerprint() != c.lastKey
+			restart = restart || cursorKey(&all[i]) != c.lastKey
 			break
 		}
 	}
 	if restart {
-		c.last, c.lastKey = maxID, all[maxIdx].Fingerprint()
+		c.last, c.lastKey = maxID, cursorKey(&all[maxIdx])
 		return all, true, nil
 	}
 
@@ -118,7 +130,7 @@ func (c *LogCursor) ReadNew(run Runner) (entries []LogEntry, reset bool, err err
 		}
 	}
 	if len(fresh) > 0 {
-		c.last, c.lastKey = maxID, all[maxIdx].Fingerprint()
+		c.last, c.lastKey = maxID, cursorKey(&all[maxIdx])
 	}
 	return fresh, false, nil
 }

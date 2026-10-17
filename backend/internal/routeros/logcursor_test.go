@@ -75,6 +75,44 @@ func TestLogCursorAdvanceRestartAndRotation(t *testing.T) {
 	}
 }
 
+// At the device's midnight RouterOS starts printing yesterday's lines with
+// their date — "oct/16 23:58:50", or "2026-10-16 23:58:50" on newer 7.x — and
+// a DST change shifts every printed time. The line at the cursor is still the
+// same line: no restart, only the new line is returned. A rebooted buffer
+// that has grown past the cursor holds another line there and still resets.
+func TestLogCursorSurvivesReformattedTimes(t *testing.T) {
+	for _, form := range []struct{ name, a, b string }{
+		{"month/day", "oct/16 23:58:40", "oct/16 23:58:50"},
+		{"ISO date", "2026-10-16 23:58:40", "2026-10-16 23:58:50"},
+		{"DST shift", "22:58:40", "22:58:50"},
+	} {
+		f := &fakeRunner{queue: []fakeReply{
+			rep(logRow("*1A0", "23:58:40", "system,info", "a"), logRow("*1A1", "23:58:50", "wireless,info", "b")),
+			rep(logRow("*1A0", form.a, "system,info", "a"), logRow("*1A1", form.b, "wireless,info", "b"),
+				logRow("*1A2", "00:00:30", "system,info", "c")),
+		}}
+		var cur LogCursor
+		if _, _, err := cur.ReadNew(f); err != nil {
+			t.Fatal(err)
+		}
+		got, reset, err := cur.ReadNew(f)
+		if err != nil || reset || !eq(ids(got), []string{"*1A2"}) {
+			t.Errorf("%s: got %v reset=%v err=%v, want only *1A2 without a reset", form.name, ids(got), reset, err)
+		}
+	}
+
+	f := &fakeRunner{queue: []fakeReply{
+		rep(logRow("*1", "10:00:00", "system,info", "router started"), logRow("*2", "10:00:05", "wireless,info", "x connected")),
+		rep(logRow("*1", "12:00:00", "system,info", "router rebooted"), logRow("*2", "12:00:01", "system,info", "dhcp started"),
+			logRow("*3", "12:00:02", "system,info", "y")),
+	}}
+	var cur LogCursor
+	cur.ReadNew(f)
+	if got, reset, _ := cur.ReadNew(f); !reset || len(got) != 3 {
+		t.Errorf("rebooted buffer past the cursor: got %v reset=%v, want all three with a reset", ids(got), reset)
+	}
+}
+
 func TestLogCursorEmptyAndUnparsable(t *testing.T) {
 	f := &fakeRunner{queue: []fakeReply{
 		rep(), // empty buffer
