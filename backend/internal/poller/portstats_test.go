@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/mikrotik-nms/backend/internal/database/queries"
+	"github.com/mikrotik-nms/backend/internal/devclass"
 	"github.com/mikrotik-nms/backend/internal/routeros"
 	"github.com/mikrotik-nms/backend/internal/ws"
 )
@@ -655,6 +656,8 @@ func TestPortStatsCycleConcurrentWithInFlightGuard(t *testing.T) {
 	mustCreateDevice(t, db, &queries.Device{ID: "nocl", Identity: "nocl", Address: "192.168.78.13"})
 
 	c := NewPortStatsCollector(db, nil, ws.NewHub())
+	c.phase = noJitter
+	c.reg = NewScheduleRegistry()
 	release := make(chan struct{})
 	var calls sync.Map // device → *int32
 	var fastCount atomic.Int64
@@ -721,10 +724,16 @@ func TestPortStatsCycleConcurrentWithInFlightGuard(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	// Once returned, the slow device is polled again.
+	// The next read counts from the end of the slow one: right after the
+	// late reply it is not due — no catch-up — one interval later it is.
+	c.cycle(context.Background(), iv)
+	if got := callCount("slow"); got != 1 {
+		t.Errorf("slow device polled %d times right after its late reply, want 1 (no catch-up)", got)
+	}
+	time.Sleep(iv + iv/2)
 	c.cycle(context.Background(), iv)
 	if got := callCount("slow"); got != 2 {
-		t.Errorf("slow device polled %d times after returning, want 2", got)
+		t.Errorf("slow device polled %d times an interval after returning, want 2", got)
 	}
 }
 
@@ -739,6 +748,13 @@ func TestPortStatsCycleShutdownSkipsFinish(t *testing.T) {
 	}
 }
 
+// hostsCadence runs the FDB dump and the stacking prints every 5 min.
+func hostsCadence() *stubCadence {
+	return &stubCadence{iv: map[devclass.Tier]time.Duration{
+		devclass.TierBridgeHosts: 5 * time.Minute, devclass.TierRelations: 5 * time.Minute,
+	}}
+}
+
 func TestPortStatsCollectHosts(t *testing.T) {
 	db := pollerTestDB(t)
 	mustCreateDevice(t, db, &queries.Device{ID: "sw", Identity: "sw", Address: "192.168.78.10"})
@@ -746,9 +762,13 @@ func TestPortStatsCollectHosts(t *testing.T) {
 	mustCreateDevice(t, db, &queries.Device{ID: "off", Identity: "off", Address: "192.168.78.12", Status: "offline"})
 
 	c := NewPortStatsCollector(db, nil, nil)
-	now := time.Now().UTC().Truncate(time.Second)
-	c.now = func() time.Time { return now }
+	clock := &testClock{t: time.Now().UTC().Truncate(time.Second)}
+	c.now = clock.now
+	c.hostClock = newTierClock(NewScheduleRegistry())
+	c.UseCadence(hostsCadence())
+	hostCalls := map[string]int{}
 	c.fetchHosts = func(id string) ([]routeros.BridgeHost, error) {
+		hostCalls[id]++
 		switch id {
 		case "sw":
 			return []routeros.BridgeHost{
@@ -770,9 +790,7 @@ func TestPortStatsCollectHosts(t *testing.T) {
 			{Iface: "pppoe-out1", Parent: "ether1", Kind: routeros.RelationPPPoE},
 		}, nil
 	}
-	if pending := c.collectHosts(context.Background(), nil); len(pending) != 0 {
-		t.Errorf("pending = %v: a failing dump is not retried early", pending)
-	}
+	c.hostsTick(context.Background())
 	rels, err := queries.ListInterfaceRelations(db)
 	if err != nil {
 		t.Fatal(err)
@@ -781,22 +799,31 @@ func TestPortStatsCollectHosts(t *testing.T) {
 		t.Errorf("relations = %+v", rels)
 	}
 	if relCalls["bad"] != 0 || relCalls["sw"] != 1 {
-		t.Errorf("relation reads = %v: only after a successful FDB dump", relCalls)
+		t.Errorf("relation reads = %v: a device failing its dump is not asked for its stacking", relCalls)
+	}
+
+	// Nothing is due again within the interval; a failing dump is not
+	// retried early either.
+	clock.set(clock.now().Add(pollerTick))
+	c.hostsTick(context.Background())
+	if hostCalls["sw"] != 1 || hostCalls["bad"] != 1 || relCalls["sw"] != 1 || relCalls["bad"] != 0 {
+		t.Errorf("reads within the interval: hosts %v, relations %v", hostCalls, relCalls)
 	}
 
 	// A failed read keeps the previous rows.
+	clock.set(clock.now().Add(6 * time.Minute))
 	c.fetchRelations = func(string) ([]routeros.InterfaceRelation, error) { return nil, errors.New("trap") }
-	c.collectHosts(context.Background(), nil)
+	c.hostsTick(context.Background())
 	if rels, _ := queries.ListInterfaceRelations(db); len(rels) != 2 {
 		t.Errorf("relations after a failed read = %+v, want the previous 2", rels)
 	}
 
-	hosts, err := queries.ListPortHosts(db, now.Add(-time.Minute), "")
+	hosts, err := queries.ListPortHosts(db, clock.now().Add(-time.Minute), "")
 	if err != nil {
 		t.Fatalf("ListPortHosts: %v", err)
 	}
 	if len(hosts) != 2 || hosts[0].DeviceID != "sw" || hosts[0].InterfaceName != "ether7" || hosts[0].VID != 28 ||
-		hosts[1].InterfaceName != "wifi2" || !hosts[1].LastSeen.Equal(now) {
+		hosts[1].InterfaceName != "wifi2" || !hosts[1].LastSeen.Equal(clock.now()) {
 		t.Fatalf("hosts = %+v", hosts)
 	}
 
@@ -810,14 +837,18 @@ func TestPortStatsCollectHosts(t *testing.T) {
 }
 
 // On a cold start the pool has dialled only some devices by the first FDB
-// pass. The ones without a connection come back as pending, and a retry pass
-// dumps just those.
-func TestPortStatsCollectHostsReportsDevicesWithoutClient(t *testing.T) {
+// pass. The ones without a connection are retried after portHostsRetryDelay,
+// not a whole interval later, and the others are not dumped again.
+func TestPortStatsCollectHostsRetriesDevicesWithoutClient(t *testing.T) {
 	db := pollerTestDB(t)
 	mustCreateDevice(t, db, &queries.Device{ID: "sw", Identity: "sw", Address: "192.168.78.10"})
 	mustCreateDevice(t, db, &queries.Device{ID: "late", Identity: "late", Address: "192.168.78.11"})
 
 	c := NewPortStatsCollector(db, nil, nil)
+	clock := &testClock{t: time.Now().UTC().Truncate(time.Second)}
+	c.now = clock.now
+	c.hostClock = newTierClock(NewScheduleRegistry())
+	c.UseCadence(hostsCadence())
 	c.fetchRelations = func(string) ([]routeros.InterfaceRelation, error) { return nil, nil }
 	dialled := map[string]bool{"sw": true}
 	calls := map[string]int{}
@@ -829,24 +860,79 @@ func TestPortStatsCollectHostsReportsDevicesWithoutClient(t *testing.T) {
 		return []routeros.BridgeHost{{MACAddress: "AA:BB:CC:00:00:0" + string(rune('0'+calls[id])), Interface: "ether" + id}}, nil
 	}
 
-	pending := c.collectHosts(context.Background(), nil)
-	if len(pending) != 1 || !pending["late"] {
-		t.Fatalf("pending after first pass = %v, want only late", pending)
-	}
-
+	start := clock.now()
+	c.hostsTick(context.Background())
 	dialled["late"] = true
-	if pending = c.collectHosts(context.Background(), pending); len(pending) != 0 {
-		t.Fatalf("pending after retry = %v, want none", pending)
+	clock.set(start.Add(portHostsRetryDelay - time.Second))
+	c.hostsTick(context.Background())
+	if calls["late"] != 1 {
+		t.Fatalf("late retried after %v: calls = %v", portHostsRetryDelay-time.Second, calls)
 	}
+	clock.set(start.Add(portHostsRetryDelay))
+	c.hostsTick(context.Background())
 	if calls["sw"] != 1 || calls["late"] != 2 {
 		t.Errorf("fetch calls = %v, want sw once (not re-dumped by the retry) and late twice", calls)
 	}
-	hosts, err := queries.ListPortHosts(db, time.Now().Add(-time.Minute), "late")
+	hosts, err := queries.ListPortHosts(db, clock.now().Add(-time.Minute), "late")
 	if err != nil {
 		t.Fatalf("ListPortHosts: %v", err)
 	}
 	if len(hosts) != 1 || hosts[0].InterfaceName != "etherlate" {
 		t.Errorf("late hosts = %+v", hosts)
+	}
+}
+
+// The hosts loop runs each device on its class plan floored by
+// port_hosts_interval — C2: the FDB every 10 min, the stacking every 15 —
+// and a paused device on neither.
+func TestPortStatsHostsPerClassCadenceAndPause(t *testing.T) {
+	db := pollerTestDB(t)
+	mustCreateDevice(t, db, &queries.Device{ID: "sw", Identity: "sw", Address: "192.0.2.20"})
+	mustCreateDevice(t, db, &queries.Device{ID: "held", Identity: "held", Address: "192.0.2.21"})
+	t0 := time.Now().UTC().Truncate(time.Second)
+	if err := queries.SetDeviceClass(db, "sw", devclass.C2, devclass.ResourceFacts{Architecture: "arm", CPUCount: 1}, t0); err != nil {
+		t.Fatal(err)
+	}
+	if err := queries.PauseDevicePolling(db, "held", t0.Add(24*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+
+	c := NewPortStatsCollector(db, nil, nil)
+	clock := &testClock{t: t0}
+	c.now = clock.now
+	reg := NewScheduleRegistry()
+	c.hostClock = newTierClock(reg)
+	c.hostClock.phase = noJitter
+	c.UseCadence(NewCadence(db, nil))
+	fdb, rel := map[string]int{}, map[string]int{}
+	c.fetchHosts = func(id string) ([]routeros.BridgeHost, error) { fdb[id]++; return nil, nil }
+	c.fetchRelations = func(id string) ([]routeros.InterfaceRelation, error) { rel[id]++; return nil, nil }
+
+	for _, step := range []struct {
+		at       time.Duration
+		fdb, rel int
+	}{
+		{0, 1, 1},
+		{5 * time.Minute, 1, 1},
+		{10 * time.Minute, 2, 1},
+		{15 * time.Minute, 2, 2},
+		{20 * time.Minute, 3, 2},
+		{30 * time.Minute, 4, 3},
+	} {
+		clock.set(t0.Add(step.at))
+		c.hostsTick(context.Background())
+		if fdb["sw"] != step.fdb || rel["sw"] != step.rel {
+			t.Errorf("+%v: FDB dumps %d, stacking reads %d; want %d, %d", step.at, fdb["sw"], rel["sw"], step.fdb, step.rel)
+		}
+	}
+	if fdb["held"] != 0 || rel["held"] != 0 {
+		t.Errorf("a paused device was read: FDB %d, stacking %d", fdb["held"], rel["held"])
+	}
+	if runs := reg.NextRuns("held"); len(runs) != 0 {
+		t.Errorf("a paused device has no next runs, got %v", runs)
+	}
+	if next := reg.NextRuns("sw")["bridge_hosts"]; !next.Equal(t0.Add(40 * time.Minute)) {
+		t.Errorf("next FDB dump = %v, want 10 min after the last", next)
 	}
 }
 

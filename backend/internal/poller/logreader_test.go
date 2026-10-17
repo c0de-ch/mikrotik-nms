@@ -36,28 +36,28 @@ func TestLogReaderSharesOneReadPerWindow(t *testing.T) {
 	r := NewLogReader()
 	t0 := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
 
-	got, reset, err := r.Entries(logConsumerWifi, "d1", f, t0)
+	got, reset, err := r.Entries(logConsumerWifi, "d1", f, t0, 0)
 	if err != nil || !reset || !sameIDs(entryIDs(got), []string{"*1", "*2"}) {
 		t.Fatalf("wifi first: %v reset=%v err=%v", entryIDs(got), reset, err)
 	}
 	// A second consumer 5 s later is served from the buffer: same lines,
 	// its own first sight, no second device read.
-	got, reset, err = r.Entries(logConsumerBridge, "d1", f, t0.Add(5*time.Second))
+	got, reset, err = r.Entries(logConsumerBridge, "d1", f, t0.Add(5*time.Second), 0)
 	if err != nil || !reset || !sameIDs(entryIDs(got), []string{"*1", "*2"}) || f.countCalls("/log/print") != 1 {
 		t.Fatalf("bridge first: %v reset=%v err=%v reads=%d", entryIDs(got), reset, err, f.countCalls("/log/print"))
 	}
 	// Asking again inside the window returns nothing new and reads nothing.
-	got, reset, _ = r.Entries(logConsumerWifi, "d1", f, t0.Add(10*time.Second))
+	got, reset, _ = r.Entries(logConsumerWifi, "d1", f, t0.Add(10*time.Second), 0)
 	if len(got) != 0 || reset || f.countCalls("/log/print") != 1 {
 		t.Fatalf("wifi inside window: %v reset=%v reads=%d", entryIDs(got), reset, f.countCalls("/log/print"))
 	}
 	// At the window the next asker reads; the cursor yields only the new line.
-	got, reset, _ = r.Entries(logConsumerWifi, "d1", f, t0.Add(30*time.Second))
+	got, reset, _ = r.Entries(logConsumerWifi, "d1", f, t0.Add(30*time.Second), 0)
 	if !sameIDs(entryIDs(got), []string{"*3"}) || reset || f.countCalls("/log/print") != 2 {
 		t.Fatalf("wifi second window: %v reset=%v reads=%d", entryIDs(got), reset, f.countCalls("/log/print"))
 	}
 	// The other consumer gets that line too, from the buffer.
-	got, reset, _ = r.Entries(logConsumerBridge, "d1", f, t0.Add(40*time.Second))
+	got, reset, _ = r.Entries(logConsumerBridge, "d1", f, t0.Add(40*time.Second), 0)
 	if !sameIDs(entryIDs(got), []string{"*3"}) || reset || f.countCalls("/log/print") != 2 {
 		t.Fatalf("bridge second window: %v reset=%v reads=%d", entryIDs(got), reset, f.countCalls("/log/print"))
 	}
@@ -76,15 +76,15 @@ func TestLogReaderDeviceRestartAndErrors(t *testing.T) {
 	r := NewLogReader()
 	t0 := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
 
-	r.Entries(logConsumerWifi, "d1", f, t0)
-	r.Entries(logConsumerBridge, "d1", f, t0)
+	r.Entries(logConsumerWifi, "d1", f, t0, 0)
+	r.Entries(logConsumerBridge, "d1", f, t0, 0)
 
 	// The device rebooted: both consumers see the new buffer flagged reset.
-	got, reset, err := r.Entries(logConsumerWifi, "d1", f, t0.Add(time.Minute))
+	got, reset, err := r.Entries(logConsumerWifi, "d1", f, t0.Add(time.Minute), 0)
 	if err != nil || !reset || !sameIDs(entryIDs(got), []string{"*1"}) {
 		t.Fatalf("wifi after reboot: %v reset=%v err=%v", entryIDs(got), reset, err)
 	}
-	got, reset, err = r.Entries(logConsumerBridge, "d1", f, t0.Add(time.Minute+5*time.Second))
+	got, reset, err = r.Entries(logConsumerBridge, "d1", f, t0.Add(time.Minute+5*time.Second), 0)
 	if err != nil || !reset || !sameIDs(entryIDs(got), []string{"*1"}) {
 		t.Fatalf("bridge after reboot: %v reset=%v err=%v", entryIDs(got), reset, err)
 	}
@@ -92,10 +92,10 @@ func TestLogReaderDeviceRestartAndErrors(t *testing.T) {
 	// A failed read with nothing buffered surfaces the error to every
 	// consumer of the window, and a consumer that never asked for a device
 	// does not pin its buffer.
-	if _, _, err := r.Entries(logConsumerWifi, "d1", f, t0.Add(2*time.Minute)); err == nil {
+	if _, _, err := r.Entries(logConsumerWifi, "d1", f, t0.Add(2*time.Minute), 0); err == nil {
 		t.Fatal("expected the read error")
 	}
-	if _, _, err := r.Entries(logConsumerBridge, "d1", f, t0.Add(2*time.Minute+5*time.Second)); err == nil {
+	if _, _, err := r.Entries(logConsumerBridge, "d1", f, t0.Add(2*time.Minute+5*time.Second), 0); err == nil {
 		t.Fatal("expected the cached read error")
 	}
 

@@ -92,13 +92,35 @@ func TestDeleteStalePortHosts(t *testing.T) {
 		t.Fatalf("seed fresh: %v", err)
 	}
 
-	n, err := DeleteStalePortHosts(db, minute(10, 0))
+	// A paused device's rows are kept however old: nothing ages while its
+	// polling is paused.
+	seedPortStatsDevice(t, db, "2")
+	if err := UpsertPortHosts(db, "2", []PortHost{{InterfaceName: "sfp1", MACAddress: "AA:AA:AA:AA:AA:03"}}, minute(8, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if err := PauseDevicePolling(db, "2", minute(13, 0)); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := DeleteStalePortHosts(db, minute(10, 0), minute(12, 30))
 	if err != nil || n != 1 {
 		t.Fatalf("DeleteStalePortHosts: n=%d err=%v, want 1", n, err)
 	}
 	left, _ := ListPortHosts(db, time.Time{}, "")
-	if len(left) != 1 || left[0].MACAddress != "AA:AA:AA:AA:AA:02" {
-		t.Errorf("left = %+v", left)
+	if len(left) != 2 || left[0].MACAddress != "AA:AA:AA:AA:AA:02" || left[1].DeviceID != "2" {
+		t.Errorf("left = %+v, want device 1's fresh row and the paused device's row", left)
+	}
+	// Once the pause has ended the paused device's old row goes too.
+	if n, err := DeleteStalePortHosts(db, minute(10, 0), minute(13, 0)); err != nil || n != 1 {
+		t.Errorf("after the pause: n=%d err=%v, want 1", n, err)
+	}
+
+	newest, err := LatestPortHostsDumps(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(newest) != 1 || !newest["1"].Equal(minute(12, 0)) {
+		t.Errorf("LatestPortHostsDumps = %v, want device 1 at 12:00", newest)
 	}
 }
 

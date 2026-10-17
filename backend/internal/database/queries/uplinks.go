@@ -44,12 +44,19 @@ func ReplaceDeviceUplinks(db *sql.DB, deviceID string, ups []DeviceUplink) error
 	return tx.Commit()
 }
 
-// ListDeviceUplinks returns uplinks seen within the freshness window.
+// ListDeviceUplinks returns uplinks seen within the freshness window, and
+// every row of a device whose polling is paused: its routes are not read
+// while the pause lasts, and its last known egress must not age off the map
+// and out of the flow classification meanwhile (each read replaces the
+// device's rows, so these are exactly its last read).
 func ListDeviceUplinks(db *sql.DB, notOlderThan time.Duration) ([]DeviceUplink, error) {
-	cutoff := time.Now().Add(-notOlderThan).UTC().Format("2006-01-02 15:04:05")
+	now := time.Now()
 	rows, err := db.Query(
 		`SELECT id, device_id, kind, interface, iface_type, gateway_ip, last_seen
-		 FROM device_uplinks WHERE last_seen >= ? ORDER BY device_id, kind, interface`, cutoff)
+		 FROM device_uplinks
+		 WHERE last_seen >= ? OR device_id IN (`+pausedDevicesSQL+`)
+		 ORDER BY device_id, kind, interface`,
+		sqlTime(now.Add(-notOlderThan)), sqlTime(now))
 	if err != nil {
 		return nil, err
 	}

@@ -67,10 +67,11 @@ func ListBridgeVLANs(db *sql.DB) ([]BridgeVLAN, error) {
 	return out, rows.Err()
 }
 
-// DeleteStaleBridgeVLANs drops bridge_vlans rows whose last_polled is older
-// than the cutoff. Used to clear VLAN entries that were removed from a device.
-func DeleteStaleBridgeVLANs(db *sql.DB, cutoff time.Time) error {
-	_, err := db.Exec(`DELETE FROM bridge_vlans WHERE last_polled < ?`, cutoff)
+// DeleteStaleBridgeVLANs drops one device's bridge_vlans rows whose
+// last_polled is older than the cutoff. Used to clear VLAN entries that were
+// removed from the device.
+func DeleteStaleBridgeVLANs(db *sql.DB, deviceID string, cutoff time.Time) error {
+	_, err := db.Exec(`DELETE FROM bridge_vlans WHERE device_id = ? AND last_polled < ?`, deviceID, sqlTime(cutoff))
 	return err
 }
 

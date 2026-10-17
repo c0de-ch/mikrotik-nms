@@ -56,9 +56,13 @@ func exporterIfaces(src IfaceSource, run routeros.Runner, deviceID string) ([]ro
 // syncExporterIfaces maps a RouterOS exporter's ifIndexes to names: the hex
 // .id of /interface/print is the flow-export ifIndex — taken from src's
 // snapshot when it has one, else printed — and /interface/vlan adds vlan-id
-// and parent. Manual names survive.
+// and parent. Manual names survive. A device whose polling is paused is not
+// read (its datagrams are still decoded with the names it had).
 func syncExporterIfaces(db *sql.DB, pool *routeros.Pool, src IfaceSource, exp queries.FlowExporter) error {
 	if pool == nil || exp.DeviceID == "" {
+		return errNoClient
+	}
+	if dev, err := queries.GetDevice(db, exp.DeviceID); err == nil && dev.PollingPaused(time.Now()) {
 		return errNoClient
 	}
 	client := pool.GetLive(exp.DeviceID)

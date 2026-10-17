@@ -86,9 +86,9 @@ func ListInterfaceStates(db *sql.DB) ([]InterfaceState, error) {
 	return out, rows.Err()
 }
 
-// DeleteStaleInterfaceStates removes rows whose last_polled is older than
-// cutoff — used to drop interfaces that disappeared from the device.
-func DeleteStaleInterfaceStates(db *sql.DB, cutoff time.Time) error {
-	_, err := db.Exec(`DELETE FROM interface_state WHERE last_polled < ?`, cutoff)
+// DeleteStaleInterfaceStates removes one device's rows whose last_polled is
+// older than cutoff — used to drop interfaces that disappeared from it.
+func DeleteStaleInterfaceStates(db *sql.DB, deviceID string, cutoff time.Time) error {
+	_, err := db.Exec(`DELETE FROM interface_state WHERE device_id = ? AND last_polled < ?`, deviceID, sqlTime(cutoff))
 	return err
 }

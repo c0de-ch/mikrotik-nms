@@ -51,12 +51,9 @@ const (
 	portStatsStartupDelay = 10 * time.Second
 	// portHostsStartupDelay holds the first FDB dump back after startup.
 	portHostsStartupDelay = 30 * time.Second
-	// portHostsRetryDelay is how soon devices skipped for want of a pooled
-	// connection are retried within one port_hosts_interval. On a cold start
-	// the pool has dialled only a few devices by the first pass; without the
-	// retry most of the fleet would have no FDB rows (so no access/wireless
-	// roles) for a whole interval.
-	portHostsRetryDelay = 30 * time.Second
+	// portHostsRetryDelay is how soon a device skipped for want of a pooled
+	// connection gets its FDB dump and stacking prints again (see hostsTick).
+	portHostsRetryDelay = noClientRetry
 	// portStatsStartupRollback is how many complete hours a startup always
 	// re-rolls into port_stats_1h.
 	portStatsStartupRollback = 3 * time.Hour
@@ -125,14 +122,15 @@ type minuteAcc struct {
 // PortStatsCollector owns the one scheduled interface read. Per device it
 // runs Tier 0 — one proplisted /interface/print (inventory, link state,
 // link-downs and counters) — each counter interval and Tier 4a — one
-// proplisted /interface/ethernet/print — every 5 min. Tier 0 counter deltas
-// become rates (the fleet snapshot, served by the API and published on WS)
-// and 1-minute buckets (port_stats_1m) plus hourly rollups (port_stats_1h);
-// the rows themselves are the per-device interface snapshot the other
-// consumers read (DeviceSnapshot) and keep the interfaces table current. A
-// second loop dumps each device's bridge FDB into port_hosts, and its
-// interface stacking (bond members, VLAN / PPPoE carriers) into
-// interface_relations, every port_hosts_interval.
+// proplisted /interface/ethernet/print — every 5 min, both on the device's
+// own cadence (tierInterval). Tier 0 counter deltas become rates (the fleet
+// snapshot, served by the API and published on WS) and 1-minute buckets
+// (port_stats_1m) plus hourly rollups (port_stats_1h); the rows themselves
+// are the per-device interface snapshot the other consumers read
+// (DeviceSnapshot) and keep the interfaces table current. A second loop
+// dumps each device's bridge FDB into port_hosts (Tier 3b), and its interface
+// stacking (bond members, VLAN / PPPoE carriers) into interface_relations
+// (Tier 3c), each on the device's cadence floored by port_hosts_interval.
 //
 // Devices are polled concurrently on their pooled clients (every print is
 // short); a device whose previous poll has not returned yet is skipped, so a
@@ -153,11 +151,22 @@ type PortStatsCollector struct {
 	now            func() time.Time
 
 	// tierInterval decides how often a tier runs on a device; 0 = not at
-	// all. The default is today's fleet-wide schedule (fleetTierInterval);
-	// the per-class cadences and the polling pause plug in here, and every
-	// interval-derived rule (delta gap, sample and snapshot expiry, the
+	// all. The default is the fleet-wide schedule (fleetTierInterval);
+	// UseCadence plugs in the per-class cadences and the polling pause, and
+	// every interval-derived rule (delta gap, sample and snapshot expiry, the
 	// flush hold) follows the interval it returns.
 	tierInterval func(dev queries.Device, tier devclass.Tier, now time.Time) time.Duration
+	// paused reports an admin pause: nothing is read, and the device's
+	// snapshot and rates do not expire while it lasts.
+	paused func(dev queries.Device, now time.Time) bool
+	// cadence schedules the hosts loop's tiers (FDB dump, stacking prints).
+	cadence CadenceSource
+	// phase is each device's jitter phase (devclass.Phase; tests pin it).
+	phase func(deviceID string) uint64
+	// hostClock schedules the hosts loop per device; reg is where every
+	// tier's next run is published (Schedule()).
+	hostClock *tierClock
+	reg       *ScheduleRegistry
 
 	flushMu sync.Mutex // serializes flush (DB writes + rollup)
 
@@ -177,19 +186,24 @@ type PortStatsCollector struct {
 // NewPortStatsCollector wires the collector; Run starts it.
 func NewPortStatsCollector(db *sql.DB, pool *routeros.Pool, hub *ws.Hub) *PortStatsCollector {
 	c := &PortStatsCollector{
-		db:       db,
-		pool:     pool,
-		hub:      hub,
-		now:      time.Now,
-		interval: defaultPortStatsInterval,
-		samples:  make(map[portStatsKey]*portCounterSample),
-		minutes:  make(map[int64]map[portStatsKey]*minuteAcc),
-		devs:     make(map[string]*deviceState),
-		inFlight: make(map[string]bool),
-		lastLog:  make(map[string]time.Time),
+		db:        db,
+		pool:      pool,
+		hub:       hub,
+		now:       time.Now,
+		interval:  defaultPortStatsInterval,
+		samples:   make(map[portStatsKey]*portCounterSample),
+		minutes:   make(map[int64]map[portStatsKey]*minuteAcc),
+		devs:      make(map[string]*deviceState),
+		inFlight:  make(map[string]bool),
+		lastLog:   make(map[string]time.Time),
+		cadence:   newFleetCadence(db),
+		phase:     devclass.Phase,
+		hostClock: newTierClock(Schedule()),
+		reg:       Schedule(),
 	}
 	c.runner = c.poolRunner
 	c.tierInterval = c.fleetTierInterval
+	c.paused = func(dev queries.Device, now time.Time) bool { return dev.PollingPaused(now) }
 	c.fetchStats = func(id string) ([]routeros.InterfaceStats, error) {
 		run, err := c.deviceRunner(id)
 		if err != nil {
@@ -234,11 +248,28 @@ func (c *PortStatsCollector) poolRunner(deviceID string) routeros.Runner {
 	return routeros.ClientRunner{Client: client}
 }
 
-// fleetTierInterval is today's schedule: Tier 0 at the fleet-wide
-// port_stats_interval, Tier 4a every ethernetInterval, nothing else. The
-// next step swaps it for devclass.EffectiveInterval(dev.EffectiveClass(),
-// dev.Profile(), tier), returning 0 while dev.PollingPaused(now).
-func (c *PortStatsCollector) fleetTierInterval(_ queries.Device, tier devclass.Tier, _ time.Time) time.Duration {
+// UseCadence schedules the collector's tiers by cs: Tier 0 and Tier 4a
+// through the tierInterval hook (0 while the device is paused), the FDB dump
+// and the stacking prints in the hosts loop, and cs's pause for every expiry
+// rule. Call before Run.
+func (c *PortStatsCollector) UseCadence(cs CadenceSource) {
+	if cs == nil {
+		return
+	}
+	c.cadence = cs
+	c.paused = cs.Paused
+	c.tierInterval = func(dev queries.Device, tier devclass.Tier, now time.Time) time.Duration {
+		return runInterval(cs, dev, tier, now)
+	}
+}
+
+// fleetTierInterval is the schedule without a CadenceSource: Tier 0 at the
+// fleet-wide port_stats_interval, Tier 4a every ethernetInterval, nothing
+// else, and nothing while the device is paused.
+func (c *PortStatsCollector) fleetTierInterval(dev queries.Device, tier devclass.Tier, now time.Time) time.Duration {
+	if dev.PollingPaused(now) {
+		return 0
+	}
 	switch tier {
 	case devclass.TierCounters:
 		c.mu.Lock()
@@ -293,10 +324,9 @@ func (c *PortStatsCollector) Run(ctx context.Context) {
 		base := PortStatsInterval(c.db)
 		next := c.safeCycle(ctx, base)
 
-		// Sleep until the next device is due — a steady cadence, since the
-		// schedule counts from the cycle start, not its end. At least a
-		// second, so a clock step never spins the loop; at most one base
-		// interval, so settings and the device list are re-read that often.
+		// Sleep until the next device is due. At least a second, so a clock
+		// step never spins the loop; at most one base interval, so settings,
+		// the device list and pauses are re-read that often.
 		wait := min(max(time.Until(next), time.Second), base)
 		if !sleepCtx(ctx, wait) {
 			return
@@ -363,7 +393,10 @@ func (c *PortStatsCollector) cycle(ctx context.Context, base time.Duration) time
 
 	var wg sync.WaitGroup
 	for _, dev := range devices {
+		c.notePause(dev, start)
 		if dev.Status != "online" {
+			c.reg.clear(dev.ID, devclass.TierCounters)
+			c.reg.clear(dev.ID, devclass.TierEthernet)
 			continue
 		}
 		plan, claimed, wake := c.planDevice(dev, start)
@@ -397,11 +430,13 @@ func (c *PortStatsCollector) cycle(ctx context.Context, base time.Duration) time
 }
 
 // planDevice decides which tiers of dev are due at now and, when any is,
-// claims the device (its poll is then in flight) and schedules each due
-// tier one interval ahead — counted from the cycle start, so a slow reply
-// does not drift the cadence. A device whose previous poll has not returned
-// is not claimed. wake is when the device is due next (zero while in flight
-// or when no tier runs on it), for the loop's sleep.
+// claims the device (its poll is then in flight). A due tier is provisionally
+// scheduled one interval (± the device's jitter) ahead for the loop's
+// wake-up; the end of its read sets the real next run (scheduleNext), so a
+// slow reply pushes the next one out instead of being caught up. A device
+// whose previous poll has not returned is not claimed. wake is when the
+// device is due next (zero while in flight or when no tier runs on it), for
+// the loop's sleep. Every tier's next run is published to the registry.
 func (c *PortStatsCollector) planDevice(dev queries.Device, now time.Time) (p tierPlan, claimed bool, wake time.Time) {
 	p.statsInterval = c.tierInterval(dev, devclass.TierCounters, now)
 	p.ethernetPeriod = c.tierInterval(dev, devclass.TierEthernet, now)
@@ -415,10 +450,10 @@ func (c *PortStatsCollector) planDevice(dev queries.Device, now time.Time) (p ti
 	p.stats = p.statsInterval > 0 && isDue(st.nextStats, now, p.statsInterval)
 	p.ethernet = p.ethernetPeriod > 0 && isDue(st.nextEthernet, now, p.ethernetPeriod)
 	if p.stats {
-		st.nextStats = now.Add(p.statsInterval)
+		st.nextStats = devclass.NextRun(now, p.statsInterval, c.phase(dev.ID))
 	}
 	if p.ethernet {
-		st.nextEthernet = now.Add(p.ethernetPeriod)
+		st.nextEthernet = devclass.NextRun(now, p.ethernetPeriod, c.phase(dev.ID))
 	}
 	if p.statsInterval > 0 {
 		wake = st.nextStats
@@ -426,11 +461,60 @@ func (c *PortStatsCollector) planDevice(dev queries.Device, now time.Time) (p ti
 	if p.ethernetPeriod > 0 && (wake.IsZero() || st.nextEthernet.Before(wake)) {
 		wake = st.nextEthernet
 	}
+	c.publishTierLocked(dev.ID, devclass.TierCounters, p.statsInterval, st.nextStats, now)
+	c.publishTierLocked(dev.ID, devclass.TierEthernet, p.ethernetPeriod, st.nextEthernet, now)
 	if p.stats || p.ethernet {
 		c.inFlight[dev.ID] = true
 		claimed = true
 	}
 	return p, claimed, wake
+}
+
+// publishTierLocked puts tier's next run (never run = due now) into the
+// registry, or takes it out when the tier does not run. c.mu held.
+func (c *PortStatsCollector) publishTierLocked(deviceID string, tier devclass.Tier, interval time.Duration, next, now time.Time) {
+	switch {
+	case interval <= 0:
+		c.reg.clear(deviceID, tier)
+	case next.IsZero():
+		c.reg.set(deviceID, tier, now)
+	default:
+		c.reg.set(deviceID, tier, next)
+	}
+}
+
+// scheduleNext sets tier's next run on deviceID from the end of its read.
+func (c *PortStatsCollector) scheduleNext(deviceID string, tier devclass.Tier, end time.Time, interval time.Duration) {
+	if interval <= 0 {
+		return
+	}
+	next := devclass.NextRun(end, interval, c.phase(deviceID))
+	c.mu.Lock()
+	st := c.deviceLocked(deviceID)
+	switch tier {
+	case devclass.TierCounters:
+		st.nextStats = next
+	case devclass.TierEthernet:
+		st.nextEthernet = next
+	}
+	c.mu.Unlock()
+	c.reg.set(deviceID, tier, next)
+}
+
+// notePause remembers whether dev is paused, and until when: its snapshot and
+// rates do not expire meanwhile (deviceState.fresh). Re-noted every cycle, so
+// a pause lifted early is picked up within one.
+func (c *PortStatsCollector) notePause(dev queries.Device, now time.Time) {
+	paused := c.paused(dev, now)
+	var until time.Time
+	if paused && dev.PollingPausedUntil != nil {
+		until = *dev.PollingPausedUntil
+	}
+	c.mu.Lock()
+	if st := c.devs[dev.ID]; st != nil {
+		st.paused, st.pausedUntil = paused, until
+	}
+	c.mu.Unlock()
 }
 
 // isDue reports whether a read scheduled for next (zero = never run) is due
@@ -465,6 +549,7 @@ func (c *PortStatsCollector) pollDevice(dev queries.Device, p tierPlan, wg *sync
 	if p.stats {
 		stats, err := c.fetchStats(dev.ID)
 		t := c.now().UTC()
+		c.scheduleNext(dev.ID, devclass.TierCounters, t, p.statsInterval)
 		if err != nil {
 			if !errors.Is(err, errNoClient) {
 				c.logThrottled("stats:"+dev.ID, "poller portstats: interface counters for %s: %v", dev.Identity, err)
@@ -484,10 +569,12 @@ func (c *PortStatsCollector) pollDevice(dev queries.Device, p tierPlan, wg *sync
 			if errors.Is(err, errNoClient) {
 				c.retryEthernet(dev.ID)
 			} else {
+				c.scheduleNext(dev.ID, devclass.TierEthernet, t, p.ethernetPeriod)
 				c.logThrottled("ethernet:"+dev.ID, "poller portstats: ethernet ports of %s: %v", dev.Identity, err)
 			}
 			return
 		}
+		c.scheduleNext(dev.ID, devclass.TierEthernet, t, p.ethernetPeriod)
 		c.ingestEthernet(dev.ID, eth, t, p.ethernetPeriod)
 	}
 }
@@ -649,12 +736,17 @@ func (c *PortStatsCollector) minuteAccFor(minute time.Time, key portStatsKey) *m
 // finishCycle ends a cycle at now: it drops rates and interface snapshots not
 // refreshed for more than 3× their device's Tier 0 interval (offline device
 // or removed interface; interval stands in for a device the collector has
-// not read yet), stamps the snapshot, flushes finished minutes and publishes.
+// not read yet) — except a paused device's, which do not age while nobody
+// reads it — stamps the snapshot, flushes finished minutes and publishes.
 func (c *PortStatsCollector) finishCycle(now time.Time, interval time.Duration) {
 	c.mu.Lock()
 	for key, s := range c.samples {
 		iv := interval
-		if st := c.devs[key.device]; st != nil && st.interval > 0 {
+		st := c.devs[key.device]
+		if st != nil && st.pausedAt(now) {
+			continue
+		}
+		if st != nil && st.interval > 0 {
 			iv = st.interval
 		}
 		if now.Sub(s.at) > 3*iv {
@@ -680,12 +772,14 @@ func (c *PortStatsCollector) finishCycle(now time.Time, interval time.Duration) 
 // its next delta starts at that sample and must find the minute it starts
 // in still open, or its share would land a minute late. The hold is capped
 // at portStatsMaxHold — a share for a minute older than that is carried into
-// the first open minute instead (accumulate). c.mu held.
+// the first open minute instead (accumulate). The pause does not extend the
+// hold: a paused device's next delta is a gap once its last read is past the
+// gap rule, which stays on the wall clock. c.mu held.
 func (c *PortStatsCollector) flushBoundaryLocked(now time.Time) time.Time {
 	boundary := now.UTC().Truncate(time.Minute)
 	floor := boundary.Add(-portStatsMaxHold)
 	for _, st := range c.devs {
-		if !st.fresh(now) {
+		if !st.current(now) {
 			continue // its next delta is past the gap rule anyway
 		}
 		if m := st.at.Truncate(time.Minute); m.Before(boundary) {
@@ -861,27 +955,28 @@ func (c *PortStatsCollector) RolledThrough() time.Time {
 	return c.rolledThrough
 }
 
-// hostsLoop dumps every online device's bridge FDB into port_hosts each
-// port_hosts_interval (re-read every iteration).
+// hostsLoop runs each online device's FDB dump (Tier 3b) and stacking prints
+// (Tier 3c) on their own per-device cadences, port_hosts_interval being the
+// floor of both.
 func (c *PortStatsCollector) hostsLoop(ctx context.Context) {
 	if !sleepCtx(ctx, portHostsStartupDelay) {
 		return
 	}
 	for {
-		pending := c.collectHosts(ctx, nil)
-		next := time.Now().Add(PortHostsInterval(c.db))
-		// Devices the pool had not dialled yet get another go soon rather
-		// than a whole interval later.
-		for len(pending) > 0 && time.Until(next) > portHostsRetryDelay {
-			if !sleepCtx(ctx, portHostsRetryDelay) {
-				return
-			}
-			pending = c.collectHosts(ctx, pending)
-		}
-		if !sleepCtx(ctx, time.Until(next)) {
+		c.safeHostsTick(ctx)
+		if !sleepCtx(ctx, pollerTick) {
 			return
 		}
 	}
+}
+
+func (c *PortStatsCollector) safeHostsTick(ctx context.Context) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("poller portstats: panic in hosts pass: %v\n%s", r, debug.Stack())
+		}
+	}()
+	c.hostsTick(ctx)
 }
 
 // sleepCtx waits for d, returning false when ctx ends first.
@@ -896,54 +991,92 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 	}
 }
 
-// collectHosts runs one FDB pass, device by device — only the devices in
-// only when it is non-nil. A failing device is logged and skipped. It returns
-// the online devices skipped for want of a pooled connection, so the caller
-// can retry them. Only port_hosts is written — never mac_lookup.
-func (c *PortStatsCollector) collectHosts(ctx context.Context, only map[string]bool) map[string]bool {
+// hostsTick runs, device by device, the FDB dumps and stacking prints that are
+// due. Offline and paused devices run neither. A device without a pooled
+// connection is retried after portHostsRetryDelay — on a cold start the pool
+// has dialled only a few devices by the first pass, and without the retry
+// most of the fleet would have no FDB rows (so no access/wireless roles) for a
+// whole interval. Only port_hosts and interface_relations are written — never
+// mac_lookup.
+func (c *PortStatsCollector) hostsTick(ctx context.Context) {
 	devices, err := queries.ListDevices(c.db)
 	if err != nil {
 		log.Printf("poller portstats: hosts list devices: %v", err)
-		return only
+		return
 	}
-	var noClient map[string]bool
+	c.hostClock.retain(deviceIDs(devices))
+	now := c.now()
 	for _, dev := range devices {
 		if ctx.Err() != nil {
-			return nil
+			return
 		}
-		if dev.Status != "online" || (only != nil && !only[dev.ID]) {
-			continue
+		var fdbIv, relIv time.Duration
+		if dev.Status == "online" {
+			fdbIv = runInterval(c.cadence, dev, devclass.TierBridgeHosts, now)
+			relIv = runInterval(c.cadence, dev, devclass.TierRelations, now)
 		}
-		if errors.Is(c.collectDeviceHosts(dev), errNoClient) {
-			if noClient == nil {
-				noClient = make(map[string]bool)
-			}
-			noClient[dev.ID] = true
+		fdbDue := c.hostClock.due(dev.ID, devclass.TierBridgeHosts, fdbIv, now)
+		relDue := c.hostClock.due(dev.ID, devclass.TierRelations, relIv, now)
+		if fdbDue || relDue {
+			c.visitHosts(dev, fdbDue, relDue, fdbIv, relIv)
 		}
 	}
-	return noClient
+}
+
+// visitHosts runs one device's due host tiers: the FDB dump first, then the
+// stacking prints — which a device that just failed its dump is not asked
+// for (they wait their interval), as the dump's failure says the session is
+// unwell.
+func (c *PortStatsCollector) visitHosts(dev queries.Device, fdbDue, relDue bool, fdbIv, relIv time.Duration) {
+	if fdbDue {
+		err := c.collectDeviceHosts(dev)
+		end := c.now()
+		if errors.Is(err, errNoClient) {
+			c.hostClock.retryAt(dev.ID, devclass.TierBridgeHosts, end.Add(portHostsRetryDelay))
+			if relDue {
+				c.hostClock.retryAt(dev.ID, devclass.TierRelations, end.Add(portHostsRetryDelay))
+			}
+			return
+		}
+		c.hostClock.ran(dev.ID, devclass.TierBridgeHosts, fdbIv, end)
+		if err != nil {
+			if relDue {
+				c.hostClock.ran(dev.ID, devclass.TierRelations, relIv, end)
+			}
+			return
+		}
+	}
+	if relDue {
+		err := c.collectDeviceRelations(dev)
+		end := c.now()
+		if errors.Is(err, errNoClient) {
+			c.hostClock.retryAt(dev.ID, devclass.TierRelations, end.Add(portHostsRetryDelay))
+			return
+		}
+		c.hostClock.ran(dev.ID, devclass.TierRelations, relIv, end)
+	}
 }
 
 // collectDeviceHosts dumps one device's FDB into port_hosts. It returns
-// errNoClient when the device had no pooled connection; other failures are
-// logged here and reported as nil.
-func (c *PortStatsCollector) collectDeviceHosts(dev queries.Device) error {
+// errNoClient when the device had no pooled connection, and the read error
+// (logged here) when the dump failed.
+func (c *PortStatsCollector) collectDeviceHosts(dev queries.Device) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("poller portstats: panic reading bridge hosts of %s (%s): %v\n%s", dev.Identity, dev.Address, r, debug.Stack())
 			if c.pool != nil {
 				c.pool.Close(dev.ID)
 			}
+			err = errors.New("panic reading bridge hosts")
 		}
 	}()
 
 	hosts, err := c.fetchHosts(dev.ID)
 	if err != nil {
-		if errors.Is(err, errNoClient) {
-			return err
+		if !errors.Is(err, errNoClient) {
+			c.logThrottled("hosts:"+dev.ID, "poller portstats: bridge hosts for %s: %v", dev.Identity, err)
 		}
-		c.logThrottled("hosts:"+dev.ID, "poller portstats: bridge hosts for %s: %v", dev.Identity, err)
-		return nil
+		return err
 	}
 	rows := make([]queries.PortHost, 0, len(hosts))
 	for _, h := range hosts {
@@ -957,20 +1090,29 @@ func (c *PortStatsCollector) collectDeviceHosts(dev queries.Device) error {
 	if err := queries.UpsertPortHosts(c.db, dev.ID, rows, c.now()); err != nil {
 		log.Printf("poller portstats: store bridge hosts for %s: %v", dev.Identity, err)
 	}
-	c.collectDeviceRelations(dev)
 	return nil
 }
 
 // collectDeviceRelations replaces one device's interface_relations with a
 // fresh read. On a failed read the previous rows stay: stacking rarely
-// changes, and a partial answer must not drop a bond's members.
-func (c *PortStatsCollector) collectDeviceRelations(dev queries.Device) {
+// changes, and a partial answer must not drop a bond's members. It returns
+// errNoClient when the device had no pooled connection.
+func (c *PortStatsCollector) collectDeviceRelations(dev queries.Device) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("poller portstats: panic reading interface stacking of %s (%s): %v\n%s", dev.Identity, dev.Address, r, debug.Stack())
+			if c.pool != nil {
+				c.pool.Close(dev.ID)
+			}
+			err = errors.New("panic reading interface stacking")
+		}
+	}()
 	rels, err := c.fetchRelations(dev.ID)
 	if err != nil {
 		if !errors.Is(err, errNoClient) {
 			c.logThrottled("relations:"+dev.ID, "poller portstats: interface stacking for %s: %v", dev.Identity, err)
 		}
-		return
+		return err
 	}
 	rows := make([]queries.InterfaceRelation, 0, len(rels))
 	for _, r := range rels {
@@ -979,6 +1121,7 @@ func (c *PortStatsCollector) collectDeviceRelations(dev queries.Device) {
 	if err := queries.ReplaceInterfaceRelations(c.db, dev.ID, rows); err != nil {
 		log.Printf("poller portstats: store interface stacking for %s: %v", dev.Identity, err)
 	}
+	return nil
 }
 
 // logThrottled logs at most once per portStatsLogEvery per key, so a device

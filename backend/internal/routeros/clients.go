@@ -16,8 +16,8 @@ type ARPEntry struct {
 	Complete  bool   `json:"complete"`
 }
 
-func GetARPTable(client *ros.Client) ([]ARPEntry, error) {
-	reply, err := RunCommand(client, "/ip/arp/print")
+func GetARPTable(run Runner) ([]ARPEntry, error) {
+	reply, err := run.Run("/ip/arp/print")
 	if err != nil {
 		return nil, err
 	}
@@ -48,8 +48,8 @@ type DHCPLease struct {
 	Dynamic    bool   `json:"dynamic"`
 }
 
-func GetDHCPLeases(client *ros.Client) ([]DHCPLease, error) {
-	reply, err := RunCommand(client, "/ip/dhcp-server/lease/print")
+func GetDHCPLeases(run Runner) ([]DHCPLease, error) {
+	reply, err := run.Run("/ip/dhcp-server/lease/print")
 	if err != nil {
 		return nil, err
 	}
@@ -72,14 +72,14 @@ func GetDHCPLeases(client *ros.Client) ([]DHCPLease, error) {
 	// those aren't live assignments — the server isn't handing them out. Drop
 	// them so a switch whose dhcp server is turned off doesn't surface a ghost
 	// "client" for every leftover static reservation.
-	return activeLeases(leases, disabledDHCPServers(client)), nil
+	return activeLeases(leases, disabledDHCPServers(run)), nil
 }
 
 // disabledDHCPServers returns the set of administratively-disabled DHCP server
 // names. Best-effort: any error yields an empty set, so leases are shown rather
 // than wrongly hidden on a transient query failure (fail-open).
-func disabledDHCPServers(client *ros.Client) map[string]bool {
-	reply, err := RunCommand(client, "/ip/dhcp-server/print")
+func disabledDHCPServers(run Runner) map[string]bool {
+	reply, err := run.Run("/ip/dhcp-server/print")
 	if err != nil {
 		return nil
 	}

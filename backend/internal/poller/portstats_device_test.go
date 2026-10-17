@@ -67,6 +67,9 @@ func newTestPortStats(t *testing.T, run routeros.Runner) (*PortStatsCollector, *
 	clock := &testClock{t: at(12, 0, 5)}
 	c.now = clock.now
 	c.runner = func(string) routeros.Runner { return run }
+	c.phase = noJitter
+	c.reg = NewScheduleRegistry()
+	c.hostClock = newTierClock(c.reg)
 	return c, clock
 }
 
@@ -351,7 +354,7 @@ func TestPortStatsHostsLoopCountsCommands(t *testing.T) {
 		"/interface/pppoe-client/print": rep(),
 	}}
 	c, clock := newTestPortStats(t, run)
-	c.collectHosts(context.Background(), nil)
+	c.hostsTick(context.Background())
 	if len(run.calls) != 4 || !strings.HasPrefix(run.calls[0], "/interface/bridge/host/print ?local=false") {
 		t.Fatalf("calls = %q, want the FDB dump then the three stacking prints", run.calls)
 	}

@@ -7,6 +7,7 @@ import (
 
 	ros "github.com/go-routeros/routeros/v3"
 	"github.com/mikrotik-nms/backend/internal/database/queries"
+	"github.com/mikrotik-nms/backend/internal/devclass"
 	"github.com/mikrotik-nms/backend/internal/routeros"
 )
 
@@ -55,17 +56,37 @@ type deviceState struct {
 	// cmdPrev in the minute before it.
 	cmdMinute         int64
 	cmdCount, cmdPrev int
+	// An admin pause seen by the last cycle, and its end (zero = until a
+	// cycle sees it lifted): nothing of the device expires meanwhile.
+	paused      bool
+	pausedUntil time.Time
 }
 
-// fresh reports whether the Tier 0 rows may still be served at now: read
-// within 3× the device's interval — the same rule that expires its rates.
-func (st *deviceState) fresh(now time.Time) bool {
+// pausedAt reports whether the device's polling is paused at now.
+func (st *deviceState) pausedAt(now time.Time) bool {
+	return st.paused && (st.pausedUntil.IsZero() || now.Before(st.pausedUntil))
+}
+
+// current reports whether the Tier 0 rows are within 3× the device's
+// interval of now — the wall-clock rule that expires its rates and that the
+// counter-delta gap rule mirrors.
+func (st *deviceState) current(now time.Time) bool {
 	return !st.at.IsZero() && now.Sub(st.at) <= 3*st.interval
+}
+
+// fresh reports whether the Tier 0 rows may still be served at now: current,
+// or the device is paused — its last read stays the device's state while
+// nobody reads it, it does not age into "gone".
+func (st *deviceState) fresh(now time.Time) bool {
+	return st.current(now) || (!st.at.IsZero() && st.pausedAt(now))
 }
 
 // ethernetFresh is fresh for the Tier 4a rows.
 func (st *deviceState) ethernetFresh(now time.Time) bool {
-	return !st.ethAt.IsZero() && now.Sub(st.ethAt) <= 3*st.ethInterval
+	if st.ethAt.IsZero() {
+		return false
+	}
+	return now.Sub(st.ethAt) <= 3*st.ethInterval || st.pausedAt(now)
 }
 
 // commandsLastMinute is the command count of the last complete minute
@@ -127,10 +148,11 @@ func (c *PortStatsCollector) ingestEthernet(deviceID string, rows []routeros.Eth
 // DeviceSnapshot returns deviceID's latest Tier 0 interface read with the
 // Tier 4a ethernet rows merged in by name, and when it was read. ok is false
 // before the first read and once the read is older than 3× the device's
-// counter interval (offline or failing device); consumers then fall back to
-// what they cached — none of them prints the interface table on a schedule
-// of its own. Safe for concurrent use; the rows are a copy. A nil collector
-// has no snapshots.
+// counter interval (offline or failing device) — not while the device's
+// polling is paused, when the last read stays served; consumers then fall
+// back to what they cached — none of them prints the interface table on a
+// schedule of its own. Safe for concurrent use; the rows are a copy. A nil
+// collector has no snapshots.
 func (c *PortStatsCollector) DeviceSnapshot(deviceID string) (rows []routeros.InterfaceSnapshot, at time.Time, ok bool) {
 	d, ok := c.DeviceIfaces(deviceID)
 	return d.Rows, d.At, ok
@@ -287,7 +309,78 @@ func (c *PortStatsCollector) countCommand(deviceID string, t time.Time) {
 }
 
 // PortHostsFreshness is how recent a port_hosts row must be to count as
-// current: three dump intervals, at least 15 min.
+// current on a device dumped at the fleet-wide port_hosts_interval: three
+// dump intervals, at least 15 min. Devices dump on their own cadence; judge
+// rows with FreshPortHosts / portHostsWindow instead.
 func PortHostsFreshness(db *sql.DB) time.Duration {
-	return max(3*PortHostsInterval(db), 15*time.Minute)
+	return max(3*PortHostsInterval(db), minPortHostsWindow)
+}
+
+// minPortHostsWindow is the shortest a device's FDB rows stay current.
+const minPortHostsWindow = 15 * time.Minute
+
+// portHostsWindow is how long dev's FDB rows count as current: three of its
+// dump intervals (its class cadence floored by port_hosts_interval), at least
+// 15 min.
+func portHostsWindow(cs CadenceSource, dev queries.Device, now time.Time) time.Duration {
+	return max(3*cs.Interval(dev, devclass.TierBridgeHosts, now), minPortHostsWindow)
+}
+
+// portHostsCutoffs is, per device, the oldest last_seen of an FDB row that is
+// current at now: now minus the device's window — or, while the device is
+// paused, its newest dump minus the window, so the rows do not age during
+// the pause. Devices without a known dump time are cut at now − window.
+func portHostsCutoffs(cs CadenceSource, devices []queries.Device, newest map[string]time.Time, now time.Time) map[string]time.Time {
+	cut := make(map[string]time.Time, len(devices))
+	for _, d := range devices {
+		anchor := now
+		if last, ok := newest[d.ID]; ok && cs.Paused(d, now) {
+			anchor = last
+		}
+		cut[d.ID] = anchor.Add(-portHostsWindow(cs, d, now))
+	}
+	return cut
+}
+
+// earliest is the oldest of cutoffs (now when there are none).
+func earliest(cutoffs map[string]time.Time, now time.Time) time.Time {
+	oldest := now
+	for _, t := range cutoffs {
+		if t.Before(oldest) {
+			oldest = t
+		}
+	}
+	return oldest
+}
+
+// FreshPortHosts returns the port_hosts rows current at now, judged per
+// device: seen within three of the device's own dump intervals (at least
+// 15 min), and for a paused device within that window of its newest dump —
+// a fleet-wide window would call a weak switch's rows (dumped every 15 min)
+// stale between dumps and age a paused device's rows away. Rows of devices
+// no longer managed are dropped. cs nil = the fleet-wide schedule.
+func FreshPortHosts(db *sql.DB, cs CadenceSource, now time.Time) ([]queries.PortHost, error) {
+	if cs == nil {
+		cs = newFleetCadence(db)
+	}
+	devices, err := queries.ListDevices(db)
+	if err != nil {
+		return nil, err
+	}
+	newest, err := queries.LatestPortHostsDumps(db)
+	if err != nil {
+		return nil, err
+	}
+	cut := portHostsCutoffs(cs, devices, newest, now)
+	rows, err := queries.ListPortHosts(db, earliest(cut, now), "")
+	if err != nil {
+		return nil, err
+	}
+	out := rows[:0]
+	for _, h := range rows {
+		if c, ok := cut[h.DeviceID]; ok && !h.LastSeen.Before(c) {
+			out = append(out, h)
+		}
+	}
+	return out, nil
 }

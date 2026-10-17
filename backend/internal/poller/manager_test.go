@@ -64,7 +64,7 @@ func TestInterSwitchPorts(t *testing.T) {
 func TestCollectUplinksReadsInterfaceSnapshot(t *testing.T) {
 	db := pollerTestDB(t)
 	mustCreateDevice(t, db, &queries.Device{ID: "r1", Identity: "router", Address: "192.0.2.1"})
-	m := &Manager{db: db, portStats: NewPortStatsCollector(db, nil, nil)}
+	m := &Manager{db: db, portStats: NewPortStatsCollector(db, nil, nil), cadence: newFleetCadence(db)}
 	run := &fakeRunner{byCmd: map[string]fakeReply{
 		"/ip/route/print": rep(map[string]string{"active": "true", "gateway": "198.51.100.1", "immediate-gw": "198.51.100.1%ether1"}),
 	}}
@@ -142,7 +142,7 @@ func TestGatewayAttachmentFromPortHosts(t *testing.T) {
 	dump("sw1", now.Add(-2*time.Minute), queries.PortHost{InterfaceName: "ether5", MACAddress: gwMAC}) // moved: latest dump wins
 	dump("sw2", now.Add(-time.Minute), queries.PortHost{InterfaceName: "ether3", MACAddress: gwMAC})   // offline device
 
-	m := &Manager{db: db}
+	m := &Manager{db: db, cadence: newFleetCadence(db)}
 	devices, err := queries.ListDevices(db)
 	if err != nil {
 		t.Fatal(err)

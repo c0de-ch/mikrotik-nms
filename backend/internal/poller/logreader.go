@@ -15,11 +15,12 @@ const (
 
 const (
 	// logReadMinInterval is the shortest gap between two reads of one device's
-	// log buffer, whoever asks. The wifi tracker (30 s default) and the
-	// network-health poller (60 s) used to each dump the buffer on their own
-	// cycle — two full /log/print per device per minute, plus the device's
-	// "logging" CPU burst for each. Now the first poller to ask within a
-	// window reads, the others are served from the buffer.
+	// log buffer, whoever asks, when the caller passes no window. The wifi
+	// tracker and the network-health poller used to each dump the buffer on
+	// their own cycle — two full /log/print per device per minute, plus the
+	// device's "logging" CPU burst for each. Now the first poller to ask
+	// within a window reads, the others are served from the buffer; callers
+	// pass the device's own window (logReadWindow of its TierLogs cadence).
 	logReadMinInterval = 30 * time.Second
 
 	// logBufferMaxLines caps the lines kept for a consumer that has stopped
@@ -48,13 +49,11 @@ type logDeviceState struct {
 }
 
 // LogReader hands every poller that wants a device's log lines the same
-// read. One cursored, proplisted /log/print per device per window
-// (logReadMinInterval); each consumer gets the lines it has not seen yet,
-// whatever its own cadence. Safe for concurrent use; one device read at a
-// time per device, other devices are not blocked.
-//
-// The read cadence is still driven by whoever asks first; the per-class
-// cadences (P0-4) will set it per device.
+// read. One cursored, proplisted /log/print per device per window — the
+// device's own, from its TierLogs cadence (logReadWindow); each consumer gets
+// the lines it has not seen yet, whatever its own cadence. Safe for
+// concurrent use; one device read at a time per device, other devices are
+// not blocked.
 type LogReader struct {
 	mu          sync.Mutex
 	devs        map[string]*logDeviceState
@@ -77,20 +76,35 @@ func (r *LogReader) state(deviceID string) *logDeviceState {
 	return st
 }
 
+// logReadWindow is the read window of a device whose TierLogs runs every
+// interval: nine tenths of it, as a consumer on the ±10 % jittered schedule
+// may ask up to a tenth early and must still get a fresh read. 0 = the
+// reader's default.
+func logReadWindow(interval time.Duration) time.Duration {
+	if interval <= 0 {
+		return 0
+	}
+	return interval - interval/10
+}
+
 // Entries returns the log lines of deviceID that consumer has not seen yet,
-// oldest first, reading the device when the buffered copy is older than the
-// minimum interval. A read error is returned only when it left the consumer
-// with nothing new; buffered lines are served regardless.
+// oldest first, reading the device when the buffered copy is at least window
+// old (window ≤ 0: the reader's minimum interval). A read error is returned
+// only when it left the consumer with nothing new; buffered lines are served
+// regardless.
 //
 // reset is true on the consumer's first call for the device and after the
 // device's buffer restarted: the lines may have been processed before, so
 // callers keep their fingerprint dedupe (and first-run suppression) for them.
-func (r *LogReader) Entries(consumer, deviceID string, run routeros.Runner, now time.Time) (entries []routeros.LogEntry, reset bool, err error) {
+func (r *LogReader) Entries(consumer, deviceID string, run routeros.Runner, now time.Time, window time.Duration) (entries []routeros.LogEntry, reset bool, err error) {
+	if window <= 0 {
+		window = r.minInterval
+	}
 	st := r.state(deviceID)
 	st.mu.Lock()
 	defer st.mu.Unlock()
 
-	if st.readAt.IsZero() || now.Sub(st.readAt) >= r.minInterval {
+	if st.readAt.IsZero() || now.Sub(st.readAt) >= window {
 		fresh, cursorReset, rerr := st.cursor.ReadNew(run)
 		st.readAt = now
 		st.lastErr = rerr

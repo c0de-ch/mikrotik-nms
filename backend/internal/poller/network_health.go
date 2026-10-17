@@ -12,21 +12,30 @@ import (
 	"time"
 
 	"github.com/mikrotik-nms/backend/internal/database/queries"
+	"github.com/mikrotik-nms/backend/internal/devclass"
 	"github.com/mikrotik-nms/backend/internal/routeros"
 	"github.com/mikrotik-nms/backend/internal/ws"
 )
 
 // NetworkHealthPoller tracks bridge / STP state and surfaces L2 loop signals.
 //
-// Per cycle it does, for each online device:
-//  1. /interface/bridge/print → the bridges (proplisted)
-//  2. /interface/bridge/port/print → ports with their STP runtime state on
+// Every pollerTick it visits each online, unpaused device and runs what is due
+// on the device's own cadence (MIKROTIK_NMS_NETWORK_HEALTH_INTERVAL is the
+// floor):
+//  1. Tier 2a–2c: /interface/bridge/print → the bridges (proplisted), then
+//     /interface/bridge/port/print → ports with their STP runtime state on
 //     RouterOS >= 7.24, else one batched (or, last resort, per-port) monitor;
 //     one batched /interface/bridge/monitor for the bridge summary
 //     (routeros.ReadBridgeState learns what each device accepts)
-//  3. /log/print filtered to bridge,info → loop / mac flap events
+//  2. Tier 3a: /interface/bridge/vlan/print → the VLAN table
+//  3. TierLogs: the shared log read → loop / mac flap events, login lines
 //  4. the port monitor over the port-stats collector's interface snapshot
-//     (Tier 0 + the Tier 4a loop-protect state) — no command of its own
+//     (Tier 0 + the Tier 4a loop-protect state) — no command of its own, run
+//     per device every max(floor, its counter cadence)
+//
+// Rows of bridges, ports, VLANs and interfaces a device no longer reports are
+// pruned once they are older than 3× that device's cadence for them; a paused
+// device's rows are never pruned.
 //
 // Anomaly detection writes rows to loop_events:
 //   - stp_disabled: bridge has STP off and >1 non-edge port
@@ -65,6 +74,30 @@ type NetworkHealthPoller struct {
 	// its account lines into device_findings.
 	logs   *LogReader
 	logins *LoginWatch
+
+	// cadence and clock schedule the tiers per device (UseCadence); runner
+	// is the device link (nil = no pooled connection) and now the clock
+	// (test seams).
+	cadence CadenceSource
+	clock   *tierClock
+	runner  func(deviceID string) routeros.Runner
+	now     func() time.Time
+	// lastPortScan is when the port monitor last ran per device.
+	lastPortScan map[string]time.Time
+	// The once-per-floor pass: prunes and the network.health summary, with
+	// the per-device bridge/port counts of the latest visits and the events
+	// recorded since the last summary.
+	lastMaint    time.Time
+	bridgeCounts map[string]int
+	portCounts   map[string]int
+	newEvents    int
+}
+
+// UseCadence schedules the poller's tiers by cs. Call before Run.
+func (n *NetworkHealthPoller) UseCadence(cs CadenceSource) {
+	if cs != nil {
+		n.cadence = cs
+	}
 }
 
 // InterfaceSnapshots serves each device's latest scheduled interface read:
@@ -265,7 +298,7 @@ func NewNetworkHealthPoller(db *sql.DB, pool *routeros.Pool, hub *ws.Hub, interv
 	if interval <= 0 {
 		interval = 60 * time.Second
 	}
-	return &NetworkHealthPoller{
+	n := &NetworkHealthPoller{
 		db:            db,
 		pool:          pool,
 		hub:           hub,
@@ -279,13 +312,18 @@ func NewNetworkHealthPoller(db *sql.DB, pool *routeros.Pool, hub *ws.Hub, interv
 		ports:         newPortMonitor(),
 		logs:          NewLogReader(),
 		logins:        NewLoginWatch(db),
+		cadence:       newFleetCadence(db),
+		clock:         newTierClock(Schedule()),
+		now:           time.Now,
+		lastPortScan:  make(map[string]time.Time),
+		bridgeCounts:  make(map[string]int),
+		portCounts:    make(map[string]int),
 	}
+	n.runner = func(deviceID string) routeros.Runner { return poolRunner(n.pool, deviceID) }
+	return n
 }
 
 func (n *NetworkHealthPoller) Run(ctx context.Context) {
-	ticker := time.NewTicker(n.interval)
-	defer ticker.Stop()
-
 	// Seed in-memory port state from the DB so the first poll after a restart
 	// only suppresses transitions for interfaces we've genuinely never seen.
 	// Without this, every existing disabled/down port would stay invisible
@@ -306,15 +344,13 @@ func (n *NetworkHealthPoller) Run(ctx context.Context) {
 	}
 
 	// Stagger after the topology poller's initial run.
-	time.Sleep(20 * time.Second)
-	n.safePoll(ctx)
-
+	if !sleepCtx(ctx, 20*time.Second) {
+		return
+	}
 	for {
-		select {
-		case <-ctx.Done():
+		n.safePoll(ctx)
+		if !sleepCtx(ctx, pollerTick) {
 			return
-		case <-ticker.C:
-			n.safePoll(ctx)
 		}
 	}
 }
@@ -328,19 +364,14 @@ func (n *NetworkHealthPoller) safePoll(ctx context.Context) {
 	n.poll(ctx)
 }
 
+// poll is one tick: every device's due work, then — once per floor interval —
+// the prunes and the network.health summary.
 func (n *NetworkHealthPoller) poll(ctx context.Context) {
 	devices, err := queries.ListDevices(n.db)
 	if err != nil {
 		return
 	}
-
-	cycleStart := time.Now()
-	totalBridges := 0
-	totalEvents := 0
-	totalPorts := 0
-
-	portSettings := loadPortMonitorSettings(n.db)
-	tcnThreshold := n.tcnStormThreshold()
+	now := n.now()
 
 	activeDevices := make(map[string]struct{}, len(devices))
 	for _, dev := range devices {
@@ -349,233 +380,350 @@ func (n *NetworkHealthPoller) poll(ctx context.Context) {
 	n.ports.pruneDevices(activeDevices)
 	n.pruneTCState(activeDevices)
 	n.logs.Prune(activeDevices)
+	n.clock.retain(deviceIDs(devices))
+	for id := range n.lastPortScan {
+		if _, ok := activeDevices[id]; !ok {
+			delete(n.lastPortScan, id)
+		}
+	}
+	for _, m := range []map[string]int{n.bridgeCounts, n.portCounts} {
+		for id := range m {
+			if _, ok := activeDevices[id]; !ok {
+				delete(m, id)
+			}
+		}
+	}
+
+	var settings *healthSettings
+	for _, dev := range devices {
+		if ctx.Err() != nil {
+			return
+		}
+		n.visit(dev, now, &settings)
+	}
+	n.maintain(devices, now)
+}
+
+// healthSettings are the runtime-tunable knobs a visit reads, loaded at most
+// once per tick and only when some device has work to do.
+type healthSettings struct {
+	ports PortMonitorSettings
+	tcn   int
+}
+
+func (n *NetworkHealthPoller) settingsOnce(s **healthSettings) *healthSettings {
+	if *s == nil {
+		*s = &healthSettings{ports: loadPortMonitorSettings(n.db), tcn: n.tcnStormThreshold()}
+	}
+	return *s
+}
+
+// portScanInterval is how often the port monitor runs over dev's snapshot:
+// every floor interval, or every counter read when that is slower. The
+// snapshot only changes on a counter read; interface_state rows are written
+// per scan.
+func (n *NetworkHealthPoller) portScanInterval(dev queries.Device, now time.Time) time.Duration {
+	return max(n.interval, n.cadence.Interval(dev, devclass.TierCounters, now))
+}
+
+// visit runs dev's work that is due at now: the port monitor, then the bridge
+// (Tier 2a–2c), VLAN (3a) and log reads on one pooled client. A device whose
+// bridge read fails is not asked for the rest this tick.
+func (n *NetworkHealthPoller) visit(dev queries.Device, now time.Time, s **healthSettings) {
+	online := dev.Status == "online"
+	paused := n.cadence.Paused(dev, now)
+	if !online {
+		delete(n.bridgeCounts, dev.ID)
+		delete(n.portCounts, dev.ID)
+	}
+	var bpIv, vlIv, lgIv time.Duration
+	if online {
+		bpIv = runInterval(n.cadence, dev, devclass.TierBridgePorts, now)
+		vlIv = runInterval(n.cadence, dev, devclass.TierBridgeVLAN, now)
+		lgIv = runInterval(n.cadence, dev, devclass.TierLogs, now)
+	}
+	bpDue := n.clock.due(dev.ID, devclass.TierBridgePorts, bpIv, now)
+	vlDue := n.clock.due(dev.ID, devclass.TierBridgeVLAN, vlIv, now)
+	lgDue := n.clock.due(dev.ID, devclass.TierLogs, lgIv, now)
+
+	// Port monitoring: link down / admin disable / flap / loop-protect on
+	// every matching interface. This is independent of bridge state because
+	// it surfaces issues on uplink interfaces and unbridged WAN ports too,
+	// and it reads the shared interface snapshot — no device command, so
+	// neither a pooled connection nor a successful bridge read is needed. A
+	// paused device has no new snapshot to look at.
+	if online && !paused && now.Sub(n.lastPortScan[dev.ID]) >= n.portScanInterval(dev, now) {
+		if set := n.settingsOnce(s); set.ports.Enabled {
+			added, ports := n.monitorPorts(dev, set.ports)
+			n.newEvents += added
+			n.portCounts[dev.ID] = ports
+		}
+		n.lastPortScan[dev.ID] = now
+	}
+
+	if !bpDue && !vlDue && !lgDue {
+		return
+	}
+	run := n.runner(dev.ID)
+	if run == nil {
+		retry := now.Add(noClientRetry)
+		for _, t := range []struct {
+			tier devclass.Tier
+			due  bool
+		}{{devclass.TierBridgePorts, bpDue}, {devclass.TierBridgeVLAN, vlDue}, {devclass.TierLogs, lgDue}} {
+			if t.due {
+				n.clock.retryAt(dev.ID, t.tier, retry)
+			}
+		}
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("network health: panic on %s: %v\n%s", dev.Identity, r, debug.Stack())
+		}
+	}()
+	if bpDue {
+		ok := n.readBridges(dev, run, now, n.settingsOnce(s).tcn)
+		n.clock.ran(dev.ID, devclass.TierBridgePorts, bpIv, n.now())
+		if !ok {
+			return
+		}
+	}
+	if vlDue {
+		n.readVLANs(dev, run)
+		n.clock.ran(dev.ID, devclass.TierBridgeVLAN, vlIv, n.now())
+	}
+	if lgDue {
+		n.readLogs(dev, run, now, lgIv)
+		n.clock.ran(dev.ID, devclass.TierLogs, lgIv, n.now())
+	}
+}
+
+// readBridges is Tier 2a–2c: the bridges, their ports' STP state and the
+// bridge summary, upserted, with the stp_disabled and tcn_storm detectors.
+// It reports whether the device answered.
+func (n *NetworkHealthPoller) readBridges(dev queries.Device, run routeros.Runner, cycleStart time.Time, tcnThreshold int) bool {
+	bridges, err := routeros.ListBridges(run)
+	if err != nil {
+		return false
+	}
+	// Keep only genuine bridges — some RouterOS versions report
+	// non-bridge interfaces via /interface/bridge/print, which would
+	// otherwise be tracked as bridges, monitored, and drive false TCN
+	// storms. Use cached interface types (a live fetch can fail on 7.23).
+	bridges = filterRealBridges(bridges, nonBridgeInterfaceNames(n.db, dev.ID))
+	state, err := routeros.ReadBridgeState(run, bridges, n.bridgeCaps[dev.ID], dev.ROSVersion, cycleStart)
+	if err != nil {
+		return false
+	}
+	n.bridgeCaps[dev.ID] = state.Caps
+	if prev := n.bridgePath[dev.ID]; prev != state.Path {
+		n.bridgePath[dev.ID] = state.Path
+		log.Printf("network health: %s: STP state via %s (%d commands for %d bridges, %d ports)",
+			nonempty(dev.Identity, dev.Address), state.Path, 1+state.Commands, len(state.Bridges), len(state.Ports))
+	}
+	bridges, ports := state.Bridges, state.Ports
+
+	// Group ports by bridge for port_count and stp_disabled detection.
+	portsByBridge := make(map[string][]routeros.BridgePortInfo)
+	for _, p := range ports {
+		portsByBridge[p.Bridge] = append(portsByBridge[p.Bridge], p)
+	}
+
+	n.bridgeCounts[dev.ID] = len(bridges)
+	for _, b := range bridges {
+		bs := &queries.BridgeStatus{
+			ID:                 dev.ID + ":" + b.Name,
+			DeviceID:           dev.ID,
+			BridgeName:         b.Name,
+			Protocol:           b.ProtocolMode,
+			STPEnabled:         b.STPEnabled(),
+			BridgeID:           b.BridgeID,
+			RootBridgeID:       b.RootBridgeID,
+			RootPathCost:       b.RootPathCost,
+			RootPort:           b.RootPort,
+			TopologyChanges:    b.TopologyChanges,
+			LastTopologyChange: b.LastTopologyChange,
+			PortCount:          len(portsByBridge[b.Name]),
+			STPSource:          state.Path,
+		}
+		_ = queries.UpsertBridgeStatus(n.db, bs)
+
+		key := dev.ID + "|" + b.Name
+		// The bridge monitor has no topology-changes field: the TCN
+		// rate is the sum of the ports' counter deltas, per minute.
+		tcnDelta, hadPrev := n.bridgeTCNDelta(key, portsByBridge[b.Name], cycleStart)
+
+		// Remember bridges that run STP so a later flickering "none" read
+		// (RouterOS 7.23) doesn't produce a false stp_disabled warning.
+		if b.STPEnabled() {
+			n.bridgeSTPSeen[key] = true
+		}
+
+		// stp_disabled: bridge has multiple *non-edge* ports but no STP.
+		// A loop needs at least two non-edge ports to physically form, so
+		// counting only non-edge ports stops access-only bridges (all
+		// edge ports) and single-uplink bridges from false-firing.
+		nonEdgeCount := countNonEdgePorts(portsByBridge[b.Name])
+		if shouldFlagSTPDisabled(b, n.bridgeSTPSeen[key], nonEdgeCount) {
+			if n.recordEvent(dev.ID, "stp_disabled", "warn", b.Name, "", "",
+				fmt.Sprintf("bridge %q runs %d non-edge ports with STP disabled (protocol=%s)",
+					b.Name, nonEdgeCount, nonempty(b.ProtocolMode, "none"))) {
+				n.newEvents++
+			}
+		}
+
+		// tcn_storm: topology changes rising fast. Only STP-running
+		// bridges can storm (see tcnStormSeverity); the threshold is
+		// runtime-tunable, per minute, and escalates to critical past
+		// a hard ceiling regardless of the configured warn threshold.
+		if hadPrev {
+			if severity, fire := tcnStormSeverity(b, tcnDelta, tcnThreshold); fire {
+				if n.recordEvent(dev.ID, "tcn_storm", severity, b.Name, "", "",
+					fmt.Sprintf("bridge %q topology-changes rose by %d/min since last poll (now %d)",
+						b.Name, tcnDelta, b.TopologyChanges)) {
+					n.newEvents++
+				}
+			}
+		}
+	}
+
+	for _, p := range ports {
+		ps := &queries.BridgePortStatus{
+			ID:               dev.ID + ":" + p.Bridge + ":" + p.Interface,
+			DeviceID:         dev.ID,
+			BridgeName:       p.Bridge,
+			PortInterface:    p.Interface,
+			Role:             p.Role,
+			Status:           p.Status,
+			Edge:             p.Edge,
+			PointToPoint:     p.PointToPoint,
+			PathCost:         p.PathCost,
+			DesignatedBridge: p.DesignatedBridge,
+			Inactive:         ptr(p.Inactive),
+			Disabled:         ptr(p.Disabled),
+			HWOffloadGroup:   p.HWOffloadGroup,
+			PortState:        p.PortState,
+			EdgeConfig:       p.EdgeConfig,
+		}
+		// Unknown stays NULL: a device that reports no runtime state
+		// or counter must not look like "not forwarding, 0 changes".
+		if p.HasRuntime {
+			ps.Forwarding, ps.Learning = ptr(p.Forwarding), ptr(p.Learning)
+		}
+		if p.HasTopologyChanges {
+			ps.TopologyChanges = ptr(p.TopologyChanges)
+		}
+		if p.HWOffloadReported {
+			ps.HWOffload = ptr(p.HWOffload)
+		}
+		if p.PVID > 0 {
+			ps.PVID = ptr(p.PVID)
+		}
+		_ = queries.UpsertBridgePortStatus(n.db, ps)
+	}
+	return true
+}
+
+// readVLANs is Tier 3a: the bridge VLAN table — which VLANs exist and where
+// they're tagged / untagged. Best-effort: devices without bridge VLAN
+// filtering return an empty table.
+func (n *NetworkHealthPoller) readVLANs(dev queries.Device, run routeros.Runner) {
+	vlans, err := routeros.GetBridgeVLANs(run)
+	if err != nil {
+		return
+	}
+	for _, v := range vlans {
+		bv := &queries.BridgeVLAN{
+			ID:              dev.ID + ":" + v.Bridge + ":" + v.VLANIDs,
+			DeviceID:        dev.ID,
+			BridgeName:      v.Bridge,
+			VLANIDs:         v.VLANIDs,
+			Tagged:          v.Tagged,
+			Untagged:        v.Untagged,
+			CurrentTagged:   v.CurrentTagged,
+			CurrentUntagged: v.CurrentUntagged,
+			Comment:         v.Comment,
+		}
+		_ = queries.UpsertBridgeVLAN(n.db, bv)
+	}
+}
+
+// readLogs is TierLogs: bridge log events (loop / mac flap / bpdu on edge) and
+// account lines from the shared per-device log read, whose window follows the
+// device's log cadence.
+func (n *NetworkHealthPoller) readLogs(dev queries.Device, run routeros.Runner, now time.Time, interval time.Duration) {
+	entries, firstSight, err := n.logs.Entries(logConsumerBridge, dev.ID, run, now, logReadWindow(interval))
+	if err != nil {
+		return
+	}
+	n.newEvents += n.processBridgeLogs(dev.ID, routeros.BridgeLogEventsFrom(entries), now)
+	n.logins.Process(&dev, run, entries, firstSight, now)
+}
+
+// staleReads is how many of its own reads a row may miss before it is
+// pruned as gone from the device.
+const staleReads = 3
+
+// maintain runs once per floor interval: it drops the rows of bridges, ports,
+// VLANs and interfaces a device stopped reporting — rows older than 3× that
+// device's cadence for them, so a weak switch read every 5 min is not pruned
+// on a router's clock, and never a paused device's — prunes the log
+// fingerprints and publishes the network.health summary.
+func (n *NetworkHealthPoller) maintain(devices []queries.Device, now time.Time) {
+	if !n.lastMaint.IsZero() && now.Sub(n.lastMaint) < n.interval {
+		return
+	}
+	n.lastMaint = now
 
 	for _, dev := range devices {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-		if dev.Status != "online" {
+		if n.cadence.Paused(dev, now) {
 			continue
 		}
-
-		evCount := 0
-		brCount := 0
-
-		// Port monitoring: link down / admin disable / flap / loop-protect
-		// on every matching interface. This is independent of bridge state
-		// because it surfaces issues on uplink interfaces and unbridged WAN
-		// ports too, and it reads the shared interface snapshot — no device
-		// command, so neither a pooled connection nor a successful bridge
-		// read is needed.
-		if portSettings.Enabled {
-			added, ports := n.monitorPorts(dev, portSettings)
-			evCount += added
-			totalPorts += ports
+		if iv := n.cadence.Interval(dev, devclass.TierBridgePorts, now); iv > 0 {
+			if err := queries.DeleteStaleBridgeRows(n.db, dev.ID, now.Add(-staleReads*iv)); err != nil {
+				log.Printf("network health: stale bridge cleanup: %v", err)
+			}
 		}
-
-		client := n.pool.GetLive(dev.ID)
-		if client == nil {
-			totalEvents += evCount
-			continue
+		if iv := n.cadence.Interval(dev, devclass.TierBridgeVLAN, now); iv > 0 {
+			if err := queries.DeleteStaleBridgeVLANs(n.db, dev.ID, now.Add(-staleReads*iv)); err != nil {
+				log.Printf("network health: stale bridge vlan cleanup: %v", err)
+			}
 		}
-		func() {
-			defer func() {
-				if r := recover(); r != nil {
-					log.Printf("network health: panic on %s: %v\n%s", dev.Identity, r, debug.Stack())
-				}
-			}()
-
-			bridges, err := routeros.ListBridges(client)
-			if err != nil {
-				return
-			}
-			// Keep only genuine bridges — some RouterOS versions report
-			// non-bridge interfaces via /interface/bridge/print, which would
-			// otherwise be tracked as bridges, monitored, and drive false TCN
-			// storms. Use cached interface types (a live fetch can fail on 7.23).
-			bridges = filterRealBridges(bridges, nonBridgeInterfaceNames(n.db, dev.ID))
-			state, err := routeros.ReadBridgeState(client, bridges, n.bridgeCaps[dev.ID], dev.ROSVersion, cycleStart)
-			if err != nil {
-				return
-			}
-			n.bridgeCaps[dev.ID] = state.Caps
-			if prev := n.bridgePath[dev.ID]; prev != state.Path {
-				n.bridgePath[dev.ID] = state.Path
-				log.Printf("network health: %s: STP state via %s (%d commands for %d bridges, %d ports)",
-					nonempty(dev.Identity, dev.Address), state.Path, 1+state.Commands, len(state.Bridges), len(state.Ports))
-			}
-			bridges, ports := state.Bridges, state.Ports
-
-			// Group ports by bridge for port_count and stp_disabled detection.
-			portsByBridge := make(map[string][]routeros.BridgePortInfo)
-			for _, p := range ports {
-				portsByBridge[p.Bridge] = append(portsByBridge[p.Bridge], p)
-			}
-
-			brCount = len(bridges)
-			for _, b := range bridges {
-				bs := &queries.BridgeStatus{
-					ID:                 dev.ID + ":" + b.Name,
-					DeviceID:           dev.ID,
-					BridgeName:         b.Name,
-					Protocol:           b.ProtocolMode,
-					STPEnabled:         b.STPEnabled(),
-					BridgeID:           b.BridgeID,
-					RootBridgeID:       b.RootBridgeID,
-					RootPathCost:       b.RootPathCost,
-					RootPort:           b.RootPort,
-					TopologyChanges:    b.TopologyChanges,
-					LastTopologyChange: b.LastTopologyChange,
-					PortCount:          len(portsByBridge[b.Name]),
-					STPSource:          state.Path,
-				}
-				_ = queries.UpsertBridgeStatus(n.db, bs)
-
-				key := dev.ID + "|" + b.Name
-				// The bridge monitor has no topology-changes field: the TCN
-				// rate is the sum of the ports' counter deltas, per minute.
-				tcnDelta, hadPrev := n.bridgeTCNDelta(key, portsByBridge[b.Name], cycleStart)
-
-				// Remember bridges that run STP so a later flickering "none" read
-				// (RouterOS 7.23) doesn't produce a false stp_disabled warning.
-				if b.STPEnabled() {
-					n.bridgeSTPSeen[key] = true
-				}
-
-				// stp_disabled: bridge has multiple *non-edge* ports but no STP.
-				// A loop needs at least two non-edge ports to physically form, so
-				// counting only non-edge ports stops access-only bridges (all
-				// edge ports) and single-uplink bridges from false-firing.
-				nonEdgeCount := countNonEdgePorts(portsByBridge[b.Name])
-				if shouldFlagSTPDisabled(b, n.bridgeSTPSeen[key], nonEdgeCount) {
-					if n.recordEvent(dev.ID, "stp_disabled", "warn", b.Name, "", "",
-						fmt.Sprintf("bridge %q runs %d non-edge ports with STP disabled (protocol=%s)",
-							b.Name, nonEdgeCount, nonempty(b.ProtocolMode, "none"))) {
-						evCount++
-					}
-				}
-
-				// tcn_storm: topology changes rising fast. Only STP-running
-				// bridges can storm (see tcnStormSeverity); the threshold is
-				// runtime-tunable, per minute, and escalates to critical past
-				// a hard ceiling regardless of the configured warn threshold.
-				if hadPrev {
-					if severity, fire := tcnStormSeverity(b, tcnDelta, tcnThreshold); fire {
-						if n.recordEvent(dev.ID, "tcn_storm", severity, b.Name, "", "",
-							fmt.Sprintf("bridge %q topology-changes rose by %d/min since last poll (now %d)",
-								b.Name, tcnDelta, b.TopologyChanges)) {
-							evCount++
-						}
-					}
-				}
-			}
-
-			for _, p := range ports {
-				ps := &queries.BridgePortStatus{
-					ID:               dev.ID + ":" + p.Bridge + ":" + p.Interface,
-					DeviceID:         dev.ID,
-					BridgeName:       p.Bridge,
-					PortInterface:    p.Interface,
-					Role:             p.Role,
-					Status:           p.Status,
-					Edge:             p.Edge,
-					PointToPoint:     p.PointToPoint,
-					PathCost:         p.PathCost,
-					DesignatedBridge: p.DesignatedBridge,
-					Inactive:         ptr(p.Inactive),
-					Disabled:         ptr(p.Disabled),
-					HWOffloadGroup:   p.HWOffloadGroup,
-					PortState:        p.PortState,
-					EdgeConfig:       p.EdgeConfig,
-				}
-				// Unknown stays NULL: a device that reports no runtime state
-				// or counter must not look like "not forwarding, 0 changes".
-				if p.HasRuntime {
-					ps.Forwarding, ps.Learning = ptr(p.Forwarding), ptr(p.Learning)
-				}
-				if p.HasTopologyChanges {
-					ps.TopologyChanges = ptr(p.TopologyChanges)
-				}
-				if p.HWOffloadReported {
-					ps.HWOffload = ptr(p.HWOffload)
-				}
-				if p.PVID > 0 {
-					ps.PVID = ptr(p.PVID)
-				}
-				_ = queries.UpsertBridgePortStatus(n.db, ps)
-			}
-
-			// Bridge VLAN table: which VLANs exist and where they're
-			// tagged / untagged. Best-effort — devices without bridge VLAN
-			// filtering return an empty table.
-			vlans, err := routeros.GetBridgeVLANs(client)
-			if err == nil {
-				for _, v := range vlans {
-					bv := &queries.BridgeVLAN{
-						ID:              dev.ID + ":" + v.Bridge + ":" + v.VLANIDs,
-						DeviceID:        dev.ID,
-						BridgeName:      v.Bridge,
-						VLANIDs:         v.VLANIDs,
-						Tagged:          v.Tagged,
-						Untagged:        v.Untagged,
-						CurrentTagged:   v.CurrentTagged,
-						CurrentUntagged: v.CurrentUntagged,
-						Comment:         v.Comment,
-					}
-					_ = queries.UpsertBridgeVLAN(n.db, bv)
-				}
-			}
-
-			// Bridge log events (loop / mac flap / bpdu on edge) and account
-			// lines, from the shared per-device log read.
-			run := routeros.ClientRunner{Client: client}
-			entries, firstSight, err := n.logs.Entries(logConsumerBridge, dev.ID, run, cycleStart)
-			if err == nil {
-				added := n.processBridgeLogs(dev.ID, routeros.BridgeLogEventsFrom(entries), cycleStart)
-				evCount += added
-				n.logins.Process(&dev, run, entries, firstSight, cycleStart)
-			}
-		}()
-
-		totalBridges += brCount
-		totalEvents += evCount
+		if err := queries.DeleteStaleInterfaceStates(n.db, dev.ID, now.Add(-staleReads*n.portScanInterval(dev, now))); err != nil {
+			log.Printf("network health: stale interface cleanup: %v", err)
+		}
 	}
 
-	// Drop rows for bridges / interfaces that vanished from devices in the
-	// last 30min so the UI doesn't keep showing ghost ports forever.
-	staleCutoff := time.Now().Add(-30 * time.Minute)
-	if err := queries.DeleteStaleBridgeRows(n.db, staleCutoff); err != nil {
-		log.Printf("network health: stale bridge cleanup: %v", err)
-	}
-	if err := queries.DeleteStaleInterfaceStates(n.db, staleCutoff); err != nil {
-		log.Printf("network health: stale interface cleanup: %v", err)
-	}
-	if err := queries.DeleteStaleBridgeVLANs(n.db, staleCutoff); err != nil {
-		log.Printf("network health: stale bridge vlan cleanup: %v", err)
+	if now.Sub(n.lastLogPruneAt) > 5*time.Minute {
+		n.pruneLogFingerprints(now)
+		n.lastLogPruneAt = now
 	}
 
-	if cycleStart.Sub(n.lastLogPruneAt) > 5*time.Minute {
-		n.pruneLogFingerprints(cycleStart)
-		n.lastLogPruneAt = cycleStart
+	// Broadcast a summary so the UI can refresh: the bridges and ports of
+	// each device's latest visit, and the events since the last summary.
+	totalBridges, totalPorts := 0, 0
+	for _, c := range n.bridgeCounts {
+		totalBridges += c
 	}
-
-	// Broadcast a summary so the UI can refresh.
-	since := time.Now().Add(-24 * time.Hour)
+	for _, c := range n.portCounts {
+		totalPorts += c
+	}
+	since := now.Add(-24 * time.Hour)
 	warn, crit, _ := queries.CountRecentLoopEvents(n.db, since)
 	n.hub.Publish("network.health", map[string]interface{}{
 		"bridges":      totalBridges,
 		"ports":        totalPorts,
-		"new_events":   totalEvents,
+		"new_events":   n.newEvents,
 		"warn_24h":     warn,
 		"critical_24h": crit,
-		"polled_at":    cycleStart.Format(time.RFC3339),
+		"polled_at":    now.Format(time.RFC3339),
 	})
 
-	if totalEvents > 0 {
-		log.Printf("network health: %d bridges polled, %d new loop events", totalBridges, totalEvents)
+	if n.newEvents > 0 {
+		log.Printf("network health: %d bridges polled, %d new loop events", totalBridges, n.newEvents)
 	}
+	n.newEvents = 0
 }
 
 // processBridgeLogs applies new bridge log events from one device. Returns

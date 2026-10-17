@@ -35,6 +35,8 @@ func TestNetworkHealthPortMonitorReadsSnapshot(t *testing.T) {
 
 	n := NewNetworkHealthPoller(db, routeros.NewPool(false), ws.NewHub(), time.Minute)
 	t0 := time.Now().UTC().Truncate(time.Second)
+	clock := &testClock{t: t0}
+	n.now = clock.now
 	src := &fakeSnapshots{
 		rows:  map[string][]routeros.InterfaceSnapshot{"sw": {linkRow("ether1", true, 10), linkRow("ether2", false, 0)}},
 		at:    t0,
@@ -57,10 +59,19 @@ func TestNetworkHealthPortMonitorReadsSnapshot(t *testing.T) {
 		t.Errorf("a device without a snapshot is asked once and skipped, asked %d", src.asked["cold"])
 	}
 
-	// Three link-downs between the two snapshots, the port reading running
-	// both times: the flap happened between reads.
+	// The port monitor scans a device once per floor interval (it would
+	// rewrite every interface_state row for an unchanged snapshot otherwise).
 	src.rows["sw"] = []routeros.InterfaceSnapshot{linkRow("ether1", true, 13), linkRow("ether2", false, 0)}
 	src.at = t0.Add(15 * time.Second)
+	clock.set(t0.Add(30 * time.Second))
+	n.poll(context.Background())
+	if src.asked["sw"] != 1 {
+		t.Fatalf("snapshot read %d times within the floor interval, want 1", src.asked["sw"])
+	}
+
+	// Three link-downs between the two snapshots, the port reading running
+	// both times: the flap happened between reads.
+	clock.set(t0.Add(time.Minute))
 	n.poll(context.Background())
 
 	events, err := queries.ListLoopEvents(db, 10)

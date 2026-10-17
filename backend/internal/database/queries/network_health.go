@@ -236,14 +236,15 @@ func boolPtr(v sql.NullInt64) *bool {
 	return &b
 }
 
-// DeleteStaleBridgeRows drops bridge_status / bridge_port_status rows whose
-// last_polled is older than the cutoff. Used to clear bridges that were
-// removed from a device.
-func DeleteStaleBridgeRows(db *sql.DB, cutoff time.Time) error {
-	if _, err := db.Exec(`DELETE FROM bridge_port_status WHERE last_polled < ?`, cutoff); err != nil {
+// DeleteStaleBridgeRows drops one device's bridge_status / bridge_port_status
+// rows whose last_polled is older than the cutoff. Used to clear bridges and
+// ports that were removed from the device.
+func DeleteStaleBridgeRows(db *sql.DB, deviceID string, cutoff time.Time) error {
+	if _, err := db.Exec(`DELETE FROM bridge_port_status WHERE device_id = ? AND last_polled < ?`,
+		deviceID, sqlTime(cutoff)); err != nil {
 		return err
 	}
-	_, err := db.Exec(`DELETE FROM bridge_status WHERE last_polled < ?`, cutoff)
+	_, err := db.Exec(`DELETE FROM bridge_status WHERE device_id = ? AND last_polled < ?`, deviceID, sqlTime(cutoff))
 	return err
 }
 

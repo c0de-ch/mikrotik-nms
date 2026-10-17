@@ -12,6 +12,7 @@ import (
 
 	"github.com/mikrotik-nms/backend/internal/config"
 	"github.com/mikrotik-nms/backend/internal/database/queries"
+	"github.com/mikrotik-nms/backend/internal/devclass"
 	"github.com/mikrotik-nms/backend/internal/flow"
 	"github.com/mikrotik-nms/backend/internal/resolver"
 	"github.com/mikrotik-nms/backend/internal/routeros"
@@ -43,8 +44,44 @@ type Manager struct {
 	ipRejectMu   sync.Mutex
 	ipRejectSeen map[string]time.Time
 
-	// classes holds the class probe's pending changes (hysteresis).
-	classes *classGate
+	// cadence is the per-class schedule every loop shares (NewCadence).
+	cadence CadenceSource
+	// inventory schedules Tier 6 (the info refresh) per device, topoClock
+	// the topology loop's neighbor and route reads; classes holds the class
+	// probe's pending changes (hysteresis).
+	inventory *tierClock
+	topoClock *tierClock
+	classes   *classGate
+	// infoBusy guards against two concurrent info refreshes of one device
+	// (the info loop and the liveness poll's enrichment of a new device).
+	infoBusy sync.Map
+	// lastBuild is when the topology loop last rebuilt the link graph.
+	lastBuild time.Time
+	// Test seams, all optional: runner is the topology loop's device link
+	// (nil = no pooled connection; the pool when unset), now the clock of
+	// the per-device loops, infoRefresh the info refresh the info loop runs.
+	// stagger spaces the devices one topology tick reads (NewManager: a
+	// second).
+	runner      func(deviceID string) routeros.Runner
+	now         func() time.Time
+	infoRefresh func(dev queries.Device)
+	stagger     time.Duration
+}
+
+// deviceRunner is deviceID's device link for the topology loop.
+func (m *Manager) deviceRunner(deviceID string) routeros.Runner {
+	if m.runner != nil {
+		return m.runner(deviceID)
+	}
+	return poolRunner(m.pool, deviceID)
+}
+
+// clock is the loops' time.
+func (m *Manager) clock() time.Time {
+	if m.now != nil {
+		return m.now()
+	}
+	return time.Now()
 }
 
 func NewManager(db *sql.DB, pool *routeros.Pool, hub *ws.Hub, cfg *config.Config) *Manager {
@@ -62,8 +99,15 @@ func NewManager(db *sql.DB, pool *routeros.Pool, hub *ws.Hub, cfg *config.Config
 		ipRejectSeen: make(map[string]time.Time),
 		portStats:    NewPortStatsCollector(db, pool, hub),
 		flows:        flow.New(db, pool, hub, flowCfg),
+		cadence:      NewCadence(db, cfg),
+		inventory:    newTierClock(Schedule()),
+		topoClock:    newTierClock(Schedule()),
 		classes:      newClassGate(),
+		stagger:      time.Second,
 	}
+	// One schedule for every loop: the class cadences, floored by the
+	// fleet-wide settings and env vars, and the per-device pause.
+	m.portStats.UseCadence(m.cadence)
 	// The port-stats collector's Tier 0 read is the one interface print:
 	// the flow ifIndex sync (here), the port monitor and the uplink pass
 	// (Start, topology) read its snapshot instead of printing again.
@@ -123,14 +167,17 @@ func (m *Manager) Start() {
 	wifiTracker := NewWifiTracker(m.db, m.pool, m.hub, 30*time.Second)
 	wifiTracker.UseLogReader(logs)
 	wifiTracker.UseCapabilities(caps)
+	wifiTracker.UseCadence(m.cadence)
 	go wifiTracker.Run(ctx)
 
 	clientDisc := NewClientDiscoveryPoller(m.db, m.pool, resolver.New(m.db), 15*time.Minute)
+	clientDisc.UseCadence(m.cadence)
 	go clientDisc.Run(ctx)
 
 	netHealth := NewNetworkHealthPoller(m.db, m.pool, m.hub, m.cfg.NetworkHealthInterval)
 	netHealth.UseLogReader(logs)
 	netHealth.UseInterfaceSnapshots(m.portStats)
+	netHealth.UseCadence(m.cadence)
 	go netHealth.Run(ctx)
 
 	connectivity := NewConnectivityPoller(m.db, m.pool, m.hub, defaultConnectivityInterval, m.cfg.ROSTLSVerify)
@@ -172,7 +219,12 @@ func (m *Manager) pollAllDevices(ctx context.Context) {
 		log.Printf("poller: list devices: %v", err)
 		return
 	}
-	m.classes.forget(deviceIDs(devices))
+	// Deleted devices leave the schedule view and the per-device clocks.
+	keep := deviceIDs(devices)
+	Schedule().Retain(keep)
+	m.inventory.retain(keep)
+	m.topoClock.retain(keep)
+	m.classes.forget(keep)
 
 	for _, dev := range devices {
 		select {
@@ -195,10 +247,11 @@ func (m *Manager) safePollDevice(dev queries.Device) {
 }
 
 // pollDevice is the lightweight liveness check run on the frequent health
-// interval. It only answers "is the device up?" via a cheap TCP ping that
-// bypasses the RouterOS API session, so it can't contend with the heavier
-// pollers and doesn't flap on transient API slowness. The full stats/version/
-// interface refresh is the infoLoop's job (see refreshDeviceInfo).
+// interval, for every device — paused or not. It only answers "is the device
+// up?" via a cheap TCP ping that bypasses the RouterOS API session, so it
+// can't contend with the heavier pollers and doesn't flap on transient API
+// slowness. The full stats/version/interface refresh is the infoLoop's job
+// (see refreshDeviceInfo).
 func (m *Manager) pollDevice(dev queries.Device) {
 	if err := m.ping(dev); err != nil {
 		m.markUnreachable(dev, err)
@@ -213,8 +266,10 @@ func (m *Manager) pollDevice(dev queries.Device) {
 	})
 
 	// A device we've never gathered details from (freshly added) gets enriched
-	// right away instead of waiting up to a full info interval.
-	if dev.Board == "" || dev.ROSVersion == "" {
+	// right away instead of waiting up to a full info interval — unless its
+	// polling is paused: then only this ping runs. (A device that has details
+	// but no class yet is picked up by the info loop's next tick.)
+	if (dev.Board == "" || dev.ROSVersion == "") && !m.cadence.Paused(dev, time.Now()) {
 		m.refreshDeviceInfo(dev)
 	}
 }
@@ -285,58 +340,57 @@ func (m *Manager) markUnreachable(dev queries.Device, pollErr error) {
 
 // defaultInfoInterval is how often the full device info (cpu/memory/uptime,
 // version/board/platform/arch and the CPU class) is refreshed when the admin
-// hasn't configured info_interval. Static details rarely change, so the
-// frequent liveness poll just pings while this heavier refresh runs rarely.
+// hasn't configured info_interval — the floor of Tier 6, whose class cadence
+// is an hour too. Static details rarely change, so the frequent liveness poll
+// just pings while this heavier refresh runs rarely.
 const defaultInfoInterval = 60 * time.Minute
 
-// infoInterval reads the runtime-tunable info-refresh period from app_settings.
-// Picked up on the next cycle without a backend restart.
-func (m *Manager) infoInterval() time.Duration {
-	v, err := queries.GetSetting(m.db, "info_interval")
-	if err != nil {
-		return defaultInfoInterval
-	}
-	n, err := strconv.Atoi(strings.TrimSpace(v))
-	if err != nil || n <= 0 {
-		return defaultInfoInterval
-	}
-	return time.Duration(n) * time.Second
-}
+// classProbeRetry is how soon a device that is online but has never been
+// classified gets its resource print again after an attempt that did not
+// classify it (no connection, a failing print), instead of an hour later.
+const classProbeRetry = 5 * time.Minute
 
 func (m *Manager) infoLoop(ctx context.Context) {
-	// Refresh shortly after startup so cached stats are fresh on boot, then on
-	// the configured (long) interval. A fresh timer each iteration lets a
-	// Settings change to info_interval take effect on the next cycle.
-	select {
-	case <-ctx.Done():
+	// Every device is due right after startup so cached stats are fresh on
+	// boot, then on its Tier 6 cadence (info_interval as the floor).
+	if !sleepCtx(ctx, 8*time.Second) {
 		return
-	case <-time.After(8 * time.Second):
 	}
-	m.refreshAllInfo(ctx)
-
 	for {
-		timer := time.NewTimer(m.infoInterval())
-		select {
-		case <-ctx.Done():
-			timer.Stop()
+		m.refreshDueInfo(ctx, m.clock())
+		if !sleepCtx(ctx, pollerTick) {
 			return
-		case <-timer.C:
-			m.refreshAllInfo(ctx)
 		}
 	}
 }
 
-func (m *Manager) refreshAllInfo(ctx context.Context) {
+// refreshDueInfo runs the info refresh of every device whose Tier 6 is due at
+// now, offline ones included: dialling the pooled connection here is what
+// lets the other loops reach a device at all. A device whose polling is
+// paused is skipped. A device that was never classified is also due once
+// online, every classProbeRetry, so a freshly added device is classified
+// within a tick of its first successful ping.
+func (m *Manager) refreshDueInfo(ctx context.Context, now time.Time) {
 	devices, err := queries.ListDevices(m.db)
 	if err != nil {
 		log.Printf("poller: info refresh list devices: %v", err)
 		return
 	}
 	for _, dev := range devices {
-		select {
-		case <-ctx.Done():
+		if ctx.Err() != nil {
 			return
-		default:
+		}
+		iv := runInterval(m.cadence, dev, devclass.TierInventory, now)
+		due := m.inventory.due(dev.ID, devclass.TierInventory, iv, now)
+		if !due && iv > 0 && dev.DeviceClass == "" && dev.Status == "online" {
+			due = now.Sub(m.inventory.lastEnd(dev.ID, devclass.TierInventory)) >= classProbeRetry
+		}
+		if !due {
+			continue
+		}
+		if m.infoRefresh != nil {
+			m.infoRefresh(dev)
+		} else {
 			m.safeRefreshInfo(dev)
 		}
 	}
@@ -360,8 +414,17 @@ func (m *Manager) safeRefreshInfo(dev queries.Device) {
 // (PortStatsCollector.syncInventory). Dialling the pooled connection here is
 // still what lets that collector reach a freshly added device. Status stays
 // owned by the liveness poll — on a connection failure here we leave status
-// alone.
+// alone. The attempt counts as the device's Tier 6 run either way.
 func (m *Manager) refreshDeviceInfo(dev queries.Device) {
+	if _, busy := m.infoBusy.LoadOrStore(dev.ID, true); busy {
+		return
+	}
+	defer m.infoBusy.Delete(dev.ID)
+	defer func() {
+		end := m.clock()
+		m.inventory.ran(dev.ID, devclass.TierInventory, runInterval(m.cadence, dev, devclass.TierInventory, end), end)
+	}()
+
 	client, err := m.pool.EnsureConnection(
 		dev.ID, dev.Address, dev.APIPort, dev.Username, dev.PasswordEnc, dev.UseTLS,
 	)
@@ -374,7 +437,7 @@ func (m *Manager) refreshDeviceInfo(dev queries.Device) {
 		m.pool.Close(dev.ID)
 		return
 	}
-	m.probeClass(dev, res.Fields, time.Now())
+	m.probeClass(dev, res.Fields, m.clock())
 
 	memUsed := res.MemoryTotal - res.MemoryFree
 	_ = queries.UpdateDeviceHealth(m.db, dev.ID, "online",
@@ -397,19 +460,14 @@ func (m *Manager) refreshDeviceInfo(dev queries.Device) {
 }
 
 func (m *Manager) topologyLoop(ctx context.Context) {
-	ticker := time.NewTicker(m.cfg.TopologyInterval)
-	defer ticker.Stop()
-
 	// Wait a bit for initial health poll to populate device info
-	time.Sleep(5 * time.Second)
-	m.safePollTopology(ctx)
-
+	if !sleepCtx(ctx, 5*time.Second) {
+		return
+	}
 	for {
-		select {
-		case <-ctx.Done():
+		m.safePollTopology(ctx)
+		if !sleepCtx(ctx, pollerTick) {
 			return
-		case <-ticker.C:
-			m.safePollTopology(ctx)
 		}
 	}
 }
@@ -423,6 +481,11 @@ func (m *Manager) safePollTopology(ctx context.Context) {
 	m.pollTopology(ctx)
 }
 
+// pollTopology is one tick of the topology loop: the neighbor (Tier 3d) and
+// default-route (Tier 3e) reads of every device for which they are due, then
+// — once per MIKROTIK_NMS_TOPOLOGY_INTERVAL, the loop's former cadence — the
+// gateway attachment, IP auto-follow and the link-graph rebuild, which read
+// only the database.
 func (m *Manager) pollTopology(ctx context.Context) {
 	devices, err := queries.ListDevices(m.db)
 	if err != nil {
@@ -430,67 +493,66 @@ func (m *Manager) pollTopology(ctx context.Context) {
 		return
 	}
 
-	// Gateway MACs (from the previous cycle's uplink rows) to look up in the
-	// devices' bridge FDBs — locates the switch+port a gateway is physically
-	// attached to instead of guessing.
-	gwMACs := m.gatewayMACs(devices)
-
+	now := m.clock()
+	polled := 0
 	for _, dev := range devices {
-		select {
-		case <-ctx.Done():
+		if ctx.Err() != nil {
 			return
-		default:
 		}
-
-		if dev.Status != "online" {
+		var nIv, rIv time.Duration
+		if dev.Status == "online" {
+			nIv = runInterval(m.cadence, dev, devclass.TierNeighbors, now)
+			rIv = runInterval(m.cadence, dev, devclass.TierRoutes, now)
+		}
+		nDue := m.topoClock.due(dev.ID, devclass.TierNeighbors, nIv, now)
+		rDue := m.topoClock.due(dev.ID, devclass.TierRoutes, rIv, now)
+		if !nDue && !rDue {
 			continue
 		}
 
-		client := m.pool.GetLive(dev.ID)
-		if client == nil {
-			continue
-		}
-
-		neighbors, err := routeros.GetNeighbors(client)
-		if err != nil {
-			log.Printf("poller topology: get neighbors for %s: %v", dev.Identity, err)
-			continue
-		}
-
-		for _, n := range neighbors {
-			if n.NeighborMAC == "" {
-				continue
+		run := m.deviceRunner(dev.ID)
+		if run == nil {
+			retry := now.Add(noClientRetry)
+			if nDue {
+				m.topoClock.retryAt(dev.ID, devclass.TierNeighbors, retry)
 			}
-			_ = queries.UpsertNeighbor(m.db, &queries.Neighbor{
-				ID:                dev.ID + ":" + n.LocalInterface + ":" + n.NeighborMAC,
-				DeviceID:          dev.ID,
-				LocalInterface:    n.LocalInterface,
-				NeighborAddress:   n.NeighborAddress,
-				NeighborMAC:       n.NeighborMAC,
-				NeighborIdentity:  n.NeighborIdentity,
-				NeighborPlatform:  n.NeighborPlatform,
-				NeighborBoard:     n.NeighborBoard,
-				NeighborVersion:   n.NeighborVersion,
-				NeighborInterface: n.NeighborInterface,
-				DiscoveredBy:      n.DiscoveredBy,
-			})
+			if rDue {
+				m.topoClock.retryAt(dev.ID, devclass.TierRoutes, retry)
+			}
+			continue
 		}
-
-		m.collectUplinks(dev, routeros.ClientRunner{Client: client})
-
-		// Stagger between devices
-		time.Sleep(time.Second)
+		if polled > 0 {
+			time.Sleep(m.stagger) // stagger between devices
+		}
+		polled++
+		if nDue {
+			m.collectNeighbors(dev, run)
+			m.topoClock.ran(dev.ID, devclass.TierNeighbors, nIv, m.clock())
+		}
+		if rDue {
+			m.collectUplinks(dev, run)
+			m.topoClock.ran(dev.ID, devclass.TierRoutes, rIv, m.clock())
+		}
 	}
 
-	m.resolveGatewayHosts(m.gatewayObservations(devices, gwMACs, time.Now()))
+	if !m.lastBuild.IsZero() && now.Sub(m.lastBuild) < m.cfg.TopologyInterval {
+		return
+	}
+	m.lastBuild = now
+
+	// Gateway MACs (from the uplink rows) to look up in the devices' bridge
+	// FDBs — locates the switch+port a gateway is physically attached to
+	// instead of guessing.
+	m.resolveGatewayHosts(m.gatewayObservations(devices, m.gatewayMACs(devices), now))
 
 	// Auto-follow IP changes: opt-in reconcile of devices that moved to a new IP,
-	// using the neighbors just upserted above. Runs before the rebuild so a
+	// using the neighbors upserted by the reads. Runs before the rebuild so a
 	// committed address change is reflected in this same cycle's graph.
 	m.reconcileAddresses(ctx)
 
-	// Rebuild topology from neighbors
-	builder := topology.NewBuilder(m.db)
+	// Rebuild topology from neighbors, each judged by its reporting device's
+	// own neighbor cadence.
+	builder := topology.NewBuilder(m.db).UseNeighborAge(NeighborAge(m.cadence))
 	graph, err := builder.Build()
 	if err != nil {
 		log.Printf("poller topology: build graph: %v", err)
@@ -498,7 +560,54 @@ func (m *Manager) pollTopology(ctx context.Context) {
 	}
 
 	m.hub.Publish("topology.update", graph)
-	log.Printf("poller: topology discovery complete — %d nodes, %d edges", len(graph.Nodes), len(graph.Edges))
+	if polled > 0 {
+		log.Printf("poller: topology discovery complete — %d nodes, %d edges", len(graph.Nodes), len(graph.Edges))
+	}
+}
+
+// collectNeighbors upserts the device's /ip/neighbor rows (Tier 3d).
+func (m *Manager) collectNeighbors(dev queries.Device, run routeros.Runner) {
+	neighbors, err := routeros.ReadNeighbors(run)
+	if err != nil {
+		log.Printf("poller topology: get neighbors for %s: %v", dev.Identity, err)
+		return
+	}
+	for _, n := range neighbors {
+		if n.NeighborMAC == "" {
+			continue
+		}
+		_ = queries.UpsertNeighbor(m.db, &queries.Neighbor{
+			ID:                dev.ID + ":" + n.LocalInterface + ":" + n.NeighborMAC,
+			DeviceID:          dev.ID,
+			LocalInterface:    n.LocalInterface,
+			NeighborAddress:   n.NeighborAddress,
+			NeighborMAC:       n.NeighborMAC,
+			NeighborIdentity:  n.NeighborIdentity,
+			NeighborPlatform:  n.NeighborPlatform,
+			NeighborBoard:     n.NeighborBoard,
+			NeighborVersion:   n.NeighborVersion,
+			NeighborInterface: n.NeighborInterface,
+			DiscoveredBy:      n.DiscoveredBy,
+		})
+	}
+}
+
+// neighborWindowReads is how many of a device's own neighbor reads its rows
+// stay current for (link staleness).
+const neighborWindowReads = 3
+
+// NeighborAge is the topology builder's staleness rule on cs: a reporting
+// device's neighbor rows stay current for three of its effective neighbor
+// reads, and do not age while the device is paused — a link it reported
+// stays up while nobody reads it.
+func NeighborAge(cs CadenceSource) topology.NeighborAge {
+	return func(dev queries.Device, now time.Time) (time.Duration, bool) {
+		iv := cs.Interval(dev, devclass.TierNeighbors, now)
+		if iv <= 0 {
+			iv = defaultTopologyFloor
+		}
+		return neighborWindowReads * iv, cs.Paused(dev, now)
+	}
 }
 
 // gatewayMACs returns MAC→IP for the unmanaged private gateways currently in
@@ -531,10 +640,11 @@ func (m *Manager) gatewayMACs(devices []queries.Device) map[string]string {
 
 // gatewayObservations locates the gateway MACs in the bridge FDB dumps the
 // port-stats collector stores in port_hosts — each online device's latest
-// dump only — so attachment costs no device command of its own (it used to
-// be one FDB query per gateway MAC per device per cycle). A gateway whose
-// MAC no dump holds yet (a new gateway, or a cold start before the first
-// dump) stays unattached until the next dump, port_hosts_interval later;
+// dump only, while current by that device's own dump cadence (a paused
+// device's last dump stays current) — so attachment costs no device command
+// of its own (it used to be one FDB query per gateway MAC per device per
+// cycle). A gateway whose MAC no dump holds yet (a new gateway, or a cold
+// start before the first dump) stays unattached until the next dump;
 // resolveGatewayHosts keeps the previous rows meanwhile.
 func (m *Manager) gatewayObservations(devices []queries.Device, gwMACs map[string]string, now time.Time) []queries.DeviceUplink {
 	if len(gwMACs) == 0 {
@@ -550,7 +660,13 @@ func (m *Manager) gatewayObservations(devices []queries.Device, gwMACs map[strin
 	for mac := range gwMACs {
 		macs = append(macs, mac)
 	}
-	hosts, err := queries.ListLatestPortHostsForMACs(m.db, now.Add(-PortHostsFreshness(m.db)), macs)
+	newest, err := queries.LatestPortHostsDumps(m.db)
+	if err != nil {
+		log.Printf("poller topology: gateway hosts from port_hosts: %v", err)
+		return nil
+	}
+	cut := portHostsCutoffs(m.cadence, devices, newest, now)
+	hosts, err := queries.ListLatestPortHostsForMACs(m.db, earliest(cut, now), macs)
 	if err != nil {
 		log.Printf("poller topology: gateway hosts from port_hosts: %v", err)
 		return nil
@@ -558,7 +674,7 @@ func (m *Manager) gatewayObservations(devices []queries.Device, gwMACs map[strin
 	var out []queries.DeviceUplink
 	for _, h := range hosts {
 		ip, ok := gwMACs[strings.ToUpper(h.MACAddress)]
-		if !ok || !online[h.DeviceID] {
+		if c, known := cut[h.DeviceID]; !ok || !online[h.DeviceID] || !known || h.LastSeen.Before(c) {
 			continue
 		}
 		out = append(out, queries.DeviceUplink{DeviceID: h.DeviceID, Interface: h.InterfaceName, GatewayIP: ip})
@@ -716,6 +832,8 @@ func (m *Manager) checkFirmware(ctx context.Context) {
 // RunFirmwareCheck polls every online device for RouterOS update availability
 // and upserts firmware_status. Shared by the periodic firmware poller and the
 // on-demand "Check All" API endpoint — both use the same connection pool.
+// A device whose polling is paused is skipped (logged once per pause): the
+// check is a fleet sweep, not an action on that device.
 //
 // A device whose check doesn't return a latest-version (async fetch still
 // pending, or it can't reach MikroTik's update servers) is left as-is:
@@ -734,6 +852,10 @@ func RunFirmwareCheck(ctx context.Context, db *sql.DB, pool *routeros.Pool, hub 
 		}
 
 		if dev.Status != "online" {
+			continue
+		}
+		if dev.PollingPaused(time.Now()) {
+			pauseLog.skip("firmware check", dev)
 			continue
 		}
 
@@ -809,12 +931,7 @@ func (m *Manager) retentionLoop(ctx context.Context) {
 				log.Printf("poller retention: deleted %d old traffic samples", n)
 			}
 
-			neighborCutoff := time.Now().Add(-24 * time.Hour)
-			if n, err := queries.DeleteStaleNeighbors(m.db, neighborCutoff); err != nil {
-				log.Printf("poller retention: neighbors: %v", err)
-			} else if n > 0 {
-				log.Printf("poller retention: deleted %d stale neighbors", n)
-			}
+			m.sweepNeighbors(time.Now())
 
 			wifiCutoff := time.Now().AddDate(0, 0, -m.cfg.RetentionDays)
 			if n, err := queries.DeleteOldWifiHistory(m.db, wifiCutoff); err != nil {
@@ -891,12 +1008,46 @@ func (m *Manager) retentionLoop(ctx context.Context) {
 	}
 }
 
+// neighborRetention is how long a neighbor row a device no longer reports is
+// kept (the device page lists them; links stop using them after three of the
+// device's neighbor reads).
+const neighborRetention = 24 * time.Hour
+
+// sweepNeighbors deletes, per device, the neighbor rows it has not reported
+// for neighborRetention — or three of its neighbor reads, when an admin set
+// a floor longer than that. A paused device's rows are kept: nothing ages
+// while nobody reads it.
+func (m *Manager) sweepNeighbors(now time.Time) {
+	devices, err := queries.ListDevices(m.db)
+	if err != nil {
+		log.Printf("poller retention: neighbors: %v", err)
+		return
+	}
+	var total int64
+	for _, dev := range devices {
+		if m.cadence.Paused(dev, now) {
+			continue
+		}
+		keep := max(neighborRetention, neighborWindowReads*m.cadence.Interval(dev, devclass.TierNeighbors, now))
+		n, err := queries.DeleteStaleNeighbors(m.db, dev.ID, now.Add(-keep))
+		if err != nil {
+			log.Printf("poller retention: neighbors of %s: %v", nonempty(dev.Identity, dev.Address), err)
+			continue
+		}
+		total += n
+	}
+	if total > 0 {
+		log.Printf("poller retention: deleted %d stale neighbors", total)
+	}
+}
+
 // sweepPortStats applies the traffic-analytics retention settings, re-read on
 // every sweep: port_stats_1m_days (default 2, clamp 1..90 — the UI reads at
 // most 24 h of 1-minute data, and the collector's hourly re-roll relies on at
 // least one day of it), port_stats_1h_days (default 365, clamp 7..1825) and
-// port_hosts_stale_days (default 7, clamp 1..365). Deletes run in bounded
-// chunks, so lowering a retention never locks the database for long.
+// port_hosts_stale_days (default 7, clamp 1..365; a paused device's rows are
+// kept). Deletes run in bounded chunks, so lowering a retention never locks
+// the database for long.
 func sweepPortStats(db *sql.DB, now time.Time) {
 	days1m := settingIntClamped(db, "port_stats_1m_days", 2, 1, 90)
 	if n, err := queries.DeleteOldPortStats(db, queries.PortStats1m, now.AddDate(0, 0, -days1m)); err != nil {
@@ -913,7 +1064,7 @@ func sweepPortStats(db *sql.DB, now time.Time) {
 	}
 
 	staleDays := settingIntClamped(db, "port_hosts_stale_days", 7, 1, 365)
-	if n, err := queries.DeleteStalePortHosts(db, now.AddDate(0, 0, -staleDays)); err != nil {
+	if n, err := queries.DeleteStalePortHosts(db, now.AddDate(0, 0, -staleDays), now); err != nil {
 		log.Printf("poller retention: port hosts: %v", err)
 	} else if n > 0 {
 		log.Printf("poller retention: deleted %d stale port hosts", n)

@@ -143,9 +143,35 @@ func ListLatestPortHostsForMACs(db *sql.DB, seenSince time.Time, macs []string) 
 	return out, rows.Err()
 }
 
-// DeleteStalePortHosts removes rows with last_seen < cutoff.
-func DeleteStalePortHosts(db *sql.DB, cutoff time.Time) (int64, error) {
-	res, err := db.Exec(`DELETE FROM port_hosts WHERE last_seen < ?`, sqlTime(cutoff))
+// LatestPortHostsDumps returns, per device, the last_seen of its newest FDB
+// dump (every row of one dump carries the same time).
+func LatestPortHostsDumps(db *sql.DB) (map[string]time.Time, error) {
+	rows, err := db.Query(`SELECT device_id, MAX(last_seen) FROM port_hosts GROUP BY device_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]time.Time{}
+	for rows.Next() {
+		var id string
+		var last dbTime
+		if err := rows.Scan(&id, &last); err != nil {
+			return nil, err
+		}
+		if last.Valid {
+			out[id] = last.Time
+		}
+	}
+	return out, rows.Err()
+}
+
+// DeleteStalePortHosts removes rows with last_seen < cutoff, except those of
+// devices whose polling is paused at now: nothing ages while nobody reads
+// the device (a pause can run as long as the stale-row retention).
+func DeleteStalePortHosts(db *sql.DB, cutoff, now time.Time) (int64, error) {
+	res, err := db.Exec(`DELETE FROM port_hosts WHERE last_seen < ?
+		AND device_id NOT IN (`+pausedDevicesSQL+`)`,
+		sqlTime(cutoff), sqlTime(now))
 	if err != nil {
 		return 0, err
 	}

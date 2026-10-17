@@ -4,8 +4,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	ros "github.com/go-routeros/routeros/v3"
 )
 
 // Bridge and STP state readers.
@@ -165,8 +163,8 @@ type BridgeState struct {
 // runtime state. Callers filter the list (RouterOS 7.23 lists non-bridge
 // interfaces here) before passing it to ReadBridgeState, which then reads and
 // monitors only genuine bridges.
-func ListBridges(client *ros.Client) ([]BridgeInfo, error) {
-	return listBridges(ClientRunner{Client: client})
+func ListBridges(run Runner) ([]BridgeInfo, error) {
+	return listBridges(run)
 }
 
 // ReadBridgeState reads the ports of the given bridges and their STP runtime
@@ -174,8 +172,8 @@ func ListBridges(client *ros.Client) ([]BridgeInfo, error) {
 // each bridge's monitor summary. caps is the device's previous capability
 // record (zero = unprobed) and version its RouterOS version; the returned
 // state carries the updated caps for the caller to keep.
-func ReadBridgeState(client *ros.Client, bridges []BridgeInfo, caps BridgeCaps, version string, now time.Time) (*BridgeState, error) {
-	return readBridgeState(ClientRunner{Client: client}, bridges, caps, version, now)
+func ReadBridgeState(run Runner, bridges []BridgeInfo, caps BridgeCaps, version string, now time.Time) (*BridgeState, error) {
+	return readBridgeState(run, bridges, caps, version, now)
 }
 
 func listBridges(r Runner) ([]BridgeInfo, error) {
@@ -611,8 +609,8 @@ type BridgeVLAN struct {
 //
 // On devices without bridge VLAN filtering this returns an empty slice. Rows
 // with an empty vlan-ids field are skipped — they carry no useful VLAN info.
-func GetBridgeVLANs(client *ros.Client) ([]BridgeVLAN, error) {
-	reply, err := RunCommand(client, "/interface/bridge/vlan/print")
+func GetBridgeVLANs(run Runner) ([]BridgeVLAN, error) {
+	reply, err := run.Run("/interface/bridge/vlan/print")
 	if err != nil {
 		return nil, err
 	}
