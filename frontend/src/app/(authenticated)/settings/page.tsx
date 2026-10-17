@@ -537,6 +537,8 @@ export default function SettingsPage() {
           <CardTitle className="text-base">Polling Intervals</CardTitle>
           <p className="text-xs text-muted-foreground">
             Configure how often the backend polls MikroTik devices. Changes take effect after backend restart.
+            Device reads are floors: a device whose CPU class allows less is read at its class cadence instead
+            (see NMS polling on each device&apos;s page).
           </p>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -588,7 +590,7 @@ export default function SettingsPage() {
             next health poll — no restart needed.
           </p>
         </CardHeader>
-        <CardContent>
+        <CardContent className="space-y-4">
           <div className="flex items-center justify-between gap-4">
             <div className="flex-1">
               <p className="font-medium text-sm">Offline threshold</p>
@@ -614,9 +616,9 @@ export default function SettingsPage() {
             <div className="flex-1">
               <p className="font-medium text-sm">Info refresh interval</p>
               <p className="text-xs text-muted-foreground">
-                How often to refresh full device details (CPU, memory, uptime, version, board, interfaces).
-                Online/offline status is checked far more often with a lightweight ping; this heavier refresh
-                runs rarely since most details rarely change. Cached values are shown between refreshes.
+                How often to refresh device details (CPU, memory, uptime, version, board) and probe the CPU class.
+                Every class reads them at most hourly, so values under an hour have no effect. Online/offline
+                status is checked far more often with a lightweight ping; cached values are shown between refreshes.
               </p>
             </div>
             <select
@@ -628,6 +630,28 @@ export default function SettingsPage() {
                 <option key={opt.value} value={opt.value}>{opt.label}</option>
               ))}
             </select>
+          </div>
+
+          <Separator />
+
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div className="min-w-0 flex-1">
+              <label htmlFor="nms-source-addresses" className="font-medium text-sm">
+                NMS source addresses
+              </label>
+              <p className="text-xs text-muted-foreground">
+                Addresses this NMS reaches devices from, when they differ from the one its routing table picks
+                (behind NAT, or several addresses). API logins from any other address show as &quot;Another API
+                client&quot; under Findings on the device&apos;s page. Comma-separated.
+              </p>
+            </div>
+            <Input
+              id="nms-source-addresses"
+              className="w-64"
+              value={settings.nms_source_addresses ?? ""}
+              onChange={(e) => updateSetting("nms_source_addresses", e.target.value)}
+              placeholder="192.0.2.10, 2001:db8::10"
+            />
           </div>
         </CardContent>
       </Card>
@@ -747,8 +771,8 @@ export default function SettingsPage() {
             <div className="flex-1">
               <p className="font-medium text-sm">TCN storm threshold</p>
               <p className="text-xs text-muted-foreground">
-                Topology-change increase within a single poll required to raise a TCN-storm event.
-                Deltas at or above 100 are escalated to critical regardless of this setting.
+                Topology changes per minute, summed over a bridge&apos;s ports, that raise a TCN-storm event.
+                100 or more per minute is escalated to critical regardless of this setting.
               </p>
             </div>
             <select
@@ -859,8 +883,9 @@ export default function SettingsPage() {
             <div className="flex-1">
               <p className="font-medium text-sm">Port counter interval</p>
               <p className="text-xs text-muted-foreground">
-                How often every online device&apos;s interface counters are read to compute port rates
-                (Traffic page, top talkers, flows).
+                The fastest any online device&apos;s interface counters are read to compute port rates
+                (Traffic page, top talkers, flows). A device keeps its class cadence when that is slower:
+                capable devices every 15 s, small every 30 s, weak every 60 s.
               </p>
             </div>
             <select
@@ -878,7 +903,8 @@ export default function SettingsPage() {
             <div className="flex-1">
               <p className="font-medium text-sm">Bridge host table interval</p>
               <p className="text-xs text-muted-foreground">
-                How often each device&apos;s bridge FDB is read to learn which clients sit behind which port.
+                How often each device&apos;s bridge FDB is read to learn which clients sit behind which port — a
+                floor under the class cadence (capable devices every 5 min, small every 10 min, weak every 15 min).
               </p>
             </div>
             <select
