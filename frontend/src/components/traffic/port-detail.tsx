@@ -2,17 +2,22 @@
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { fmtBps } from "@/components/graph/graph-style";
+import { DeviceLoadBadges } from "@/components/devices/device-load";
 import type { Device, PortRate, PortRole, PortSnapshot, TrafficRange } from "@/lib/api";
+import { budgetClass, counterIntervalSeconds, isPollingPaused } from "@/lib/device-load";
 import { BehindPort } from "./behind-port";
 import { PortConversations } from "./flows/port-conversations";
+import { useDevicePorts, useNow } from "./hooks";
 import { RX_COLOR, TX_COLOR, collectingText, dirLabels, portKey, roleFor, roleHint, snapshotReady, splitDirection } from "./lib";
 import { Notice } from "./notice";
 import { PathStrip } from "./path-strip";
 import { PortHistoryCard } from "./port-history";
 import { RoleBadge } from "./role-badge";
+import { SnapshotAge } from "./snapshot-age";
 
-// PortDetail: one port — live rate, the Internet → port path, history with
-// stats for the range, and what is behind it.
+// PortDetail: one port — live rate (with its age against the device's own
+// counter cadence), the Internet → port path, history with stats for the
+// range, and what is behind it.
 export function PortDetail({
   deviceId,
   iface,
@@ -46,6 +51,12 @@ export function PortDetail({
   const labels = dirLabels(role);
   const now = rate && ready ? splitDirection(role, rate.rx_bps, rate.tx_bps) : null;
   const pps = rate && ready ? splitDirection(role, rate.rx_pps, rate.tx_pps) : null;
+  // The device's own read time and cadence for the rate's age (the fleet
+  // snapshot only knows its cycle, not when this device answered).
+  const clock = useNow(60_000);
+  const paused = device ? isPollingPaused(device, clock) : false;
+  const ports = useDevicePorts(deviceId, paused);
+  const interval = device ? counterIntervalSeconds(budgetClass(device), ports?.data.interval_seconds ?? snapshot?.interval_seconds) : undefined;
 
   return (
     <div className="space-y-4">
@@ -62,38 +73,46 @@ export function PortDetail({
                   <span className="text-xs font-normal text-muted-foreground">link down</span>
                 ) : null}
               </CardTitle>
-              <p className="text-xs text-muted-foreground">
-                <button type="button" className="font-medium text-foreground hover:underline" onClick={() => onOpenDevice(deviceId)}>
-                  {nameOf(deviceId)}
-                </button>
-                {device?.address ? ` · ${device.address}` : ""}
-                {rate?.type ? ` · ${rate.type}` : ""}
-                {rate?.comment ? ` · ${rate.comment}` : ""}
+              <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+                <span>
+                  <button type="button" className="font-medium text-foreground hover:underline" onClick={() => onOpenDevice(deviceId)}>
+                    {nameOf(deviceId)}
+                  </button>
+                  {device?.address ? ` · ${device.address}` : ""}
+                  {rate?.type ? ` · ${rate.type}` : ""}
+                  {rate?.comment ? ` · ${rate.comment}` : ""}
+                </span>
+                {device && <DeviceLoadBadges device={device} />}
               </p>
               <p className="text-xs text-muted-foreground">{roleHint(role, roleInfo?.role === role ? roleInfo : undefined)}.</p>
             </div>
             {now && pps && (
-              <div className="grid grid-cols-[auto_auto] gap-x-3 text-right text-sm" aria-label="Current rate">
-                <span className="flex items-center justify-end gap-1.5 text-xs text-muted-foreground">
-                  <span className="h-2 w-2 rounded-sm" style={{ background: RX_COLOR }} />
-                  {labels.down}
-                </span>
-                <span className="font-mono font-semibold tabular-nums">
-                  {fmtBps(now.down)} <span className="text-xs font-normal text-muted-foreground">{pps.down} pps</span>
-                </span>
-                <span className="flex items-center justify-end gap-1.5 text-xs text-muted-foreground">
-                  <span className="h-2 w-2 rounded-sm" style={{ background: TX_COLOR }} />
-                  {labels.up}
-                </span>
-                <span className="font-mono font-semibold tabular-nums">
-                  {fmtBps(now.up)} <span className="text-xs font-normal text-muted-foreground">{pps.up} pps</span>
-                </span>
+              <div className="flex flex-col items-end gap-1.5">
+                <div className="grid grid-cols-[auto_auto] gap-x-3 text-right text-sm" role="group" aria-label="Current rate">
+                  <span className="flex items-center justify-end gap-1.5 text-xs text-muted-foreground">
+                    <span className="h-2 w-2 rounded-sm" style={{ background: RX_COLOR }} />
+                    {labels.down}
+                  </span>
+                  <span className="font-mono font-semibold tabular-nums">
+                    {fmtBps(now.down)} <span className="text-xs font-normal text-muted-foreground">{pps.down} pps</span>
+                  </span>
+                  <span className="flex items-center justify-end gap-1.5 text-xs text-muted-foreground">
+                    <span className="h-2 w-2 rounded-sm" style={{ background: TX_COLOR }} />
+                    {labels.up}
+                  </span>
+                  <span className="font-mono font-semibold tabular-nums">
+                    {fmtBps(now.up)} <span className="text-xs font-normal text-muted-foreground">{pps.up} pps</span>
+                  </span>
+                </div>
+                {ports && (
+                  <SnapshotAge meta={ports.data} receivedAt={ports.receivedAt} intervalSeconds={interval} paused={paused} />
+                )}
               </div>
             )}
           </div>
         </CardHeader>
         <CardContent className="space-y-3">
-          {!ready && <Notice kind="loading">{collectingText(snapshot)}</Notice>}
+          {!ready && <Notice kind="loading">{collectingText(snapshot, interval)}</Notice>}
           {offline && <Notice kind="warn">Device offline — live counters unavailable. History below still works.</Notice>}
           {ready && !offline && !rate && (
             <Notice>This interface is not in the live snapshot (removed, or not reported by the device).</Notice>
@@ -105,7 +124,7 @@ export function PortDetail({
         </CardContent>
       </Card>
 
-      <PortHistoryCard deviceId={deviceId} iface={iface} range={range} role={role} snapshot={snapshot} rate={rate} />
+      <PortHistoryCard deviceId={deviceId} device={device} iface={iface} range={range} role={role} snapshot={snapshot} rate={rate} />
 
       <PortConversations deviceId={deviceId} iface={iface} range={range} onOpenPort={onOpenPort} />
 

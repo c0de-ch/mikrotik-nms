@@ -31,6 +31,7 @@ export function TopTalkers({
   snapshot,
   roles,
   nameOf,
+  pausedIds,
   onOpenPort,
   onOpenDevice,
 }: {
@@ -39,6 +40,8 @@ export function TopTalkers({
   snapshot: PortSnapshot | null;
   roles: Map<string, PortRole>;
   nameOf: (deviceId: string) => string;
+  // Devices whose polling is paused: their rows carry a held reading.
+  pausedIds?: Set<string>;
   onOpenPort: (deviceId: string, iface: string) => void;
   onOpenDevice: (deviceId: string) => void;
 }) {
@@ -135,6 +138,7 @@ export function TopTalkers({
             dir={dir}
             live={live}
             showDevice
+            pausedIds={pausedIds}
             loading={tableLoading}
             onOpenPort={onOpenPort}
             onOpenDevice={onOpenDevice}

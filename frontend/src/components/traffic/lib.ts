@@ -2,8 +2,9 @@
 // Colours and bps formatting come from graph-style so the map and traffic
 // views read as one system.
 
-import type { Device, DeviceClass, PortRate, PortRole, PortRoleName, PortSnapshot, SeriesPoint, TopDir, TopMetric, TrafficRange } from "@/lib/api";
+import type { Device, PortRate, PortRole, PortRoleName, PortSnapshot, SeriesPoint, TopDir, TopMetric, TrafficRange } from "@/lib/api";
 import { TRAFFIC, fmtBps } from "@/components/graph/graph-style";
+import { fmtInterval } from "@/lib/device-load";
 
 export const RX_COLOR = TRAFFIC.rx;
 export const TX_COLOR = TRAFFIC.tx;
@@ -232,25 +233,20 @@ export const METRIC_OPTIONS = (live: boolean): { value: TopMetric; label: string
 
 // ---- snapshot state ---------------------------------------------------------
 
-export function collectingText(snapshot: PortSnapshot | null): string {
-  const secs = 2 * (snapshot?.interval_seconds || 15);
-  return `Collecting first samples — port rates appear after two polls (~${secs}s).`;
+// intervalSeconds: the device's own counter cadence when the view is about
+// one device (a weak one is read every 60 s); the fleet interval otherwise.
+export function collectingText(snapshot: PortSnapshot | null, intervalSeconds?: number): string {
+  const secs = 2 * (intervalSeconds || snapshot?.interval_seconds || 15);
+  return `Collecting first samples — port rates appear after two reads (about ${fmtInterval(secs)}).`;
 }
 
 export function snapshotReady(snapshot: PortSnapshot | null): boolean {
   return !!snapshot && snapshot.ready && snapshot.ts !== null;
 }
 
-// A CPU class in plain words, as the device page's polling card says it.
-export const CLASS_WORD: Record<DeviceClass, string> = { C0: "unprobed", C1: "weak", C2: "small", C3: "capable" };
-
-// "just now", "12 s ago", "4 min ago" for snapshot-derived rates.
-export function fmtAge(seconds: number): string {
-  if (seconds < 2) return "just now";
-  if (seconds < 120) return `${Math.round(seconds)} s ago`;
-  if (seconds < 7200) return `${Math.round(seconds / 60)} min ago`;
-  return `${Math.round(seconds / 3600)} h ago`;
-}
+// "just now", "12 s ago", "4 min ago" for snapshot-derived rates — the
+// device-load vocabulary's relative age.
+export { fmtAgo as fmtAge } from "@/lib/device-load";
 
 // The age of snapshot data now: the age the server reported plus the time
 // since the response arrived (never the local clock against sampled_at,

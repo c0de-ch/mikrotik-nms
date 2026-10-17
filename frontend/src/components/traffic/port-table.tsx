@@ -4,6 +4,7 @@ import { Globe, Network, Users, Wifi } from "lucide-react";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
 import { fmtBps } from "@/components/graph/graph-style";
+import { PauseGlyph } from "@/components/devices/device-load";
 import type { PortRoleName, TopDir, TopMetric, TopPortRow } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { fmtBytes, metricPair, splitDirection } from "./lib";
@@ -34,6 +35,7 @@ export function PortTable({
   dir = "total",
   live,
   showDevice,
+  pausedIds,
   loading,
   onOpenPort,
   onOpenDevice,
@@ -43,6 +45,9 @@ export function PortTable({
   dir?: TopDir;
   live: boolean;
   showDevice: boolean;
+  // Devices whose polling is paused: their rates are the last reading, so
+  // the row says so next to the device name.
+  pausedIds?: Set<string>;
   loading?: boolean;
   onOpenPort: (deviceId: string, iface: string) => void;
   onOpenDevice?: (deviceId: string) => void;
@@ -122,6 +127,15 @@ export function PortTable({
                         >
                           {r.device_name}
                         </button>
+                        {pausedIds?.has(r.device_id) && (
+                          <span
+                            className="inline-flex shrink-0 items-center text-load-hold"
+                            title="NMS polling is paused for this device: its rates are the last reading"
+                          >
+                            <PauseGlyph />
+                            <span className="sr-only">polling paused</span>
+                          </span>
+                        )}
                         <span className="text-muted-foreground">·</span>
                       </>
                     )}
