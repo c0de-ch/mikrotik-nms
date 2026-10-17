@@ -529,6 +529,32 @@ func TestTrafficManagerPolicyCache(t *testing.T) {
 	}
 }
 
+// A pause stops a granted stream at its next sample, not when the policy
+// cache (30 s) catches up: only liveness may reach a paused device.
+func TestTrafficManagerPauseStopsTheStreamAtOnce(t *testing.T) {
+	tm, hub, rec, ctx := liveManager(t)
+	admin := ws.NewClientFor(hub, nil, ws.ClientInfo{Role: "admin"})
+	topic := TrafficTopic("sw", "ether1")
+	subscribe(t, hub, admin, topic)
+	tm.reconcile(ctx)
+	wantNotice(t, rec.take(), admin.ID(), ws.TypeSubscribeAck, topic)
+	st := &deviceStream{ifaces: []string{"ether1"}}
+	tm.sampleOnce(ctx, "sw", st)
+	if n := rec.readCount("sw"); n != 1 {
+		t.Fatalf("reads before the pause = %d, want 1", n)
+	}
+	if err := queries.PauseDevicePolling(tm.db, "sw", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if p := tm.cachedPolicy("sw"); p.device.PollingPaused(time.Now()) {
+		t.Fatal("setup: the cached policy already knows the pause")
+	}
+	tm.sampleOnce(ctx, "sw", st)
+	if n := rec.readCount("sw"); n != 1 {
+		t.Errorf("reads after the pause = %d, want none beyond the first", n)
+	}
+}
+
 func policyCount(tm *TrafficManager) int {
 	tm.policyMu.Lock()
 	defer tm.policyMu.Unlock()

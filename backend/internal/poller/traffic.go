@@ -548,7 +548,10 @@ func (tm *TrafficManager) runStream(ctx context.Context, deviceID string, st *de
 }
 
 // sampleOnce reads every interface the stream carries in one call, records
-// the samples (the live range's history seed) and publishes them.
+// the samples (the live range's history seed) and publishes them. The pause
+// is read from the database, not the cached policy (up to livePolicyTTL
+// old): an admin's pause stops the device's stream at the next sample, and
+// the vetting drops the subscriptions once the cache catches up.
 func (tm *TrafficManager) sampleOnce(ctx context.Context, deviceID string, st *deviceStream) {
 	tm.mu.Lock()
 	ifaces := slices.Clone(st.ifaces)
@@ -556,6 +559,9 @@ func (tm *TrafficManager) sampleOnce(ctx context.Context, deviceID string, st *d
 	p := tm.cachedPolicy(deviceID)
 	if len(ifaces) == 0 || !p.exists || p.device.Status != "online" || p.device.PollingPaused(tm.now()) {
 		return // nothing granted, or nothing to read from: no dial
+	}
+	if tm.db != nil && DevicePaused(tm.db, deviceID, tm.now()) {
+		return
 	}
 
 	// Stamped before the call, so a loop started while it is in flight
