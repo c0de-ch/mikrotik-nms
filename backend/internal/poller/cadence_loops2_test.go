@@ -154,6 +154,67 @@ func TestNetworkHealthPrunesPerDeviceAndNeverPaused(t *testing.T) {
 	}
 }
 
+// When a pause ends the device's rows are as old as the pause. A first visit
+// that cannot read the device (no pooled connection yet) must not prune
+// them: each tier gets a whole stale window from the pause's end to be read
+// again — and after it, rows still not refreshed go as usual.
+func TestNetworkHealthKeepsRowsAfterAPause(t *testing.T) {
+	db := pollerTestDB(t)
+	classFleet(t, db, map[string]devclass.Class{"held": devclass.C3}, "held")
+	start := time.Now().UTC().Truncate(time.Second)
+	if err := queries.UpsertBridgeStatus(db, &queries.BridgeStatus{ID: "held:bridge", DeviceID: "held", BridgeName: "bridge"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := queries.UpsertBridgeVLAN(db, &queries.BridgeVLAN{ID: "held:bridge:10", DeviceID: "held", BridgeName: "bridge", VLANIDs: "10"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := queries.UpsertInterfaceState(db, &queries.InterfaceState{ID: "held:ether1", DeviceID: "held", InterfaceName: "ether1"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, tb := range []string{"bridge_status", "bridge_vlans", "interface_state"} {
+		if _, err := db.Exec(`UPDATE `+tb+` SET last_polled = ?`, sqlStamp(start.Add(-48*time.Hour))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	n := NewNetworkHealthPoller(db, nil, ws.NewHub(), time.Minute)
+	clock := &testClock{t: start}
+	n.now = clock.now
+	n.clock = newTierClock(NewScheduleRegistry())
+	n.UseCadence(NewCadence(db, &config.Config{TopologyInterval: time.Minute, NetworkHealthInterval: time.Minute}))
+	n.runner = func(string) routeros.Runner { return nil } // no pooled connection
+	count := func() int {
+		total := 0
+		for _, tb := range []string{"bridge_status", "bridge_vlans", "interface_state"} {
+			var c int
+			if err := db.QueryRow(`SELECT COUNT(*) FROM ` + tb + ` WHERE device_id = 'held'`).Scan(&c); err != nil {
+				t.Fatal(err)
+			}
+			total += c
+		}
+		return total
+	}
+
+	n.poll(context.Background()) // paused: never pruned
+	if err := queries.ResumeDevicePolling(db, "held"); err != nil {
+		t.Fatal(err)
+	}
+	clock.set(start.Add(time.Minute))
+	n.poll(context.Background())
+	if got := count(); got != 3 {
+		t.Fatalf("rows left right after the pause = %d, want all 3 kept", got)
+	}
+	clock.set(start.Add(20 * time.Minute))
+	n.poll(context.Background())
+	if got := count(); got != 3 {
+		t.Fatalf("rows left 20 min after the pause = %d, want all 3 (within the 30 min window)", got)
+	}
+	clock.set(start.Add(46 * time.Minute)) // past every window, still unread
+	n.poll(context.Background())
+	if got := count(); got != 0 {
+		t.Fatalf("rows left after the windows = %d, want none", got)
+	}
+}
+
 // wifiController scripts an AP / controller with the RouterOS 7 wifi package
 // and the given clients in its registration table.
 func wifiController(macs ...string) *fakeRunner {

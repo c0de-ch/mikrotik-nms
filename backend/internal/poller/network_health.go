@@ -91,6 +91,10 @@ type NetworkHealthPoller struct {
 	bridgeCounts map[string]int
 	portCounts   map[string]int
 	newEvents    int
+	// pausedSeen is when maintain last found each device paused: after the
+	// pause the device's rows are as old as the pause, and the prunes give
+	// it a stale window from there to be read again.
+	pausedSeen map[string]time.Time
 }
 
 // UseCadence schedules the poller's tiers by cs. Call before Run.
@@ -318,6 +322,7 @@ func NewNetworkHealthPoller(db *sql.DB, pool *routeros.Pool, hub *ws.Hub, interv
 		lastPortScan:  make(map[string]time.Time),
 		bridgeCounts:  make(map[string]int),
 		portCounts:    make(map[string]int),
+		pausedSeen:    make(map[string]time.Time),
 	}
 	n.runner = func(deviceID string) routeros.Runner { return poolRunner(n.pool, deviceID) }
 	return n
@@ -391,6 +396,11 @@ func (n *NetworkHealthPoller) poll(ctx context.Context) {
 			if _, ok := activeDevices[id]; !ok {
 				delete(m, id)
 			}
+		}
+	}
+	for id := range n.pausedSeen {
+		if _, ok := activeDevices[id]; !ok {
+			delete(n.pausedSeen, id)
 		}
 	}
 
@@ -678,12 +688,19 @@ func staleAge(interval time.Duration) time.Duration {
 	return max(staleReads*interval, minStaleRowAge)
 }
 
+// pausedSeenKeep bounds how long the end of a pause is remembered: longer
+// than any stale window.
+const pausedSeenKeep = 24 * time.Hour
+
 // maintain runs once per floor interval: it drops the rows of bridges, ports,
 // VLANs and interfaces a device stopped reporting — rows older than 3× that
 // device's cadence for them, at least 30 min (staleAge), so a weak switch
-// read every 15 min is not pruned on a router's clock, and never a paused
-// device's — prunes the log fingerprints and publishes the network.health
-// summary.
+// read every 15 min is not pruned on a router's clock — prunes the log
+// fingerprints and publishes the network.health summary. A paused device's
+// rows are never pruned, and once its pause ends each tier gets a whole stale
+// window to be read again before its rows count as gone: the rows are as old
+// as the pause, and a first read that fails (no pooled connection yet, a
+// session lost during the pause) must not wipe the device off the page.
 func (n *NetworkHealthPoller) maintain(devices []queries.Device, now time.Time) {
 	if !n.lastMaint.IsZero() && now.Sub(n.lastMaint) < n.interval {
 		return
@@ -692,20 +709,32 @@ func (n *NetworkHealthPoller) maintain(devices []queries.Device, now time.Time) 
 
 	for _, dev := range devices {
 		if n.cadence.Paused(dev, now) {
+			n.pausedSeen[dev.ID] = now
 			continue
 		}
-		if iv := n.cadence.Interval(dev, devclass.TierBridgePorts, now); iv > 0 {
+		resumed, wasPaused := n.pausedSeen[dev.ID]
+		if wasPaused && now.Sub(resumed) > pausedSeenKeep {
+			delete(n.pausedSeen, dev.ID)
+			wasPaused = false
+		}
+		// prune reports whether rows read every iv may be pruned now.
+		prune := func(iv time.Duration) bool {
+			return iv > 0 && !(wasPaused && now.Sub(resumed) <= staleAge(iv))
+		}
+		if iv := n.cadence.Interval(dev, devclass.TierBridgePorts, now); prune(iv) {
 			if err := queries.DeleteStaleBridgeRows(n.db, dev.ID, now.Add(-staleAge(iv))); err != nil {
 				log.Printf("network health: stale bridge cleanup: %v", err)
 			}
 		}
-		if iv := n.cadence.Interval(dev, devclass.TierBridgeVLAN, now); iv > 0 {
+		if iv := n.cadence.Interval(dev, devclass.TierBridgeVLAN, now); prune(iv) {
 			if err := queries.DeleteStaleBridgeVLANs(n.db, dev.ID, now.Add(-staleAge(iv))); err != nil {
 				log.Printf("network health: stale bridge vlan cleanup: %v", err)
 			}
 		}
-		if err := queries.DeleteStaleInterfaceStates(n.db, dev.ID, now.Add(-staleAge(n.portScanInterval(dev, now)))); err != nil {
-			log.Printf("network health: stale interface cleanup: %v", err)
+		if iv := n.portScanInterval(dev, now); prune(iv) {
+			if err := queries.DeleteStaleInterfaceStates(n.db, dev.ID, now.Add(-staleAge(iv))); err != nil {
+				log.Printf("network health: stale interface cleanup: %v", err)
+			}
 		}
 	}
 
