@@ -34,8 +34,9 @@ import (
 //     per device every max(floor, its counter cadence)
 //
 // Rows of bridges, ports, VLANs and interfaces a device no longer reports are
-// pruned once they are older than 3× that device's cadence for them; a paused
-// device's rows are never pruned.
+// pruned once they are older than 3× that device's cadence for them, at
+// least 30 min; a paused device's rows are never pruned, nor within that
+// window after its pause ended.
 //
 // Anomaly detection writes rows to loop_events:
 //   - stp_disabled: bridge has STP off and >1 non-edge port

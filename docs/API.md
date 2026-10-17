@@ -45,10 +45,11 @@ fixed bodies, e.g. `{"error":"missing authorization token"}` (401) and
 | `202 Accepted` | Async work started (firmware check, upgrade). |
 | `400 Bad Request` | Malformed body or invalid parameters. |
 | `401 Unauthorized` | Missing/invalid token or bad credentials. |
-| `403 Forbidden` | Authenticated but lacking the required role. |
+| `403 Forbidden` | Authenticated but lacking the required role — or a device action whose target lies outside `MIKROTIK_NMS_ALLOWED_TARGET_CIDRS`. |
 | `404 Not Found` | Resource does not exist. |
-| `409 Conflict` | Duplicate resource (username, device address, flow exporter address, flow view for a port) or setup already done. |
+| `409 Conflict` | Duplicate resource (username, device address, flow exporter address, flow view for a port) or setup already done — or an on-demand action on a device whose polling is paused (`{"error": "polling paused until <RFC 3339 time>"}`, see [Devices](#devices)). |
 | `500 Internal Server Error` | Unexpected backend / database failure. |
+| `503 Service Unavailable` | A device action on an instance whose polling is off (`MIKROTIK_NMS_POLLERS=off`). |
 
 ## 2. Authentication
 
@@ -146,7 +147,18 @@ class the pollers budget the device as (an unprobed device counts as `C1`).
 `poll_profile` is `auto` (the class cadences) or `light` (the `C1` cadences
 whatever the class); `polling_paused_until` / `polling_paused` show an
 active pause. Pauses and profile/override changes are written to the audit
-log with the acting user.
+log with the acting user. `PUT /devices/{id}/polling` validates the whole
+body before writing anything: a `400` leaves every field as it was.
+
+While a pause is in force only the liveness ping reaches the device, and
+the on-demand actions that would contact it answer `409` with
+`{"error": "polling paused until <RFC 3339 time>"}` before any device I/O:
+the speed-test, ping and traceroute run-nows of a target it probes from,
+`GET /devices/{id}/addresses`, `POST /firmware/upgrade` / `channel` /
+`routerboard` (refused when any listed device is paused; the message names
+it, and no job is created), and `GET /debug/wifi`. A firmware job already
+running when the pause starts is not interrupted. A granted live stream
+stops at its next sample.
 
 Create/update body fields:
 
@@ -795,7 +807,7 @@ the same topic (new period after a class change) replaces the earlier one.
 | `device.health` | object | Device liveness/info updates from the health and info pollers. |
 | `topology.update` | graph object | Full topology graph (`nodes` + `edges`); the one non-`map` payload. |
 | `traffic.<deviceID>.<iface>` | object | Live `/interface/monitor-traffic` samples of one interface `{device_id, interface_name, rx_bps, tx_bps, rx_pps, tx_pps, period_seconds, timestamp}`, within the device class's caps (see below). Vetted: every subscribe gets a `subscribe.ack` or `subscribe.error`. Sampling starts once granted and stops on the last unsubscribe. |
-| `traffic.ports` | object | Fleet-wide port snapshot `{ts, interval_seconds, ready, ports: [{device_id, iface, type, comment?, running, disabled, rx_bps, tx_bps, rx_pps, tx_pps}]}`, once per `port_stats_interval` (default 15 s) while anyone is subscribed. Raw: no `role`/`device_name` (join `/traffic/ports/roles`). |
+| `traffic.ports` | object | Fleet-wide port snapshot `{ts, interval_seconds, ready, ports: [{device_id, iface, type, comment?, running, disabled, rx_bps, tx_bps, rx_pps, tx_pps}]}` while anyone is subscribed, after each counter cycle that changed the rates (a reading landed or rates expired; devices are read on their own cadences, so several times per `port_stats_interval`, but never from a cycle that read nothing). Raw: no `role`/`device_name` (join `/traffic/ports/roles`). |
 | `topology.traffic` | object | Per-link throughput for the network map — the `GET /traffic/links` payload — once per port-counter cycle while anyone is subscribed. Derived from the snapshot: no device call. |
 | `firmware.update` | object | Firmware status changed (poll cycle or triggered check). |
 | `upgrade.progress.<jobId>` | object | Per-device upgrade progress for one job. |
