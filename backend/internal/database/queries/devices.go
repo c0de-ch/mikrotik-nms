@@ -44,6 +44,21 @@ type Device struct {
 	PollingPausedUntil *time.Time `json:"polling_paused_until"`
 	CPUCount           *int       `json:"cpu_count"`
 	CPUMHzMax          *int       `json:"cpu_mhz_max"`
+
+	// Polling is the live schedule the API attaches to a single device
+	// (GET /devices/{id}); never stored, nil elsewhere.
+	Polling *DevicePolling `json:"polling,omitempty"`
+}
+
+// DevicePolling is how the pollers currently treat a device: the class and
+// profile they budget it by, the pause in force, and when each scheduled
+// read (devclass tier name → time) runs next. A paused device lists no next
+// runs — nothing but liveness runs until the pause ends.
+type DevicePolling struct {
+	Class       devclass.Class       `json:"class"`
+	Profile     devclass.Profile     `json:"profile"`
+	PausedUntil *time.Time           `json:"paused_until"`
+	NextRuns    map[string]time.Time `json:"next_runs"`
 }
 
 // deviceColumns is the SELECT list every Device scan reads, in scanDevice's
@@ -192,6 +207,13 @@ func SetDeviceClassOverride(db *sql.DB, id string, override devclass.Class) erro
 	_, err := db.Exec(`UPDATE devices SET class_override=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`, v, id)
 	return err
 }
+
+// pausedDevicesSQL selects the ids of the devices whose polling is paused at
+// the bound time (bind sqlTime(now)), for staleness rules that must not age a
+// paused device's rows. The stored pause end is compared to the second: it is
+// written as a time.Time (its String form, "… +0000 UTC"), which is longer than
+// the bound layout and would otherwise outlast its own second.
+const pausedDevicesSQL = `SELECT id FROM devices WHERE substr(polling_paused_until, 1, 19) > ?`
 
 // PauseDevicePolling suspends every poller but liveness for the device until
 // the given time.
