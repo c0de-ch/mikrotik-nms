@@ -303,9 +303,16 @@ func (wt *WifiTracker) poll(ctx context.Context) {
 	// Phase 4: absence safety net. Only fires when a client has been missing
 	// from every current registration read for missedPollThreshold of its
 	// controller's reads AND the log never recorded a leave for it (which
-	// would have removed it from wt.clients already).
+	// would have removed it from wt.clients already). A paused controller's
+	// clients are not absent but unobserved — nothing of a paused device
+	// ages, and after a backend restart its last read is not even in memory
+	// (only the positions restored from wifi_history are).
 	for mac, state := range wt.clients {
 		if _, seen := current[mac]; seen {
+			state.AbsentSince = time.Time{}
+			continue
+		}
+		if dev, ok := byID[state.Controller]; ok && wt.cadence.Paused(dev, now) {
 			state.AbsentSince = time.Time{}
 			continue
 		}

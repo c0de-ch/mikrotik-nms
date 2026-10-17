@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/mikrotik-nms/backend/internal/config"
+	"github.com/mikrotik-nms/backend/internal/database/queries"
 	"github.com/mikrotik-nms/backend/internal/devclass"
 	"github.com/mikrotik-nms/backend/internal/routeros"
 	"github.com/mikrotik-nms/backend/internal/ws"
@@ -147,5 +148,37 @@ func TestWifiRoamRecordedAfterQuietHour(t *testing.T) {
 				t.Errorf("roam row source = %q, want one from the log", src)
 			}
 		})
+	}
+}
+
+// After a backend restart the clients of a paused controller come back from
+// wifi_history, but the controller is not read until the pause ends: they
+// must not be reported gone by the absence net meanwhile.
+func TestWifiRestartDuringPauseNoFalseLeaves(t *testing.T) {
+	db := pollerTestDB(t)
+	classFleet(t, db, map[string]devclass.Class{"held": devclass.C3}, "held")
+	const z = "02:00:00:00:A0:03"
+	if err := queries.InsertWifiHistory(db, &queries.WifiHistoryEntry{MACAddress: z, APName: "held-ap", SSID: "lab",
+		Event: "join", ControllerID: "held", Source: "log"}); err != nil {
+		t.Fatal(err)
+	}
+	runners := map[string]*fakeRunner{"held": wifiController(z)}
+	wt := NewWifiTracker(db, nil, ws.NewHub(), 30*time.Second)
+	clock := &testClock{t: at(12, 0, 0)}
+	wt.now = clock.now
+	wt.clock = newTierClock(NewScheduleRegistry())
+	wt.clock.phase = noJitter
+	wt.UseCadence(NewCadence(db, nil))
+	wt.runner = scriptedRunners(runners)
+	wt.restoreState()
+	for ts := at(12, 0, 0); !ts.After(at(12, 10, 0)); ts = ts.Add(30 * time.Second) {
+		clock.set(ts)
+		wt.poll(context.Background())
+	}
+	if len(runners["held"].calls) != 0 {
+		t.Fatalf("a paused controller was read: %q", runners["held"].calls)
+	}
+	if left := wifiEvents(t, db, "leave"); len(left) != 0 {
+		t.Errorf("leaves for a paused controller's clients after a restart: %v", left)
 	}
 }
