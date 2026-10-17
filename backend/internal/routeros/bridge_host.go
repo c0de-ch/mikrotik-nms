@@ -85,10 +85,25 @@ type InterfaceRelation struct {
 	Iface  string
 	Parent string
 	Kind   string // RelationBond | RelationVLAN | RelationPPPoE
+	// VLANID is a VLAN interface's vlan-id (RelationVLAN only; 0 when
+	// absent): with Iface and Parent it is the device's /interface/vlan row,
+	// which the flow ifIndex sync reads from here instead of printing it.
+	VLANID int
+}
+
+// VLANs returns the /interface/vlan rows among rels.
+func VLANs(rels []InterfaceRelation) []VLANInfo {
+	out := []VLANInfo{}
+	for _, r := range rels {
+		if r.Kind == RelationVLAN {
+			out = append(out, VLANInfo{Name: r.Iface, VLANID: r.VLANID, Parent: r.Parent})
+		}
+	}
+	return out
 }
 
 // GetInterfaceRelations reads the device's bond membership
-// (/interface/bonding slaves), VLAN parents and PPPoE-client carriers
+// (/interface/bonding slaves), VLAN parents and ids and PPPoE-client carriers
 // (interface=) on the pooled client — three short prints. Any failing print
 // fails the whole read, so a partial answer never replaces a complete one.
 func GetInterfaceRelations(run Runner) ([]InterfaceRelation, error) {
@@ -98,9 +113,7 @@ func GetInterfaceRelations(run Runner) ([]InterfaceRelation, error) {
 		parse         func(map[string]string) []InterfaceRelation
 	}{
 		{"/interface/bonding/print", "=.proplist=name,slaves", parseBondSlaves},
-		{"/interface/vlan/print", "=.proplist=name,interface", func(m map[string]string) []InterfaceRelation {
-			return parseCarrier(m, RelationVLAN)
-		}},
+		{"/interface/vlan/print", "=.proplist=name,interface,vlan-id", parseVLANCarrier},
 		{"/interface/pppoe-client/print", "=.proplist=name,interface", func(m map[string]string) []InterfaceRelation {
 			return parseCarrier(m, RelationPPPoE)
 		}},
@@ -130,6 +143,16 @@ func parseBondSlaves(m map[string]string) []InterfaceRelation {
 		}
 	}
 	return out
+}
+
+// parseVLANCarrier turns one /interface/vlan row into its "runs over"
+// relation, with the VLAN id.
+func parseVLANCarrier(m map[string]string) []InterfaceRelation {
+	rels := parseCarrier(m, RelationVLAN)
+	if len(rels) == 1 {
+		rels[0].VLANID, _ = strconv.Atoi(strings.TrimSpace(m["vlan-id"]))
+	}
+	return rels
 }
 
 // parseCarrier turns one /interface/vlan or /interface/pppoe-client row into

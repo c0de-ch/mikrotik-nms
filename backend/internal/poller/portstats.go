@@ -1116,7 +1116,8 @@ func (c *PortStatsCollector) collectDeviceHosts(dev queries.Device) (err error) 
 }
 
 // collectDeviceRelations replaces one device's interface_relations with a
-// fresh read. On a failed read the previous rows stay: stacking rarely
+// fresh read, and keeps its VLAN rows in memory for the flow ifIndex sync
+// (DeviceVLANs). On a failed read the previous rows stay: stacking rarely
 // changes, and a partial answer must not drop a bond's members. It returns
 // errNoClient when the device had no pooled connection.
 func (c *PortStatsCollector) collectDeviceRelations(dev queries.Device) (err error) {
@@ -1136,6 +1137,7 @@ func (c *PortStatsCollector) collectDeviceRelations(dev queries.Device) (err err
 		}
 		return err
 	}
+	c.storeVLANs(dev.ID, rels, c.now().UTC())
 	rows := make([]queries.InterfaceRelation, 0, len(rels))
 	for _, r := range rels {
 		rows = append(rows, queries.InterfaceRelation{InterfaceName: r.Iface, Kind: r.Kind, Parent: r.Parent})

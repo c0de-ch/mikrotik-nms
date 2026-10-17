@@ -3,8 +3,6 @@ package routeros
 import (
 	"strconv"
 	"strings"
-
-	ros "github.com/go-routeros/routeros/v3"
 )
 
 // IfIndexFromID converts a RouterOS API ".id" ("*D") to the SNMP / flow-export
@@ -30,10 +28,11 @@ type VLANInfo struct {
 	Parent string // the vlan's interface= (e.g. "bridge")
 }
 
-// GetVLANInfo runs /interface/vlan/print =.proplist=name,vlan-id,interface on
-// a pooled client.
-func GetVLANInfo(client *ros.Client) ([]VLANInfo, error) {
-	reply, err := RunCommand(client, "/interface/vlan/print", "=.proplist=name,vlan-id,interface")
+// GetVLANInfo runs /interface/vlan/print =.proplist=name,vlan-id,interface.
+// The port-stats collector's stacking read (GetInterfaceRelations, VLANs)
+// carries the same rows; this print stands in only until that has run.
+func GetVLANInfo(run Runner) ([]VLANInfo, error) {
+	reply, err := run.Run("/interface/vlan/print", "=.proplist=name,vlan-id,interface")
 	if err != nil {
 		return nil, err
 	}

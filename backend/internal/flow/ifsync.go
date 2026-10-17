@@ -8,6 +8,7 @@ import (
 	"runtime/debug"
 	"time"
 
+	ros "github.com/go-routeros/routeros/v3"
 	"github.com/mikrotik-nms/backend/internal/database/queries"
 	"github.com/mikrotik-nms/backend/internal/routeros"
 )
@@ -22,16 +23,19 @@ const (
 
 var errNoClient = errors.New("no pooled connection")
 
-// IfaceSource serves a managed device's latest scheduled interface read
-// from memory — the port-stats collector's Tier 0 snapshot — so the ifIndex
-// sync needs no interface print of its own.
+// IfaceSource serves a managed device's latest scheduled interface reads
+// from memory — the port-stats collector's Tier 0 snapshot and the VLAN rows
+// of its stacking read (Tier 3c) — so the ifIndex sync needs no print of its
+// own.
 type IfaceSource interface {
 	DeviceSnapshot(deviceID string) (rows []routeros.InterfaceSnapshot, at time.Time, ok bool)
+	DeviceVLANs(deviceID string) (vlans []routeros.VLANInfo, at time.Time, ok bool)
 }
 
-// UseIfaceSource makes the ifIndex sync take interface names from src; the
-// device's interface table is printed only while src has no snapshot of it
-// (cold start, a device the collector cannot read). Call before Run.
+// UseIfaceSource makes the ifIndex sync take interface names and VLAN rows
+// from src; the device's interface or VLAN table is printed only while src
+// has no read of it (cold start, a device the collector cannot read). Call
+// before Run.
 func (c *Collector) UseIfaceSource(src IfaceSource) {
 	if c != nil {
 		c.ifaceSrc = src
@@ -46,6 +50,24 @@ func (c *Collector) UseUplinkAge(age queries.UplinkAge) {
 	if c != nil {
 		c.uplinkAge = age
 	}
+}
+
+// poolRunner runs on deviceID's pooled client, looked up at the first
+// command: a sync the collector's reads fully serve never touches the pool.
+type poolRunner struct {
+	pool     *routeros.Pool
+	deviceID string
+}
+
+func (r poolRunner) Run(command string, args ...string) (*ros.Reply, error) {
+	if r.pool == nil {
+		return nil, errNoClient
+	}
+	client := r.pool.GetLive(r.deviceID)
+	if client == nil {
+		return nil, errNoClient
+	}
+	return routeros.ClientRunner{Client: client}.Run(command, args...)
 }
 
 // exporterIfaces returns deviceID's interface rows: src's snapshot when it
@@ -63,31 +85,44 @@ func exporterIfaces(src IfaceSource, run routeros.Runner, deviceID string) ([]ro
 	return routeros.GetInterfaceStats(run)
 }
 
+// exporterVLANs returns deviceID's /interface/vlan rows: src's latest stacking
+// read when it holds one, else one print on run.
+func exporterVLANs(src IfaceSource, run routeros.Runner, deviceID string) ([]routeros.VLANInfo, error) {
+	if src != nil {
+		if vlans, _, ok := src.DeviceVLANs(deviceID); ok {
+			return vlans, nil
+		}
+	}
+	return routeros.GetVLANInfo(run)
+}
+
 // syncExporterIfaces maps a RouterOS exporter's ifIndexes to names: the hex
-// .id of /interface/print is the flow-export ifIndex — taken from src's
-// snapshot when it has one, else printed — and /interface/vlan adds vlan-id
-// and parent. Manual names survive. A device whose polling is paused is not
-// read (its datagrams are still decoded with the names it had).
+// .id of /interface/print is the flow-export ifIndex, and /interface/vlan adds
+// vlan-id and parent — both taken from src's reads when it has them, printed
+// on the device's pooled client only before (the device is then not touched
+// at all once src has read it). Manual names survive. A failed VLAN read
+// fails the sync rather than storing the names without their VLAN ids. A
+// device whose polling is paused is not synced (its datagrams are still
+// decoded with the names it had).
 func syncExporterIfaces(db *sql.DB, pool *routeros.Pool, src IfaceSource, exp queries.FlowExporter) error {
-	if pool == nil || exp.DeviceID == "" {
+	if exp.DeviceID == "" {
 		return errNoClient
 	}
 	if dev, err := queries.GetDevice(db, exp.DeviceID); err == nil && dev.PollingPaused(time.Now()) {
 		return errNoClient
 	}
-	client := pool.GetLive(exp.DeviceID)
-	if client == nil {
-		return errNoClient
-	}
-	stats, err := exporterIfaces(src, routeros.ClientRunner{Client: client}, exp.DeviceID)
+	run := poolRunner{pool: pool, deviceID: exp.DeviceID}
+	stats, err := exporterIfaces(src, run, exp.DeviceID)
 	if err != nil {
 		return err
 	}
-	vlans := map[string]routeros.VLANInfo{}
-	if list, err := routeros.GetVLANInfo(client); err == nil {
-		for _, v := range list {
-			vlans[v.Name] = v
-		}
+	list, err := exporterVLANs(src, run, exp.DeviceID)
+	if err != nil {
+		return err
+	}
+	vlans := make(map[string]routeros.VLANInfo, len(list))
+	for _, v := range list {
+		vlans[v.Name] = v
 	}
 	return queries.UpsertDeviceFlowIfaces(db, exp.ID, ifacesFromStats(stats, vlans))
 }

@@ -110,7 +110,8 @@ func NewManager(db *sql.DB, pool *routeros.Pool, hub *ws.Hub, cfg *config.Config
 	m.portStats.UseCadence(m.cadence)
 	// The port-stats collector's Tier 0 read is the one interface print:
 	// the flow ifIndex sync (here), the port monitor and the uplink pass
-	// (Start, topology) read its snapshot instead of printing again.
+	// (Start, topology) read its snapshot instead of printing again; its
+	// stacking read (Tier 3c) also serves the sync's VLAN rows.
 	m.flows.UseIfaceSource(m.portStats)
 	// The flow plan and point facing judge egress rows as the map does.
 	m.flows.UseUplinkAge(UplinkAge(m.cadence))

@@ -787,6 +787,7 @@ func TestPortStatsCollectHosts(t *testing.T) {
 		relCalls[id]++
 		return []routeros.InterfaceRelation{
 			{Iface: "ether7", Parent: "bond1", Kind: routeros.RelationBond},
+			{Iface: "net28", Parent: "bridge", Kind: routeros.RelationVLAN, VLANID: 28},
 			{Iface: "pppoe-out1", Parent: "ether1", Kind: routeros.RelationPPPoE},
 		}, nil
 	}
@@ -795,8 +796,17 @@ func TestPortStatsCollectHosts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rels) != 2 || rels[0] != (queries.InterfaceRelation{DeviceID: "sw", InterfaceName: "ether7", Kind: "bond", Parent: "bond1"}) {
+	if len(rels) != 3 || rels[0] != (queries.InterfaceRelation{DeviceID: "sw", InterfaceName: "ether7", Kind: "bond", Parent: "bond1"}) {
 		t.Errorf("relations = %+v", rels)
+	}
+	// The stacking read's VLAN rows are kept for the flow ifIndex sync,
+	// which then needs no /interface/vlan print of its own.
+	wantVLANs := []routeros.VLANInfo{{Name: "net28", VLANID: 28, Parent: "bridge"}}
+	if vlans, at, ok := c.DeviceVLANs("sw"); !ok || !at.Equal(clock.now()) || len(vlans) != 1 || vlans[0] != wantVLANs[0] {
+		t.Errorf("VLAN rows of the stacking read = %+v at %v (%v)", vlans, at, ok)
+	}
+	if _, _, ok := c.DeviceVLANs("bad"); ok {
+		t.Error("a device whose stacking was never read reports VLAN rows")
 	}
 	if relCalls["bad"] != 0 || relCalls["sw"] != 1 {
 		t.Errorf("relation reads = %v: a device failing its dump is not asked for its stacking", relCalls)
@@ -814,8 +824,11 @@ func TestPortStatsCollectHosts(t *testing.T) {
 	clock.set(clock.now().Add(6 * time.Minute))
 	c.fetchRelations = func(string) ([]routeros.InterfaceRelation, error) { return nil, errors.New("trap") }
 	c.hostsTick(context.Background())
-	if rels, _ := queries.ListInterfaceRelations(db); len(rels) != 2 {
-		t.Errorf("relations after a failed read = %+v, want the previous 2", rels)
+	if rels, _ := queries.ListInterfaceRelations(db); len(rels) != 3 {
+		t.Errorf("relations after a failed read = %+v, want the previous 3", rels)
+	}
+	if vlans, _, ok := c.DeviceVLANs("sw"); !ok || len(vlans) != 1 || vlans[0] != wantVLANs[0] {
+		t.Errorf("VLAN rows after a failed read = %+v (%v), want the previous ones", vlans, ok)
 	}
 
 	hosts, err := queries.ListPortHosts(db, clock.now().Add(-time.Minute), "")

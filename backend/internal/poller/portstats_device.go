@@ -46,6 +46,10 @@ type deviceState struct {
 	ethAt       time.Time
 	ethInterval time.Duration
 	eth         map[string]routeros.EthernetStats
+	// Tier 3c: the /interface/vlan rows of the latest stacking read and when
+	// it was read (zero = not since startup).
+	vlans   []routeros.VLANInfo
+	vlansAt time.Time
 	// When each tier is due next; zero = at the next wake-up.
 	nextStats, nextEthernet time.Time
 	// What the interfaces table last received, by name; invAt is when every
@@ -184,6 +188,35 @@ func (c *PortStatsCollector) DeviceIfaces(deviceID string) (DeviceIfaces, bool) 
 	d.At = st.at
 	d.Rows = routeros.MergeEthernet(st.rows, eth)
 	return d, true
+}
+
+// DeviceVLANs returns deviceID's /interface/vlan rows (name, vlan-id, parent)
+// from its latest stacking read (Tier 3c) and when that was read; ok is false
+// until the first read since startup. Unlike the counter snapshot it does
+// not expire: VLAN stacking rarely changes, a failing read leaves the last
+// one standing (as interface_relations does), and the flow ifIndex sync that
+// reads it uses it next to a fresh interface snapshot only. Safe for
+// concurrent use; the rows are a copy. A nil collector has none.
+func (c *PortStatsCollector) DeviceVLANs(deviceID string) (vlans []routeros.VLANInfo, at time.Time, ok bool) {
+	if c == nil {
+		return nil, time.Time{}, false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	st := c.devs[deviceID]
+	if st == nil || st.vlansAt.IsZero() {
+		return nil, time.Time{}, false
+	}
+	return append([]routeros.VLANInfo{}, st.vlans...), st.vlansAt, true
+}
+
+// storeVLANs keeps the VLAN rows of a stacking read taken at t.
+func (c *PortStatsCollector) storeVLANs(deviceID string, rels []routeros.InterfaceRelation, t time.Time) {
+	vlans := routeros.VLANs(rels)
+	c.mu.Lock()
+	st := c.deviceLocked(deviceID)
+	st.vlans, st.vlansAt = vlans, t
+	c.mu.Unlock()
 }
 
 // inventoryRow is the part of an interface the interfaces table stores.
