@@ -529,7 +529,9 @@ func (c *PortStatsCollector) release(deviceID string) {
 // first, then Tier 4a — and ingests the replies. It may outlive the cycle
 // that started it; a late reply still updates the state. A device that did
 // not answer Tier 0 is not asked for Tier 4a: that read is retried at the
-// next wake-up instead of an ethernet interval later.
+// next wake-up instead of an ethernet interval later. A tier that could not
+// start for want of a pooled connection (cold start, redial cooldown) is not
+// a run: it is due again at the next wake-up, not an interval later.
 func (c *PortStatsCollector) pollDevice(dev queries.Device, p tierPlan, wg *sync.WaitGroup) {
 	defer wg.Done()
 	defer c.release(dev.ID)
@@ -545,7 +547,11 @@ func (c *PortStatsCollector) pollDevice(dev queries.Device, p tierPlan, wg *sync
 	if p.stats {
 		stats, err := c.fetchStats(dev.ID)
 		t := c.now().UTC()
-		c.scheduleNext(dev.ID, devclass.TierCounters, t, p.statsInterval)
+		if errors.Is(err, errNoClient) {
+			c.retryStats(dev.ID)
+		} else {
+			c.scheduleNext(dev.ID, devclass.TierCounters, t, p.statsInterval)
+		}
 		if err != nil {
 			if !errors.Is(err, errNoClient) {
 				c.logThrottled("stats:"+dev.ID, "poller portstats: interface counters for %s: %v", dev.Identity, err)

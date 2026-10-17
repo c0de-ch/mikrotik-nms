@@ -145,6 +145,13 @@ func (c *PortStatsCollector) retryEthernet(deviceID string) {
 	c.mu.Unlock()
 }
 
+// retryStats makes deviceID's Tier 0 read due again at the next wake-up.
+func (c *PortStatsCollector) retryStats(deviceID string) {
+	c.mu.Lock()
+	c.deviceLocked(deviceID).nextStats = time.Time{}
+	c.mu.Unlock()
+}
+
 // ingestEthernet stores one device's Tier 4a rows read at t.
 func (c *PortStatsCollector) ingestEthernet(deviceID string, rows []routeros.EthernetStats, t time.Time, interval time.Duration) {
 	byName := make(map[string]routeros.EthernetStats, len(rows))

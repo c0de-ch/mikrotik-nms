@@ -195,6 +195,44 @@ func TestPortStatsStaleEthernetNotMerged(t *testing.T) {
 	}
 }
 
+// A device the pool holds no connection for yet (cold start) is tried again at
+// the next wake-up, not a whole counter interval later: a weak switch on a
+// 60 s cadence gets its first snapshot within a base interval of the pool
+// dialling it.
+func TestPortStatsTier0WithoutClientRetriesAtNextWake(t *testing.T) {
+	run := switchRunner("1000")
+	c, clock := newTestPortStats(t, run)
+	c.UseCadence(&stubCadence{iv: map[devclass.Tier]time.Duration{devclass.TierCounters: time.Minute, devclass.TierEthernet: ethernetInterval}})
+	dialled := false
+	c.runner = func(string) routeros.Runner {
+		if !dialled {
+			return nil
+		}
+		return run
+	}
+	const base = 15 * time.Second
+
+	c.cycle(context.Background(), base)
+	if len(run.calls) != 0 {
+		t.Fatalf("calls without a connection = %q", run.calls)
+	}
+	dialled = true
+	clock.set(at(12, 0, 20))
+	c.cycle(context.Background(), base)
+	if len(run.calls) != 2 || run.calls[0] != tier0Call || run.calls[1] != tier4aCall {
+		t.Fatalf("calls one base interval after the pool dialled = %q, want Tier 0 and Tier 4a", run.calls)
+	}
+	if _, ok := c.DeviceIfaces("sw"); !ok {
+		t.Error("no snapshot after the retried read")
+	}
+	// A real read schedules the next one a counter interval out.
+	clock.set(at(12, 0, 35))
+	c.cycle(context.Background(), base)
+	if got := run.countCalls("/interface/print"); got != 1 {
+		t.Errorf("Tier 0 prints 15 s after a read on a 60 s cadence = %d, want 1", got)
+	}
+}
+
 // A device that does not answer Tier 0 is not asked for Tier 4a, and Tier
 // 4a is due again at the next wake-up rather than five minutes later.
 func TestPortStatsTier0FailureDefersEthernet(t *testing.T) {
