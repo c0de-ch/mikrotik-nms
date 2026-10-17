@@ -55,7 +55,8 @@ export default function AuthenticatedLayout({
       <AppSidebar />
       <SidebarInset>
         <PollingOffBanner />
-        <main className="flex-1 p-6">{children}</main>
+        {/* 16 px gutters on phones, 24 px from sm up. */}
+        <main className="min-w-0 flex-1 p-4 sm:p-6">{children}</main>
       </SidebarInset>
     </SidebarProvider>
   );
