@@ -177,6 +177,12 @@ type PortStatsCollector struct {
 	flushedThrough time.Time
 	rolledThrough  time.Time
 	lastLog        map[string]time.Time
+	// changed is set when the rates changed since the last publication: a
+	// counter reading landed, or rates expired. Devices read on their own
+	// phases wake the loop many times per interval (and a fleet of slow
+	// devices wakes it with nothing due); only a cycle that changed
+	// something is published.
+	changed bool
 }
 
 // NewPortStatsCollector wires the collector; Run starts it.
@@ -595,6 +601,7 @@ func (c *PortStatsCollector) ingest(deviceID string, stats []routeros.InterfaceS
 
 	st := c.deviceLocked(deviceID)
 	st.rows, st.at, st.interval = stats, t, interval
+	c.changed = true
 
 	maxGap := 3 * interval.Seconds()
 
@@ -739,7 +746,8 @@ func (c *PortStatsCollector) minuteAccFor(minute time.Time, key portStatsKey) *m
 // refreshed for more than 3× their device's Tier 0 interval (offline device
 // or removed interface; interval stands in for a device the collector has
 // not read yet) — except a paused device's, which do not age while nobody
-// reads it — stamps the snapshot, flushes finished minutes and publishes.
+// reads it — stamps the snapshot, flushes finished minutes and publishes
+// when the rates changed since the last publication (c.changed).
 func (c *PortStatsCollector) finishCycle(now time.Time, interval time.Duration) {
 	c.mu.Lock()
 	for key, s := range c.samples {
@@ -753,6 +761,7 @@ func (c *PortStatsCollector) finishCycle(now time.Time, interval time.Duration) 
 		}
 		if now.Sub(s.at) > 3*iv {
 			delete(c.samples, key)
+			c.changed = true
 		}
 	}
 	for _, st := range c.devs {
@@ -761,10 +770,14 @@ func (c *PortStatsCollector) finishCycle(now time.Time, interval time.Duration) 
 		}
 	}
 	c.lastCycle = now
+	changed := c.changed
+	c.changed = false
 	c.mu.Unlock()
 
 	c.flush(now)
-	c.publish()
+	if changed {
+		c.publish()
+	}
 }
 
 // flushBoundaryLocked is the exclusive end of the minutes a flush at now may

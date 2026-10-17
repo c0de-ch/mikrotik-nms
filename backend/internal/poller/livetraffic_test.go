@@ -259,6 +259,51 @@ func TestPortStatsPublishesToAnInProcessListener(t *testing.T) {
 	}
 }
 
+// A cycle publishes the snapshot only when it changed since the last
+// publication — a reading landed, or rates expired — not on every wake-up of
+// the per-device loop.
+func TestPortStatsPublishesOnlyChangedCycles(t *testing.T) {
+	hub := ws.NewHub()
+	go hub.Run()
+	c := NewPortStatsCollector(liveDB(t), nil, hub)
+	got := make(chan PortSnapshot, 8)
+	defer hub.Listen(PortRatesTopic, func(v any) { got <- v.(PortSnapshot) })()
+	published := func() int {
+		n := 0
+		for {
+			select {
+			case <-got:
+				n++
+			case <-time.After(30 * time.Millisecond):
+				return n
+			}
+		}
+	}
+	const iv = 15 * time.Second
+	t0 := time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
+	read := func(at time.Time, rx int64) {
+		c.ingest("a", []routeros.InterfaceStats{{Name: "ether1", Type: "ether", Running: true, HasCounters: true, RxBytes: rx}}, at, iv)
+	}
+	read(t0, 0)
+	c.finishCycle(t0, iv)
+	if n := published(); n != 1 {
+		t.Fatalf("a cycle with a reading published %d times, want 1", n)
+	}
+	c.finishCycle(t0.Add(5*time.Second), iv) // a wake-up that read nothing
+	if n := published(); n != 0 {
+		t.Fatalf("an unchanged cycle published %d times, want 0", n)
+	}
+	read(t0.Add(iv), 1500)
+	c.finishCycle(t0.Add(iv), iv)
+	if n := published(); n != 1 {
+		t.Fatalf("the next reading published %d times, want 1", n)
+	}
+	c.finishCycle(t0.Add(iv+time.Minute), iv) // a's rates expire: the ports go
+	if n := published(); n != 1 {
+		t.Fatalf("expired rates published %d times, want 1", n)
+	}
+}
+
 // End to end: while the map is watched, each traffic.ports publication turns
 // into one topology.traffic message read from the port-stats collector's own
 // state — its rates and each device's read time — and no device sees a
