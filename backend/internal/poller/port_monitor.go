@@ -102,6 +102,7 @@ type portState struct {
 	// is not persisted, so the first observation re-baselines).
 	linkDowns     int64
 	hasLinkDowns  bool
+	seenAt        time.Time  // when that observation was read (zero: none since startup)
 	flaps         []flapMark // flaps within the flap window, oldest first
 	flappedFiring bool       // true while the interface is over the flap threshold (suppress duplicate critical events)
 	firedAt       time.Time  // when the current port_link_flap fired
@@ -134,10 +135,16 @@ func (p *portState) flapsInWindow(now time.Time, window time.Duration) int {
 // counter (every RouterOS 7 interface does) — which also catches a flap
 // that came and went between two reads — else, without a baseline, a running
 // → not running transition. A counter that went backwards (reboot, reset)
-// counts as 0. It moves prev's counter baseline to the current reading.
-func observedFlaps(prev *portState, hadPrev bool, iface routeros.InterfaceSnapshot) int {
+// counts as 0, and so does a reading more than a flap window after the
+// previous one (a polling pause, an outage, a snapshot that was missing):
+// those link-downs are spread over a gap no window can place them in, and
+// booking them at once would fire a critical flap for hours of history. It
+// moves prev's baseline to the current reading, read at now.
+func observedFlaps(prev *portState, hadPrev bool, iface routeros.InterfaceSnapshot, now time.Time, window time.Duration) int {
 	n := 0
+	gap := !prev.seenAt.IsZero() && now.Sub(prev.seenAt) > window
 	switch {
+	case gap:
 	case iface.HasLinkDowns && prev.hasLinkDowns:
 		if iface.LinkDowns > prev.linkDowns {
 			n = int(min(iface.LinkDowns-prev.linkDowns, math.MaxInt32))
@@ -145,7 +152,7 @@ func observedFlaps(prev *portState, hadPrev bool, iface routeros.InterfaceSnapsh
 	case hadPrev && prev.running && !iface.Running:
 		n = 1
 	}
-	prev.linkDowns, prev.hasLinkDowns = iface.LinkDowns, iface.HasLinkDowns
+	prev.linkDowns, prev.hasLinkDowns, prev.seenAt = iface.LinkDowns, iface.HasLinkDowns, now
 	return n
 }
 
@@ -251,7 +258,7 @@ func (m *portMonitor) processInterface(
 	if prev.flappedFiring && (count < settings.FlapThreshold || now.Sub(prev.firedAt) > settings.FlapWindow) {
 		prev.flappedFiring = false
 	}
-	if n := observedFlaps(prev, hadPrev, iface); n > 0 {
+	if n := observedFlaps(prev, hadPrev, iface, now, settings.FlapWindow); n > 0 {
 		prev.flaps = append(prev.flaps, flapMark{at: now, n: n})
 		count += n
 		if count >= settings.FlapThreshold && !prev.flappedFiring && !first {

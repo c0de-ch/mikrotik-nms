@@ -203,6 +203,29 @@ func TestProcessInterface_LinkDownsDeltaFlaps(t *testing.T) {
 	}
 }
 
+// Link-downs counted across a gap longer than the flap window — a polling
+// pause, an outage — cannot be placed in any window: they re-baseline the
+// counter instead of firing a critical flap for hours of history.
+func TestProcessInterface_LinkDownsAcrossAGapAreNotFlaps(t *testing.T) {
+	m := newPortMonitor()
+	settings := PortMonitorSettings{Enabled: true, FlapThreshold: 3, FlapWindow: 5 * time.Minute}
+	t0 := time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
+	m.rememberFirstRun("sw")
+	m.processInterface("sw", linkRow("ether2", true, 10), settings, t0)
+	m.markDeviceProcessed("sw")
+	m.processInterface("sw", linkRow("ether2", true, 10), settings, t0.Add(time.Minute))
+
+	evs, st := m.processInterface("sw", linkRow("ether2", true, 13), settings, t0.Add(6*time.Hour+time.Minute))
+	if countKind(evs, "port_link_flap") != 0 || st.FlapCountWindow != 0 {
+		t.Fatalf("after a 6 h gap: events %+v, flaps %d — want none", evs, st.FlapCountWindow)
+	}
+	// Counting resumes from the new baseline.
+	_, st = m.processInterface("sw", linkRow("ether2", true, 14), settings, t0.Add(6*time.Hour+2*time.Minute))
+	if st.FlapCountWindow != 1 {
+		t.Fatalf("flaps after the gap = %d, want 1 from the new baseline", st.FlapCountWindow)
+	}
+}
+
 // A counter that went backwards (reboot) counts as 0 and re-baselines.
 func TestProcessInterface_LinkDownsCounterReset(t *testing.T) {
 	m := newPortMonitor()
