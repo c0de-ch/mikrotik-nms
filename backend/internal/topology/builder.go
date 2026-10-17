@@ -14,16 +14,77 @@ import (
 
 // Builder constructs a deduplicated link topology from raw neighbor data.
 type Builder struct {
-	db *sql.DB
+	db  *sql.DB
+	age NeighborAge
+	now func() time.Time
 }
 
+// NeighborAge tells the builder how long a reporting device's neighbor rows
+// stay current: window is its staleness window (three of its own neighbor
+// reads), and paused stops its rows from ageing — a link it reported stays up
+// while nobody reads the device.
+type NeighborAge func(reporter queries.Device, now time.Time) (window time.Duration, paused bool)
+
 func NewBuilder(db *sql.DB) *Builder {
-	return &Builder{db: db}
+	return &Builder{db: db, now: time.Now}
+}
+
+// UseNeighborAge makes a neighbor row produce a link only while it is current
+// by age. Without one every stored row counts, and only the neighbor
+// retention sweep ever takes a link down.
+func (b *Builder) UseNeighborAge(age NeighborAge) *Builder {
+	b.age = age
+	return b
+}
+
+// currentNeighbors keeps the rows that are current at now by age: seen within
+// the reporting device's window — for a paused reporter within the window of
+// its newest row (its last read), so the pause does not age them. Rows of
+// devices no longer managed are dropped.
+func currentNeighbors(rows []queries.Neighbor, devices map[string]queries.Device, age NeighborAge, now time.Time) []queries.Neighbor {
+	if age == nil {
+		return rows
+	}
+	newest := make(map[string]time.Time)
+	for _, n := range rows {
+		if n.LastSeen.After(newest[n.DeviceID]) {
+			newest[n.DeviceID] = n.LastSeen
+		}
+	}
+	type rule struct {
+		window time.Duration
+		anchor time.Time
+	}
+	rules := make(map[string]rule)
+	out := make([]queries.Neighbor, 0, len(rows))
+	for _, n := range rows {
+		r, ok := rules[n.DeviceID]
+		if !ok {
+			dev, managed := devices[n.DeviceID]
+			if !managed {
+				continue
+			}
+			window, paused := age(dev, now)
+			r = rule{window: window, anchor: now}
+			if paused {
+				r.anchor = newest[n.DeviceID]
+			}
+			rules[n.DeviceID] = r
+		}
+		if r.anchor.Sub(n.LastSeen) <= r.window {
+			out = append(out, n)
+		}
+	}
+	return out
 }
 
 // Build reads all neighbors and devices, resolves links, and writes them to the links table.
 // Returns the full topology graph for broadcasting.
 func (b *Builder) Build() (*Graph, error) {
+	// Every link a current neighbor supports is upserted (last_seen = now)
+	// below; whatever was not is down from this build on.
+	buildStart := time.Now()
+
 	devices, err := queries.ListDevices(b.db)
 	if err != nil {
 		return nil, err
@@ -47,6 +108,10 @@ func (b *Builder) Build() (*Graph, error) {
 			deviceByIdentity[d.Identity] = d
 		}
 	}
+
+	// A link is up while a neighbor row supporting it is current: link
+	// staleness is three of the reporting device's own neighbor reads.
+	neighbors = currentNeighbors(neighbors, deviceByID, b.age, b.now())
 
 	// Build interface MAC → device lookup
 	macToDevice := make(map[string]macDeviceInfo)
@@ -149,14 +214,16 @@ func (b *Builder) Build() (*Graph, error) {
 		}
 	}
 
-	// Mark stale links
-	staleCutoff := time.Now().Add(-2 * time.Minute) // 2x the 60s topology interval
-	if err := queries.MarkStaleLinksDown(b.db, staleCutoff); err != nil {
+	// A link no current neighbor supports any more is down: each device's
+	// rows already went through its own staleness window above, so a weak
+	// switch read every 5 min keeps its links as long as a router read every
+	// 2 min, and a paused device keeps them all.
+	if err := queries.MarkStaleLinksDown(b.db, buildStart); err != nil {
 		log.Printf("topology: mark stale links: %v", err)
 	}
 
 	// Remove very old links (24h)
-	oldCutoff := time.Now().Add(-24 * time.Hour)
+	oldCutoff := buildStart.Add(-24 * time.Hour)
 	if _, err := queries.DeleteOldLinks(b.db, oldCutoff); err != nil {
 		log.Printf("topology: delete old links: %v", err)
 	}
