@@ -98,7 +98,8 @@ func TestNetworkHealthPerClassCadenceAndPause(t *testing.T) {
 
 // The prunes drop a device's bridge, VLAN and interface rows once they are
 // older than 3× that device's cadence for them — a weak switch's on its own
-// slow clock — and never a paused device's.
+// slow clock — but never sooner than 30 min (a device that drops off for a
+// few minutes stays on the page), and never a paused device's.
 func TestNetworkHealthPrunesPerDeviceAndNeverPaused(t *testing.T) {
 	db := pollerTestDB(t)
 	classFleet(t, db, map[string]devclass.Class{"r3": devclass.C3, "s1": devclass.C1, "held": devclass.C3}, "held")
@@ -119,9 +120,9 @@ func TestNetworkHealthPrunesPerDeviceAndNeverPaused(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	age("bridge_status", 10*time.Minute) // C3 bridge ports 2 min → 6 min; C1 5 min → 15 min
-	age("bridge_vlans", 20*time.Minute)  // C3 5 min → 15 min; C1 15 min → 45 min
-	age("interface_state", 4*time.Minute)
+	age("bridge_status", 20*time.Minute)   // C3 bridge ports 2 min, C1 5 min → both the 30 min floor
+	age("bridge_vlans", 40*time.Minute)    // C3 5 min → the floor; C1 15 min → 45 min
+	age("interface_state", 31*time.Minute) // every 60 s → the floor
 
 	n := NewNetworkHealthPoller(db, nil, ws.NewHub(), time.Minute)
 	n.UseCadence(NewCadence(db, &config.Config{TopologyInterval: time.Minute, NetworkHealthInterval: time.Minute}))
@@ -142,11 +143,11 @@ func TestNetworkHealthPrunesPerDeviceAndNeverPaused(t *testing.T) {
 		}
 		return out
 	}
-	if got := left("bridge_status"); got["r3"] || !got["s1"] || !got["held"] {
-		t.Errorf("bridge rows left = %v, want s1 (slow cadence) and held (paused)", got)
+	if got := left("bridge_status"); !got["r3"] || !got["s1"] || !got["held"] {
+		t.Errorf("bridge rows left = %v, want all three (20 min is within the floor)", got)
 	}
 	if got := left("bridge_vlans"); got["r3"] || !got["s1"] || !got["held"] {
-		t.Errorf("vlan rows left = %v, want s1 and held", got)
+		t.Errorf("vlan rows left = %v, want s1 (slow cadence) and held (paused)", got)
 	}
 	if got := left("interface_state"); got["r3"] || got["s1"] || !got["held"] {
 		t.Errorf("interface rows left = %v, want only the paused device's", got)

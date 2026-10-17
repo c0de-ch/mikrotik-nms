@@ -665,11 +665,25 @@ func (n *NetworkHealthPoller) readLogs(dev queries.Device, run routeros.Runner, 
 // pruned as gone from the device.
 const staleReads = 3
 
+// minStaleRowAge is the shortest a row outlives its device's last report: the
+// fleet-wide window the prunes used before per-device cadences. Three reads
+// of a C3 router are only minutes, and a device that reboots or drops off for
+// a few minutes — the moment an operator opens the network-health page or the
+// VLAN matrix to look into it — must not vanish from them.
+const minStaleRowAge = 30 * time.Minute
+
+// staleAge is how old a row read every interval may get before the prune
+// takes it as gone from the device.
+func staleAge(interval time.Duration) time.Duration {
+	return max(staleReads*interval, minStaleRowAge)
+}
+
 // maintain runs once per floor interval: it drops the rows of bridges, ports,
 // VLANs and interfaces a device stopped reporting — rows older than 3× that
-// device's cadence for them, so a weak switch read every 5 min is not pruned
-// on a router's clock, and never a paused device's — prunes the log
-// fingerprints and publishes the network.health summary.
+// device's cadence for them, at least 30 min (staleAge), so a weak switch
+// read every 15 min is not pruned on a router's clock, and never a paused
+// device's — prunes the log fingerprints and publishes the network.health
+// summary.
 func (n *NetworkHealthPoller) maintain(devices []queries.Device, now time.Time) {
 	if !n.lastMaint.IsZero() && now.Sub(n.lastMaint) < n.interval {
 		return
@@ -681,16 +695,16 @@ func (n *NetworkHealthPoller) maintain(devices []queries.Device, now time.Time) 
 			continue
 		}
 		if iv := n.cadence.Interval(dev, devclass.TierBridgePorts, now); iv > 0 {
-			if err := queries.DeleteStaleBridgeRows(n.db, dev.ID, now.Add(-staleReads*iv)); err != nil {
+			if err := queries.DeleteStaleBridgeRows(n.db, dev.ID, now.Add(-staleAge(iv))); err != nil {
 				log.Printf("network health: stale bridge cleanup: %v", err)
 			}
 		}
 		if iv := n.cadence.Interval(dev, devclass.TierBridgeVLAN, now); iv > 0 {
-			if err := queries.DeleteStaleBridgeVLANs(n.db, dev.ID, now.Add(-staleReads*iv)); err != nil {
+			if err := queries.DeleteStaleBridgeVLANs(n.db, dev.ID, now.Add(-staleAge(iv))); err != nil {
 				log.Printf("network health: stale bridge vlan cleanup: %v", err)
 			}
 		}
-		if err := queries.DeleteStaleInterfaceStates(n.db, dev.ID, now.Add(-staleReads*n.portScanInterval(dev, now))); err != nil {
+		if err := queries.DeleteStaleInterfaceStates(n.db, dev.ID, now.Add(-staleAge(n.portScanInterval(dev, now)))); err != nil {
 			log.Printf("network health: stale interface cleanup: %v", err)
 		}
 	}
