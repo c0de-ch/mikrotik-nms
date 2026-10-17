@@ -239,9 +239,9 @@ The backend is configured **entirely** via `MIKROTIK_NMS_*` environment variable
 | `MIKROTIK_NMS_ALLOWED_ORIGINS` | Comma-separated CORS / WebSocket origin allow-list (e.g. `https://nms.example.com`). Unset = reflect any origin (logs a warning) | — | No |
 | `MIKROTIK_NMS_ROS_TLS_VERIFY` | Verify RouterOS API-TLS device certificates. Off by default (self-signed certs) | `false` | No |
 | `MIKROTIK_NMS_HEALTH_INTERVAL` | Liveness ping cadence | `30s` | No |
-| `MIKROTIK_NMS_TOPOLOGY_INTERVAL` | `/ip/neighbor` poll + link-graph rebuild cadence | `60s` | No |
+| `MIKROTIK_NMS_TOPOLOGY_INTERVAL` | **Floor** of each device's `/ip/neighbor` and default-route reads (they run on the device's class cadence when slower), and the link-graph rebuild cadence | `60s` | No |
 | `MIKROTIK_NMS_FIRMWARE_INTERVAL` | RouterOS update-check cadence | `6h` | No |
-| `MIKROTIK_NMS_NETWORK_HEALTH_INTERVAL` | Bridge/STP + port-state poll cadence | `60s` | No |
+| `MIKROTIK_NMS_NETWORK_HEALTH_INTERVAL` | **Floor** of each device's bridge/STP, bridge-VLAN and log reads (class cadence when slower), and the port-state scan / stale-row prune cadence | `60s` | No |
 | `MIKROTIK_NMS_RETENTION_INTERVAL` | Cleanup sweep cadence | `1h` | No |
 | `MIKROTIK_NMS_RETENTION_DAYS` | Retention window for samples / events | `7` | No |
 | `MIKROTIK_NMS_DEFAULT_ROS_USER` | Default RouterOS username for new devices | `admin` | No |
@@ -257,6 +257,27 @@ Frontend (build-time only, inlined into the bundle):
 |---|---|---|
 | `NEXT_PUBLIC_API_URL` | Backend API URL the browser uses | `http://localhost:8080` |
 | `NEXT_PUBLIC_WS_URL` | Backend WebSocket URL the browser uses | `ws://localhost:8080` |
+
+### Polling intervals are floors
+
+Every device is read on the cadence of its **CPU class**, probed from `/system/resource` (C1: MIPS or ≤ 128 MiB; C2: small ARM; C3: arm64/x86 with 2+ cores; an unprobed device counts as C1). The interval settings and env vars that once set one cadence for the whole fleet are now **floors**: a device runs at `max(its class cadence, the floor)`, so raising a setting still slows every device down, but no setting reads a device faster than its class allows. The pairs are:
+
+| Read | C3 / C2 / C1 cadence | Floor |
+|---|---|---|
+| Interface counters (Tier 0) | 15 s / 30 s / 60 s | `port_stats_interval` |
+| Ethernet / switch counters (4a) | 5 min | `port_stats_interval` |
+| Bridge FDB (3b) | 5 / 10 / 15 min | `port_hosts_interval` |
+| Bond / VLAN / PPPoE stacking (3c) | 5 / 15 / 15 min | `port_hosts_interval` |
+| Neighbors (3d) | 2 / 2 / 5 min | `MIKROTIK_NMS_TOPOLOGY_INTERVAL` |
+| Default routes (3e) | 60 s / 5 / 5 min | `MIKROTIK_NMS_TOPOLOGY_INTERVAL` |
+| Bridge ports + STP (2a–2c), log buffer | 2 / 2 / 5 min | `MIKROTIK_NMS_NETWORK_HEALTH_INTERVAL` |
+| Bridge VLAN table (3a) | 5 / 5 / 15 min | `MIKROTIK_NMS_NETWORK_HEALTH_INTERVAL` |
+| Wifi registration tables (5c) | 30 s / 60 s / 5 min | `wifi_interval` |
+| ARP (5a) | 5 / 30 / 30 min | `client_discovery_interval` |
+| DHCP leases (5b) | 5 min, C3 only | `client_discovery_interval` |
+| Resource + class probe (6) | 60 min | `info_interval` |
+
+Each device's next read is the end of its last one plus the interval, ±10 % by a per-device phase, so a fleet spreads out instead of polling in lockstep. On a device's page an admin can switch it to the **light** profile (the C1 cadences), override its class with a gentler one, or **pause** polling for 1–168 hours: during a pause only the liveness ping runs, nothing derived from the device ages (links stay up, rows are not pruned), and its charts show the time as a gap. The liveness ping (`MIKROTIK_NMS_HEALTH_INTERVAL`), firmware checks, connectivity probes and speed tests keep their fleet-wide cadences.
 
 ### Restart required vs. runtime-tunable
 
