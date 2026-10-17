@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/mikrotik-nms/backend/internal/config"
+	"github.com/mikrotik-nms/backend/internal/poller"
 	"github.com/mikrotik-nms/backend/internal/routeros"
 )
 
@@ -43,6 +44,17 @@ func writeDialPolicyError(w http.ResponseWriter, err error) bool {
 		return true
 	}
 	return false
+}
+
+// cadenceSource is the schedule staleness rules are judged by: the poller
+// manager's when wired, else one built from the database and config (tests,
+// tools) — the same class cadences and floors, without the manager's floor
+// cache.
+func (s *Server) cadenceSource() poller.CadenceSource {
+	if s.cadence != nil {
+		return s.cadence
+	}
+	return poller.NewCadence(s.db, s.cfg)
 }
 
 // pollersMode is the instance's MIKROTIK_NMS_POLLERS value ("local" or

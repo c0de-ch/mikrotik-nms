@@ -38,6 +38,16 @@ func (c *Collector) UseIfaceSource(src IfaceSource) {
 	}
 }
 
+// UseUplinkAge judges the device_uplinks rows the address plan and the native
+// points' facing read by age (poller.UplinkAge: three of the device's route
+// reads, frozen while it is paused); nil = queries.DefaultUplinkWindow. Call
+// before Run.
+func (c *Collector) UseUplinkAge(age queries.UplinkAge) {
+	if c != nil {
+		c.uplinkAge = age
+	}
+}
+
 // exporterIfaces returns deviceID's interface rows: src's snapshot when it
 // holds one, else one Tier 0 print on run.
 func exporterIfaces(src IfaceSource, run routeros.Runner, deviceID string) ([]routeros.InterfaceStats, error) {
@@ -158,7 +168,7 @@ func (c *Collector) maintLoop(ctx context.Context) {
 		case <-ifsyncT.C:
 			safeMaint("ifsync", func() {
 				c.ifsyncAll()
-				reconcileNativePoints(c.db)
+				reconcileNativePoints(c.db, c.uplinkAge, c.now())
 			})
 			ifsyncT.Reset(ifsyncInterval)
 		case id := <-c.ifsyncReq:
@@ -169,11 +179,11 @@ func (c *Collector) maintLoop(ctx context.Context) {
 			lastOnDemand[id] = now
 			safeMaint("ifsync", func() {
 				c.ifsyncOne(id)
-				reconcileNativePoints(c.db)
+				reconcileNativePoints(c.db, c.uplinkAge, c.now())
 			})
 		case <-planT.C:
 			retry := false
-			safeMaint("plan", func() { retry = refreshPlan(c.db, c.pool, c.now()) })
+			safeMaint("plan", func() { retry = refreshPlan(c.db, c.pool, c.uplinkAge, c.now()) })
 			if retry && planRetries < planMaxRetries {
 				planRetries++
 				planT.Reset(planRetry)
@@ -182,7 +192,7 @@ func (c *Collector) maintLoop(ctx context.Context) {
 				planT.Reset(planInterval)
 			}
 		case <-pointsT.C:
-			safeMaint("points", func() { reconcileNativePoints(c.db) })
+			safeMaint("points", func() { reconcileNativePoints(c.db, c.uplinkAge, c.now()) })
 		}
 	}
 }

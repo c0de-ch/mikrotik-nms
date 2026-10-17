@@ -26,13 +26,15 @@ const mbps = int64(1_000_000)
 type fakePortStats struct {
 	snap            poller.PortSnapshot
 	flushed, rolled time.Time
-	reads           map[string]time.Time // DeviceSampleTimes; nil = all read at snap.TS
+	reads           map[string]time.Time // per-device read times; nil = all read at snap.TS
 }
 
-func (f *fakePortStats) Snapshot() poller.PortSnapshot           { return f.snap }
-func (f *fakePortStats) FlushedThrough() time.Time               { return f.flushed }
-func (f *fakePortStats) RolledThrough() time.Time                { return f.rolled }
-func (f *fakePortStats) DeviceSampleTimes() map[string]time.Time { return f.reads }
+func (f *fakePortStats) Snapshot() poller.PortSnapshot { return f.snap }
+func (f *fakePortStats) FlushedThrough() time.Time     { return f.flushed }
+func (f *fakePortStats) RolledThrough() time.Time      { return f.rolled }
+func (f *fakePortStats) SnapshotWithReadTimes() (poller.PortSnapshot, map[string]time.Time) {
+	return f.snap, f.reads
+}
 
 // trafficFixture is the contract §7.6 mesh (R internet edge → C core → S
 // access → A1/A2 APs, MNDP hearing nearly every pair) stored in a real DB,

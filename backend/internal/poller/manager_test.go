@@ -147,7 +147,7 @@ func TestGatewayAttachmentFromPortHosts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	gw := m.gatewayMACs(devices)
+	gw := m.gatewayMACs(devices, now)
 	if gw[gwMAC] != gwIP {
 		t.Fatalf("gateway MACs = %v", gw)
 	}

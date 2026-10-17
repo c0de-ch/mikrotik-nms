@@ -198,43 +198,45 @@ func TestNewSnapshotMeta(t *testing.T) {
 	}
 }
 
-// A device whose reads fail keeps its rates unchanged in the snapshots that
-// follow; the tracker dates them to the last change.
-func TestReadTrackerDatesUnchangedRates(t *testing.T) {
-	t0 := time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
-	r := newReadTracker()
-	got := r.observe(readySnapshot(t0, rateOf("a", "e1", "ether", 10, 90), rateOf("b", "e1", "ether", 91, 11)))
-	if !got["a"].Equal(t0) || !got["b"].Equal(t0) {
-		t.Fatalf("first snapshot = %v, want both at t0", got)
+// The snapshot and the per-device read times come from one lock: every device
+// in the snapshot is dated to its own last Tier 0 read, so a device whose
+// reads fail shows its true age next to a device read since — and a device
+// whose snapshot expired keeps the date of the rates the snapshot still
+// carries until the cycle that prunes both.
+func TestPortStatsSnapshotWithReadTimes(t *testing.T) {
+	snap, times := (*PortStatsCollector)(nil).SnapshotWithReadTimes()
+	if times != nil || snap.Ports == nil || len(snap.Ports) != 0 {
+		t.Errorf("nil collector = %+v, %v", snap, times)
 	}
-	t1 := t0.Add(15 * time.Second)
-	got = r.observe(readySnapshot(t1, rateOf("a", "e1", "ether", 10, 90), rateOf("b", "e1", "ether", 95, 12)))
-	if !got["a"].Equal(t0) || !got["b"].Equal(t1) {
-		t.Errorf("a unchanged, b changed = %v, want a at t0, b at t1", got)
-	}
-	// A device that leaves the snapshot is forgotten.
-	got = r.observe(readySnapshot(t1.Add(15*time.Second), rateOf("b", "e1", "ether", 1, 1)))
-	if _, ok := got["a"]; ok || len(got) != 1 {
-		t.Errorf("after a left = %v", got)
-	}
-}
-
-func TestPortStatsDeviceSampleTimes(t *testing.T) {
-	if (*PortStatsCollector)(nil).DeviceSampleTimes() != nil {
-		t.Error("nil collector reported read times")
-	}
-	c := NewPortStatsCollector(nil, nil, nil)
+	c := NewPortStatsCollector(liveDB(t), nil, nil)
 	t1 := time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
 	t2 := t1.Add(15 * time.Second)
-	row := func(name string) routeros.InterfaceStats {
-		return routeros.InterfaceStats{Name: name, Type: "ether", Running: true, HasCounters: true}
+	row := func(name string, rx int64) routeros.InterfaceStats {
+		return routeros.InterfaceStats{Name: name, Type: "ether", Running: true, HasCounters: true, RxBytes: rx}
 	}
-	c.ingest("a", []routeros.InterfaceStats{row("ether1"), row("ether2")}, t1, 15*time.Second)
-	c.ingest("b", []routeros.InterfaceStats{row("ether1")}, t1, 15*time.Second)
-	c.ingest("b", []routeros.InterfaceStats{row("ether1")}, t2, 15*time.Second)
-	got := c.DeviceSampleTimes()
-	if len(got) != 2 || !got["a"].Equal(t1) || !got["b"].Equal(t2) {
-		t.Errorf("DeviceSampleTimes = %v, want a at t1, b at t2", got)
+	c.ingest("a", []routeros.InterfaceStats{row("ether1", 0), row("ether2", 0)}, t1, 15*time.Second)
+	c.ingest("b", []routeros.InterfaceStats{row("ether1", 0)}, t1, 15*time.Second)
+	c.ingest("b", []routeros.InterfaceStats{row("ether1", 1500)}, t2, 15*time.Second)
+	snap, times = c.SnapshotWithReadTimes()
+	if len(times) != 2 || !times["a"].Equal(t1) || !times["b"].Equal(t2) {
+		t.Errorf("read times = %v, want a at t1, b at t2", times)
+	}
+	if len(snap.Ports) != 3 {
+		t.Errorf("snapshot ports = %+v", snap.Ports)
+	}
+	// Past 3x its interval a's snapshot is no longer served, but its rates
+	// stay in the fleet snapshot until finishCycle prunes them — dated t1.
+	c.now = func() time.Time { return t1.Add(50 * time.Second) }
+	if _, ok := c.DeviceIfaces("a"); ok {
+		t.Fatal("a's snapshot still served after 3 intervals")
+	}
+	if _, times = c.SnapshotWithReadTimes(); !times["a"].Equal(t1) {
+		t.Errorf("a's read time before the prune = %v, want t1", times["a"])
+	}
+	c.finishCycle(t1.Add(50*time.Second), 15*time.Second)
+	snap, times = c.SnapshotWithReadTimes()
+	if _, ok := times["a"]; ok || len(snap.Ports) != 1 || snap.Ports[0].DeviceID != "b" {
+		t.Errorf("after the prune: ports %+v, times %v — want only b", snap.Ports, times)
 	}
 }
 
@@ -258,7 +260,9 @@ func TestPortStatsPublishesToAnInProcessListener(t *testing.T) {
 }
 
 // End to end: while the map is watched, each traffic.ports publication turns
-// into one topology.traffic message — and no device sees a single command.
+// into one topology.traffic message read from the port-stats collector's own
+// state — its rates and each device's read time — and no device sees a
+// single command.
 func TestLiveTrafficCollectorPublishesFromTheSnapshot(t *testing.T) {
 	db := liveDB(t)
 	liveDevice(t, db, "a", devclass.C1, "sfp1")
@@ -281,13 +285,23 @@ func TestLiveTrafficCollectorPublishesFromTheSnapshot(t *testing.T) {
 
 	hub := ws.NewHub()
 	go hub.Run()
-	c := NewLiveTrafficCollector(db, pool, hub)
+	ports := NewPortStatsCollector(db, pool, hub)
+	c := NewLiveTrafficCollector(db, ports, hub)
 	c.watchEvery = 5 * time.Millisecond
 	ctx, cancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() { defer wg.Done(); c.Run(ctx) }()
 	defer func() { cancel(); wg.Wait() }()
+
+	// read stores one Tier 0 reading of dev's port at at: rx/tx bytes so far.
+	const iv = 15 * time.Second
+	read := func(dev, iface string, at time.Time, rx, tx int64) {
+		ports.ingest(dev, []routeros.InterfaceStats{{Name: iface, Type: "ether", Running: true, HasCounters: true,
+			RxBytes: rx, TxBytes: tx}}, at, iv)
+	}
+	cycle := func(at time.Time) { ports.finishCycle(at, iv) }
+	bytesFor := func(bps int64) int64 { return bps * int64(iv/time.Second) / 8 }
 
 	// Nobody watches the map: the collector must not listen to the snapshot.
 	time.Sleep(30 * time.Millisecond)
@@ -299,36 +313,46 @@ func TestLiveTrafficCollectorPublishesFromTheSnapshot(t *testing.T) {
 	stopWatching := hub.Listen(LiveTrafficTopic, func(v any) { payloads <- v.(LinkTrafficPayload) })
 	waitUntil(t, func() bool { return hub.TopicSubscriberCount(PortRatesTopic) == 1 })
 
-	ts := time.Now().UTC()
-	hub.Publish(PortRatesTopic, readySnapshot(ts, rateOf("a", "sfp1", "ether", 10, 90), rateOf("b", "ether1", "ether", 91, 11)))
-	select {
-	case p := <-payloads:
-		if p.Source != SourceSnapshot || p.SampledAt == nil || !p.SampledAt.Equal(ts) || len(p.Links) != 1 {
-			t.Fatalf("payload = %+v", p)
-		}
-		// Equal freshness, so the C3 end (b) is read, turned into a's frame.
-		if l := p.Links[0]; l.ID != linkID || l.DeviceID != "b" || l.RxBps != 11 || l.TxBps != 91 {
-			t.Errorf("link = %+v", l)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("no topology.traffic message after a snapshot")
-	}
-
-	// A snapshot that is not ready yet publishes nothing.
-	hub.Publish(PortRatesTopic, PortSnapshot{IntervalSeconds: 15, Ports: []PortRate{}})
+	// One reading each is no rate yet: the cycle publishes a snapshot that
+	// is not ready, and the map gets nothing.
+	t0 := time.Now().UTC().Add(-time.Minute).Truncate(time.Second)
+	read("a", "sfp1", t0, 0, 0)
+	read("b", "ether1", t0, 0, 0)
+	cycle(t0)
 	select {
 	case p := <-payloads:
 		t.Fatalf("published from a not-ready snapshot: %+v", p)
 	case <-time.After(50 * time.Millisecond):
 	}
 
-	// b's reads start failing: its rates stay as they were while a's move
-	// on, so the next cycle reads the link on a despite b's cadence.
-	ts2 := ts.Add(15 * time.Second)
-	hub.Publish(PortRatesTopic, readySnapshot(ts2, rateOf("a", "sfp1", "ether", 20, 80), rateOf("b", "ether1", "ether", 91, 11)))
+	// Rates: a counts 80 in / 720 out, b the mirror (728 in / 88 out) — the
+	// two ends differ so the test tells which one was read.
+	t1 := t0.Add(iv)
+	read("a", "sfp1", t1, bytesFor(80), bytesFor(720))
+	read("b", "ether1", t1, bytesFor(728), bytesFor(88))
+	cycle(t1)
 	select {
 	case p := <-payloads:
-		if l := p.Links[0]; l.DeviceID != "a" || l.RxBps != 20 || l.TxBps != 80 {
+		if p.Source != SourceSnapshot || p.SampledAt == nil || !p.SampledAt.Equal(t1) || len(p.Links) != 1 {
+			t.Fatalf("payload = %+v", p)
+		}
+		// Equal freshness, so the C3 end (b) is read, turned into a's frame.
+		if l := p.Links[0]; l.ID != linkID || l.DeviceID != "b" || l.RxBps != 88 || l.TxBps != 728 {
+			t.Errorf("link = %+v", l)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no topology.traffic message after a snapshot")
+	}
+
+	// b's reads start failing: its rates stay as they were while a is read
+	// again, so the next cycle reads the link on a despite b's cadence —
+	// told by the collector's read times, not guessed from the rates.
+	t2 := t1.Add(iv)
+	read("a", "sfp1", t2, bytesFor(80)+bytesFor(160), bytesFor(720)+bytesFor(640))
+	cycle(t2)
+	select {
+	case p := <-payloads:
+		if l := p.Links[0]; l.DeviceID != "a" || l.RxBps != 160 || l.TxBps != 640 {
 			t.Errorf("link with b stale = %+v, want read on a", l)
 		}
 	case <-time.After(2 * time.Second):

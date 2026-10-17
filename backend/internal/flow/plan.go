@@ -18,7 +18,8 @@ const (
 	planFirstDelay = 60 * time.Second
 	planInterval   = 15 * time.Minute
 	// planRetry re-runs the plan soon when an answering device's uplink rows
-	// were older than uplinkFreshness. After a restart that followed a longer
+	// were stale by their device's window (UseUplinkAge). After a restart
+	// that followed a longer
 	// downtime the topology poller refreshes them within about a minute; a
 	// plan built before that classifies WAN prefixes (default-route
 	// interfaces) as internal for a whole planInterval. Bounded by
@@ -240,10 +241,11 @@ func staleUplinks(answered map[string]bool, fresh, all []queries.DeviceUplink) b
 // refreshPlan reads every online device's addresses and replaces
 // flow_prefixes, keeping the previous plan when no device answered. A device
 // whose polling is paused is not read: its previous rows are carried over,
-// so its prefixes keep their class while nobody reads it. It returns true
-// when the plan was built while an answering device's uplink rows were stale
-// (the caller retries after planRetry).
-func refreshPlan(db *sql.DB, pool *routeros.Pool, now time.Time) (retry bool) {
+// so its prefixes keep their class while nobody reads it. Uplink rows are
+// judged by age (UseUplinkAge). It returns true when the plan was built while
+// an answering device's uplink rows were stale (the caller retries after
+// planRetry).
+func refreshPlan(db *sql.DB, pool *routeros.Pool, age queries.UplinkAge, now time.Time) (retry bool) {
 	if db == nil || pool == nil {
 		return false
 	}
@@ -288,7 +290,7 @@ func refreshPlan(db *sql.DB, pool *routeros.Pool, now time.Time) (retry bool) {
 	if len(answered) == 0 {
 		return false
 	}
-	uplinks, err := queries.ListDeviceUplinks(db, uplinkFreshness)
+	uplinks, err := queries.ListFreshDeviceUplinks(db, age, now)
 	if err != nil {
 		log.Printf("flow plan: uplinks: %v", err)
 		return false

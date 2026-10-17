@@ -9,7 +9,6 @@ import (
 
 	"github.com/mikrotik-nms/backend/internal/database/queries"
 	"github.com/mikrotik-nms/backend/internal/devclass"
-	"github.com/mikrotik-nms/backend/internal/routeros"
 	"github.com/mikrotik-nms/backend/internal/topology"
 	"github.com/mikrotik-nms/backend/internal/ws"
 )
@@ -21,10 +20,6 @@ const LiveTrafficTopic = "topology.traffic"
 // rates are the port-stats collector's counter deltas, read without a device
 // call.
 const SourceSnapshot = "snapshot"
-
-// uplinkFreshness is how old a device_uplinks row may be and still count;
-// the same window the map's topology builder draws egress edges from.
-const uplinkFreshness = 10 * time.Minute
 
 // SnapshotMeta tells a live view how fresh snapshot-derived rates are, so it
 // can say "updated 12 s ago" instead of implying a live reading.
@@ -84,15 +79,16 @@ type LinkTrafficInput struct {
 	Uplinks  []queries.DeviceUplink
 	Snapshot PortSnapshot
 	// SampledAt is when each device's counters were last read
-	// (PortStatsCollector.DeviceSampleTimes, or a readTracker); a device
-	// missing from it counts as read at Snapshot.TS.
+	// (PortStatsCollector.SnapshotWithReadTimes); a device missing from it
+	// counts as read at Snapshot.TS.
 	SampledAt map[string]time.Time
 }
 
 // LoadLinkTraffic derives every measurable link's rate from snap and the
-// links, devices and uplinks tables, reading each link on its fresher end by
-// sampledAt (nil: every device at snap.TS). It never calls a device.
-func LoadLinkTraffic(db *sql.DB, snap PortSnapshot, sampledAt map[string]time.Time, now time.Time) (LinkTrafficPayload, error) {
+// links, devices and uplinks tables (egress rows current by cs, see
+// FreshUplinks), reading each link on its fresher end by sampledAt (nil:
+// every device at snap.TS). It never calls a device.
+func LoadLinkTraffic(db *sql.DB, cs CadenceSource, snap PortSnapshot, sampledAt map[string]time.Time, now time.Time) (LinkTrafficPayload, error) {
 	out := LinkTrafficPayload{SnapshotMeta: NewSnapshotMeta(snap, now), Links: []LinkTraffic{}}
 	if len(snap.Ports) == 0 {
 		return out, nil
@@ -105,7 +101,7 @@ func LoadLinkTraffic(db *sql.DB, snap PortSnapshot, sampledAt map[string]time.Ti
 	if err != nil {
 		return out, err
 	}
-	ups, err := queries.ListDeviceUplinks(db, uplinkFreshness)
+	ups, err := FreshUplinks(db, cs, now)
 	if err != nil {
 		return out, err
 	}
@@ -281,39 +277,58 @@ func BuildLinkTraffic(in LinkTrafficInput) []LinkTraffic {
 	return out
 }
 
+// linkReadings is the part of *PortStatsCollector the map-link feed reads:
+// the snapshot with each device's read time, taken together.
+type linkReadings interface {
+	SnapshotWithReadTimes() (PortSnapshot, map[string]time.Time)
+}
+
 // LiveTrafficCollector publishes per-link throughput for the network map on
-// topology.traffic. Every rate comes from the port-stats snapshot, which it
-// receives by listening to the collector's traffic.ports publication
-// in-process — so an open map costs the devices nothing. (It used to run one
-// monitor-traffic per link interface every 5 s: 100–270 commands a minute on
-// a 1-core switch.) It is subscriber-gated: the listener is attached only
-// while someone watches the map, and a topology.traffic message goes out once
-// per counter cycle.
+// topology.traffic. Every rate comes from the port-stats snapshot: the
+// collector listens in-process to the port-stats collector's traffic.ports
+// publication — the end of a counter cycle — and then reads that collector's
+// snapshot and per-device read times — so an open map costs the devices
+// nothing. (It used to run one monitor-traffic per link interface every 5 s:
+// 100–270 commands a minute on a 1-core switch.) It is subscriber-gated: the
+// listener is attached only while someone watches the map, and a
+// topology.traffic message goes out once per counter cycle.
 type LiveTrafficCollector struct {
-	db    *sql.DB
-	hub   *ws.Hub
-	now   func() time.Time
-	snaps chan PortSnapshot // newest snapshot not yet published (capacity 1)
+	db      *sql.DB
+	ports   linkReadings
+	hub     *ws.Hub
+	cadence CadenceSource // judges the egress rows (FreshUplinks)
+	now     func() time.Time
+	cycles  chan struct{} // a counter cycle ended and Run has not caught up yet (capacity 1)
 
 	// watchEvery is how often Run checks for map viewers.
 	watchEvery time.Duration
 }
 
-// NewLiveTrafficCollector wires the collector. The pool is not used — link
-// rates come from the snapshot — and the parameter only keeps the
-// constructor's signature.
-func NewLiveTrafficCollector(db *sql.DB, _ *routeros.Pool, hub *ws.Hub) *LiveTrafficCollector {
+// NewLiveTrafficCollector wires the feed to the port-stats collector whose
+// snapshot it publishes; the fleet-wide schedule judges egress rows until
+// UseCadence.
+func NewLiveTrafficCollector(db *sql.DB, ports *PortStatsCollector, hub *ws.Hub) *LiveTrafficCollector {
 	return &LiveTrafficCollector{
 		db:         db,
+		ports:      ports,
 		hub:        hub,
+		cadence:    newFleetCadence(db),
 		now:        time.Now,
-		snaps:      make(chan PortSnapshot, 1),
+		cycles:     make(chan struct{}, 1),
 		watchEvery: 2 * time.Second,
 	}
 }
 
-// Run attaches the snapshot listener while the map has viewers and publishes
-// each snapshot's link rates; it returns when ctx is done.
+// UseCadence judges the egress rows by cs (the manager's schedule). Call
+// before Run.
+func (c *LiveTrafficCollector) UseCadence(cs CadenceSource) {
+	if cs != nil {
+		c.cadence = cs
+	}
+}
+
+// Run attaches the cycle listener while the map has viewers and publishes the
+// link rates once per counter cycle; it returns when ctx is done.
 func (c *LiveTrafficCollector) Run(ctx context.Context) {
 	ticker := time.NewTicker(c.watchEvery)
 	defer ticker.Stop()
@@ -323,9 +338,6 @@ func (c *LiveTrafficCollector) Run(ctx context.Context) {
 			stop()
 		}
 	}()
-	// Read times come from the sequence of snapshots this collector sees
-	// (it is handed snapshots, not the collector that holds the times).
-	var reads *readTracker
 	for {
 		select {
 		case <-ctx.Done():
@@ -335,16 +347,21 @@ func (c *LiveTrafficCollector) Run(ctx context.Context) {
 			switch {
 			case watching && stop == nil:
 				stop = c.hub.Listen(PortRatesTopic, c.offer)
-				reads = newReadTracker()
 			case !watching && stop != nil:
 				stop()
-				stop, reads = nil, nil
+				stop = nil
 			}
-		case snap := <-c.snaps:
-			if c.hub.TopicSubscriberCount(LiveTrafficTopic) == 0 || reads == nil {
+		case <-c.cycles:
+			if stop == nil || c.hub.TopicSubscriberCount(LiveTrafficTopic) == 0 {
 				continue
 			}
-			payload, err := LoadLinkTraffic(c.db, snap, reads.observe(snap), c.now())
+			// The newest state, not the published copy: the rates and the
+			// read times the fresher-end rule needs come from one lock.
+			snap, readAt := c.ports.SnapshotWithReadTimes()
+			if !snap.Ready || snap.TS == nil {
+				continue
+			}
+			payload, err := LoadLinkTraffic(c.db, c.cadence, snap, readAt, c.now())
 			if err != nil {
 				log.Printf("poller livetraffic: %v", err)
 				continue
@@ -354,73 +371,16 @@ func (c *LiveTrafficCollector) Run(ctx context.Context) {
 	}
 }
 
-// readTracker infers when each device's counters were last read from the
-// snapshots published one after another: a successful read recomputes the
-// device's rates, a failed one leaves them exactly as they were (for up to
-// three intervals), so the snapshot time of a device's last change is its
-// last read. A device whose every port is idle looks unread even when read;
-// that only ever hands its links to the other end, which reads the same idle
-// link.
-type readTracker struct {
-	prev    map[portStatsKey]PortRate
-	changed map[string]time.Time // by device id
-}
-
-func newReadTracker() *readTracker {
-	return &readTracker{prev: map[portStatsKey]PortRate{}, changed: map[string]time.Time{}}
-}
-
-// observe takes the next snapshot (Ready, with a TS) and returns every
-// present device's inferred read time.
-func (r *readTracker) observe(snap PortSnapshot) map[string]time.Time {
-	ts := *snap.TS
-	next := make(map[portStatsKey]PortRate, len(snap.Ports))
-	present := make(map[string]bool)
-	for _, p := range snap.Ports {
-		k := portStatsKey{p.DeviceID, p.Iface}
-		next[k] = p
-		present[p.DeviceID] = true
-		if old, ok := r.prev[k]; !ok || !sameReading(old, p) {
-			r.changed[p.DeviceID] = ts
-		}
-	}
-	for dev := range r.changed {
-		if !present[dev] {
-			delete(r.changed, dev)
-		}
-	}
-	r.prev = next
-	out := make(map[string]time.Time, len(r.changed))
-	for dev, at := range r.changed {
-		out[dev] = at
-	}
-	return out
-}
-
-// sameReading reports whether two snapshots carry the same reading of a port:
-// the fields every counter read recomputes.
-func sameReading(a, b PortRate) bool {
-	return a.RxBps == b.RxBps && a.TxBps == b.TxBps && a.RxPps == b.RxPps && a.TxPps == b.TxPps &&
-		a.Running == b.Running && a.Disabled == b.Disabled
-}
-
-// offer hands a published snapshot to Run, replacing one Run has not picked
-// up yet: only the newest matters. It runs on the port-stats collector's
-// goroutine, so it never blocks and never touches the database.
+// offer tells Run a counter cycle ended (a traffic.ports publication), at
+// most once ahead: cycles Run has not caught up with collapse into one, as
+// only the newest state matters. It runs on the publisher's goroutine, so it
+// never blocks and never touches the database.
 func (c *LiveTrafficCollector) offer(v any) {
-	snap, ok := v.(PortSnapshot)
-	if !ok || !snap.Ready || snap.TS == nil {
+	if snap, ok := v.(PortSnapshot); !ok || !snap.Ready {
 		return
 	}
-	for {
-		select {
-		case c.snaps <- snap:
-			return
-		default:
-			select {
-			case <-c.snaps: // drop the stale one Run has not taken
-			default:
-			}
-		}
+	select {
+	case c.cycles <- struct{}{}:
+	default: // one is pending already
 	}
 }

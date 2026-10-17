@@ -38,6 +38,12 @@ type Server struct {
 	// wired (tests); handlers then serve DB state only.
 	flows flowSource
 
+	// cadence is the poller manager's schedule — per-device class cadences,
+	// floors and the pause — by which the API judges the staleness of what
+	// the pollers wrote (links, egress rows, FDB rows) exactly as the loops
+	// do. nil (tests) = a schedule built from the database and config.
+	cadence poller.CadenceSource
+
 	// flowCache holds aggregated flow rows of recent /flows/* queries;
 	// cleared by every flow admin write (see flowChanged).
 	flowCache flowAggCache
@@ -59,8 +65,8 @@ type flowSource interface {
 }
 
 func NewRouter(db *sql.DB, hub *ws.Hub, cfg *config.Config, pool *routeros.Pool, m mailer.Sender,
-	portStats *poller.PortStatsCollector, flows *flow.Collector) http.Handler {
-	s := &Server{db: db, hub: hub, cfg: cfg, pool: pool, mailer: m, resolver: resolver.New(db)}
+	portStats *poller.PortStatsCollector, flows *flow.Collector, cadence poller.CadenceSource) http.Handler {
+	s := &Server{db: db, hub: hub, cfg: cfg, pool: pool, mailer: m, resolver: resolver.New(db), cadence: cadence}
 	if portStats != nil {
 		s.portStats = portStats
 	}

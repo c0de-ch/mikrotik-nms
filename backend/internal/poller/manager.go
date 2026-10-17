@@ -112,6 +112,8 @@ func NewManager(db *sql.DB, pool *routeros.Pool, hub *ws.Hub, cfg *config.Config
 	// the flow ifIndex sync (here), the port monitor and the uplink pass
 	// (Start, topology) read its snapshot instead of printing again.
 	m.flows.UseIfaceSource(m.portStats)
+	// The flow plan and point facing judge egress rows as the map does.
+	m.flows.UseUplinkAge(UplinkAge(m.cadence))
 	return m
 }
 
@@ -125,6 +127,13 @@ func (m *Manager) PortStats() *PortStatsCollector {
 // when no listen address is configured) for the API's /flows endpoints.
 func (m *Manager) Flows() *flow.Collector {
 	return m.flows
+}
+
+// Cadence returns the schedule every loop shares (non-nil right after
+// NewManager), so the API judges link, egress and FDB staleness by the same
+// per-device cadences, floors and pause as the pollers that wrote the rows.
+func (m *Manager) Cadence() CadenceSource {
+	return m.cadence
 }
 
 // Start launches the background loops. Database-only jobs — retention and
@@ -152,7 +161,8 @@ func (m *Manager) Start() {
 	trafficMgr := NewTrafficManager(m.db, m.pool, m.hub)
 	go trafficMgr.Run(ctx)
 
-	liveTraffic := NewLiveTrafficCollector(m.db, m.pool, m.hub)
+	liveTraffic := NewLiveTrafficCollector(m.db, m.portStats, m.hub)
+	liveTraffic.UseCadence(m.cadence)
 	go liveTraffic.Run(ctx)
 
 	go m.portStats.Run(ctx)
@@ -543,7 +553,7 @@ func (m *Manager) pollTopology(ctx context.Context) {
 	// Gateway MACs (from the uplink rows) to look up in the devices' bridge
 	// FDBs — locates the switch+port a gateway is physically attached to
 	// instead of guessing.
-	m.resolveGatewayHosts(m.gatewayObservations(devices, m.gatewayMACs(devices), now))
+	m.resolveGatewayHosts(m.gatewayObservations(devices, m.gatewayMACs(devices, now), now))
 
 	// Auto-follow IP changes: opt-in reconcile of devices that moved to a new IP,
 	// using the neighbors upserted by the reads. Runs before the rebuild so a
@@ -551,9 +561,8 @@ func (m *Manager) pollTopology(ctx context.Context) {
 	m.reconcileAddresses(ctx)
 
 	// Rebuild topology from neighbors, each judged by its reporting device's
-	// own neighbor cadence.
-	builder := topology.NewBuilder(m.db).UseNeighborAge(NeighborAge(m.cadence))
-	graph, err := builder.Build()
+	// own neighbor cadence (egress rows by its route cadence).
+	graph, err := NewTopologyBuilder(m.db, m.cadence).Build()
 	if err != nil {
 		log.Printf("poller topology: build graph: %v", err)
 		return
@@ -610,15 +619,51 @@ func NeighborAge(cs CadenceSource) topology.NeighborAge {
 	}
 }
 
+// uplinkWindowReads is how many of a device's own route reads its egress
+// rows (device_uplinks) stay current for.
+const uplinkWindowReads = 3
+
+// UplinkAge is the device_uplinks staleness rule on cs: a device's egress
+// rows stay current for three of its route reads (Tier 3e, floored by
+// MIKROTIK_NMS_TOPOLOGY_INTERVAL), at least queries.DefaultUplinkWindow —
+// the fixed window every reader used before, under which a weak device read
+// every 5 min lost its egress after two reads, one failed read and a little
+// jitter — and do not age while the device is paused.
+func UplinkAge(cs CadenceSource) queries.UplinkAge {
+	return func(dev queries.Device, now time.Time) (time.Duration, bool) {
+		window := uplinkWindowReads * cs.Interval(dev, devclass.TierRoutes, now)
+		return max(window, queries.DefaultUplinkWindow), cs.Paused(dev, now)
+	}
+}
+
+// FreshUplinks returns the device_uplinks rows current at now by
+// UplinkAge(cs). cs nil = the fleet-wide schedule.
+func FreshUplinks(db *sql.DB, cs CadenceSource, now time.Time) ([]queries.DeviceUplink, error) {
+	if cs == nil {
+		cs = newFleetCadence(db)
+	}
+	return queries.ListFreshDeviceUplinks(db, UplinkAge(cs), now)
+}
+
+// NewTopologyBuilder is the link-graph builder on cs's staleness rules —
+// neighbor rows by NeighborAge, egress rows by UplinkAge — which the
+// topology loop and GET /topology share, so both draw the same graph.
+func NewTopologyBuilder(db *sql.DB, cs CadenceSource) *topology.Builder {
+	if cs == nil {
+		cs = newFleetCadence(db)
+	}
+	return topology.NewBuilder(db).UseNeighborAge(NeighborAge(cs)).UseUplinkAge(UplinkAge(cs))
+}
+
 // gatewayMACs returns MAC→IP for the unmanaged private gateways currently in
 // device_uplinks (previous cycle) whose MAC the client cache knows. These are
 // the addresses whose physical attachment the FDB pass locates.
-func (m *Manager) gatewayMACs(devices []queries.Device) map[string]string {
+func (m *Manager) gatewayMACs(devices []queries.Device, now time.Time) map[string]string {
 	managed := make(map[string]bool, len(devices))
 	for _, d := range devices {
 		managed[d.Address] = true
 	}
-	ups, err := queries.ListDeviceUplinks(m.db, 10*time.Minute)
+	ups, err := FreshUplinks(m.db, m.cadence, now)
 	if err != nil {
 		return nil
 	}

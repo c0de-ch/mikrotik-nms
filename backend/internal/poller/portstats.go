@@ -904,8 +904,22 @@ func (c *PortStatsCollector) publish() {
 // Snapshot returns a deep copy of the latest rates, safe for concurrent use.
 // A nil collector yields an empty snapshot.
 func (c *PortStatsCollector) Snapshot() PortSnapshot {
+	snap, _ := c.SnapshotWithReadTimes()
+	return snap
+}
+
+// SnapshotWithReadTimes is Snapshot together with when each device in it was
+// last read (its Tier 0 read, DeviceIfaces.At), both taken under one lock.
+// The snapshot carries one cycle time while devices are read on their own
+// cadences, and a device whose reads fail keeps its last rates for up to
+// three intervals: the read times tell such stale rates from fresh ones — the
+// map links' fresher-end rule and the port grid's age — and, taken together,
+// a reply that lands in between can never make a device's time look fresher
+// than the rates served. A nil collector yields the empty snapshot and no
+// times.
+func (c *PortStatsCollector) SnapshotWithReadTimes() (PortSnapshot, map[string]time.Time) {
 	if c == nil {
-		return PortSnapshot{IntervalSeconds: int(defaultPortStatsInterval / time.Second), Ports: []PortRate{}}
+		return PortSnapshot{IntervalSeconds: int(defaultPortStatsInterval / time.Second), Ports: []PortRate{}}, nil
 	}
 	c.mu.Lock()
 	snap := PortSnapshot{
@@ -920,6 +934,14 @@ func (c *PortStatsCollector) Snapshot() PortSnapshot {
 	for _, s := range c.samples {
 		snap.Ports = append(snap.Ports, s.rate)
 	}
+	times := make(map[string]time.Time, len(c.devs))
+	for id, st := range c.devs {
+		// Not st.fresh: a device's rates outlive its snapshot until the
+		// cycle that prunes both, and must keep their true age meanwhile.
+		if !st.at.IsZero() {
+			times[id] = st.at
+		}
+	}
 	c.mu.Unlock()
 
 	sort.Slice(snap.Ports, func(i, j int) bool {
@@ -929,7 +951,7 @@ func (c *PortStatsCollector) Snapshot() PortSnapshot {
 		}
 		return a.Iface < b.Iface
 	})
-	return snap
+	return snap, times
 }
 
 // FlushedThrough is the exclusive end of the newest processed 1m bucket

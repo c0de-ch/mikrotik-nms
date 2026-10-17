@@ -7,23 +7,24 @@ import (
 	"github.com/mikrotik-nms/backend/internal/poller"
 )
 
-// deviceReadTimes is implemented by the port-stats collector: when each
-// device's counters were last read (the snapshot itself carries one fleet
-// cycle time). Test fakes may leave it out.
-type deviceReadTimes interface {
-	DeviceSampleTimes() map[string]time.Time
+// liveReadings is implemented by the port-stats collector: the snapshot with
+// when each device's counters were last read (the snapshot itself carries
+// one fleet cycle time), both taken under one lock. Test fakes may leave it
+// out.
+type liveReadings interface {
+	SnapshotWithReadTimes() (poller.PortSnapshot, map[string]time.Time)
 }
 
-// liveSnapshot returns the per-device read times and then the snapshot — in
-// that order, so a cycle finishing in between can only make a time look
-// older than its rates, never fresher. Times are nil when the source does
-// not provide them.
+// liveSnapshot returns the per-device read times and the snapshot, taken
+// together, so no read landing in between can make a time look fresher
+// than the rates served. Times are nil when the source does not provide
+// them.
 func (s *Server) liveSnapshot() (map[string]time.Time, poller.PortSnapshot) {
-	var times map[string]time.Time
-	if src, ok := s.portStats.(deviceReadTimes); ok {
-		times = src.DeviceSampleTimes()
+	if src, ok := s.portStats.(liveReadings); ok {
+		snap, times := src.SnapshotWithReadTimes()
+		return times, snap
 	}
-	return times, s.portSnapshot()
+	return nil, s.portSnapshot()
 }
 
 // handleGetTrafficLinks returns per-link throughput for the network map's
@@ -32,7 +33,7 @@ func (s *Server) liveSnapshot() (map[string]time.Time, poller.PortSnapshot) {
 // "topology.traffic" WS topic, built the same way once per counter cycle.
 func (s *Server) handleGetTrafficLinks(w http.ResponseWriter, r *http.Request) {
 	times, snap := s.liveSnapshot()
-	payload, err := poller.LoadLinkTraffic(s.db, snap, times, time.Now())
+	payload, err := poller.LoadLinkTraffic(s.db, s.cadenceSource(), snap, times, time.Now())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to load links")
 		return

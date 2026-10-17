@@ -165,7 +165,7 @@ func TestCollectorRouterOSNATAndSelfExport(t *testing.T) {
 		{DeviceID: "rb", Kind: "default-route", Interface: "eth1-wan", IfaceType: "ether", GatewayIP: "100.64.0.1"}}); err != nil {
 		t.Fatal(err)
 	}
-	reconcileNativePoints(db)
+	reconcileNativePoints(db, nil, time.Now())
 	points, _ = queries.ListFlowPoints(db)
 	facing := map[string]string{}
 	for _, p := range points {
@@ -193,14 +193,14 @@ func TestCollectorRouterOSNATAndSelfExport(t *testing.T) {
 	if _, err := db.Exec(`UPDATE device_uplinks SET last_seen = '2000-01-01 00:00:00'`); err != nil {
 		t.Fatal(err)
 	}
-	reconcileNativePoints(db)
+	reconcileNativePoints(db, nil, time.Now())
 	if f := wanFacing(); f != "up" {
 		t.Fatalf("stale uplinks flipped eth1-wan to %s", f)
 	}
 	if err := queries.ReplaceDeviceUplinks(db, "rb", nil); err != nil {
 		t.Fatal(err)
 	}
-	reconcileNativePoints(db)
+	reconcileNativePoints(db, nil, time.Now())
 	if f := wanFacing(); f != "up" {
 		t.Fatalf("a vanished default route flipped eth1-wan to %s", f)
 	}
@@ -270,7 +270,7 @@ func TestCollectorOPNsenseReplayDupAndHints(t *testing.T) {
 	// An admin names and roles the LAN: the auto point follows.
 	_ = queries.SetFlowIfaceManual(db, id, 1, "LAN", "lan")
 	_ = queries.SetFlowIfaceManual(db, id, 7, "", "lan")
-	reconcileNativePoints(db)
+	reconcileNativePoints(db, nil, time.Now())
 	points, _ = queries.ListFlowPoints(db)
 	names := map[string]string{}
 	for _, p := range points {

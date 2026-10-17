@@ -44,11 +44,86 @@ func ReplaceDeviceUplinks(db *sql.DB, deviceID string, ups []DeviceUplink) error
 	return tx.Commit()
 }
 
-// ListDeviceUplinks returns uplinks seen within the freshness window, and
-// every row of a device whose polling is paused: its routes are not read
-// while the pause lasts, and its last known egress must not age off the map
-// and out of the flow classification meanwhile (each read replaces the
-// device's rows, so these are exactly its last read).
+// DefaultUplinkWindow is how long an uplink row stays current when no
+// per-device rule is given (ListFreshDeviceUplinks with a nil UplinkAge):
+// the fixed window every reader applied before the per-device cadences.
+const DefaultUplinkWindow = 10 * time.Minute
+
+// UplinkAge tells how long dev's device_uplinks rows stay current at now —
+// window — and whether its polling is paused, when they do not age at all:
+// its routes are not read while the pause lasts, and its last known egress
+// must not age off the map and out of the flow classification meanwhile.
+// poller.UplinkAge builds it from the device's route-read cadence.
+type UplinkAge func(dev Device, now time.Time) (window time.Duration, paused bool)
+
+// ListFreshDeviceUplinks returns the uplink rows current at now, judged per
+// device by age: last seen within the device's window, or of any age while
+// the device is paused (each route read replaces the device's rows, so those
+// are exactly its last read). A nil age applies DefaultUplinkWindow to every
+// device, the pause still honoured. Rows of devices that no longer exist are
+// dropped. Every reader of the egress facts — the map, the traffic role
+// graph, the gateway attachment, the flow plan and points — goes through
+// here, so they all agree on which egress is current.
+func ListFreshDeviceUplinks(db *sql.DB, age UplinkAge, now time.Time) ([]DeviceUplink, error) {
+	devices, err := ListDevices(db)
+	if err != nil {
+		return nil, err
+	}
+	type rule struct {
+		cutoff time.Time
+		paused bool
+	}
+	rules := make(map[string]rule, len(devices))
+	for i := range devices {
+		d := &devices[i]
+		window, paused := DefaultUplinkWindow, d.PollingPaused(now)
+		if age != nil {
+			window, paused = age(*d, now)
+		}
+		rules[d.ID] = rule{cutoff: now.Add(-window), paused: paused}
+	}
+	all, err := listUplinksSince(db, time.Time{})
+	if err != nil {
+		return nil, err
+	}
+	out := all[:0]
+	for _, u := range all {
+		r, ok := rules[u.DeviceID]
+		if ok && (r.paused || !u.LastSeen.Before(r.cutoff)) {
+			out = append(out, u)
+		}
+	}
+	return out, nil
+}
+
+// listUplinksSince returns every row last seen at or after since (the zero
+// time: all of them).
+func listUplinksSince(db *sql.DB, since time.Time) ([]DeviceUplink, error) {
+	rows, err := db.Query(
+		`SELECT id, device_id, kind, interface, iface_type, gateway_ip, last_seen
+		 FROM device_uplinks WHERE last_seen >= ?
+		 ORDER BY device_id, kind, interface`, sqlTime(since))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []DeviceUplink
+	for rows.Next() {
+		var u DeviceUplink
+		if err := rows.Scan(&u.ID, &u.DeviceID, &u.Kind, &u.Interface, &u.IfaceType, &u.GatewayIP, &u.LastSeen); err != nil {
+			return nil, err
+		}
+		out = append(out, u)
+	}
+	return out, rows.Err()
+}
+
+// ListDeviceUplinks returns uplinks seen within notOlderThan, and every row of
+// a device whose polling is paused. Freshness readers use
+// ListFreshDeviceUplinks (the per-device window); this stays for the "every
+// row ever seen" queries (a year-long window) that tell a device with stale
+// uplink rows from one without any.
 func ListDeviceUplinks(db *sql.DB, notOlderThan time.Duration) ([]DeviceUplink, error) {
 	now := time.Now()
 	rows, err := db.Query(

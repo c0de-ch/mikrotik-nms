@@ -48,3 +48,53 @@ func TestListDeviceUplinksKeepsPausedDevices(t *testing.T) {
 		t.Fatalf("after the pause ended = %v, want none", got)
 	}
 }
+
+// Fresh uplinks are judged per device: each device's rows against its own
+// window, a paused device's rows at any age; a nil rule is the fixed default
+// window with the pause still honoured.
+func TestListFreshDeviceUplinksPerDevice(t *testing.T) {
+	db := testDB(t)
+	for _, id := range []string{"1", "2", "3"} {
+		seedPortStatsDevice(t, db, id)
+		if err := ReplaceDeviceUplinks(db, id, []DeviceUplink{{DeviceID: id, Kind: "default-route", Interface: "ether1", GatewayIP: "198.51.100.1"}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	now := time.Now()
+	age := func(id string, d time.Duration) {
+		t.Helper()
+		if _, err := db.Exec(`UPDATE device_uplinks SET last_seen = ? WHERE device_id = ?`, sqlTime(now.Add(-d)), id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	age("1", 12*time.Minute) // a weak device, read every 5 min: within its 15 min
+	age("2", 12*time.Minute) // a device on the default window: stale
+	age("3", 3*time.Hour)    // paused
+	if err := PauseDevicePolling(db, "3", now.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	devices := func(rule UplinkAge) map[string]bool {
+		t.Helper()
+		ups, err := ListFreshDeviceUplinks(db, rule, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := map[string]bool{}
+		for _, u := range ups {
+			out[u.DeviceID] = true
+		}
+		return out
+	}
+	rule := func(dev Device, at time.Time) (time.Duration, bool) {
+		if dev.ID == "1" {
+			return 15 * time.Minute, dev.PollingPaused(at)
+		}
+		return DefaultUplinkWindow, dev.PollingPaused(at)
+	}
+	if got := devices(rule); len(got) != 2 || !got["1"] || !got["3"] {
+		t.Errorf("per-device rule = %v, want 1 (its own window) and 3 (paused)", got)
+	}
+	if got := devices(nil); len(got) != 1 || !got["3"] {
+		t.Errorf("default rule = %v, want only the paused 3", got)
+	}
+}

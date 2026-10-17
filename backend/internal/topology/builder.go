@@ -14,9 +14,10 @@ import (
 
 // Builder constructs a deduplicated link topology from raw neighbor data.
 type Builder struct {
-	db  *sql.DB
-	age NeighborAge
-	now func() time.Time
+	db        *sql.DB
+	age       NeighborAge
+	uplinkAge queries.UplinkAge
+	now       func() time.Time
 }
 
 // NeighborAge tells the builder how long a reporting device's neighbor rows
@@ -34,6 +35,14 @@ func NewBuilder(db *sql.DB) *Builder {
 // retention sweep ever takes a link down.
 func (b *Builder) UseNeighborAge(age NeighborAge) *Builder {
 	b.age = age
+	return b
+}
+
+// UseUplinkAge judges the egress rows the graph's Internet / gateway / VPN
+// elements come from by age (per device; see queries.ListFreshDeviceUplinks).
+// Without one every device gets queries.DefaultUplinkWindow.
+func (b *Builder) UseUplinkAge(age queries.UplinkAge) *Builder {
+	b.uplinkAge = age
 	return b
 }
 
@@ -407,7 +416,7 @@ func IsPrivateIP(s string) bool {
 //     traffic flows gateway-to-gateway (the tunnel itself is on the gateways,
 //     which the NMS does not manage).
 func (b *Builder) appendUplinks(graph *Graph, devices []queries.Device) {
-	ups, err := queries.ListDeviceUplinks(b.db, 10*time.Minute)
+	ups, err := queries.ListFreshDeviceUplinks(b.db, b.uplinkAge, b.now())
 	if err != nil || len(ups) == 0 {
 		return
 	}
