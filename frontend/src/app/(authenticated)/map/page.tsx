@@ -11,7 +11,7 @@ import {
 import { useAuth } from "@/context/auth";
 import {
   api, type TopologyData, type TopologyNode, type Device, type LinkTraffic,
-  type BridgeVLAN, type NetworkClient, type DevicePortsResponse, type LinkTrafficResponse,
+  type BridgeVLAN, type NetworkClient, type LinkTrafficResponse,
 } from "@/lib/api";
 import { useWebSocket } from "@/hooks/use-websocket";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
@@ -22,7 +22,10 @@ import { deviceStatusColor } from "@/lib/status";
 import { fmtBps, BRAND, SYNTH, SYNTH_TYPES } from "@/components/graph/graph-style";
 import { PortHeatmap } from "@/components/traffic/port-heatmap";
 import { SnapshotAge } from "@/components/traffic/snapshot-age";
-import { useDarkFlag } from "@/components/traffic/hooks";
+import { useDarkFlag, useDevicePorts } from "@/components/traffic/hooks";
+import { DeviceClassBadge, PausedBadge } from "@/components/devices/device-load";
+import { useNow } from "@/hooks/use-now";
+import { budgetClass, counterIntervalSeconds, isPollingPaused } from "@/lib/device-load";
 import type { EdgeTraffic, CanvasApi, CanvasEdge } from "@/components/graph/topology-canvas";
 
 const TopologyCanvas = dynamic(() => import("@/components/graph/topology-canvas"), {
@@ -59,43 +62,24 @@ const isSynthEdge = (t: string) => t === "gateway" || t === "internet" || t === 
 // ---- switch port grid (per-port traffic, coloured by load) ------------------
 // GET /devices/{id}/ports is served from the port-counter snapshot, so the
 // grid sends the switch no commands however many tabs show it. It refetches
-// once per counter cycle — the rates change no faster — and says how old they
-// are. A cell deep-links to the port's detail on /traffic.
-function PortGrid({ deviceId, dark }: { deviceId: string; dark: boolean }) {
-  const { token } = useAuth();
+// once per fleet counter cycle and says how old the rates are, against the
+// device's own counter cadence (a weak switch is read every 60 s, so 45 s is
+// not stale there) and its pause. A cell deep-links to the port's detail on
+// /traffic.
+function PortGrid({ deviceId, device, dark }: { deviceId: string; device: Device | undefined; dark: boolean }) {
   const router = useRouter();
-  const [state, setState] = useState<{ data: DevicePortsResponse; receivedAt: number } | null>(null);
-  useEffect(() => {
-    if (!token) return;
-    let alive = true;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const load = () => {
-      api.devices
-        .ports(token, deviceId)
-        .then((data) => {
-          if (!alive) return;
-          setState({ data, receivedAt: Date.now() });
-          timer = setTimeout(load, Math.max(5, data.interval_seconds || 15) * 1000);
-        })
-        .catch(() => {
-          if (alive) timer = setTimeout(load, 15_000);
-        });
-    };
-    load();
-    return () => {
-      alive = false;
-      clearTimeout(timer);
-    };
-  }, [token, deviceId]);
-  // Until the new device's answer arrives, show nothing rather than the
-  // previous device's ports.
-  const current = state?.data.device_id === deviceId ? state : null;
+  const now = useNow(60_000);
+  const paused = device ? isPollingPaused(device, now) : false;
+  const current = useDevicePorts(deviceId, paused);
+  const interval = device ? counterIntervalSeconds(budgetClass(device), current?.data.interval_seconds) : undefined;
 
   return (
     <>
       <div className="mb-2 flex items-center justify-between gap-2">
         <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Ports</h3>
-        {current && <SnapshotAge meta={current.data} receivedAt={current.receivedAt} />}
+        {current && (
+          <SnapshotAge meta={current.data} receivedAt={current.receivedAt} intervalSeconds={interval} paused={paused} />
+        )}
       </div>
       {current ? (
         <PortHeatmap
@@ -486,6 +470,8 @@ export default function MapPage() {
                 {!SYNTH_TYPES.has(detail.node.type) && (
                   <div className="flex items-center gap-3 text-[11px] text-muted-foreground mt-1 flex-wrap">
                     <span className="inline-flex items-center gap-1"><span className={`h-2 w-2 rounded-full ${deviceStatusColor(detail.node.status)}`} />{detail.node.status}</span>
+                    {detail.dev && <DeviceClassBadge device={detail.dev} className="text-[11px]" />}
+                    {detail.dev && <PausedBadge device={detail.dev} />}
                     {detail.node.cpu_load != null && <span className="inline-flex items-center gap-1"><Cpu className="h-3 w-3" />{detail.node.cpu_load}%</span>}
                     {memPct != null && <span className="inline-flex items-center gap-1"><MemoryStick className="h-3 w-3" />{memPct}%</span>}
                     {detail.dev?.uptime && <span className="inline-flex items-center gap-1"><Activity className="h-3 w-3" />{detail.dev.uptime}</span>}
@@ -497,7 +483,7 @@ export default function MapPage() {
               <div className="px-4 pb-6 space-y-4">
                 {(detail.node.type === "switch" || detail.node.type === "router") && (
                   <section>
-                    <PortGrid deviceId={detail.node.id} dark={dark} />
+                    <PortGrid deviceId={detail.node.id} device={detail.dev} dark={dark} />
                   </section>
                 )}
 

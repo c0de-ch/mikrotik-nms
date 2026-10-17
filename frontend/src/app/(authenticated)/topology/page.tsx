@@ -24,6 +24,7 @@ import { toast } from "sonner";
 import { useAuth } from "@/context/auth";
 import { api, type TopologyData, type TopologyNode, type Device } from "@/lib/api";
 import { deviceStatusColor } from "@/lib/status";
+import { DeviceClassBadge, PausedBadge } from "@/components/devices/device-load";
 import { SYNTH_TYPES } from "@/components/graph/graph-style";
 import { useWebSocket } from "@/hooks/use-websocket";
 
@@ -327,7 +328,10 @@ export default function TopologyPage() {
 
           return (
             <Card key={node.id} className="overflow-hidden">
-              <CardHeader className="pb-2">
+              {/* minmax(0,1fr): the header grid's one column must not grow to
+                  its rows' min-content (a long model name, a long health
+                  line) — that pushed the status dot past the card edge. */}
+              <CardHeader className="grid-cols-[minmax(0,1fr)] pb-2">
                 <div className="flex items-center gap-3">
                   <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-white ${node.status === "online" ? "bg-primary" : "bg-muted-foreground/50"}`}>
                     <DeviceIcon type={node.type} />
@@ -345,8 +349,10 @@ export default function TopologyPage() {
                     </Button>
                   </div>
                 </div>
-                {/* Health line */}
+                {/* Health line: what the NMS may ask of the device, then its own load. */}
                 <div className="flex items-center gap-3 text-[11px] text-muted-foreground mt-1 pl-12 flex-wrap">
+                  {dev && <DeviceClassBadge device={dev} className="text-[11px]" />}
+                  {dev && <PausedBadge device={dev} />}
                   {node.cpu_load != null && (
                     <span className={`inline-flex items-center gap-1 ${loadColor(node.cpu_load)}`} title="CPU load">
                       <Cpu className="h-3 w-3" />{node.cpu_load}%

@@ -1,6 +1,7 @@
 "use client";
 
-import { Suspense, useEffect, useState, useMemo } from "react";
+import { Suspense, useCallback, useEffect, useState, useMemo } from "react";
+import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Plus, ExternalLink, Trash2, Radar, Loader2, Check, ArrowUpDown, AlertTriangle, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -26,6 +27,9 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { useAuth } from "@/context/auth";
 import { api, type Device, type DiscoveredDevice, type DeepDiscoveredDevice } from "@/lib/api";
 import { deviceStatusBadgeClass, deviceStatusLabel } from "@/lib/status";
+import { DeviceClassBadge, PauseGlyph, PausedBadge } from "@/components/devices/device-load";
+import { useNow } from "@/hooks/use-now";
+import { CLASSES, budgetClass, budgetReason, isPollingPaused, type BudgetClass } from "@/lib/device-load";
 import { toast } from "sonner";
 
 // timeAgo formats an absolute timestamp as "5m ago" / "2h 14m ago" / "3d ago".
@@ -42,6 +46,10 @@ function timeAgo(dateStr: string): string {
 type StatusFilter = "online" | "offline" | "unknown";
 function isStatusFilter(v: string | null): v is StatusFilter {
   return v === "online" || v === "offline" || v === "unknown";
+}
+
+function isClassFilter(v: string | null): v is BudgetClass {
+  return v === "C1" || v === "C2" || v === "C3";
 }
 
 // uptimeSeconds parses a RouterOS duration ("2w3d7h12m5s") into seconds so
@@ -65,6 +73,7 @@ type DeviceSortKey =
   | "board"
   | "ros_version"
   | "cpu_load"
+  | "polling"
   | "uptime"
   | "last_seen";
 
@@ -84,6 +93,10 @@ function deviceSortValue(d: Device, key: DeviceSortKey): string | number | null 
       return d.ros_version || null;
     case "cpu_load":
       return d.cpu_load;
+    case "polling":
+      // The budget the NMS polls the device as; an unprobed device (assumed
+      // C1) sorts just below the probed C1s.
+      return CLASSES[budgetClass(d)].rank - (budgetReason(d) === "unprobed" ? 0.5 : 0);
     case "uptime":
       return uptimeSeconds(d.uptime);
     case "last_seen":
@@ -104,6 +117,12 @@ function DevicesPageInner() {
   const searchParams = useSearchParams();
   const statusParam = searchParams.get("status");
   const statusFilter: StatusFilter | null = isStatusFilter(statusParam) ? statusParam : null;
+  // Device-load filters: ?class=C1|C2|C3 (the class the device is polled
+  // as) and ?polling=paused — set from the badges in the Polling column.
+  const classParam = searchParams.get("class");
+  const classFilter: BudgetClass | null = isClassFilter(classParam) ? classParam : null;
+  const pausedFilter = searchParams.get("polling") === "paused";
+  const now = useNow(60_000);
   const [devices, setDevices] = useState<Device[]>([]);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [discoveryOpen, setDiscoveryOpen] = useState(false);
@@ -121,12 +140,23 @@ function DevicesPageInner() {
   const [form, setForm] = useState({ address: "", identity: "", username: "admin", password: "", api_port: "8728" });
   const router = useRouter();
 
-  const loadDevices = () => {
+  const loadDevices = useCallback(() => {
     if (!token) return;
     api.devices.list(token).then(setDevices).catch(console.error);
-  };
+  }, [token]);
 
-  useEffect(() => { loadDevices(); }, [token]);
+  useEffect(() => {
+    loadDevices();
+  }, [loadDevices]);
+
+  // Adds, changes or clears one filter param, keeping the others.
+  const setFilterParam = (key: "status" | "class" | "polling", value: string | null) => {
+    const q = new URLSearchParams(searchParams.toString());
+    if (value) q.set(key, value);
+    else q.delete(key);
+    const qs = q.toString();
+    router.push(qs ? `/devices?${qs}` : "/devices");
+  };
 
   const existingAddresses = new Set(devices.map((d) => d.address));
 
@@ -330,9 +360,21 @@ function DevicesPageInner() {
   const isAdmin = user?.role === "admin";
 
   const visibleDevices = useMemo(
-    () => (statusFilter ? devices.filter((d) => d.status === statusFilter) : devices),
-    [devices, statusFilter],
+    () =>
+      devices.filter(
+        (d) =>
+          (!statusFilter || d.status === statusFilter) &&
+          (!classFilter || budgetClass(d) === classFilter) &&
+          (!pausedFilter || isPollingPaused(d, now)),
+      ),
+    [devices, statusFilter, classFilter, pausedFilter, now],
   );
+  const pausedCount = useMemo(() => devices.filter((d) => isPollingPaused(d, now)).length, [devices, now]);
+  const activeFilters: { key: "status" | "class" | "polling"; label: string }[] = [
+    ...(statusFilter ? [{ key: "status" as const, label: `status: ${deviceStatusLabel(statusFilter)}` }] : []),
+    ...(classFilter ? [{ key: "class" as const, label: `class: ${classFilter} ${CLASSES[classFilter].word}` }] : []),
+    ...(pausedFilter ? [{ key: "polling" as const, label: "polling paused" }] : []),
+  ];
 
   const [devSortKey, setDevSortKey] = useState<DeviceSortKey | null>(null);
   const [devSortAsc, setDevSortAsc] = useState(true);
@@ -360,9 +402,23 @@ function DevicesPageInner() {
   }, [visibleDevices, devSortKey, devSortAsc]);
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">Devices</h1>
+    <div className="min-w-0 space-y-4 [contain:inline-size]">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-3">
+          <h1 className="text-2xl font-bold">Devices</h1>
+          {pausedCount > 0 && !pausedFilter && (
+            <button
+              type="button"
+              onClick={() => setFilterParam("polling", "paused")}
+              className="inline-flex h-6 items-center gap-1 rounded-full bg-load-hold/10 px-2 text-xs font-medium text-load-hold hover:bg-load-hold/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              title="Devices whose NMS polling an admin paused: only the liveness check runs for them"
+              aria-label={`Show only the ${pausedCount} paused device${pausedCount === 1 ? "" : "s"}`}
+            >
+              <PauseGlyph />
+              {pausedCount} paused
+            </button>
+          )}
+        </div>
         {isAdmin && (
           <div className="flex gap-2">
             <Dialog open={discoveryOpen} onOpenChange={setDiscoveryOpen}>
@@ -630,19 +686,23 @@ function DevicesPageInner() {
         )}
       </div>
 
-      {statusFilter && (
-        <div className="flex items-center gap-2">
+      {activeFilters.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2">
           <span className="text-sm text-muted-foreground">Filter:</span>
-          <Badge variant="secondary" className="gap-1.5">
-            status: {deviceStatusLabel(statusFilter)}
-            <button
-              onClick={() => router.push("/devices")}
-              className="ml-1 rounded-sm hover:bg-foreground/10"
-              title="Clear filter"
-            >
-              <X className="h-3 w-3" />
-            </button>
-          </Badge>
+          {activeFilters.map((f) => (
+            <Badge key={f.key} variant="secondary" className="gap-1.5">
+              {f.label}
+              <button
+                type="button"
+                onClick={() => setFilterParam(f.key, null)}
+                className="ml-1 rounded-sm hover:bg-foreground/10"
+                title="Clear filter"
+                aria-label={`Clear filter ${f.label}`}
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </Badge>
+          ))}
           <span className="text-sm text-muted-foreground">
             {visibleDevices.length} of {devices.length}
           </span>
@@ -659,10 +719,17 @@ function DevicesPageInner() {
               ["board", "Model"],
               ["ros_version", "Version"],
               ["cpu_load", "CPU"],
+              ["polling", "Polling"],
               ["uptime", "Uptime"],
               ["last_seen", "Last seen"],
             ] as [DeviceSortKey, string][]).map(([key, label]) => (
-              <TableHead key={key} className="cursor-pointer select-none" onClick={() => toggleDevSort(key)}>
+              <TableHead
+                key={key}
+                className="cursor-pointer select-none"
+                onClick={() => toggleDevSort(key)}
+                aria-sort={devSortKey === key ? (devSortAsc ? "ascending" : "descending") : undefined}
+                title={key === "polling" ? "The class the NMS polls the device as (C1 weak … C3 capable), and an admin pause" : undefined}
+              >
                 <span className="inline-flex items-center gap-1">
                   {label}
                   <ArrowUpDown className={`h-3 w-3 shrink-0 ${devSortKey === key ? "text-foreground" : "text-muted-foreground/40"}`} />
@@ -680,11 +747,27 @@ function DevicesPageInner() {
                   {deviceStatusLabel(device.status)}
                 </Badge>
               </TableCell>
-              <TableCell className="font-medium">{device.identity || "—"}</TableCell>
+              <TableCell className="font-medium">
+                {/* The row opens the device too; the link makes it reachable by keyboard. */}
+                <Link
+                  href={`/devices/${device.id}`}
+                  aria-label={device.identity ? undefined : `Open ${device.address}`}
+                  onClick={(e) => e.stopPropagation()}
+                  className="rounded-sm hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  {device.identity || "—"}
+                </Link>
+              </TableCell>
               <TableCell>{device.address}</TableCell>
               <TableCell className="text-sm">{device.board || "—"}</TableCell>
               <TableCell className="text-sm">{device.ros_version || "—"}</TableCell>
               <TableCell className="text-sm">{device.cpu_load != null ? `${device.cpu_load}%` : "—"}</TableCell>
+              <TableCell>
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                  <DeviceClassBadge device={device} onClick={() => setFilterParam("class", budgetClass(device))} />
+                  <PausedBadge device={device} onClick={() => setFilterParam("polling", "paused")} />
+                </div>
+              </TableCell>
               <TableCell className="text-sm">{device.uptime || "—"}</TableCell>
               <TableCell
                 className="text-sm text-muted-foreground"
@@ -708,10 +791,10 @@ function DevicesPageInner() {
           ))}
           {visibleDevices.length === 0 && (
             <TableRow>
-              <TableCell colSpan={9} className="text-center py-8 text-muted-foreground">
+              <TableCell colSpan={10} className="text-center py-8 text-muted-foreground">
                 {devices.length === 0
                   ? "No devices configured — use Discover to scan the network"
-                  : `No devices with status "${statusFilter ? deviceStatusLabel(statusFilter) : ""}"`}
+                  : "No devices match the filter"}
               </TableCell>
             </TableRow>
           )}
