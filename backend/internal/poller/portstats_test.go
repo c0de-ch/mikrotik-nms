@@ -4,12 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/mikrotik-nms/backend/internal/database/queries"
+	"github.com/mikrotik-nms/backend/internal/devclass"
 	"github.com/mikrotik-nms/backend/internal/routeros"
 	"github.com/mikrotik-nms/backend/internal/ws"
 )
@@ -252,7 +255,9 @@ func TestPortStatsConstantRateChartsFlat(t *testing.T) {
 				} else {
 					ts = ts.Add(-tc.jitter)
 				}
-				if ts.After(end.Add(tc.iv)) {
+				// Run two intervals past the end: a sample just before a
+				// minute boundary holds that minute open for the next one.
+				if ts.After(end.Add(2 * tc.iv)) {
 					break
 				}
 				bytes := int64(ts.Sub(at(9, 0, 0)).Seconds() * rateBps / 8)
@@ -355,20 +360,191 @@ func TestPortStatsRuntimeRollupAfterStall(t *testing.T) {
 	}
 }
 
-func TestPortStatsLateSampleCarriedIntoOpenMinute(t *testing.T) {
+// A flush keeps the minute a device's open interval starts in: a reply taken
+// at 12:00:59 but ingested after the 12:01:00 flush still lands in 12:00.
+func TestPortStatsFlushHoldsMinuteOfOpenInterval(t *testing.T) {
 	c := NewPortStatsCollector(pollerTestDB(t), nil, nil)
 	const iv = 15 * time.Second
 	c.ingest("d1", []routeros.InterfaceStats{ifStats("ether1", 0, 0, 0, 0)}, at(12, 0, 40), iv)
-	c.finishCycle(at(12, 1, 0), iv) // FlushedThrough = 12:01 (nothing accumulated yet)
+	c.finishCycle(at(12, 1, 0), iv)
+	if got := c.FlushedThrough(); !got.Equal(at(12, 0, 0)) {
+		t.Fatalf("FlushedThrough = %v, want 12:00 held for d1's open interval", got)
+	}
 
-	// Reply taken at 12:00:59 but ingested after the flush.
 	c.ingest("d1", []routeros.InterfaceStats{ifStats("ether1", 1_000, 0, 0, 0)}, at(12, 0, 59), iv)
+	if minuteSamples(c, at(12, 0, 0), "d1", "ether1") != 1 {
+		t.Error("the late reply must land in its own minute")
+	}
+	c.ingest("d1", []routeros.InterfaceStats{ifStats("ether1", 2_500, 0, 0, 0)}, at(12, 1, 14), iv)
+	c.finishCycle(at(12, 1, 15), iv)
+	if got := c.FlushedThrough(); !got.Equal(at(12, 1, 0)) {
+		t.Fatalf("FlushedThrough = %v, want 12:01 once d1 moved on", got)
+	}
+}
+
+// A device on a long interval holds the flush for as long as its next read
+// is expected (one interval with the jitter): another device's cycle at 12:03
+// keeps 12:00 open for the 12:00:10–12:05:10 delta, whose shares then land
+// in their own minutes.
+func TestPortStatsFlushHoldsLongInterval(t *testing.T) {
+	c := NewPortStatsCollector(pollerTestDB(t), nil, nil)
+	const iv = 5 * time.Minute
+	c.ingest("d1", []routeros.InterfaceStats{ifStats("ether1", 0, 0, 0, 0)}, at(12, 0, 10), iv)
+	c.finishCycle(at(12, 3, 0), iv) // another device's cycle
+	if got := c.FlushedThrough(); !got.Equal(at(12, 0, 0)) {
+		t.Fatalf("FlushedThrough = %v, want 12:00 held for d1's open interval", got)
+	}
+
+	c.ingest("d1", []routeros.InterfaceStats{ifStats("ether1", 30_000, 0, 0, 0)}, at(12, 5, 10), iv) // 100 B/s
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for m, want := range map[time.Time]int64{at(12, 0, 0): 5_000, at(12, 1, 0): 6_000, at(12, 4, 0): 6_000, at(12, 5, 0): 1_000} {
+		if acc := c.minutes[m.Unix()][portStatsKey{"d1", "ether1"}]; acc == nil || acc.rxBytes != want {
+			t.Errorf("%s = %+v, want %d B", m.Format("15:04"), acc, want)
+		}
+	}
+}
+
+// A device whose read is overdue (a failed read, offline) holds nothing: the
+// flush moves on, and the late delta's shares for minutes already flushed are
+// carried into the first open minute, so the bytes still add up exactly.
+func TestPortStatsShareBeyondHoldCarriedIntoOpenMinute(t *testing.T) {
+	c := NewPortStatsCollector(pollerTestDB(t), nil, nil)
+	const iv = 5 * time.Minute
+	c.ingest("d1", []routeros.InterfaceStats{ifStats("ether1", 0, 0, 0, 0)}, at(12, 0, 10), iv)
+	c.finishCycle(at(12, 8, 0), iv) // its 12:05 read failed: overdue by now
+	if got := c.FlushedThrough(); !got.Equal(at(12, 8, 0)) {
+		t.Fatalf("FlushedThrough = %v, want 12:08 (an overdue device holds nothing)", got)
+	}
+
+	c.ingest("d1", []routeros.InterfaceStats{ifStats("ether1", 60_000, 0, 0, 0)}, at(12, 10, 10), iv) // 100 B/s
 	if minuteSamples(c, at(12, 0, 0), "d1", "ether1") != 0 {
-		t.Error("late sample must not reopen a flushed minute")
+		t.Error("a flushed minute must not be reopened")
 	}
-	if minuteSamples(c, at(12, 1, 0), "d1", "ether1") != 1 {
-		t.Error("late sample must be carried into the first open minute")
+	c.mu.Lock()
+	carried := *c.minutes[at(12, 8, 0).Unix()][portStatsKey{"d1", "ether1"}]
+	c.mu.Unlock()
+	// 12:00 (50 s) to 12:07 (60 s each) carried into 12:08, plus its own 60 s.
+	if carried.seconds != 530 || carried.rxBytes != 53_000 {
+		t.Errorf("12:08 = %+v, want 530 s and 53000 B", carried)
 	}
+	var total int64
+	c.mu.Lock()
+	for _, ports := range c.minutes {
+		total += ports[portStatsKey{"d1", "ether1"}].rxBytes
+	}
+	c.mu.Unlock()
+	if total != 60_000 {
+		t.Errorf("accumulated %d B, want the whole 60000 B delta", total)
+	}
+}
+
+// Devices on different Tier 0 intervals interleave their cycles, so the
+// fast device's flushes happen while the slow device's interval is open.
+// Each minute must still hold exactly the shares of the intervals that
+// overlap it (proration by overlap), not a share pushed into a later minute.
+// The rate steps up mid-run, which is what tells the two apart.
+func TestPortStatsPerDeviceIntervalsProrateExactly(t *testing.T) {
+	want := prorateFleet(t, []prorateDevice{{"fast", 15 * time.Second, at(10, 0, 5)}, {"slow", time.Minute, at(10, 0, 30)}})
+	// The step at 10:30 straddles the slow device's 10:29:30–10:30:30
+	// interval: half of its 30 MB belongs to 10:29.
+	if w := want["slow"][at(10, 29, 0)]; w != 15e6 {
+		t.Fatalf("reference for slow 10:29 = %.0f, the fixture no longer exercises the hold", w)
+	}
+}
+
+// The same at port_stats_interval = 300 s: two devices five minutes apart in
+// period but on different phases, with a fast one flushing in between — each
+// 5-minute delta still spreads over its own minutes instead of combing into
+// one.
+func TestPortStatsLongIntervalsProrateExactly(t *testing.T) {
+	prorateFleet(t, []prorateDevice{
+		{"fast", 15 * time.Second, at(10, 0, 5)},
+		{"slow", 5 * time.Minute, at(10, 0, 10)},
+		{"late", 5 * time.Minute, at(10, 2, 30)},
+	})
+}
+
+// prorateDevice is one device of prorateFleet: its Tier 0 interval and first
+// read.
+type prorateDevice struct {
+	id    string
+	iv    time.Duration
+	first time.Time
+}
+
+// prorateFleet reads every device on its own interval from first until 11:10
+// — a rate stepping up at 10:30 and 10:45 — finishing a cycle after each
+// read as the collector does, and checks that every device's 1-minute rows
+// from 10:10 to 11:00 hold exactly the shares of the intervals overlapping
+// them. It returns the reference shares.
+func prorateFleet(t *testing.T, devs []prorateDevice) map[string]map[time.Time]float64 {
+	t.Helper()
+	db := pollerTestDB(t)
+	for i, d := range devs {
+		mustCreateDevice(t, db, &queries.Device{ID: d.id, Identity: d.id, Address: fmt.Sprintf("192.0.2.%d", 10+i)})
+	}
+	c := NewPortStatsCollector(db, nil, nil)
+
+	// Idle until 10:30, 1 MB/s until 10:45, 3 MB/s after.
+	bytesAt := func(ts time.Time) int64 {
+		s := ts.Sub(at(10, 30, 0)).Seconds()
+		switch {
+		case s <= 0:
+			return 0
+		case s <= 900:
+			return int64(s * 1e6)
+		}
+		return int64(900e6 + (s-900)*3e6)
+	}
+	type poll struct {
+		dev string
+		iv  time.Duration
+		t   time.Time
+	}
+	var polls []poll
+	want := map[string]map[time.Time]float64{}
+	for _, d := range devs {
+		want[d.id] = map[time.Time]float64{}
+		for ts := d.first; !ts.After(at(11, 10, 0)); ts = ts.Add(d.iv) {
+			polls = append(polls, poll{d.id, d.iv, ts})
+		}
+	}
+	sort.Slice(polls, func(i, j int) bool { return polls[i].t.Before(polls[j].t) })
+
+	last := map[string]time.Time{}
+	for _, p := range polls {
+		c.ingest(p.dev, []routeros.InterfaceStats{ifStats("ether1", bytesAt(p.t), 0, 0, 0)}, p.t, p.iv)
+		c.finishCycle(p.t.Add(50*time.Millisecond), 15*time.Second)
+
+		// The reference: this interval's delta spread over its minutes by
+		// overlap.
+		if from, ok := last[p.dev]; ok {
+			delta := float64(bytesAt(p.t) - bytesAt(from))
+			for m := from.Truncate(time.Minute); m.Before(p.t); m = m.Add(time.Minute) {
+				overlap := minTime(p.t, m.Add(time.Minute)).Sub(maxTime(from, m))
+				want[p.dev][m] += delta * overlap.Seconds() / p.t.Sub(from).Seconds()
+			}
+		}
+		last[p.dev] = p.t
+	}
+
+	for _, d := range devs {
+		rows, err := queries.GetPortStatsSeries(db, queries.PortStats1m, d.id, "ether1", at(10, 10, 0), at(11, 0, 0))
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := map[time.Time]int64{}
+		for _, r := range rows {
+			got[r.Bucket] = r.RxBytes
+		}
+		for m := at(10, 10, 0); m.Before(at(11, 0, 0)); m = m.Add(time.Minute) {
+			if diff := float64(got[m]) - want[d.id][m]; diff > 2 || diff < -2 {
+				t.Errorf("%s %s: %d B, want %.0f B", d.id, m.Format("15:04"), got[m], want[d.id][m])
+			}
+		}
+	}
+	return want
 }
 
 func TestPortStatsSnapshotPruneAndShape(t *testing.T) {
@@ -536,6 +712,8 @@ func TestPortStatsCycleConcurrentWithInFlightGuard(t *testing.T) {
 	mustCreateDevice(t, db, &queries.Device{ID: "nocl", Identity: "nocl", Address: "192.168.78.13"})
 
 	c := NewPortStatsCollector(db, nil, ws.NewHub())
+	c.phase = noJitter
+	c.reg = NewScheduleRegistry()
 	release := make(chan struct{})
 	var calls sync.Map // device → *int32
 	var fastCount atomic.Int64
@@ -602,10 +780,16 @@ func TestPortStatsCycleConcurrentWithInFlightGuard(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	// Once returned, the slow device is polled again.
+	// The next read counts from the end of the slow one: right after the
+	// late reply it is not due — no catch-up — one interval later it is.
+	c.cycle(context.Background(), iv)
+	if got := callCount("slow"); got != 1 {
+		t.Errorf("slow device polled %d times right after its late reply, want 1 (no catch-up)", got)
+	}
+	time.Sleep(iv + iv/2)
 	c.cycle(context.Background(), iv)
 	if got := callCount("slow"); got != 2 {
-		t.Errorf("slow device polled %d times after returning, want 2", got)
+		t.Errorf("slow device polled %d times an interval after returning, want 2", got)
 	}
 }
 
@@ -620,6 +804,13 @@ func TestPortStatsCycleShutdownSkipsFinish(t *testing.T) {
 	}
 }
 
+// hostsCadence runs the FDB dump and the stacking prints every 5 min.
+func hostsCadence() *stubCadence {
+	return &stubCadence{iv: map[devclass.Tier]time.Duration{
+		devclass.TierBridgeHosts: 5 * time.Minute, devclass.TierRelations: 5 * time.Minute,
+	}}
+}
+
 func TestPortStatsCollectHosts(t *testing.T) {
 	db := pollerTestDB(t)
 	mustCreateDevice(t, db, &queries.Device{ID: "sw", Identity: "sw", Address: "192.168.78.10"})
@@ -627,9 +818,13 @@ func TestPortStatsCollectHosts(t *testing.T) {
 	mustCreateDevice(t, db, &queries.Device{ID: "off", Identity: "off", Address: "192.168.78.12", Status: "offline"})
 
 	c := NewPortStatsCollector(db, nil, nil)
-	now := time.Now().UTC().Truncate(time.Second)
-	c.now = func() time.Time { return now }
+	clock := &testClock{t: time.Now().UTC().Truncate(time.Second)}
+	c.now = clock.now
+	c.hostClock = newTierClock(NewScheduleRegistry())
+	c.UseCadence(hostsCadence())
+	hostCalls := map[string]int{}
 	c.fetchHosts = func(id string) ([]routeros.BridgeHost, error) {
+		hostCalls[id]++
 		switch id {
 		case "sw":
 			return []routeros.BridgeHost{
@@ -648,36 +843,56 @@ func TestPortStatsCollectHosts(t *testing.T) {
 		relCalls[id]++
 		return []routeros.InterfaceRelation{
 			{Iface: "ether7", Parent: "bond1", Kind: routeros.RelationBond},
+			{Iface: "net28", Parent: "bridge", Kind: routeros.RelationVLAN, VLANID: 28},
 			{Iface: "pppoe-out1", Parent: "ether1", Kind: routeros.RelationPPPoE},
 		}, nil
 	}
-	if pending := c.collectHosts(context.Background(), nil); len(pending) != 0 {
-		t.Errorf("pending = %v: a failing dump is not retried early", pending)
-	}
+	c.hostsTick(context.Background())
 	rels, err := queries.ListInterfaceRelations(db)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rels) != 2 || rels[0] != (queries.InterfaceRelation{DeviceID: "sw", InterfaceName: "ether7", Kind: "bond", Parent: "bond1"}) {
+	if len(rels) != 3 || rels[0] != (queries.InterfaceRelation{DeviceID: "sw", InterfaceName: "ether7", Kind: "bond", Parent: "bond1"}) {
 		t.Errorf("relations = %+v", rels)
 	}
+	// The stacking read's VLAN rows are kept for the flow ifIndex sync,
+	// which then needs no /interface/vlan print of its own.
+	wantVLANs := []routeros.VLANInfo{{Name: "net28", VLANID: 28, Parent: "bridge"}}
+	if vlans, at, ok := c.DeviceVLANs("sw"); !ok || !at.Equal(clock.now()) || len(vlans) != 1 || vlans[0] != wantVLANs[0] {
+		t.Errorf("VLAN rows of the stacking read = %+v at %v (%v)", vlans, at, ok)
+	}
+	if _, _, ok := c.DeviceVLANs("bad"); ok {
+		t.Error("a device whose stacking was never read reports VLAN rows")
+	}
 	if relCalls["bad"] != 0 || relCalls["sw"] != 1 {
-		t.Errorf("relation reads = %v: only after a successful FDB dump", relCalls)
+		t.Errorf("relation reads = %v: a device failing its dump is not asked for its stacking", relCalls)
+	}
+
+	// Nothing is due again within the interval; a failing dump is not
+	// retried early either.
+	clock.set(clock.now().Add(pollerTick))
+	c.hostsTick(context.Background())
+	if hostCalls["sw"] != 1 || hostCalls["bad"] != 1 || relCalls["sw"] != 1 || relCalls["bad"] != 0 {
+		t.Errorf("reads within the interval: hosts %v, relations %v", hostCalls, relCalls)
 	}
 
 	// A failed read keeps the previous rows.
+	clock.set(clock.now().Add(6 * time.Minute))
 	c.fetchRelations = func(string) ([]routeros.InterfaceRelation, error) { return nil, errors.New("trap") }
-	c.collectHosts(context.Background(), nil)
-	if rels, _ := queries.ListInterfaceRelations(db); len(rels) != 2 {
-		t.Errorf("relations after a failed read = %+v, want the previous 2", rels)
+	c.hostsTick(context.Background())
+	if rels, _ := queries.ListInterfaceRelations(db); len(rels) != 3 {
+		t.Errorf("relations after a failed read = %+v, want the previous 3", rels)
+	}
+	if vlans, _, ok := c.DeviceVLANs("sw"); !ok || len(vlans) != 1 || vlans[0] != wantVLANs[0] {
+		t.Errorf("VLAN rows after a failed read = %+v (%v), want the previous ones", vlans, ok)
 	}
 
-	hosts, err := queries.ListPortHosts(db, now.Add(-time.Minute), "")
+	hosts, err := queries.ListPortHosts(db, clock.now().Add(-time.Minute), "")
 	if err != nil {
 		t.Fatalf("ListPortHosts: %v", err)
 	}
 	if len(hosts) != 2 || hosts[0].DeviceID != "sw" || hosts[0].InterfaceName != "ether7" || hosts[0].VID != 28 ||
-		hosts[1].InterfaceName != "wifi2" || !hosts[1].LastSeen.Equal(now) {
+		hosts[1].InterfaceName != "wifi2" || !hosts[1].LastSeen.Equal(clock.now()) {
 		t.Fatalf("hosts = %+v", hosts)
 	}
 
@@ -691,14 +906,18 @@ func TestPortStatsCollectHosts(t *testing.T) {
 }
 
 // On a cold start the pool has dialled only some devices by the first FDB
-// pass. The ones without a connection come back as pending, and a retry pass
-// dumps just those.
-func TestPortStatsCollectHostsReportsDevicesWithoutClient(t *testing.T) {
+// pass. The ones without a connection are retried after portHostsRetryDelay,
+// not a whole interval later, and the others are not dumped again.
+func TestPortStatsCollectHostsRetriesDevicesWithoutClient(t *testing.T) {
 	db := pollerTestDB(t)
 	mustCreateDevice(t, db, &queries.Device{ID: "sw", Identity: "sw", Address: "192.168.78.10"})
 	mustCreateDevice(t, db, &queries.Device{ID: "late", Identity: "late", Address: "192.168.78.11"})
 
 	c := NewPortStatsCollector(db, nil, nil)
+	clock := &testClock{t: time.Now().UTC().Truncate(time.Second)}
+	c.now = clock.now
+	c.hostClock = newTierClock(NewScheduleRegistry())
+	c.UseCadence(hostsCadence())
 	c.fetchRelations = func(string) ([]routeros.InterfaceRelation, error) { return nil, nil }
 	dialled := map[string]bool{"sw": true}
 	calls := map[string]int{}
@@ -710,24 +929,79 @@ func TestPortStatsCollectHostsReportsDevicesWithoutClient(t *testing.T) {
 		return []routeros.BridgeHost{{MACAddress: "AA:BB:CC:00:00:0" + string(rune('0'+calls[id])), Interface: "ether" + id}}, nil
 	}
 
-	pending := c.collectHosts(context.Background(), nil)
-	if len(pending) != 1 || !pending["late"] {
-		t.Fatalf("pending after first pass = %v, want only late", pending)
-	}
-
+	start := clock.now()
+	c.hostsTick(context.Background())
 	dialled["late"] = true
-	if pending = c.collectHosts(context.Background(), pending); len(pending) != 0 {
-		t.Fatalf("pending after retry = %v, want none", pending)
+	clock.set(start.Add(portHostsRetryDelay - time.Second))
+	c.hostsTick(context.Background())
+	if calls["late"] != 1 {
+		t.Fatalf("late retried after %v: calls = %v", portHostsRetryDelay-time.Second, calls)
 	}
+	clock.set(start.Add(portHostsRetryDelay))
+	c.hostsTick(context.Background())
 	if calls["sw"] != 1 || calls["late"] != 2 {
 		t.Errorf("fetch calls = %v, want sw once (not re-dumped by the retry) and late twice", calls)
 	}
-	hosts, err := queries.ListPortHosts(db, time.Now().Add(-time.Minute), "late")
+	hosts, err := queries.ListPortHosts(db, clock.now().Add(-time.Minute), "late")
 	if err != nil {
 		t.Fatalf("ListPortHosts: %v", err)
 	}
 	if len(hosts) != 1 || hosts[0].InterfaceName != "etherlate" {
 		t.Errorf("late hosts = %+v", hosts)
+	}
+}
+
+// The hosts loop runs each device on its class plan floored by
+// port_hosts_interval — C2: the FDB every 10 min, the stacking every 15 —
+// and a paused device on neither.
+func TestPortStatsHostsPerClassCadenceAndPause(t *testing.T) {
+	db := pollerTestDB(t)
+	mustCreateDevice(t, db, &queries.Device{ID: "sw", Identity: "sw", Address: "192.0.2.20"})
+	mustCreateDevice(t, db, &queries.Device{ID: "held", Identity: "held", Address: "192.0.2.21"})
+	t0 := time.Now().UTC().Truncate(time.Second)
+	if err := queries.SetDeviceClass(db, "sw", devclass.C2, devclass.ResourceFacts{Architecture: "arm", CPUCount: 1}, t0); err != nil {
+		t.Fatal(err)
+	}
+	if err := queries.PauseDevicePolling(db, "held", t0.Add(24*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+
+	c := NewPortStatsCollector(db, nil, nil)
+	clock := &testClock{t: t0}
+	c.now = clock.now
+	reg := NewScheduleRegistry()
+	c.hostClock = newTierClock(reg)
+	c.hostClock.phase = noJitter
+	c.UseCadence(NewCadence(db, nil))
+	fdb, rel := map[string]int{}, map[string]int{}
+	c.fetchHosts = func(id string) ([]routeros.BridgeHost, error) { fdb[id]++; return nil, nil }
+	c.fetchRelations = func(id string) ([]routeros.InterfaceRelation, error) { rel[id]++; return nil, nil }
+
+	for _, step := range []struct {
+		at       time.Duration
+		fdb, rel int
+	}{
+		{0, 1, 1},
+		{5 * time.Minute, 1, 1},
+		{10 * time.Minute, 2, 1},
+		{15 * time.Minute, 2, 2},
+		{20 * time.Minute, 3, 2},
+		{30 * time.Minute, 4, 3},
+	} {
+		clock.set(t0.Add(step.at))
+		c.hostsTick(context.Background())
+		if fdb["sw"] != step.fdb || rel["sw"] != step.rel {
+			t.Errorf("+%v: FDB dumps %d, stacking reads %d; want %d, %d", step.at, fdb["sw"], rel["sw"], step.fdb, step.rel)
+		}
+	}
+	if fdb["held"] != 0 || rel["held"] != 0 {
+		t.Errorf("a paused device was read: FDB %d, stacking %d", fdb["held"], rel["held"])
+	}
+	if runs := reg.NextRuns("held"); len(runs) != 0 {
+		t.Errorf("a paused device has no next runs, got %v", runs)
+	}
+	if next := reg.NextRuns("sw")["bridge_hosts"]; !next.Equal(t0.Add(40 * time.Minute)) {
+		t.Errorf("next FDB dump = %v, want 10 min after the last", next)
 	}
 }
 

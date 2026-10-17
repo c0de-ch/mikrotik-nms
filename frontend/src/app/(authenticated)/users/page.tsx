@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -31,12 +31,14 @@ export default function UsersPage() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [form, setForm] = useState({ username: "", password: "", role: "viewer" });
 
-  const load = () => {
+  const load = useCallback(() => {
     if (!token) return;
     api.users.list(token).then(setUsers).catch(console.error);
-  };
+  }, [token]);
 
-  useEffect(() => { load(); }, [token]);
+  useEffect(() => {
+    load();
+  }, [load]);
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();

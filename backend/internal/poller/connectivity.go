@@ -38,7 +38,9 @@ const defaultConnectivityPingCount = 5
 //     MACs from the CAPsMAN/wifi registration tables (client_signal_samples).
 //
 // Unresolvable/offline targets still persist a sample (sent=0, error set) so
-// the time series shows "no data" gaps honestly.
+// the time series shows "no data" gaps honestly. A target whose probing
+// device's polling is paused is skipped without a sample: paused minutes are
+// gaps with no rows, and the device gets nothing but liveness pings.
 type ConnectivityPoller struct {
 	db        *sql.DB
 	pool      *routeros.Pool
@@ -183,6 +185,15 @@ func (cp *ConnectivityPoller) poll(ctx context.Context) {
 	for _, d := range devices {
 		deviceByID[d.ID] = d
 	}
+	now := time.Now()
+	paused := func(id string) bool {
+		d, ok := deviceByID[id]
+		if ok && d.PollingPaused(now) {
+			pauseLog.skip("connectivity probes", d)
+			return true
+		}
+		return false
+	}
 
 	// Resolve every target to (probing device, address), grouping by device.
 	groups := make(map[string][]probeTask)
@@ -204,6 +215,9 @@ func (cp *ConnectivityPoller) poll(ctx context.Context) {
 				// Cache the freshly-resolved IP for the UI.
 				_ = queries.UpdatePingTargetAddress(cp.db, t.ID, addr)
 			}
+			if paused(devID) {
+				continue
+			}
 			if reason != "" {
 				cp.recordError(t, devID, addr, reason)
 				continue
@@ -218,6 +232,9 @@ func (cp *ConnectivityPoller) poll(ctx context.Context) {
 			dev, ok := deviceByID[t.DeviceID]
 			if !ok {
 				cp.recordError(t, t.DeviceID, t.Address, "probing device no longer exists")
+				continue
+			}
+			if paused(t.DeviceID) {
 				continue
 			}
 			if dev.Status != "online" {
@@ -390,12 +407,13 @@ func (cp *ConnectivityPoller) maybeAutoTraceroute(t queries.PingTarget, dev quer
 	}()
 }
 
-// collectSignals fetches the wifi registration tables once per online device
-// and records a ClientSignalSample for each watched MAC found. Best-effort:
-// errors are ignored, panics contained per device.
+// collectSignals fetches the wifi registration tables once per online,
+// unpaused device and records a ClientSignalSample for each watched MAC
+// found. Best-effort: errors are ignored, panics contained per device.
 func (cp *ConnectivityPoller) collectSignals(ctx context.Context, devices []queries.Device, watched map[string]bool) {
 	regByMAC := make(map[string]routeros.WifiRegistration)
 
+	now := time.Now()
 	for _, dev := range devices {
 		select {
 		case <-ctx.Done():
@@ -403,6 +421,10 @@ func (cp *ConnectivityPoller) collectSignals(ctx context.Context, devices []quer
 		default:
 		}
 		if dev.Status != "online" {
+			continue
+		}
+		if dev.PollingPaused(now) {
+			pauseLog.skip("connectivity signal reads", dev)
 			continue
 		}
 		client := cp.pool.GetLive(dev.ID)

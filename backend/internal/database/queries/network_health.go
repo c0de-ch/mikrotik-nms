@@ -18,21 +18,34 @@ type BridgeStatus struct {
 	TopologyChanges    int       `json:"topology_changes"`
 	LastTopologyChange string    `json:"last_topology_change"`
 	PortCount          int       `json:"port_count"`
+	STPSource          string    `json:"stp_source"` // routeros.BridgePath*: how the port STP state was read
 	LastPolled         time.Time `json:"last_polled"`
 }
 
 type BridgePortStatus struct {
-	ID               string    `json:"id"`
-	DeviceID         string    `json:"device_id"`
-	BridgeName       string    `json:"bridge_name"`
-	PortInterface    string    `json:"port_interface"`
-	Role             string    `json:"role"`
-	Status           string    `json:"status"`
-	Edge             bool      `json:"edge"`
-	PointToPoint     bool      `json:"point_to_point"`
-	PathCost         int       `json:"path_cost"`
-	DesignatedBridge string    `json:"designated_bridge"`
-	LastPolled       time.Time `json:"last_polled"`
+	ID               string `json:"id"`
+	DeviceID         string `json:"device_id"`
+	BridgeName       string `json:"bridge_name"`
+	PortInterface    string `json:"port_interface"`
+	Role             string `json:"role"`
+	Status           string `json:"status"`
+	Edge             bool   `json:"edge"`
+	PointToPoint     bool   `json:"point_to_point"`
+	PathCost         int    `json:"path_cost"`
+	DesignatedBridge string `json:"designated_bridge"` // designated-bridge-id
+	// Fields a device may not report: nil (NULL, JSON null) means unknown,
+	// which detectors must not read as 0 or false.
+	TopologyChanges *int      `json:"topology_changes"`
+	Forwarding      *bool     `json:"forwarding"`
+	Learning        *bool     `json:"learning"`
+	Inactive        *bool     `json:"inactive"`
+	Disabled        *bool     `json:"disabled"`
+	HWOffload       *bool     `json:"hw_offload"`
+	HWOffloadGroup  string    `json:"hw_offload_group"`
+	PVID            *int      `json:"pvid"`
+	PortState       string    `json:"port_state"`  // raw RouterOS status: in-bridge | inactive
+	EdgeConfig      string    `json:"edge_config"` // configured edge: auto | yes | no | yes-discover | no-discover
+	LastPolled      time.Time `json:"last_polled"`
 }
 
 type LoopEvent struct {
@@ -57,8 +70,8 @@ func UpsertBridgeStatus(db *sql.DB, b *BridgeStatus) error {
 	_, err := db.Exec(
 		`INSERT INTO bridge_status (id, device_id, bridge_name, protocol, stp_enabled, bridge_id,
 		   root_bridge_id, root_path_cost, root_port, topology_changes, last_topology_change,
-		   port_count, last_polled)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		   port_count, stp_source, last_polled)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
 		 ON CONFLICT(device_id, bridge_name) DO UPDATE SET
 		   protocol=excluded.protocol,
 		   stp_enabled=excluded.stp_enabled,
@@ -69,10 +82,11 @@ func UpsertBridgeStatus(db *sql.DB, b *BridgeStatus) error {
 		   topology_changes=excluded.topology_changes,
 		   last_topology_change=excluded.last_topology_change,
 		   port_count=excluded.port_count,
+		   stp_source=excluded.stp_source,
 		   last_polled=CURRENT_TIMESTAMP`,
 		b.ID, b.DeviceID, b.BridgeName, b.Protocol, stp, b.BridgeID,
 		b.RootBridgeID, b.RootPathCost, b.RootPort, b.TopologyChanges, b.LastTopologyChange,
-		b.PortCount,
+		b.PortCount, b.STPSource,
 	)
 	return err
 }
@@ -88,8 +102,10 @@ func UpsertBridgePortStatus(db *sql.DB, p *BridgePortStatus) error {
 	}
 	_, err := db.Exec(
 		`INSERT INTO bridge_port_status (id, device_id, bridge_name, port_interface, role, status,
-		   edge, point_to_point, path_cost, designated_bridge, last_polled)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		   edge, point_to_point, path_cost, designated_bridge,
+		   topology_changes, forwarding, learning, inactive, disabled, hw_offload, hw_offload_group,
+		   pvid, port_state, edge_config, last_polled)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
 		 ON CONFLICT(device_id, bridge_name, port_interface) DO UPDATE SET
 		   role=excluded.role,
 		   status=excluded.status,
@@ -97,9 +113,22 @@ func UpsertBridgePortStatus(db *sql.DB, p *BridgePortStatus) error {
 		   point_to_point=excluded.point_to_point,
 		   path_cost=excluded.path_cost,
 		   designated_bridge=excluded.designated_bridge,
+		   topology_changes=excluded.topology_changes,
+		   forwarding=excluded.forwarding,
+		   learning=excluded.learning,
+		   inactive=excluded.inactive,
+		   disabled=excluded.disabled,
+		   hw_offload=excluded.hw_offload,
+		   hw_offload_group=excluded.hw_offload_group,
+		   pvid=excluded.pvid,
+		   port_state=excluded.port_state,
+		   edge_config=excluded.edge_config,
 		   last_polled=CURRENT_TIMESTAMP`,
 		p.ID, p.DeviceID, p.BridgeName, p.PortInterface, p.Role, p.Status,
 		edge, p2p, p.PathCost, p.DesignatedBridge,
+		nullInt(p.TopologyChanges), nullBool(p.Forwarding), nullBool(p.Learning), nullBool(p.Inactive),
+		nullBool(p.Disabled), nullBool(p.HWOffload), p.HWOffloadGroup,
+		nullInt(p.PVID), p.PortState, p.EdgeConfig,
 	)
 	return err
 }
@@ -108,7 +137,7 @@ func ListBridgeStatus(db *sql.DB) ([]BridgeStatus, error) {
 	rows, err := db.Query(
 		`SELECT id, device_id, bridge_name, protocol, stp_enabled, bridge_id,
 		   root_bridge_id, root_path_cost, root_port, topology_changes, last_topology_change,
-		   port_count, last_polled
+		   port_count, stp_source, last_polled
 		 FROM bridge_status ORDER BY device_id, bridge_name`,
 	)
 	if err != nil {
@@ -122,7 +151,7 @@ func ListBridgeStatus(db *sql.DB) ([]BridgeStatus, error) {
 		var stp int
 		if err := rows.Scan(&b.ID, &b.DeviceID, &b.BridgeName, &b.Protocol, &stp, &b.BridgeID,
 			&b.RootBridgeID, &b.RootPathCost, &b.RootPort, &b.TopologyChanges, &b.LastTopologyChange,
-			&b.PortCount, &b.LastPolled); err != nil {
+			&b.PortCount, &b.STPSource, &b.LastPolled); err != nil {
 			return nil, err
 		}
 		b.STPEnabled = stp == 1
@@ -134,7 +163,10 @@ func ListBridgeStatus(db *sql.DB) ([]BridgeStatus, error) {
 func ListBridgePortStatus(db *sql.DB) ([]BridgePortStatus, error) {
 	rows, err := db.Query(
 		`SELECT id, device_id, bridge_name, port_interface, role, status,
-		   edge, point_to_point, path_cost, designated_bridge, last_polled
+		   edge, point_to_point, path_cost, designated_bridge,
+		   topology_changes, forwarding, learning, inactive, disabled, hw_offload,
+		   COALESCE(hw_offload_group, ''), pvid, COALESCE(port_state, ''), COALESCE(edge_config, ''),
+		   last_polled
 		 FROM bridge_port_status ORDER BY device_id, bridge_name, port_interface`,
 	)
 	if err != nil {
@@ -146,25 +178,73 @@ func ListBridgePortStatus(db *sql.DB) ([]BridgePortStatus, error) {
 	for rows.Next() {
 		var p BridgePortStatus
 		var edge, p2p int
+		var tcn, pvid sql.NullInt64
+		var fwd, lrn, inactive, disabled, hw sql.NullInt64
 		if err := rows.Scan(&p.ID, &p.DeviceID, &p.BridgeName, &p.PortInterface, &p.Role, &p.Status,
-			&edge, &p2p, &p.PathCost, &p.DesignatedBridge, &p.LastPolled); err != nil {
+			&edge, &p2p, &p.PathCost, &p.DesignatedBridge,
+			&tcn, &fwd, &lrn, &inactive, &disabled, &hw,
+			&p.HWOffloadGroup, &pvid, &p.PortState, &p.EdgeConfig,
+			&p.LastPolled); err != nil {
 			return nil, err
 		}
 		p.Edge = edge == 1
 		p.PointToPoint = p2p == 1
+		p.TopologyChanges = intPtr(tcn)
+		p.PVID = intPtr(pvid)
+		p.Forwarding = boolPtr(fwd)
+		p.Learning = boolPtr(lrn)
+		p.Inactive = boolPtr(inactive)
+		p.Disabled = boolPtr(disabled)
+		p.HWOffload = boolPtr(hw)
 		out = append(out, p)
 	}
 	return out, rows.Err()
 }
 
-// DeleteStaleBridgeRows drops bridge_status / bridge_port_status rows whose
-// last_polled is older than the cutoff. Used to clear bridges that were
-// removed from a device.
-func DeleteStaleBridgeRows(db *sql.DB, cutoff time.Time) error {
-	if _, err := db.Exec(`DELETE FROM bridge_port_status WHERE last_polled < ?`, cutoff); err != nil {
+// nullInt / nullBool bind an optional field as NULL when it is unknown;
+// intPtr / boolPtr read it back the same way.
+func nullInt(v *int) any {
+	if v == nil {
+		return nil
+	}
+	return *v
+}
+
+func nullBool(v *bool) any {
+	if v == nil {
+		return nil
+	}
+	if *v {
+		return 1
+	}
+	return 0
+}
+
+func intPtr(v sql.NullInt64) *int {
+	if !v.Valid {
+		return nil
+	}
+	n := int(v.Int64)
+	return &n
+}
+
+func boolPtr(v sql.NullInt64) *bool {
+	if !v.Valid {
+		return nil
+	}
+	b := v.Int64 == 1
+	return &b
+}
+
+// DeleteStaleBridgeRows drops one device's bridge_status / bridge_port_status
+// rows whose last_polled is older than the cutoff. Used to clear bridges and
+// ports that were removed from the device.
+func DeleteStaleBridgeRows(db *sql.DB, deviceID string, cutoff time.Time) error {
+	if _, err := db.Exec(`DELETE FROM bridge_port_status WHERE device_id = ? AND last_polled < ?`,
+		deviceID, sqlTime(cutoff)); err != nil {
 		return err
 	}
-	_, err := db.Exec(`DELETE FROM bridge_status WHERE last_polled < ?`, cutoff)
+	_, err := db.Exec(`DELETE FROM bridge_status WHERE device_id = ? AND last_polled < ?`, deviceID, sqlTime(cutoff))
 	return err
 }
 

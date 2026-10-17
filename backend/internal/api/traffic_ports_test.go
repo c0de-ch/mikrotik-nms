@@ -26,11 +26,15 @@ const mbps = int64(1_000_000)
 type fakePortStats struct {
 	snap            poller.PortSnapshot
 	flushed, rolled time.Time
+	reads           map[string]time.Time // per-device read times; nil = all read at snap.TS
 }
 
 func (f *fakePortStats) Snapshot() poller.PortSnapshot { return f.snap }
 func (f *fakePortStats) FlushedThrough() time.Time     { return f.flushed }
 func (f *fakePortStats) RolledThrough() time.Time      { return f.rolled }
+func (f *fakePortStats) SnapshotWithReadTimes() (poller.PortSnapshot, map[string]time.Time) {
+	return f.snap, f.reads
+}
 
 // trafficFixture is the contract §7.6 mesh (R internet edge → C core → S
 // access → A1/A2 APs, MNDP hearing nearly every pair) stored in a real DB,
@@ -195,6 +199,7 @@ func TestTrafficRoutesStaticBeforeParam(t *testing.T) {
 		"/traffic/path?device=r":                      `"hops"`,
 		"/traffic/sankey":                             `"estimated"`,
 		"/traffic/summary":                            `"device_id"`,
+		"/traffic/links":                              `"source":"snapshot"`,
 		"/traffic/r/" + url.PathEscape("eth1-wan"):    `[]`,
 		"/traffic/ports/history?device=r&iface=a%2Fb": `"iface":"a/b"`,
 	} {

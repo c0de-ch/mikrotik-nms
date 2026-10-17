@@ -4,6 +4,7 @@
 
 import type { Device, PortRate, PortRole, PortRoleName, PortSnapshot, SeriesPoint, TopDir, TopMetric, TrafficRange } from "@/lib/api";
 import { TRAFFIC, fmtBps } from "@/components/graph/graph-style";
+import { fmtInterval } from "@/lib/device-load";
 
 export const RX_COLOR = TRAFFIC.rx;
 export const TX_COLOR = TRAFFIC.tx;
@@ -232,13 +233,26 @@ export const METRIC_OPTIONS = (live: boolean): { value: TopMetric; label: string
 
 // ---- snapshot state ---------------------------------------------------------
 
-export function collectingText(snapshot: PortSnapshot | null): string {
-  const secs = 2 * (snapshot?.interval_seconds || 15);
-  return `Collecting first samples — port rates appear after two polls (~${secs}s).`;
+// intervalSeconds: the device's own counter cadence when the view is about
+// one device (a weak one is read every 60 s); the fleet interval otherwise.
+export function collectingText(snapshot: PortSnapshot | null, intervalSeconds?: number): string {
+  const secs = 2 * (intervalSeconds || snapshot?.interval_seconds || 15);
+  return `Collecting first samples — port rates appear after two reads (about ${fmtInterval(secs)}).`;
 }
 
 export function snapshotReady(snapshot: PortSnapshot | null): boolean {
   return !!snapshot && snapshot.ready && snapshot.ts !== null;
+}
+
+// "just now", "12 s ago", "4 min ago" for snapshot-derived rates — the
+// device-load vocabulary's relative age.
+export { fmtAgo as fmtAge } from "@/lib/device-load";
+
+// The age of snapshot data now: the age the server reported plus the time
+// since the response arrived (never the local clock against sampled_at,
+// which may be skewed).
+export function ageNow(ageAtReceipt: number, receivedAt: number, now: number): number {
+  return ageAtReceipt + Math.max(0, now - receivedAt) / 1000;
 }
 
 // ---- formatting -------------------------------------------------------------

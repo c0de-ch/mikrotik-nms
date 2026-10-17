@@ -40,12 +40,12 @@ export function explainEvent(e: EventCtx): HealthHint {
       return {
         meaning: `${bridge} on ${dev} is receiving STP topology-change notifications continuously. Every TCN makes all switches flush their MAC tables, causing brief flooding — this shows up as network-wide micro-drops (audio blips, lag spikes).`,
         causes: [
-          "A port that is flapping (link up/down repeatedly) on a NON-edge port — each transition emits a TCN. Check the Flapping counter in Port State below and match timestamps.",
+          "A port that is flapping (link up/down repeatedly) on a NON-edge port — each transition emits a TCN. The bridge's Topology changes column below shows which port's counter is climbing; match it with Port State → Recent link-downs.",
           "A real loop or an unstable downstream switch/AP rebooting repeatedly.",
           "Client ports not marked as edge: a PC rebooting then triggers TCNs it shouldn't.",
         ],
         fixes: [
-          "Find the flapping port (Port State → Recent flaps) and fix its cable/device — that usually ends the storm.",
+          "Find the flapping port (highest Topology changes on the bridge, or Port State → Recent link-downs) and fix its cable/device — that usually ends the storm.",
           "Set edge=yes on access ports (client/server/AP-less ports) so their link changes never generate TCNs: /interface bridge port set [find interface=<port>] edge=yes",
           "If the counter climbs but nothing is flapping, look for a loop: check loop_detected/mac_flap events on the same bridge.",
         ],

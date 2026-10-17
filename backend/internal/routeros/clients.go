@@ -1,6 +1,7 @@
 package routeros
 
 import (
+	"fmt"
 	"strconv"
 
 	ros "github.com/go-routeros/routeros/v3"
@@ -15,8 +16,8 @@ type ARPEntry struct {
 	Complete  bool   `json:"complete"`
 }
 
-func GetARPTable(client *ros.Client) ([]ARPEntry, error) {
-	reply, err := RunCommand(client, "/ip/arp/print")
+func GetARPTable(run Runner) ([]ARPEntry, error) {
+	reply, err := run.Run("/ip/arp/print")
 	if err != nil {
 		return nil, err
 	}
@@ -47,8 +48,8 @@ type DHCPLease struct {
 	Dynamic    bool   `json:"dynamic"`
 }
 
-func GetDHCPLeases(client *ros.Client) ([]DHCPLease, error) {
-	reply, err := RunCommand(client, "/ip/dhcp-server/lease/print")
+func GetDHCPLeases(run Runner) ([]DHCPLease, error) {
+	reply, err := run.Run("/ip/dhcp-server/lease/print")
 	if err != nil {
 		return nil, err
 	}
@@ -71,14 +72,14 @@ func GetDHCPLeases(client *ros.Client) ([]DHCPLease, error) {
 	// those aren't live assignments — the server isn't handing them out. Drop
 	// them so a switch whose dhcp server is turned off doesn't surface a ghost
 	// "client" for every leftover static reservation.
-	return activeLeases(leases, disabledDHCPServers(client)), nil
+	return activeLeases(leases, disabledDHCPServers(run)), nil
 }
 
 // disabledDHCPServers returns the set of administratively-disabled DHCP server
 // names. Best-effort: any error yields an empty set, so leases are shown rather
 // than wrongly hidden on a transient query failure (fail-open).
-func disabledDHCPServers(client *ros.Client) map[string]bool {
-	reply, err := RunCommand(client, "/ip/dhcp-server/print")
+func disabledDHCPServers(run Runner) map[string]bool {
+	reply, err := run.Run("/ip/dhcp-server/print")
 	if err != nil {
 		return nil
 	}
@@ -130,24 +131,61 @@ type WifiRegistration struct {
 	Source     string `json:"source"` // "wifi-v2", "capsman", "wireless"
 }
 
-// GetCAPsMANRegistrations gets wireless clients from CAPsMAN (RouterOS v7 /interface/wifi).
+// Registration-table menus a device may have, in the order a device that has
+// several is read. Which ones exist is probed once (poller.CapabilityCache);
+// printing a menu whose package is missing costs the device a trap.
+const (
+	RegMenuWifi     = "wifi"     // /interface/wifi (RouterOS 7 wifi, CAPsMAN v2)
+	RegMenuCAPsMAN  = "capsman"  // /caps-man (legacy CAPsMAN controller)
+	RegMenuWireless = "wireless" // /interface/wireless (legacy local wireless)
+)
+
+// Menu probe commands, for the capability cache.
+const (
+	WifiProbeCommand       = "/interface/wifi/print"
+	CAPsMANProbeCommand    = "/caps-man/interface/print"
+	WirelessProbeCommand   = "/interface/wireless/print"
+	DHCPServerProbeCommand = "/ip/dhcp-server/print"
+	BridgeProbeCommand     = "/interface/bridge/print"
+)
+
+// GetRegistrations reads one registration-table menu (RegMenu*). Callers know
+// from the capability probe which menus the device has, so this never sends
+// a print that will trap.
+func GetRegistrations(run Runner, menu string) ([]WifiRegistration, error) {
+	switch menu {
+	case RegMenuWifi:
+		return getWifiRegistrations(run)
+	case RegMenuCAPsMAN:
+		return getLegacyCAPsMANRegistrations(run)
+	case RegMenuWireless:
+		return getLocalWirelessRegistrations(run)
+	}
+	return nil, fmt.Errorf("unknown registration menu %q", menu)
+}
+
+// GetCAPsMANRegistrations gets wireless clients without knowing which menus
+// the device has: it tries wifi, then legacy CAPsMAN, then local wireless,
+// and a missing package costs a trap per attempt. On-demand callers only
+// (the Clients page); the pollers read the menus the capability probe found.
 func GetCAPsMANRegistrations(client *ros.Client) ([]WifiRegistration, error) {
+	run := ClientRunner{Client: client}
 	// Try RouterOS v7 wifi first
-	regs, err := getWifiRegistrations(client)
+	regs, err := getWifiRegistrations(run)
 	if err == nil && len(regs) > 0 {
 		return regs, nil
 	}
 	// Fallback to legacy CAPsMAN
-	regs, err = getLegacyCAPsMANRegistrations(client)
+	regs, err = getLegacyCAPsMANRegistrations(run)
 	if err == nil {
 		return regs, nil
 	}
 	// Fallback to local wireless registration-table
-	return getLocalWirelessRegistrations(client)
+	return getLocalWirelessRegistrations(run)
 }
 
-func getWifiRegistrations(client *ros.Client) ([]WifiRegistration, error) {
-	reply, err := RunCommand(client, "/interface/wifi/registration-table/print")
+func getWifiRegistrations(run Runner) ([]WifiRegistration, error) {
+	reply, err := run.Run("/interface/wifi/registration-table/print")
 	if err != nil {
 		return nil, err
 	}
@@ -182,8 +220,8 @@ func getWifiRegistrations(client *ros.Client) ([]WifiRegistration, error) {
 	return regs, nil
 }
 
-func getLegacyCAPsMANRegistrations(client *ros.Client) ([]WifiRegistration, error) {
-	reply, err := RunCommand(client, "/caps-man/registration-table/print")
+func getLegacyCAPsMANRegistrations(run Runner) ([]WifiRegistration, error) {
+	reply, err := run.Run("/caps-man/registration-table/print")
 	if err != nil {
 		return nil, err
 	}
@@ -208,8 +246,8 @@ func getLegacyCAPsMANRegistrations(client *ros.Client) ([]WifiRegistration, erro
 	return regs, nil
 }
 
-func getLocalWirelessRegistrations(client *ros.Client) ([]WifiRegistration, error) {
-	reply, err := RunCommand(client, "/interface/wireless/registration-table/print")
+func getLocalWirelessRegistrations(run Runner) ([]WifiRegistration, error) {
+	reply, err := run.Run("/interface/wireless/registration-table/print")
 	if err != nil {
 		return nil, err
 	}

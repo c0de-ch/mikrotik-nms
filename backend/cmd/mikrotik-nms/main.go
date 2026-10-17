@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -83,6 +84,22 @@ func main() {
 
 	pool := routeros.NewPool(cfg.ROSTLSVerify)
 
+	// The device I/O fence. MIKROTIK_NMS_POLLERS=off is the code default, so a
+	// checkout started against a copy of a production database never contacts
+	// the fleet; "local" dials only inside MIKROTIK_NMS_ALLOWED_TARGET_CIDRS.
+	// Installed before the manager and the router exist, so nothing can dial
+	// ahead of it.
+	routeros.SetDialPolicy(&routeros.DialPolicy{Enabled: cfg.PollersEnabled(), Allowed: cfg.AllowedTargetCIDRs})
+	if cfg.PollersEnabled() {
+		n := 0
+		if devices, err := queries.ListDevices(db); err == nil {
+			n = len(devices)
+		}
+		log.Printf("pollers: local — polling %d devices, targets limited to %s", n, strings.Join(cfg.AllowedTargetCIDRStrings(), ","))
+	} else {
+		log.Println("pollers: off (MIKROTIK_NMS_POLLERS=off — no device or UDP I/O)")
+	}
+
 	// Informational only: the live SMTP config is resolved per request from
 	// app_settings (Settings page) with this env config as the fallback, so a
 	// nil mailer is passed to the router and the API builds one on demand.
@@ -108,7 +125,7 @@ func main() {
 	flows := pollerMgr.Flows()
 	telemetry.SetFlowMetricsSource(func() telemetry.FlowMetrics { return flowMetrics(flows.Status(), time.Now()) })
 
-	router := api.NewRouter(db, hub, cfg, pool, nil, pollerMgr.PortStats(), flows)
+	router := api.NewRouter(db, hub, cfg, pool, nil, pollerMgr.PortStats(), flows, pollerMgr.Cadence())
 
 	srv := &http.Server{
 		Addr:         cfg.Listen,

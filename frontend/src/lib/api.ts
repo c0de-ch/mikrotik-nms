@@ -216,16 +216,39 @@ export const api = {
       apiFetch(`/devices/${id}`, { method: "DELETE", token }),
     interfaces: (token: string, id: string) =>
       apiFetch<DeviceInterface[]>(`/devices/${id}/interfaces`, { token }),
-    // Physical ports with a one-shot live rx/tx sample — powers the switch
-    // port-grid on the map.
+    // Physical ports with their rx/tx from the port-counter snapshot (no
+    // device call) — powers the switch port grid on the map.
     ports: (token: string, id: string) =>
-      apiFetch<DevicePort[]>(`/devices/${id}/ports`, { token }),
+      apiFetch<DevicePortsResponse>(`/devices/${id}/ports`, { token }),
+    // What a live per-port stream of this device may do for the caller
+    // (class caps, admin-only, pause) — checked before subscribing.
+    liveLimits: (token: string, id: string) =>
+      apiFetch<LiveLimits>(`/devices/${id}/live-limits`, { token }),
     neighbors: (token: string, id: string) =>
       apiFetch<Neighbor[]>(`/devices/${id}/neighbors`, { token }),
     // Live from the device: configured IPv4/IPv6 addresses annotated with the
     // VLAN id when the interface is an /interface/vlan. 409 when offline.
     addresses: (token: string, id: string) =>
       apiFetch<DeviceAddress[]>(`/devices/${id}/addresses`, { token }),
+    // Polling controls (admin): pause every poller but liveness, switch to
+    // the light (C1) cadences, or override the CPU class with a gentler one.
+    pausePolling: (token: string, id: string, hours: number) =>
+      apiFetch<Device>(`/devices/${id}/polling/pause`, {
+        method: "POST",
+        token,
+        body: JSON.stringify({ hours }),
+      }),
+    resumePolling: (token: string, id: string) =>
+      apiFetch<Device>(`/devices/${id}/polling/resume`, { method: "POST", token }),
+    updatePolling: (token: string, id: string, data: UpdatePollingRequest) =>
+      apiFetch<Device>(`/devices/${id}/polling`, { method: "PUT", token, body: JSON.stringify(data) }),
+    // Operator actions on the device (pauses, profile and class changes), newest first.
+    audit: (token: string, id: string, limit = 20) =>
+      apiFetch<DeviceAuditEntry[]>(`/devices/${id}/audit?limit=${limit}`, { token }),
+    // What the pollers noticed about the device (another API poller, login
+    // failures, …), most recently seen first.
+    findings: (token: string, id: string, limit = 50) =>
+      apiFetch<DeviceFinding[]>(`/devices/${id}/findings?limit=${limit}`, { token }),
   },
 
   // Topology
@@ -237,10 +260,10 @@ export const api = {
   traffic: {
     summary: (token: string) =>
       apiFetch<{ device_id: string; rx_bps: number; tx_bps: number }[]>("/traffic/summary", { token }),
-    // One-shot per-link throughput snapshot for the map's initial paint; the
-    // continuous feed is the "topology.traffic" WS topic.
+    // Per-link throughput from the port-counter snapshot for the map's
+    // initial paint; the continuous feed is the "topology.traffic" WS topic.
     links: (token: string) =>
-      apiFetch<{ links: LinkTraffic[] }>("/traffic/links", { token }),
+      apiFetch<LinkTrafficResponse>("/traffic/links", { token }),
     get: (token: string, deviceId: string, iface: string, from?: string, to?: string) => {
       const params = new URLSearchParams();
       if (from) params.set("from", from);
@@ -598,11 +621,20 @@ export const api = {
       apiFetch(`/users/${id}`, { method: "DELETE", token }),
   },
 
-  // Health
-  health: () => apiFetch<{ status: string }>("/health"),
+  // Health (public): liveness, the instance id the version watchdog compares,
+  // and whether this instance polls devices at all.
+  health: () => apiFetch<{ status: string; instance_id?: string; pollers?: "local" | "off" }>("/health"),
+  // How this instance runs (logged-in users): polling mode + the subnets it may reach.
+  system: (token: string) => apiFetch<SystemInfo>("/system", { token }),
 };
 
 // Types
+export interface SystemInfo {
+  instance_id: string;
+  pollers: "local" | "off";
+  allowed_target_cidrs: string[];
+}
+
 export interface Device {
   id: string;
   address: string;
@@ -626,6 +658,65 @@ export interface Device {
   notes: string;
   created_at: string;
   updated_at: string;
+  // CPU class and polling controls. device_class is what the last
+  // /system/resource probe derived ("" until probed); class_override an
+  // admin's gentler-only override; effective_class what the pollers budget
+  // the device as (an unprobed device counts as C1).
+  device_class: DeviceClass | "";
+  class_override: DeviceClass | "";
+  effective_class: DeviceClass;
+  class_probed_at: string | null;
+  poll_profile: PollProfile;
+  polling_paused_until: string | null;
+  polling_paused: boolean;
+  cpu_count: number | null;
+  cpu_mhz_max: number | null;
+  // How the pollers treat the device right now — GET /devices/{id} and the
+  // polling-control responses only.
+  polling?: DevicePolling;
+}
+
+// next_runs maps a scheduled read (counters, neighbors, bridge_ports, …) to
+// when it runs next; empty while the device is paused or offline.
+export interface DevicePolling {
+  class: DeviceClass;
+  profile: PollProfile;
+  paused_until: string | null;
+  next_runs: Record<string, string>;
+}
+
+export type DeviceClass = "C0" | "C1" | "C2" | "C3";
+export type PollProfile = "auto" | "light";
+
+export interface UpdatePollingRequest {
+  profile?: PollProfile;
+  // null clears the override; omit to leave it alone.
+  class_override?: DeviceClass | null;
+}
+
+export interface DeviceAuditEntry {
+  id: number;
+  at: string;
+  user_id: string;
+  username: string;
+  action: string;
+  device_id: string;
+  detail: string;
+}
+
+// One device_findings row: something a poller noticed about the device,
+// deduplicated by (kind, detail) — count and last_seen grow on repeats.
+// kind: parallel_api_poller (an API login from an address that is not this
+// NMS) or login_failure; others may follow.
+export interface DeviceFinding {
+  id: number;
+  device_id: string;
+  kind: string;
+  severity: "info" | "warn" | "critical";
+  detail: string;
+  first_seen: string;
+  last_seen: string;
+  count: number;
 }
 
 export interface CreateDeviceRequest {
@@ -709,14 +800,70 @@ export interface TrafficSample {
   collected_at: string;
 }
 
-// Live per-link throughput for the network map. id == the topology edge id
-// (links.id), so it merges straight onto the corresponding graph edge.
+// Per-link throughput for the network map. id == the topology edge id
+// (links.id, or a synthetic egress edge id), so it merges straight onto the
+// corresponding graph edge. Rates are in source's frame (rx enters source);
+// device_id/iface name the end whose port counters were read.
 export interface LinkTraffic {
   id: string;
   source: string;
   target: string;
   rx_bps: number;
   tx_bps: number;
+  device_id: string;
+  iface: string;
+}
+
+// Freshness of rates derived from the port-counter snapshot. sampled_at is
+// the end of the counter cycle the rates come from (null before the first
+// cycle, or for a device the snapshot has nothing of); age_seconds is its
+// age when the server answered — add the time since the response arrived
+// rather than comparing sampled_at with the local clock.
+export interface SnapshotMeta {
+  source: "snapshot";
+  sampled_at: string | null;
+  age_seconds: number | null;
+  interval_seconds: number;
+  ready: boolean;
+}
+
+// REST /traffic/links and the WS "topology.traffic" payload.
+export interface LinkTrafficResponse extends SnapshotMeta {
+  links: LinkTraffic[];
+}
+
+// A device's live-stream ceilings (backend devclass.LiveCaps): the class
+// they follow (C1 on the light profile), the shortest sampling period, how
+// many ports and viewers may stream at once, and whether only admins may.
+export interface LiveCaps {
+  class: DeviceClass;
+  profile: PollProfile;
+  min_period_seconds: number;
+  max_ifaces: number;
+  leases: number;
+  admin_only: boolean;
+  // How often the port-counter snapshot — the fallback view — refreshes.
+  snapshot_interval_seconds: number;
+}
+
+// GET /devices/{id}/live-limits: whether the caller may stream at all (role,
+// pause, polling mode); interface and viewer ceilings are decided on
+// subscribe (subscribe.error).
+export interface LiveLimits extends LiveCaps {
+  device_id: string;
+  allowed: boolean;
+  reason?: string;
+  message?: string;
+}
+
+// Data of the subscribe.ack / subscribe.error control frame on a
+// "traffic.<device>.<iface>" topic: the effective period when granted, the
+// refusal code and message (and the fallback topic) when not.
+export interface LiveStreamStatus extends LiveCaps {
+  period_seconds?: number;
+  code?: string;
+  error?: string;
+  fallback?: string;
 }
 
 // ---- Traffic analytics (port-stats collector) --------------------------------
@@ -1275,7 +1422,7 @@ export interface FlowExporterBody {
   nat_addresses: string[];
 }
 
-// One physical port of a device with a live throughput sample.
+// One physical port of a device with its rate from the port-counter snapshot.
 export interface DevicePort {
   name: string;
   type: string;
@@ -1284,6 +1431,13 @@ export interface DevicePort {
   comment: string;
   rx_bps: number;
   tx_bps: number;
+}
+
+// GET /devices/{id}/ports. sampled_at is null while the snapshot has none
+// of the device's interfaces (offline or not polled yet): rates are 0 then.
+export interface DevicePortsResponse extends SnapshotMeta {
+  device_id: string;
+  ports: DevicePort[];
 }
 
 export interface FirmwareStatus {
@@ -1356,8 +1510,27 @@ export interface BridgePortStatus {
   point_to_point: boolean;
   path_cost: number;
   designated_bridge: string;
+  // Runtime fields a device may not report: null means unknown (never read
+  // as 0 or false). Optional for backends older than the 7.24 bridge reader.
+  topology_changes?: number | null;
+  forwarding?: boolean | null;
+  learning?: boolean | null;
+  inactive?: boolean | null;
+  disabled?: boolean | null;
+  hw_offload?: boolean | null;
+  hw_offload_group?: string;
+  pvid?: number | null;
+  // Raw RouterOS status ("in-bridge" | "inactive") and the configured edge
+  // (auto | yes | no | yes-discover | no-discover).
+  port_state?: string;
+  edge_config?: string;
   last_polled: string;
 }
+
+// How a bridge's port STP state was read: the port print itself (RouterOS
+// >= 7.24, cheapest), one monitor over all active ports, a monitor per port
+// (last resort), or not at all.
+export type StpSource = "print" | "monitor-batched" | "monitor-per-port" | "none";
 
 export interface BridgeWithPorts {
   id: string;
@@ -1370,9 +1543,11 @@ export interface BridgeWithPorts {
   root_bridge_id: string;
   root_path_cost: number;
   root_port: string;
+  // Sum of the member ports' topology-change counters.
   topology_changes: number;
   last_topology_change: string;
   port_count: number;
+  stp_source?: StpSource | "";
   last_polled: string;
   ports: BridgePortStatus[];
 }

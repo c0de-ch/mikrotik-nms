@@ -19,6 +19,10 @@ services:
       - MIKROTIK_NMS_DB_PATH=/data/mikrotik-nms.db
       - MIKROTIK_NMS_LISTEN=:8080
       - MIKROTIK_NMS_JWT_SECRET=dev-secret-change-me
+      # A dev stack polls nothing unless you opt in: POLLERS=local plus the
+      # subnet(s) of the (lab) devices it may reach.
+      - MIKROTIK_NMS_POLLERS=${POLLERS:-off}
+      - MIKROTIK_NMS_ALLOWED_TARGET_CIDRS=${ALLOWED_TARGET_CIDRS:-}
       - MIKROTIK_NMS_FLOW_LISTEN=${FLOW_LISTEN:-}
     command: ["mikrotik-nms"]
 

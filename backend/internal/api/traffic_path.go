@@ -270,7 +270,7 @@ func (s *Server) trafficTopology() (*trafficTopo, error) {
 	if s.topo != nil && now.Sub(s.topo.builtAt) < trafficTopoTTL {
 		return s.topo, nil
 	}
-	t, err := loadTrafficTopo(s.db, s.portSnapshot(), now)
+	t, err := loadTrafficTopo(s.db, s.cadenceSource(), s.portSnapshot(), now)
 	if err != nil {
 		return nil, err
 	}
@@ -292,14 +292,17 @@ func (s *Server) invalidateTrafficTopo() {
 // uplinks, interfaces (running/disabled taken from the live snapshot, plus
 // snapshot ports the table does not know yet), fresh FDB rows, interface
 // stacking (bond members, VLAN/PPPoE carriers) and gateway labels from the
-// client cache.
+// client cache. Uplink and FDB rows are judged per device by cs, as the
+// pollers that wrote them judge them (FreshUplinks, FreshPortHosts): a weak
+// switch dumping its FDB every 15 min, or a paused device, keeps its rows
+// between reads.
 //
 // The snapshot is a full /interface/print of every device it holds, so for
 // those devices it is the port list: interfaces-table rows it lacks were
 // removed or renamed on the device (the table is never pruned) and would
 // surface as ghost ports. Table rows only stand in for devices the snapshot
 // does not have (offline). Blank-named rows are always dropped.
-func loadTrafficTopo(db *sql.DB, snap poller.PortSnapshot, now time.Time) (*trafficTopo, error) {
+func loadTrafficTopo(db *sql.DB, cs poller.CadenceSource, snap poller.PortSnapshot, now time.Time) (*trafficTopo, error) {
 	devices, err := queries.ListDevices(db)
 	if err != nil {
 		return nil, err
@@ -308,11 +311,11 @@ func loadTrafficTopo(db *sql.DB, snap poller.PortSnapshot, now time.Time) (*traf
 	if err != nil {
 		return nil, err
 	}
-	uplinks, err := queries.ListDeviceUplinks(db, 10*time.Minute)
+	uplinks, err := poller.FreshUplinks(db, cs, now)
 	if err != nil {
 		return nil, err
 	}
-	hosts, err := queries.ListPortHosts(db, now.Add(-max(3*poller.PortHostsInterval(db), 15*time.Minute)), "")
+	hosts, err := poller.FreshPortHosts(db, cs, now)
 	if err != nil {
 		return nil, err
 	}

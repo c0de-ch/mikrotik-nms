@@ -6,7 +6,10 @@ trap 'kill 0' EXIT
 
 echo "Starting MikroTik NMS development servers..."
 
-# Backend
+# Backend. MIKROTIK_NMS_POLLERS is deliberately left at its default (off): a
+# dev backend never contacts devices, even with a copied production database.
+# To poll real (lab) devices use `make dev-backend-poll` with
+# MIKROTIK_NMS_ALLOWED_TARGET_CIDRS set to their subnet(s).
 (cd backend && \
   MIKROTIK_NMS_JWT_SECRET=dev-secret \
   MIKROTIK_NMS_DB_PATH=mikrotik-nms.db \

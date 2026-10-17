@@ -1,14 +1,14 @@
 package api
 
 import (
-	"crypto/tls"
 	"database/sql"
 	"fmt"
 	"net/http"
+	"time"
 
-	ros "github.com/go-routeros/routeros/v3"
 	"github.com/google/uuid"
 	"github.com/mikrotik-nms/backend/internal/database/queries"
+	"github.com/mikrotik-nms/backend/internal/poller"
 	rosutil "github.com/mikrotik-nms/backend/internal/routeros"
 )
 
@@ -57,7 +57,14 @@ func (s *Server) handleGetDevice(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to get device")
 		return
 	}
-	writeJSON(w, http.StatusOK, device)
+	writeJSON(w, http.StatusOK, withPolling(device))
+}
+
+// withPolling attaches how the pollers treat the device right now — class,
+// profile, pause and each scheduled read's next run — for the device page.
+func withPolling(d *queries.Device) *queries.Device {
+	d.Polling = poller.Schedule().Polling(*d, time.Now())
+	return d
 }
 
 func (s *Server) handleCreateDevice(w http.ResponseWriter, r *http.Request) {
@@ -82,17 +89,14 @@ func (s *Server) handleCreateDevice(w http.ResponseWriter, r *http.Request) {
 		password = s.cfg.DefaultROSPass
 	}
 
-	// Test connection before adding. JoinHostPort (not "%s:%d") so an IPv6
-	// literal is bracketed correctly instead of failing with "too many colons".
-	addr := rosutil.JoinHostPort(req.Address, req.APIPort)
-	var testClient *ros.Client
-	var testErr error
-	if req.UseTLS {
-		testClient, testErr = ros.DialTLS(addr, req.Username, password, &tls.Config{InsecureSkipVerify: !s.cfg.ROSTLSVerify}) //nolint:gosec // opt-in verification via MIKROTIK_NMS_ROS_TLS_VERIFY
-	} else {
-		testClient, testErr = ros.Dial(addr, req.Username, password)
-	}
+	// Test connection before adding, on a one-shot connection that goes
+	// through the dial policy like every other device dial (polling off, or
+	// an address outside the allowed subnets, is refused before any login).
+	testClient, testErr := rosutil.DialOnce(req.Address, req.APIPort, req.Username, password, req.UseTLS, s.cfg.ROSTLSVerify)
 	if testErr != nil {
+		if writeDialPolicyError(w, testErr) {
+			return
+		}
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("cannot connect to %s: %v", req.Address, testErr))
 		return
 	}
@@ -245,6 +249,9 @@ func (s *Server) handleDeviceAddresses(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "failed to get device")
+		return
+	}
+	if s.writePollingPaused(w, dev.ID) {
 		return
 	}
 	if dev.Status != "online" {

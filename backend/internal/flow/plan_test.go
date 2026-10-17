@@ -285,3 +285,32 @@ func TestStaleUplinks(t *testing.T) {
 		}
 	}
 }
+
+// A paused device is not asked for its addresses: its stored plan rows are
+// carried over where the new plan has no row for the prefix, so its subnets
+// keep their class while nobody reads it.
+func TestCarryPausedPrefixes(t *testing.T) {
+	db := testDB(t)
+	old := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	stored := []queries.FlowPrefix{
+		{Prefix: netip.MustParsePrefix("192.0.2.0/24"), Class: "internal", DeviceID: "held", Iface: "bridge", UpdatedAt: old},
+		{Prefix: netip.MustParsePrefix("198.51.100.0/24"), Class: "transit", DeviceID: "held", Iface: "ether1", UpdatedAt: old},
+		{Prefix: netip.MustParsePrefix("203.0.113.0/24"), Class: "internal", DeviceID: "gone", Iface: "ether2", UpdatedAt: old},
+	}
+	if err := queries.ReplaceFlowPrefixes(db, stored); err != nil {
+		t.Fatal(err)
+	}
+	fresh := []queries.FlowPrefix{{Prefix: netip.MustParsePrefix("198.51.100.0/24"), Class: "internal", DeviceID: "rb", Iface: "bridge", UpdatedAt: tLab}}
+
+	got := carryPausedPrefixes(db, fresh, map[string]bool{"held": true})
+	byPrefix := map[string]queries.FlowPrefix{}
+	for _, p := range got {
+		byPrefix[p.Prefix.String()] = p
+	}
+	if len(got) != 2 || byPrefix["192.0.2.0/24"].DeviceID != "held" || byPrefix["198.51.100.0/24"].DeviceID != "rb" {
+		t.Errorf("plan = %+v, want the fresh row plus the paused device's other prefix", got)
+	}
+	if again := carryPausedPrefixes(db, fresh, nil); len(again) != 1 {
+		t.Errorf("without paused devices the plan is untouched: %+v", again)
+	}
+}

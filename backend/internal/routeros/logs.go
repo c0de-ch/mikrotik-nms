@@ -105,48 +105,44 @@ func ParseWirelessLogMessage(msg string) *WirelessLogEvent {
 	return ev
 }
 
-// GetWirelessLogEvents fetches recent log entries from a RouterOS device and
-// returns those that look like wireless/CAPsMAN/wifi client events. The
-// returned slice is in the order RouterOS produced it (oldest first).
+// WirelessLogEventsFrom returns the wireless / CAPsMAN / wifi client events
+// among a log read, in the order the device produced them (oldest first).
 //
 // We deliberately do not use a server-side topics filter because the topic
 // name varies across RouterOS versions ("wireless", "wifi", "caps") and the
-// API does not support a portable OR filter. The log buffer is small enough
-// that pulling everything once per poll cycle is cheap.
-func GetWirelessLogEvents(client *ros.Client) ([]WirelessLogEvent, error) {
-	reply, err := RunCommand(client, "/log/print")
-	if err != nil {
-		return nil, err
-	}
+// API does not support a portable OR filter; the shared log read is
+// proplisted and cursored instead (poller.LogReader).
+func WirelessLogEventsFrom(entries []LogEntry) []WirelessLogEvent {
 	out := make([]WirelessLogEvent, 0, 32)
-	for _, re := range reply.Re {
-		m := GetSentenceMap(re)
-		topics := m["topics"]
-		if !isWirelessTopic(topics) {
+	for i := range entries {
+		e := &entries[i]
+		if !isWirelessTopic(e.Topics) {
 			continue
 		}
-		parsed := ParseWirelessLogMessage(m["message"])
+		parsed := ParseWirelessLogMessage(e.Message)
 		if parsed == nil {
 			continue
 		}
-		parsed.Time = m["time"]
-		parsed.Topics = topics
-		parsed.Message = m["message"]
+		parsed.Time = e.Time
+		parsed.Topics = e.Topics
+		parsed.Message = e.Message
 		out = append(out, *parsed)
 	}
-	return out, nil
+	return out
+}
+
+// GetWirelessLogEvents reads the device's whole log buffer and returns its
+// wireless events. One-shot callers only: pollers share one cursored read per
+// device through poller.LogReader instead of dumping the buffer themselves.
+func GetWirelessLogEvents(client *ros.Client) ([]WirelessLogEvent, error) {
+	entries, err := ReadLog(ClientRunner{Client: client})
+	if err != nil {
+		return nil, err
+	}
+	return WirelessLogEventsFrom(entries), nil
 }
 
 func isWirelessTopic(topics string) bool {
-	if topics == "" {
-		return false
-	}
 	// topics is a comma-separated list like "wireless,info" or "wifi,info,debug".
-	for _, t := range strings.Split(topics, ",") {
-		switch strings.TrimSpace(t) {
-		case "wireless", "wifi", "caps":
-			return true
-		}
-	}
-	return false
+	return hasTopic(topics, "wireless", "wifi", "caps")
 }

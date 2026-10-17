@@ -146,8 +146,10 @@ func ListUnmanagedNeighbors(db *sql.DB) ([]UnmanagedNeighbor, error) {
 	return out, rows.Err()
 }
 
-func DeleteStaleNeighbors(db *sql.DB, cutoff time.Time) (int64, error) {
-	res, err := db.Exec(`DELETE FROM neighbors WHERE last_seen < ?`, cutoff)
+// DeleteStaleNeighbors removes the neighbor rows deviceID last reported
+// before cutoff.
+func DeleteStaleNeighbors(db *sql.DB, deviceID string, cutoff time.Time) (int64, error) {
+	res, err := db.Exec(`DELETE FROM neighbors WHERE device_id = ? AND last_seen < ?`, deviceID, sqlTime(cutoff))
 	if err != nil {
 		return 0, err
 	}

@@ -21,15 +21,33 @@ type SystemResource struct {
 	MemoryFree   int64
 	MemoryTotal  int64
 	Uptime       string
+
+	// Fields is the proplisted sentence as the device returned it, for
+	// readers that need more than the typed fields: the class probe hands it
+	// to devclass.ParseResourceFacts (cpu-count, cpu-frequency, …).
+	Fields map[string]string
 }
 
+// systemResourceProplist limits the resource print to what its readers use:
+// the inventory and health fields above plus the CPU facts the device class
+// is derived from. Without it RouterOS formats every field (bad blocks,
+// write-sector counters, build time, …) on each print.
+const systemResourceProplist = "=.proplist=board-name,version,platform,architecture-name," +
+	"cpu,cpu-count,cpu-frequency,cpu-load,total-memory,free-memory,uptime"
+
 func GetSystemResource(client *ros.Client) (*SystemResource, error) {
-	reply, err := RunCommand(client, "/system/resource/print")
+	return ReadSystemResource(ClientRunner{Client: client})
+}
+
+// ReadSystemResource is GetSystemResource on a Runner: one proplisted
+// /system/resource/print.
+func ReadSystemResource(run Runner) (*SystemResource, error) {
+	reply, err := run.Run("/system/resource/print", systemResourceProplist)
 	if err != nil {
 		return nil, err
 	}
 
-	if len(reply.Re) == 0 {
+	if reply == nil || len(reply.Re) == 0 {
 		return nil, ErrEmptyReply
 	}
 
@@ -40,6 +58,7 @@ func GetSystemResource(client *ros.Client) (*SystemResource, error) {
 		Version:      m["version"],
 		Architecture: m["architecture-name"],
 		Uptime:       m["uptime"],
+		Fields:       m,
 	}
 
 	if v, err := strconv.Atoi(m["cpu-load"]); err == nil {
@@ -55,37 +74,36 @@ func GetSystemResource(client *ros.Client) (*SystemResource, error) {
 	return r, nil
 }
 
+// InterfaceInfo is the identity slice of an interface: its name, type and
+// MAC.
 type InterfaceInfo struct {
 	Name       string
 	Type       string
 	MACAddress string
-	MTU        int
-	Running    bool
-	Disabled   bool
-	Comment    string
 }
 
-func GetInterfaces(client *ros.Client) ([]InterfaceInfo, error) {
-	reply, err := RunCommand(client, "/interface/print")
+// interfaceIdentityProplist limits GetInterfaces to what identity checks read.
+const interfaceIdentityProplist = "=.proplist=name,type,mac-address"
+
+// GetInterfaces lists the device's interfaces with name, type and MAC only.
+// It is not a poll: the scheduled interface read is Tier 0
+// (GetInterfaceStats), which every consumer gets from the port-stats
+// collector's snapshot. This one confirms the identity of a device answering
+// at a candidate address (IP auto-follow), which no snapshot covers yet.
+func GetInterfaces(run Runner) ([]InterfaceInfo, error) {
+	reply, err := run.Run("/interface/print", interfaceIdentityProplist)
 	if err != nil {
 		return nil, err
 	}
 
-	var ifaces []InterfaceInfo
+	ifaces := make([]InterfaceInfo, 0, len(reply.Re))
 	for _, re := range reply.Re {
 		m := GetSentenceMap(re)
-		iface := InterfaceInfo{
+		ifaces = append(ifaces, InterfaceInfo{
 			Name:       m["name"],
 			Type:       m["type"],
 			MACAddress: m["mac-address"],
-			Comment:    m["comment"],
-			Running:    m["running"] == "true",
-			Disabled:   m["disabled"] == "true",
-		}
-		if v, err := strconv.Atoi(m["mtu"]); err == nil {
-			iface.MTU = v
-		}
-		ifaces = append(ifaces, iface)
+		})
 	}
 	return ifaces, nil
 }

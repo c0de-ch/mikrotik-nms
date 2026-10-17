@@ -68,7 +68,8 @@ mikrotik-c0de/
         └── lib/
             ├── api.ts             # typed REST client
             ├── ws.ts              # auto-reconnecting WS client
-            └── status.ts          # device-status presentation helpers
+            ├── status.ts          # device-status presentation helpers
+            └── device-load.ts     # class budget / pause / cadence helpers
 ```
 
 ## 3. Running locally
@@ -98,6 +99,30 @@ that, use the normal login. New users are created from the **Users** page
 
 > `NEXT_PUBLIC_*` values are inlined into the bundle at build time — changing
 > them requires a frontend rebuild.
+
+### A dev backend never polls production
+
+`MIKROTIK_NMS_POLLERS` defaults to **`off`**, and `make dev-backend` /
+`scripts/dev.sh` leave it there: the backend does no device or UDP I/O at all
+(no RouterOS dials, no flow socket), while retention and the hourly rollups
+keep running. A copied production database therefore shows its history and
+nothing else — the UI shows a "Polling is off on this instance" banner, and
+every on-demand device action (add-device test, discovery, run-now probes,
+firmware jobs) answers `503`.
+
+To poll real **lab** devices from a checkout, opt in and name their subnets:
+
+```bash
+MIKROTIK_NMS_ALLOWED_TARGET_CIDRS=192.0.2.0/24 make dev-backend-poll
+# == MIKROTIK_NMS_POLLERS=local plus the dev secret/DB vars
+```
+
+With `local`, the backend refuses to start while `MIKROTIK_NMS_ALLOWED_TARGET_CIDRS`
+is empty and refuses any dial outside it (`403` from the API, `routeros.ErrTargetNotAllowed`
+in Go). The fence is `routeros.SetDialPolicy` / `CheckTarget`, consulted by
+`Pool.Dial`, `DialOnce`, `Ping`, `ScanSubnet` and `ScanMNDP` — new code that
+reaches a device must go through one of those, never `net.Dial` or the
+go-routeros dialers directly.
 
 ## 4. Build / test / lint
 
@@ -348,6 +373,42 @@ import { deviceStatusLabel, deviceStatusBadgeClass, deviceStatusColor } from "@/
   {deviceStatusLabel(d.status)}
 </Badge>
 <span className={`h-2 w-2 rounded-full ${deviceStatusColor(d.status)}`} />
+```
+
+### Device-load marks
+
+How hard the NMS may poll a device (its CPU class budget), whether its
+polling is paused, and how fresh snapshot rates are read as one system. Use
+the shared pieces rather than ad-hoc badges:
+
+- [`lib/device-load.ts`](../frontend/src/lib/device-load.ts) — pure helpers:
+  `budgetClass` (the effective class, `C1` on the light profile — what the
+  cadences and live caps follow), `budgetReason` (`unprobed` / `light` /
+  `override`), `counterIntervalSeconds` (the device's own counter cadence:
+  class cadence floored by the fleet `interval_seconds` — a weak device is
+  read every 60 s, not 15 s), `isPollingPaused`, `liveRefusalText` and the
+  time formatters. The class tables mirror `internal/devclass`; keep them in
+  step.
+- [`components/devices/device-load.tsx`](../frontend/src/components/devices/device-load.tsx)
+  — `ClassMeter` (three equal bars, filled up to the budget class;
+  monochrome — a weak device is a fact, not a fault), `DeviceClassBadge`,
+  `PausedBadge` (the one loud mark) and `DeviceLoadBadges` (both, in that
+  order, after the status badge wherever a device is named).
+- [`components/traffic/snapshot-age.tsx`](../frontend/src/components/traffic/snapshot-age.tsx)
+  — "Updated 12 s ago"; pass `intervalSeconds` (the device's cadence) and
+  `paused` when the view is about one device.
+
+Colours are the `--load-meter`, `--load-track` and `--load-hold` tokens in
+`globals.css` (Tailwind `bg-load-meter`, `text-load-hold`, …). "Hold" amber
+means *this is not moving* — polling paused, or a reading gone stale — and
+nothing else.
+
+```tsx
+import { DeviceLoadBadges } from "@/components/devices/device-load";
+
+<Badge variant="outline" className={deviceStatusBadgeClass(d.status)}>{deviceStatusLabel(d.status)}</Badge>
+<DeviceLoadBadges device={d} />            {/* ▮▯▯ C1  ‖ Paused */}
+<DeviceLoadBadges device={d} detail="full" /> {/* ▮▯▯ C1 weak  ‖ Paused until 14:30 */}
 ```
 
 ## 7. Testing patterns

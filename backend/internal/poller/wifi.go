@@ -4,22 +4,36 @@ import (
 	"context"
 	"database/sql"
 	"log"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/mikrotik-nms/backend/internal/database/queries"
+	"github.com/mikrotik-nms/backend/internal/devclass"
 	"github.com/mikrotik-nms/backend/internal/routeros"
 	"github.com/mikrotik-nms/backend/internal/ws"
 )
 
 // clientState tracks the last known state of a wifi client.
 type clientState struct {
-	AP           string
-	SSID         string
-	Signal       string
-	MissedPolls  int           // how many consecutive polls the client was absent
+	AP     string
+	SSID   string
+	Signal string
+	// Controller is the device whose log or registration table last
+	// reported the client: its read cadence sizes the absence grace.
+	Controller string
+	// AbsentSince is when the client was first missing from every current
+	// registration read; zero while it is in one.
+	AbsentSince  time.Time
 	PendingLeave *pendingLeave // deferred leave awaiting registration-table confirmation
+}
+
+// regRead is one controller's latest registration-table read, which stands
+// for the controller until the next one: controllers are read on their own
+// cadences, so a tick sees only some of them fresh.
+type regRead struct {
+	at       time.Time
+	interval time.Duration
+	clients  map[string]*wifiSnapshot
 }
 
 // pendingLeave holds a log-based disconnect that has not yet been confirmed
@@ -32,15 +46,23 @@ type pendingLeave struct {
 	Reason string
 }
 
-// WifiTracker periodically polls CAPsMAN/WiFi registrations and records history.
+// WifiTracker polls CAPsMAN/WiFi registrations and records history. Each
+// controller is read on its own Tier 5c cadence (wifi_interval is the floor),
+// its log lines in the same visit.
 //
 // Sources of truth, in priority order:
 //  1. RouterOS wireless log entries (authoritative for join/leave/roam) —
-//     parsed via routeros.GetWirelessLogEvents.
+//     the shared per-device log read, parsed by routeros.WirelessLogEventsFrom.
 //  2. Registration table snapshots — used to enrich state with signal/rate
-//     and to catch clients that the log missed.
-//  3. Absence from the registration table for >= missedPollThreshold cycles —
-//     a safety net only, in case logging is disabled on the controller.
+//     and to catch clients that the log missed. Every controller's latest
+//     read stands until its next one (or until it is 3 reads old).
+//  3. Absence from every current registration read for missedPollThreshold
+//     of its controller's reads — a safety net only, in case logging is
+//     disabled on the controller.
+//
+// Only devices with a wireless package (CapabilityCache) are read at all: a
+// switch has no wireless log lines and no registration table, and asking it
+// anyway cost a log dump plus three trapping prints every cycle.
 type WifiTracker struct {
 	db       *sql.DB
 	pool     *routeros.Pool
@@ -51,12 +73,47 @@ type WifiTracker struct {
 	// Pruned periodically to bound memory.
 	seenLogs       map[string]map[string]time.Time // devID -> fingerprint -> firstSeen
 	lastLogPruneAt time.Time
+
+	logs *LogReader       // shared with the network-health poller (UseLogReader)
+	caps *CapabilityCache // shared fleet-wide (UseCapabilities)
+
+	// cadence and clock schedule the controllers (UseCadence); regs holds
+	// each one's latest registration read. runner is the device link and
+	// now the clock (test seams).
+	cadence CadenceSource
+	clock   *tierClock
+	regs    map[string]*regRead
+	runner  func(deviceID string) routeros.Runner
+	now     func() time.Time
 }
 
-// Number of consecutive missed polls before declaring a client as "left" via
-// the safety-net path. With log-based detection as the primary source, we
-// raise this so absence-based leaves only fire when logging is broken.
-// At 30s intervals, 10 misses = 5 minute grace period.
+// UseCadence schedules the controllers by cs. Call before Run.
+func (wt *WifiTracker) UseCadence(cs CadenceSource) {
+	if cs != nil {
+		wt.cadence = cs
+	}
+}
+
+// UseLogReader shares one log reader with the other pollers, so a device's
+// buffer is read once per window for all of them.
+func (wt *WifiTracker) UseLogReader(r *LogReader) {
+	if r != nil {
+		wt.logs = r
+	}
+}
+
+// UseCapabilities shares one capability cache with the other pollers.
+func (wt *WifiTracker) UseCapabilities(c *CapabilityCache) {
+	if c != nil {
+		wt.caps = c
+	}
+}
+
+// How many of its controller's registration reads a client may be missing
+// from before the safety net declares it "left" (a time: this many of the
+// controller's intervals). With log-based detection as the primary source, we
+// raise this so absence-based leaves only fire when logging is broken. At a
+// 30 s cadence, 10 reads = a 5 minute grace period.
 const missedPollThreshold = 10
 
 // How long to keep log fingerprints in memory before pruning. Must be larger
@@ -65,46 +122,37 @@ const missedPollThreshold = 10
 const logFingerprintTTL = 30 * time.Minute
 
 func NewWifiTracker(db *sql.DB, pool *routeros.Pool, hub *ws.Hub, interval time.Duration) *WifiTracker {
-	return &WifiTracker{
+	if interval <= 0 {
+		interval = defaultWifiFloor
+	}
+	wt := &WifiTracker{
 		db:       db,
 		pool:     pool,
 		hub:      hub,
 		interval: interval,
 		clients:  make(map[string]*clientState),
 		seenLogs: make(map[string]map[string]time.Time),
+		logs:     NewLogReader(),
+		caps:     NewCapabilityCache(),
+		cadence:  newFleetCadence(db),
+		clock:    newTierClock(Schedule()),
+		regs:     make(map[string]*regRead),
+		now:      time.Now,
 	}
-}
-
-// currentInterval reads the runtime-tunable wifi_interval (seconds) from
-// app_settings, falling back to the interval the tracker was constructed with.
-// Re-read each cycle so a Settings change applies without a backend restart.
-func (wt *WifiTracker) currentInterval() time.Duration {
-	if v, err := queries.GetSetting(wt.db, "wifi_interval"); err == nil {
-		if n, e := strconv.Atoi(strings.TrimSpace(v)); e == nil && n > 0 {
-			return time.Duration(n) * time.Second
-		}
-	}
-	return wt.interval
+	wt.runner = func(deviceID string) routeros.Runner { return poolRunner(wt.pool, deviceID) }
+	return wt
 }
 
 func (wt *WifiTracker) Run(ctx context.Context) {
 	wt.restoreState()
 
-	select {
-	case <-ctx.Done():
+	if !sleepCtx(ctx, 15*time.Second) {
 		return
-	case <-time.After(15 * time.Second):
 	}
-	wt.safePoll(ctx)
-
 	for {
-		timer := time.NewTimer(wt.currentInterval())
-		select {
-		case <-ctx.Done():
-			timer.Stop()
+		wt.safePoll(ctx)
+		if !sleepCtx(ctx, pollerTick) {
 			return
-		case <-timer.C:
-			wt.safePoll(ctx)
 		}
 	}
 }
@@ -123,108 +171,97 @@ func (wt *WifiTracker) poll(ctx context.Context) {
 	if err != nil {
 		return
 	}
-
-	macLookups, _ := queries.GetAllMACLookups(wt.db)
-	now := time.Now()
-
-	// Phase 1: drain wireless logs from each controller. This is the
-	// authoritative source for join / leave / roam events.
-	for _, dev := range devices {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-		if dev.Status != "online" {
-			continue
-		}
-		client := wt.pool.GetLive(dev.ID)
-		if client == nil {
-			continue
-		}
-		func() {
-			defer func() { recover() }()
-			events, err := routeros.GetWirelessLogEvents(client)
-			if err != nil {
-				return
-			}
-			wt.processDeviceLogs(dev.ID, events, macLookups, now)
-		}()
+	now := wt.now()
+	wt.clock.retain(deviceIDs(devices))
+	byID := make(map[string]queries.Device, len(devices))
+	for _, d := range devices {
+		byID[d.ID] = d
 	}
 
-	// Phase 2: snapshot registration tables (for signal/rate enrichment and
-	// the absence safety net).
-	currentClients := make(map[string]*wifiSnapshot)
-	for _, dev := range devices {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-		if dev.Status != "online" {
-			continue
-		}
-		client := wt.pool.GetLive(dev.ID)
-		if client == nil {
-			continue
-		}
-		func() {
-			defer func() { recover() }()
-			regs, err := routeros.GetCAPsMANRegistrations(client)
-			if err != nil {
-				return
+	// The MAC cache names the clients of emitted events; read once, and only
+	// on a tick that emits something.
+	var macLookups map[string]*queries.MACLookup
+	lookups := func() map[string]*queries.MACLookup {
+		if macLookups == nil {
+			if macLookups, _ = queries.GetAllMACLookups(wt.db); macLookups == nil {
+				macLookups = map[string]*queries.MACLookup{}
 			}
-			for _, reg := range regs {
-				mac := strings.ToUpper(reg.MAC)
-				if mac == "" || mac == "00:00:00:00:00:00" {
-					continue
-				}
-				// Skip non-wireless entries — a real wireless registration
-				// will have at least an SSID, band, or signal.
-				if reg.SSID == "" && reg.Band == "" && reg.Signal == "" {
-					continue
-				}
-				apName := reg.AP
-				if apName == "" && reg.Interface != "" {
-					apName = reg.Interface
-					if idx := strings.Index(apName, "/"); idx > 0 {
-						apName = apName[:idx]
-					}
-				}
-				currentClients[mac] = &wifiSnapshot{
-					mac:     mac,
-					ap:      apName,
-					ssid:    reg.SSID,
-					band:    reg.Band,
-					channel: reg.Channel,
-					signal:  reg.Signal,
-					txRate:  reg.TxRate,
-					rxRate:  reg.RxRate,
-					lastIP:  reg.LastIP,
-					devID:   dev.ID,
-				}
-			}
-		}()
+		}
+		return macLookups
 	}
 
-	// Phase 3: enrich state from snapshot. If a client appears in the
-	// registration table that the log never told us about, emit a join from
-	// the snapshot — covers controllers where wireless logging is disabled.
-	seenMACs := make(map[string]bool)
-	for mac, snap := range currentClients {
-		seenMACs[mac] = true
+	// Phases 1–2, per controller due at now: drain its wireless log (the
+	// authoritative source for join / leave / roam) and read its
+	// registration tables. Devices without a wireless package are probed
+	// once and then skipped — nothing to read there.
+	read := make(map[string]bool)
+	for _, dev := range devices {
+		if ctx.Err() != nil {
+			return
+		}
+		var iv time.Duration
+		if dev.Status == "online" {
+			iv = runInterval(wt.cadence, dev, devclass.TierWifiRegistrations, now)
+		}
+		// A device probed without a wireless package has no registration
+		// read: it is visited again only when its probe is due.
+		if caps, known := wt.caps.Get(dev.ID); known && !caps.HasWifiRole() && !probeDue(caps, dev.ROSVersion, now) {
+			iv = 0
+		}
+		if !wt.clock.due(dev.ID, devclass.TierWifiRegistrations, iv, now) {
+			continue
+		}
+		run := wt.runner(dev.ID)
+		if run == nil {
+			wt.clock.retryAt(dev.ID, devclass.TierWifiRegistrations, now.Add(noClientRetry))
+			continue
+		}
+		if wt.readController(dev, run, now, iv, lookups) {
+			read[dev.ID] = true
+		}
+		wt.clock.ran(dev.ID, devclass.TierWifiRegistrations, iv, wt.now())
+	}
+
+	// The registration tables as last read: each controller's latest read
+	// while it is within 3 of its intervals — a paused controller's read does
+	// not age — the freshest one winning for a client two controllers list.
+	current := make(map[string]*wifiSnapshot)
+	for id, rr := range wt.regs {
+		dev, ok := byID[id]
+		if !ok {
+			delete(wt.regs, id)
+			continue
+		}
+		if now.Sub(rr.at) > 3*rr.interval && !wt.cadence.Paused(dev, now) {
+			delete(wt.regs, id)
+			continue
+		}
+		for mac, snap := range rr.clients {
+			if prev, ok := current[mac]; !ok || wt.regs[prev.devID].at.Before(rr.at) {
+				current[mac] = snap
+			}
+		}
+	}
+
+	// Phase 3: enrich state from the tables read this tick. If a client
+	// appears in one that the log never told us about, emit a join from the
+	// snapshot — covers controllers where wireless logging is disabled.
+	for mac, snap := range current {
+		if !read[snap.devID] {
+			continue
+		}
 		prev, exists := wt.clients[mac]
 		if !exists {
-			wt.emitFromSnapshot(snap, "join", "", macLookups, now)
+			wt.emitFromSnapshot(snap, "join", "", lookups(), now)
 			wt.clients[mac] = &clientState{
-				AP: snap.ap, SSID: snap.ssid, Signal: snap.signal,
+				AP: snap.ap, SSID: snap.ssid, Signal: snap.signal, Controller: snap.devID,
 			}
 			continue
 		}
-		// Already known — refresh enrichment fields and reset miss counter.
+		// Already known — refresh enrichment fields.
 		prev.Signal = snap.signal
 		prev.SSID = snap.ssid
-		prev.MissedPolls = 0
+		prev.Controller = snap.devID
 
 		// Update mac_lookup with lastIP from registration table if available.
 		if snap.lastIP != "" {
@@ -243,14 +280,15 @@ func (wt *WifiTracker) poll(ctx context.Context) {
 		}
 	}
 
-	// Phase 3.5: resolve deferred leaves. If a client had a log-based
-	// disconnect but is still in the registration table, the disconnect was
-	// transient — suppress it. Otherwise confirm and emit the leave.
+	// Phase 3.5: resolve deferred leaves (logged this tick by a controller
+	// whose tables were read in the same visit). If the client is still in
+	// a current registration read, the disconnect was transient — suppress
+	// it. Otherwise confirm and emit the leave.
 	for mac, state := range wt.clients {
 		if state.PendingLeave == nil {
 			continue
 		}
-		if seenMACs[mac] {
+		if _, seen := current[mac]; seen {
 			// Client is still registered — transient disconnect, suppress.
 			state.PendingLeave = nil
 			continue
@@ -258,21 +296,32 @@ func (wt *WifiTracker) poll(ctx context.Context) {
 		// Client is gone from registration table — confirm the leave.
 		wt.emitLeave(mac, state.PendingLeave.AP, state.PendingLeave.SSID,
 			state.PendingLeave.Signal, state.PendingLeave.Source,
-			state.PendingLeave.Reason, macLookups, now)
+			state.PendingLeave.Reason, lookups(), now)
 		delete(wt.clients, mac)
 	}
 
 	// Phase 4: absence safety net. Only fires when a client has been missing
-	// from registration tables for missedPollThreshold cycles AND the log
-	// never recorded a leave for it (which would have removed it from
-	// wt.clients already).
+	// from every current registration read for missedPollThreshold of its
+	// controller's reads AND the log never recorded a leave for it (which
+	// would have removed it from wt.clients already). A paused controller's
+	// clients are not absent but unobserved — nothing of a paused device
+	// ages, and after a backend restart its last read is not even in memory
+	// (only the positions restored from wifi_history are).
 	for mac, state := range wt.clients {
-		if seenMACs[mac] {
+		if _, seen := current[mac]; seen {
+			state.AbsentSince = time.Time{}
 			continue
 		}
-		state.MissedPolls++
-		if state.MissedPolls >= missedPollThreshold {
-			wt.emitLeave(mac, state.AP, state.SSID, state.Signal, "absence", "", macLookups, now)
+		if dev, ok := byID[state.Controller]; ok && wt.cadence.Paused(dev, now) {
+			state.AbsentSince = time.Time{}
+			continue
+		}
+		if state.AbsentSince.IsZero() {
+			state.AbsentSince = now
+			continue
+		}
+		if now.Sub(state.AbsentSince) >= wt.absenceGrace(state, byID, now) {
+			wt.emitLeave(mac, state.AP, state.SSID, state.Signal, "absence", "", lookups(), now)
 			delete(wt.clients, mac)
 		}
 	}
@@ -284,16 +333,100 @@ func (wt *WifiTracker) poll(ctx context.Context) {
 	}
 }
 
+// readController drains one controller's wireless log and reads its
+// registration tables (only the menus its capability probe found), making
+// the read its current one. It reports whether a table was read: when every
+// menu failed the previous read stands — a failing print is not "no clients".
+func (wt *WifiTracker) readController(dev queries.Device, run routeros.Runner, now time.Time, interval time.Duration, lookups func() map[string]*queries.MACLookup) (ok bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("wifi tracker: panic reading %s: %v", nonempty(dev.Identity, dev.Address), r)
+			ok = false
+		}
+	}()
+	caps := wt.caps.Ensure(dev.ID, dev.ROSVersion, run, now)
+	if !caps.HasWifiRole() {
+		delete(wt.regs, dev.ID)
+		return false
+	}
+	window := logReadWindow(wt.cadence.Interval(dev, devclass.TierLogs, now))
+	if entries, err := wt.logs.Entries(logConsumerWifi, dev.ID, run, now, window); err == nil {
+		wt.processDeviceLogs(dev.ID, routeros.WirelessLogEventsFrom(entries), lookups(), now)
+	}
+
+	var regs []routeros.WifiRegistration
+	answered := false
+	for _, menu := range caps.RegistrationMenus() {
+		rows, err := routeros.GetRegistrations(run, menu)
+		if err != nil {
+			// A trap on a menu the probe found: the package or the policy
+			// changed since — re-probe soon rather than trap all day.
+			wt.caps.NoteReadTrap(dev.ID, menu, err, now)
+			continue
+		}
+		answered = true
+		regs = append(regs, rows...)
+	}
+	if !answered {
+		return false
+	}
+	clients := make(map[string]*wifiSnapshot, len(regs))
+	for _, reg := range regs {
+		mac := strings.ToUpper(reg.MAC)
+		if mac == "" || mac == "00:00:00:00:00:00" {
+			continue
+		}
+		// Skip non-wireless entries — a real wireless registration
+		// will have at least an SSID, band, or signal.
+		if reg.SSID == "" && reg.Band == "" && reg.Signal == "" {
+			continue
+		}
+		apName := reg.AP
+		if apName == "" && reg.Interface != "" {
+			apName = reg.Interface
+			if idx := strings.Index(apName, "/"); idx > 0 {
+				apName = apName[:idx]
+			}
+		}
+		clients[mac] = &wifiSnapshot{
+			mac:     mac,
+			ap:      apName,
+			ssid:    reg.SSID,
+			band:    reg.Band,
+			channel: reg.Channel,
+			signal:  reg.Signal,
+			txRate:  reg.TxRate,
+			rxRate:  reg.RxRate,
+			lastIP:  reg.LastIP,
+			devID:   dev.ID,
+		}
+	}
+	wt.regs[dev.ID] = &regRead{at: now, interval: interval, clients: clients}
+	return true
+}
+
+// absenceGrace is how long state may be missing from every registration read
+// before the safety net declares it left: missedPollThreshold of its
+// controller's reads (the tracker's interval when the controller is unknown).
+func (wt *WifiTracker) absenceGrace(state *clientState, devices map[string]queries.Device, now time.Time) time.Duration {
+	iv := wt.interval
+	if dev, ok := devices[state.Controller]; ok {
+		if v := wt.cadence.Interval(dev, devclass.TierWifiRegistrations, now); v > 0 {
+			iv = v
+		}
+	}
+	return missedPollThreshold * iv
+}
+
 // processDeviceLogs applies a batch of wireless log events from one
 // controller, deduping against fingerprints already seen in this process.
-//
-// On the very first poll for a device, all current log entries are marked as
-// seen WITHOUT emitting events — otherwise a backend restart would replay
-// the entire in-memory log buffer into wifi_history.
+// Every line the shared LogReader hands out is new — the buffer it found on
+// its first read of the device is handed to nobody, so a backend restart does
+// not replay the log into wifi_history — and the fingerprints only guard
+// against a line delivered twice.
 func (wt *WifiTracker) processDeviceLogs(devID string, events []routeros.WirelessLogEvent, macLookups map[string]*queries.MACLookup, now time.Time) {
-	seen, exists := wt.seenLogs[devID]
-	firstRun := !exists
-	if !exists {
+	seen := wt.seenLogs[devID]
+	if seen == nil {
 		seen = make(map[string]time.Time)
 		wt.seenLogs[devID] = seen
 	}
@@ -302,13 +435,10 @@ func (wt *WifiTracker) processDeviceLogs(devID string, events []routeros.Wireles
 		ev := &events[i]
 		fp := ev.Fingerprint()
 		if _, already := seen[fp]; already {
-			seen[fp] = now // refresh so it stays alive while in source buffer
+			seen[fp] = now
 			continue
 		}
 		seen[fp] = now
-		if firstRun {
-			continue
-		}
 		wt.handleLogEvent(ev, devID, macLookups, now)
 	}
 }
@@ -361,7 +491,7 @@ func (wt *WifiTracker) handleLogEvent(ev *routeros.WirelessLogEvent, devID strin
 			}
 		}
 		wt.clients[ev.MAC] = &clientState{
-			AP: ev.AP, SSID: ev.SSID, Signal: ev.Signal,
+			AP: ev.AP, SSID: ev.SSID, Signal: ev.Signal, Controller: devID,
 		}
 		_ = queries.InsertWifiHistory(wt.db, &queries.WifiHistoryEntry{
 			MACAddress: ev.MAC, IPAddress: ip, HostName: hostname,
@@ -395,7 +525,7 @@ func (wt *WifiTracker) handleLogEvent(ev *routeros.WirelessLogEvent, devID strin
 				signal = prev.Signal
 			}
 		} else {
-			prev = &clientState{AP: ap, SSID: ssid, Signal: signal}
+			prev = &clientState{AP: ap, SSID: ssid, Signal: signal, Controller: devID}
 			wt.clients[ev.MAC] = prev
 		}
 		// Defer the leave — it will be confirmed or suppressed after the
@@ -421,7 +551,7 @@ func (wt *WifiTracker) handleLogEvent(ev *routeros.WirelessLogEvent, devID strin
 			}
 		}
 		wt.clients[ev.MAC] = &clientState{
-			AP: ev.ToAP, SSID: ev.ToSSID, Signal: ev.Signal,
+			AP: ev.ToAP, SSID: ev.ToSSID, Signal: ev.Signal, Controller: devID,
 		}
 		_ = queries.InsertWifiHistory(wt.db, &queries.WifiHistoryEntry{
 			MACAddress: ev.MAC, IPAddress: ip, HostName: hostname,
@@ -528,7 +658,7 @@ func (wt *WifiTracker) restoreState() {
 	}
 	for _, c := range clients {
 		wt.clients[c.MACAddress] = &clientState{
-			AP: c.APName,
+			AP: c.APName, Controller: c.ControllerID,
 		}
 	}
 	if len(clients) > 0 {

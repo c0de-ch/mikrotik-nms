@@ -2,6 +2,7 @@ package poller
 
 import (
 	"testing"
+	"time"
 
 	"github.com/mikrotik-nms/backend/internal/routeros"
 )
@@ -79,34 +80,96 @@ func TestCountNonEdgePorts(t *testing.T) {
 }
 
 func TestTCNStormSeverity(t *testing.T) {
-	stp := func(tc int) routeros.BridgeInfo {
-		return routeros.BridgeInfo{Name: "bridge", ProtocolMode: "rstp", TopologyChanges: tc}
-	}
-	noStp := func(tc int) routeros.BridgeInfo {
-		return routeros.BridgeInfo{Name: "ether1", ProtocolMode: "none", TopologyChanges: tc}
-	}
+	stp := routeros.BridgeInfo{Name: "bridge", ProtocolMode: "rstp"}
+	noStp := routeros.BridgeInfo{Name: "ether1", ProtocolMode: "none"}
 
 	tests := []struct {
 		name      string
 		b         routeros.BridgeInfo
-		prev      int
+		delta     int
 		threshold int
 		wantSev   string
 		wantFire  bool
 	}{
-		{"non-STP huge delta never fires", noStp(710), 0, 30, "", false},
-		{"STP below threshold", stp(10), 0, 30, "", false},
-		{"STP warn", stp(50), 0, 30, "warn", true},
-		{"STP critical", stp(710), 0, 30, "critical", true},
-		{"STP critical at ceiling", stp(100), 0, 30, "critical", true},
-		{"STP no change", stp(5), 5, 30, "", false},
+		{"non-STP huge delta never fires", noStp, 710, 30, "", false},
+		{"STP below threshold", stp, 10, 30, "", false},
+		{"STP warn", stp, 50, 30, "warn", true},
+		{"STP critical", stp, 710, 30, "critical", true},
+		{"STP critical at ceiling", stp, 100, 30, "critical", true},
+		{"STP no change", stp, 0, 30, "", false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			sev, _, fire := tcnStormSeverity(tc.b, tc.prev, tc.threshold)
+			sev, fire := tcnStormSeverity(tc.b, tc.delta, tc.threshold)
 			if fire != tc.wantFire || sev != tc.wantSev {
 				t.Fatalf("tcnStormSeverity = (%q, fire=%v), want (%q, fire=%v)", sev, fire, tc.wantSev, tc.wantFire)
 			}
 		})
+	}
+}
+
+func TestNormalizeTCNDelta(t *testing.T) {
+	tests := []struct {
+		delta   int
+		elapsed time.Duration
+		want    int
+	}{
+		{30, time.Minute, 30},
+		{30, 61 * time.Second, 30},  // a 60 s cadence jittering by a second is still 30/min
+		{5, 5 * time.Second, 5},     // a fast cycle is never inflated
+		{300, 10 * time.Minute, 30}, // a 10 min cadence sees the same storm as a 1 min one
+		{90, 3 * time.Minute, 30},
+		{0, time.Minute, 0},
+		{-3, time.Minute, 0},
+	}
+	for _, tc := range tests {
+		if got := normalizeTCNDelta(tc.delta, tc.elapsed); got != tc.want {
+			t.Errorf("normalizeTCNDelta(%d, %s) = %d, want %d", tc.delta, tc.elapsed, got, tc.want)
+		}
+	}
+}
+
+func TestBridgeTCNDelta(t *testing.T) {
+	n := NewNetworkHealthPoller(nil, nil, nil, time.Minute)
+	t0 := time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
+	ports := func(a, b int) []routeros.BridgePortInfo {
+		return []routeros.BridgePortInfo{
+			{Interface: "ether1", TopologyChanges: a, HasTopologyChanges: true},
+			{Interface: "ether2", TopologyChanges: b, HasTopologyChanges: true},
+		}
+	}
+	const key = "dev|bridge"
+
+	// First sample: nothing to compare against.
+	if d, ok := n.bridgeTCNDelta(key, ports(10, 20), t0); ok {
+		t.Fatalf("first sample: ok with delta %d, want no delta", d)
+	}
+	// One minute later, +5 and +7 → 12 per minute.
+	if d, ok := n.bridgeTCNDelta(key, ports(15, 27), t0.Add(time.Minute)); !ok || d != 12 {
+		t.Fatalf("second sample: (%d, %v), want (12, true)", d, ok)
+	}
+	// A port joining with a big counter and a counter reset contribute
+	// nothing; only ether2's +3 counts.
+	p := append(ports(2, 30), routeros.BridgePortInfo{Interface: "ether3", TopologyChanges: 500, HasTopologyChanges: true})
+	if d, ok := n.bridgeTCNDelta(key, p, t0.Add(2*time.Minute)); !ok || d != 3 {
+		t.Fatalf("reset + new port: (%d, %v), want (3, true)", d, ok)
+	}
+	// Five minutes later, +50 across the ports → 10 per minute.
+	p = append(ports(22, 60), routeros.BridgePortInfo{Interface: "ether3", TopologyChanges: 500, HasTopologyChanges: true})
+	if d, ok := n.bridgeTCNDelta(key, p, t0.Add(7*time.Minute)); !ok || d != 10 {
+		t.Fatalf("five-minute gap: (%d, %v), want (10, true)", d, ok)
+	}
+	// A device whose RouterOS reports no per-port counter never compares.
+	if d, ok := n.bridgeTCNDelta("dev|other", []routeros.BridgePortInfo{{Interface: "ether1"}}, t0); ok {
+		t.Fatalf("no counters: ok with delta %d", d)
+	}
+	if d, ok := n.bridgeTCNDelta("dev|other", []routeros.BridgePortInfo{{Interface: "ether1"}}, t0.Add(time.Minute)); ok {
+		t.Fatalf("no counters, second sample: ok with delta %d", d)
+	}
+
+	// Pruning a vanished device forgets its samples.
+	n.pruneTCState(map[string]struct{}{"other-device": {}})
+	if len(n.prevPortTC) != 0 || len(n.prevTCAt) != 0 {
+		t.Fatalf("prune left %d port samples, %d bridge samples", len(n.prevPortTC), len(n.prevTCAt))
 	}
 }

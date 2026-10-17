@@ -108,16 +108,25 @@ func (sp *SpeedTestPoller) poll(ctx context.Context) {
 		return // nothing configured — keep the idle cycle free of any device traffic
 	}
 
-	for i, test := range tests {
+	ran := 0
+	for _, test := range tests {
 		select {
 		case <-ctx.Done():
 			return
 		default:
 		}
-		sp.safeRunTest(test)
-		if i < len(tests)-1 {
+		// A scheduled download from a paused device is skipped without a
+		// sample (paused time is a gap, not an error); the API refuses a
+		// run-now with 409 meanwhile.
+		if dev, err := queries.GetDevice(sp.db, test.DeviceID); err == nil && dev.PollingPaused(time.Now()) {
+			pauseLog.skip("speed tests", *dev)
+			continue
+		}
+		if ran > 0 {
 			time.Sleep(2 * time.Second) // let the line settle between tests
 		}
+		sp.safeRunTest(test)
+		ran++
 	}
 }
 

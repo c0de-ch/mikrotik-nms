@@ -5,16 +5,21 @@ import { Server } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { fmtBps } from "@/components/graph/graph-style";
+import { DeviceLoadBadges } from "@/components/devices/device-load";
 import type { Device, PortRate, PortRole, PortSnapshot } from "@/lib/api";
+import { budgetClass, counterIntervalSeconds, isPollingPaused } from "@/lib/device-load";
 import { deviceStatusBadgeClass, deviceStatusLabel } from "@/lib/status";
-import type { TrafficParams, UpdateParams } from "./hooks";
+import { useDevicePorts, useNow, type TrafficParams, type UpdateParams } from "./hooks";
 import { collectingText, comparePortNames, deviceLoads, isPhysicalPort, portKey, roleFor, snapshotReady } from "./lib";
 import { EmptyState, Notice } from "./notice";
 import { HeatmapLegend, PortHeatmap, type HeatmapPort } from "./port-heatmap";
 import { PortRanking } from "./port-ranking";
+import { SnapshotAge } from "./snapshot-age";
 
 // DeviceView: one device's live port heatmap (from the traffic.ports
-// snapshot — no per-port streams) plus its ranked ports for the range.
+// snapshot — no per-port streams) plus its ranked ports for the range. The
+// header names the device's class and pause, and how old its rates are
+// against its own counter cadence.
 export function DeviceView({
   deviceId,
   device,
@@ -69,6 +74,10 @@ export function DeviceView({
   );
   const load = useMemo(() => deviceLoads(devicePorts).get(deviceId), [devicePorts, deviceId]);
   const ready = snapshotReady(snapshot);
+  const clock = useNow(60_000);
+  const paused = device ? isPollingPaused(device, clock) : false;
+  const ports = useDevicePorts(deviceId, paused);
+  const interval = device ? counterIntervalSeconds(budgetClass(device), ports?.data.interval_seconds ?? snapshot?.interval_seconds) : undefined;
 
   // Only claim the device is gone when the list loaded fine and neither the
   // live snapshot nor the role graph has heard of it either.
@@ -90,13 +99,14 @@ export function DeviceView({
         <CardHeader className="gap-3">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="min-w-0">
-              <CardTitle className="flex flex-wrap items-center gap-2 text-base">
+              <CardTitle className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5 text-base">
                 <span className="truncate">{nameOf(deviceId)}</span>
                 {device && (
                   <Badge variant="outline" className={deviceStatusBadgeClass(device.status)}>
                     {deviceStatusLabel(device.status)}
                   </Badge>
                 )}
+                {device && <DeviceLoadBadges device={device} detail="full" />}
               </CardTitle>
               {device && (
                 <p className="text-xs text-muted-foreground">
@@ -107,17 +117,20 @@ export function DeviceView({
               )}
             </div>
             {load && ready && (
-              <div className="text-right">
+              <div className="flex flex-col items-end gap-1 text-right">
                 <div className="text-lg font-semibold tabular-nums">{fmtBps(load.throughput)}</div>
                 <div className="text-xs text-muted-foreground">
                   switched now · {load.activePorts}/{heat.length} ports active
                 </div>
+                {ports && (
+                  <SnapshotAge meta={ports.data} receivedAt={ports.receivedAt} intervalSeconds={interval} paused={paused} />
+                )}
               </div>
             )}
           </div>
         </CardHeader>
         <CardContent className="space-y-3">
-          {!ready && <Notice kind="loading">{collectingText(snapshot)}</Notice>}
+          {!ready && <Notice kind="loading">{collectingText(snapshot, interval)}</Notice>}
           {offline && <Notice kind="warn">Device offline — live counters unavailable. History below still works.</Notice>}
           {heat.length > 0 && (
             <>

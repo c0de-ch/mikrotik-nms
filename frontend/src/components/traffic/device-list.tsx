@@ -5,6 +5,7 @@ import { ChevronRight, Server } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { fmtBps } from "@/components/graph/graph-style";
+import { DeviceLoadBadges } from "@/components/devices/device-load";
 import type { Device, PortSnapshot } from "@/lib/api";
 import { deviceStatusColor, deviceStatusLabel } from "@/lib/status";
 import { deviceLoads, deviceName, snapshotReady } from "./lib";
@@ -89,7 +90,10 @@ export function DeviceList({
                   {d.board ? ` · ${d.board}` : ""}
                 </p>
               </div>
-              <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
+              <span className="flex shrink-0 items-center gap-2">
+                <DeviceLoadBadges device={d} />
+                <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
+              </span>
             </div>
             {load ? (
               <div className="space-y-1.5">

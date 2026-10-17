@@ -28,6 +28,13 @@ function getWsBase() {
 
 type MessageHandler = (topic: string, data: unknown) => void;
 
+// Control frames the server sends one client about its own subscription to
+// a topic whose owner vets subscribers (the per-port live stream): an ack
+// with how the topic is served, or an error after which the server has
+// dropped the subscription. Data frames carry no type.
+export type ControlType = "subscribe.ack" | "subscribe.error";
+export type StatusHandler = (type: ControlType, data: unknown) => void;
+
 // Single-flight refresh promise — apiFetch has the same pattern; both share
 // the same /auth/refresh endpoint and the same localStorage entries, so we
 // duplicate the deduplication here to avoid a thundering herd from many
@@ -66,6 +73,7 @@ async function refreshAccessToken(): Promise<string | null> {
 export class NmsWebSocket {
   private ws: WebSocket | null = null;
   private handlers: Map<string, Set<MessageHandler>> = new Map();
+  private statusHandlers: Map<string, Set<StatusHandler>> = new Map();
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private token: string;
   private disposed = false;
@@ -106,6 +114,13 @@ export class NmsWebSocket {
     this.ws.onmessage = (event) => {
       try {
         const msg = JSON.parse(event.data);
+        if (msg.type) {
+          // A control frame is about the subscription, never a sample.
+          for (const handler of this.statusHandlers.get(msg.topic) ?? []) {
+            handler(msg.type as ControlType, msg.data);
+          }
+          return;
+        }
         const handlers = this.handlers.get(msg.topic);
         if (handlers) {
           for (const handler of handlers) {
@@ -167,7 +182,11 @@ export class NmsWebSocket {
     this.ws = null;
   }
 
-  subscribe(topic: string, handler: MessageHandler) {
+  subscribe(topic: string, handler: MessageHandler, onStatus?: StatusHandler) {
+    if (onStatus) {
+      if (!this.statusHandlers.has(topic)) this.statusHandlers.set(topic, new Set());
+      this.statusHandlers.get(topic)!.add(onStatus);
+    }
     if (!this.handlers.has(topic)) {
       this.handlers.set(topic, new Set());
       if (this.ws?.readyState === WebSocket.OPEN) {
@@ -176,10 +195,15 @@ export class NmsWebSocket {
     }
     this.handlers.get(topic)!.add(handler);
 
-    return () => this.unsubscribe(topic, handler);
+    return () => this.unsubscribe(topic, handler, onStatus);
   }
 
-  unsubscribe(topic: string, handler: MessageHandler) {
+  unsubscribe(topic: string, handler: MessageHandler, onStatus?: StatusHandler) {
+    if (onStatus) {
+      const statusHandlers = this.statusHandlers.get(topic);
+      statusHandlers?.delete(onStatus);
+      if (statusHandlers?.size === 0) this.statusHandlers.delete(topic);
+    }
     const handlers = this.handlers.get(topic);
     if (handlers) {
       handlers.delete(handler);

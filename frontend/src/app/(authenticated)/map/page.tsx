@@ -11,7 +11,7 @@ import {
 import { useAuth } from "@/context/auth";
 import {
   api, type TopologyData, type TopologyNode, type Device, type LinkTraffic,
-  type BridgeVLAN, type NetworkClient, type DevicePort,
+  type BridgeVLAN, type NetworkClient, type LinkTrafficResponse,
 } from "@/lib/api";
 import { useWebSocket } from "@/hooks/use-websocket";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
@@ -21,7 +21,11 @@ import { Button } from "@/components/ui/button";
 import { deviceStatusColor } from "@/lib/status";
 import { fmtBps, BRAND, SYNTH, SYNTH_TYPES } from "@/components/graph/graph-style";
 import { PortHeatmap } from "@/components/traffic/port-heatmap";
-import { useDarkFlag } from "@/components/traffic/hooks";
+import { SnapshotAge } from "@/components/traffic/snapshot-age";
+import { useDarkFlag, useDevicePorts } from "@/components/traffic/hooks";
+import { DeviceClassBadge, PausedBadge } from "@/components/devices/device-load";
+import { useNow } from "@/hooks/use-now";
+import { budgetClass, counterIntervalSeconds, isPollingPaused } from "@/lib/device-load";
 import type { EdgeTraffic, CanvasApi, CanvasEdge } from "@/components/graph/topology-canvas";
 
 const TopologyCanvas = dynamic(() => import("@/components/graph/topology-canvas"), {
@@ -55,29 +59,38 @@ const SYNTH_DESCRIPTION: Record<string, string> = {
 
 const isSynthEdge = (t: string) => t === "gateway" || t === "internet" || t === "vpn";
 
-// ---- switch port grid (live per-port traffic, coloured by load) -------------
-// Data still comes from GET /devices/{id}/ports (one-shot live sample, 3 s);
-// rendering is the shared heatmap. A cell deep-links to the port's detail on
+// ---- switch port grid (per-port traffic, coloured by load) ------------------
+// GET /devices/{id}/ports is served from the port-counter snapshot, so the
+// grid sends the switch no commands however many tabs show it. It refetches
+// once per fleet counter cycle and says how old the rates are, against the
+// device's own counter cadence (a weak switch is read every 60 s, so 45 s is
+// not stale there) and its pause. A cell deep-links to the port's detail on
 // /traffic.
-function PortGrid({ deviceId, dark }: { deviceId: string; dark: boolean }) {
-  const { token } = useAuth();
+function PortGrid({ deviceId, device, dark }: { deviceId: string; device: Device | undefined; dark: boolean }) {
   const router = useRouter();
-  const [ports, setPorts] = useState<DevicePort[]>([]);
-  useEffect(() => {
-    if (!token) return;
-    let alive = true;
-    const load = () => api.devices.ports(token, deviceId).then((p) => { if (alive) setPorts(p); }).catch(() => {});
-    load();
-    const id = setInterval(load, 3000);
-    return () => { alive = false; clearInterval(id); };
-  }, [token, deviceId]);
+  const now = useNow(60_000);
+  const paused = device ? isPollingPaused(device, now) : false;
+  const current = useDevicePorts(deviceId, paused);
+  const interval = device ? counterIntervalSeconds(budgetClass(device), current?.data.interval_seconds) : undefined;
 
   return (
-    <PortHeatmap
-      ports={ports}
-      dark={dark}
-      onSelect={(iface) => router.push(`/traffic?view=devices&device=${deviceId}&iface=${encodeURIComponent(iface)}`)}
-    />
+    <>
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Ports</h3>
+        {current && (
+          <SnapshotAge meta={current.data} receivedAt={current.receivedAt} intervalSeconds={interval} paused={paused} />
+        )}
+      </div>
+      {current ? (
+        <PortHeatmap
+          ports={current.data.ports}
+          dark={dark}
+          onSelect={(iface) => router.push(`/traffic?view=devices&device=${deviceId}&iface=${encodeURIComponent(iface)}`)}
+        />
+      ) : (
+        <p className="text-xs text-muted-foreground">Loading ports…</p>
+      )}
+    </>
   );
 }
 
@@ -89,6 +102,8 @@ export default function MapPage() {
   const [vlans, setVlans] = useState<BridgeVLAN[]>([]);
   const [clients, setClients] = useState<NetworkClient[]>([]);
   const [rawTraffic, setRawTraffic] = useState<Map<string, EdgeTraffic>>(new Map());
+  // Freshness of the link rates (they come from the port-counter snapshot).
+  const [linkMeta, setLinkMeta] = useState<{ meta: LinkTrafficResponse; receivedAt: number } | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   // Follows the <html> "dark" class, which the layout sets only after the
   // settings fetch — reading it once at mount got it wrong on a reload.
@@ -105,6 +120,18 @@ export default function MapPage() {
   const apiRef = useRef<CanvasApi | null>(null);
   const registerApi = useCallback((a: CanvasApi) => { apiRef.current = a; }, []);
 
+  // Link rates with their freshness, from REST /traffic/links (first paint)
+  // or topology.traffic; an answer older than what is shown is dropped (the
+  // REST call can land after the first WS message).
+  const linkSampledAt = useRef(0);
+  const applyLinks = useCallback((r: LinkTrafficResponse) => {
+    const at = r.sampled_at ? Date.parse(r.sampled_at) : 0;
+    if (at < linkSampledAt.current) return;
+    linkSampledAt.current = at;
+    setRawTraffic(new Map(r.links.map((l: LinkTraffic) => [l.id, { rx: l.rx_bps, tx: l.tx_bps }])));
+    setLinkMeta({ meta: r, receivedAt: Date.now() });
+  }, []);
+
   useEffect(() => {
     if (!token) return;
     api.topology.get(token).then(setTopology).catch(console.error);
@@ -112,8 +139,8 @@ export default function MapPage() {
     api.wifi.current(token).then((c) => setWifi(c as WifiClient[])).catch(console.error);
     api.vlans.list(token).then(setVlans).catch(console.error);
     api.clients.cached(token).then((r) => setClients(r.clients)).catch(console.error);
-    api.traffic.links(token).then((r) => setRawTraffic(new Map(r.links.map((l: LinkTraffic) => [l.id, { rx: l.rx_bps, tx: l.tx_bps }])))).catch(console.error);
-  }, [token]);
+    api.traffic.links(token).then(applyLinks).catch(console.error);
+  }, [token, applyLinks]);
 
   useWebSocket("topology.update", useCallback((data) => setTopology(data as TopologyData), []));
   useWebSocket("device.health", useCallback((data) => {
@@ -121,11 +148,11 @@ export default function MapPage() {
     if (!u.device_id) return;
     setDevices((prev) => prev.map((d) => (d.id !== u.device_id ? d : { ...d, ...(u.status ? { status: u.status } : {}), ...(typeof u.cpu_load === "number" ? { cpu_load: u.cpu_load } : {}), ...(u.uptime ? { uptime: u.uptime } : {}) })));
   }, []));
+  // One message per port-counter cycle (~15 s), derived from the snapshot.
   useWebSocket("topology.traffic", useCallback((data) => {
-    const d = data as { links?: LinkTraffic[] };
-    if (!d.links) return;
-    setRawTraffic(new Map(d.links.map((l) => [l.id, { rx: l.rx_bps, tx: l.tx_bps }])));
-  }, []));
+    const d = data as LinkTrafficResponse;
+    if (Array.isArray(d?.links)) applyLinks(d);
+  }, [applyLinks]));
 
   const nodes = useMemo<TopologyNode[]>(() => topology?.nodes.map((n) => n.data) ?? [], [topology]);
   const rawEdges = useMemo(() => topology?.edges.map((e) => e.data) ?? [], [topology]);
@@ -330,7 +357,10 @@ export default function MapPage() {
             {summary.total} devices · {summary.online} online{summary.offline ? ` · ${summary.offline} offline` : ""} · {summary.edges} links{physicalOnly ? ` (of ${summary.raw})` : ""}
           </p>
         </div>
-        <Badge className="bg-primary/10 text-primary gap-1"><ArrowDownUp className="h-3.5 w-3.5" /> {fmtBps(summary.thru)}</Badge>
+        <div className="flex items-center gap-3">
+          {linkMeta && <SnapshotAge meta={linkMeta.meta} receivedAt={linkMeta.receivedAt} />}
+          <Badge className="bg-primary/10 text-primary gap-1"><ArrowDownUp className="h-3.5 w-3.5" /> {fmtBps(summary.thru)}</Badge>
+        </div>
       </div>
 
       <div className="flex items-center gap-2 flex-wrap">
@@ -400,7 +430,7 @@ export default function MapPage() {
             <span className="inline-flex items-center gap-1"><span className="h-2 w-2 rounded-full" style={{ background: SYNTH.vpn }} />vpn</span>
           </div>
           <div className="flex items-center gap-3 text-muted-foreground">
-            <span>edge = live Mbps</span>
+            <span>edge = Mbps from port counters</span>
             <span className="inline-flex items-center gap-1"><span className="h-0.5 w-4" style={{ background: BRAND.primary }} />&lt;100</span>
             <span className="inline-flex items-center gap-1"><span className="h-0.5 w-4" style={{ background: BRAND.amber }} />100–500</span>
             <span className="inline-flex items-center gap-1"><span className="h-0.5 w-4" style={{ background: BRAND.red }} />&gt;500</span>
@@ -440,6 +470,8 @@ export default function MapPage() {
                 {!SYNTH_TYPES.has(detail.node.type) && (
                   <div className="flex items-center gap-3 text-[11px] text-muted-foreground mt-1 flex-wrap">
                     <span className="inline-flex items-center gap-1"><span className={`h-2 w-2 rounded-full ${deviceStatusColor(detail.node.status)}`} />{detail.node.status}</span>
+                    {detail.dev && <DeviceClassBadge device={detail.dev} className="text-[11px]" />}
+                    {detail.dev && <PausedBadge device={detail.dev} />}
                     {detail.node.cpu_load != null && <span className="inline-flex items-center gap-1"><Cpu className="h-3 w-3" />{detail.node.cpu_load}%</span>}
                     {memPct != null && <span className="inline-flex items-center gap-1"><MemoryStick className="h-3 w-3" />{memPct}%</span>}
                     {detail.dev?.uptime && <span className="inline-flex items-center gap-1"><Activity className="h-3 w-3" />{detail.dev.uptime}</span>}
@@ -451,8 +483,7 @@ export default function MapPage() {
               <div className="px-4 pb-6 space-y-4">
                 {(detail.node.type === "switch" || detail.node.type === "router") && (
                   <section>
-                    <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">Ports (live)</h3>
-                    <PortGrid deviceId={detail.node.id} dark={dark} />
+                    <PortGrid deviceId={detail.node.id} device={detail.dev} dark={dark} />
                   </section>
                 )}
 

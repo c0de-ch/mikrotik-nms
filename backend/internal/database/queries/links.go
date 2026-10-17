@@ -52,13 +52,15 @@ func ListLinks(db *sql.DB) ([]Link, error) {
 	return links, rows.Err()
 }
 
+// MarkStaleLinksDown marks down every up link last upserted before cutoff,
+// to the second (last_seen is CURRENT_TIMESTAMP text, compared as such).
 func MarkStaleLinksDown(db *sql.DB, cutoff time.Time) error {
-	_, err := db.Exec(`UPDATE links SET status = 'down' WHERE last_seen < ? AND status = 'up'`, cutoff)
+	_, err := db.Exec(`UPDATE links SET status = 'down' WHERE last_seen < ? AND status = 'up'`, sqlTime(cutoff))
 	return err
 }
 
 func DeleteOldLinks(db *sql.DB, cutoff time.Time) (int64, error) {
-	res, err := db.Exec(`DELETE FROM links WHERE last_seen < ?`, cutoff)
+	res, err := db.Exec(`DELETE FROM links WHERE last_seen < ?`, sqlTime(cutoff))
 	if err != nil {
 		return 0, err
 	}

@@ -337,6 +337,14 @@ func (s *Server) handleRunPingTarget(w http.ResponseWriter, r *http.Request) {
 		deviceID, address = t.DeviceID, t.Address
 	}
 
+	if s.writePollingPaused(w, deviceID) {
+		return
+	}
+	// With polling off there is never a pooled session; say so instead of
+	// the generic "no connection yet".
+	if writeDialPolicyError(w, routeros.PollingAllowed()) {
+		return
+	}
 	client := s.pool.GetLive(deviceID)
 	if client == nil {
 		writeError(w, http.StatusConflict, "no API connection to probing device yet — try again shortly")
@@ -461,8 +469,15 @@ func (s *Server) handleRunTraceroute(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "probing device no longer exists")
 		return
 	}
+	if s.writePollingPaused(w, dev.ID) {
+		return
+	}
 	if dev.Status != "online" {
 		writeError(w, http.StatusConflict, "probing device is "+dev.Status)
+		return
+	}
+	// Refuse a fenced device synchronously rather than recording a failed run.
+	if writeDialPolicyError(w, routeros.CheckTarget(dev.Address)) {
 		return
 	}
 
