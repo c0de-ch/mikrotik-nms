@@ -1,12 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { ExternalLink, ArrowLeft } from "lucide-react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {
   Table,
@@ -20,120 +19,125 @@ import { useAuth } from "@/context/auth";
 import { api, type Device, type DeviceInterface, type Neighbor } from "@/lib/api";
 import { deviceStatusBadgeClass, deviceStatusLabel } from "@/lib/status";
 import { useWebSocket } from "@/hooks/use-websocket";
+import { DeviceLoadBadges } from "@/components/devices/device-load";
+import { FindingsCard } from "@/components/devices/findings-card";
+import { LoadCard } from "@/components/devices/load-card";
 import { PollingCard } from "@/components/devices/polling-card";
+
+// The device is re-read this often (database only): the polling card's
+// "next read in …" and a pause set from another tab stay current.
+const DEVICE_REFRESH_MS = 30_000;
 
 export default function DeviceDetailPage() {
   const { id } = useParams<{ id: string }>();
   const { token, user } = useAuth();
   const [device, setDevice] = useState<Device | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const [interfaces, setInterfaces] = useState<DeviceInterface[]>([]);
   const [neighbors, setNeighbors] = useState<Neighbor[]>([]);
 
   useEffect(() => {
     if (!token || !id) return;
-    api.devices.get(token, id).then(setDevice).catch(console.error);
+    let alive = true;
+    const load = () =>
+      api.devices
+        .get(token, id)
+        .then((d) => {
+          if (!alive) return;
+          setDevice(d);
+          setError(null);
+        })
+        .catch((e) => {
+          if (alive) setError(e instanceof Error ? e.message : String(e));
+        });
+    load();
+    const t = setInterval(load, DEVICE_REFRESH_MS);
     api.devices.interfaces(token, id).then(setInterfaces).catch(console.error);
     api.devices.neighbors(token, id).then(setNeighbors).catch(console.error);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
   }, [token, id]);
 
-  useWebSocket("device.health", (data) => {
-    const update = data as { device_id: string; status: string; cpu_load?: number; memory_pct?: number; uptime?: string };
-    if (update.device_id === id && device) {
-      setDevice((prev) =>
-        prev ? { ...prev, status: update.status as Device["status"], cpu_load: update.cpu_load ?? prev.cpu_load } : prev,
-      );
-    }
-  });
+  useWebSocket(
+    "device.health",
+    useCallback(
+      (data: unknown) => {
+        const update = data as { device_id: string; status: string; cpu_load?: number; memory_pct?: number; uptime?: string };
+        if (update.device_id !== id) return;
+        setDevice((prev) =>
+          prev
+            ? {
+                ...prev,
+                status: update.status as Device["status"],
+                cpu_load: update.cpu_load ?? prev.cpu_load,
+                uptime: update.uptime ?? prev.uptime,
+              }
+            : prev,
+        );
+      },
+      [id],
+    ),
+  );
 
   if (!device) {
-    return <div className="text-muted-foreground">Loading...</div>;
+    return error ? (
+      <div className="space-y-3">
+        <p role="alert" className="text-sm text-red-700 dark:text-red-400">
+          Could not load this device: {error}
+        </p>
+        <Button variant="outline" size="sm" render={<Link href="/devices" />}>
+          <ArrowLeft />
+          Back to devices
+        </Button>
+      </div>
+    ) : (
+      <div className="text-muted-foreground">Loading…</div>
+    );
   }
 
-  const memPct = device.memory_used && device.memory_total
-    ? Math.round((device.memory_used / device.memory_total) * 100)
-    : null;
-
   return (
-    <div className="space-y-6">
-      <div className="flex items-center gap-4">
-        <Button variant="ghost" size="icon" render={<Link href="/devices" />}>
+    <div className="min-w-0 space-y-6 [contain:inline-size]">
+      <div className="flex flex-wrap items-start gap-x-4 gap-y-3">
+        <Button variant="ghost" size="icon" render={<Link href="/devices" />} aria-label="Back to devices">
           <ArrowLeft className="h-4 w-4" />
         </Button>
-        <div className="flex-1">
-          <h1 className="text-2xl font-bold">{device.identity || device.address}</h1>
-          <p className="text-sm text-muted-foreground">{device.address}</p>
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+            <h1 className="min-w-0 break-words text-2xl font-bold">{device.identity || device.address}</h1>
+            <Badge variant="outline" className={deviceStatusBadgeClass(device.status)}>
+              {deviceStatusLabel(device.status)}
+            </Badge>
+            <DeviceLoadBadges device={device} detail="full" />
+          </div>
+          <p className="mt-0.5 text-sm text-muted-foreground">
+            {device.address}
+            {device.board ? ` · ${device.board}` : ""}
+          </p>
         </div>
-        <Badge variant="outline" className={`text-sm ${deviceStatusBadgeClass(device.status)}`}>
-          {deviceStatusLabel(device.status)}
-        </Badge>
-        <Button variant="outline" render={<a href={`http://${device.address}`} target="_blank" rel="noopener" />}>
-          <ExternalLink className="mr-2 h-4 w-4" />
-          Open WebFig
+        <Button
+          variant="outline"
+          aria-label="Open WebFig"
+          render={<a href={`http://${device.address}`} target="_blank" rel="noopener" />}
+        >
+          <ExternalLink className="h-4 w-4 sm:mr-1" />
+          <span className="hidden sm:inline">Open WebFig</span>
         </Button>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-        <Card>
-          <CardHeader className="pb-2"><CardTitle className="text-sm font-medium">Model</CardTitle></CardHeader>
-          <CardContent><div className="text-lg font-semibold">{device.board || "—"}</div></CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="pb-2"><CardTitle className="text-sm font-medium">RouterOS</CardTitle></CardHeader>
-          <CardContent><div className="text-lg font-semibold">{device.ros_version || "—"}</div></CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="pb-2"><CardTitle className="text-sm font-medium">CPU Load</CardTitle></CardHeader>
-          <CardContent>
-            <div className="text-lg font-semibold">{device.cpu_load != null ? `${device.cpu_load}%` : "—"}</div>
-            {device.cpu_load != null && (
-              <div className="mt-1 h-2 rounded-full bg-muted">
-                <div
-                  className="h-full rounded-full bg-primary transition-all"
-                  style={{ width: `${Math.min(device.cpu_load, 100)}%` }}
-                />
-              </div>
-            )}
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="pb-2"><CardTitle className="text-sm font-medium">Memory</CardTitle></CardHeader>
-          <CardContent>
-            <div className="text-lg font-semibold">{memPct != null ? `${memPct}%` : "—"}</div>
-            {memPct != null && (
-              <div className="mt-1 h-2 rounded-full bg-muted">
-                <div
-                  className="h-full rounded-full bg-primary transition-all"
-                  style={{ width: `${Math.min(memPct, 100)}%` }}
-                />
-              </div>
-            )}
-          </CardContent>
-        </Card>
+      {/* The device's own load next to what the NMS asks of it: the two
+          halves of "is the NMS why this switch is busy?". */}
+      <div className="grid items-start gap-4 lg:grid-cols-5">
+        <div className="lg:col-span-2">
+          <LoadCard device={device} />
+        </div>
+        <div className="min-w-0 lg:col-span-3">
+          {token && <PollingCard device={device} token={token} isAdmin={user?.role === "admin"} onChange={setDevice} />}
+        </div>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-3">
-        <Card>
-          <CardHeader className="pb-2"><CardTitle className="text-sm font-medium">Uptime</CardTitle></CardHeader>
-          <CardContent><div className="text-sm">{device.uptime || "—"}</div></CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="pb-2"><CardTitle className="text-sm font-medium">Architecture</CardTitle></CardHeader>
-          <CardContent><div className="text-sm">{device.architecture || "—"}</div></CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="pb-2"><CardTitle className="text-sm font-medium">Platform</CardTitle></CardHeader>
-          <CardContent><div className="text-sm">{device.platform || "—"}</div></CardContent>
-        </Card>
-      </div>
-
-      {token && (
-        <PollingCard
-          device={device}
-          token={token}
-          isAdmin={user?.role === "admin"}
-          onChange={setDevice}
-        />
-      )}
+      {token && <FindingsCard deviceId={device.id} token={token} />}
 
       <Tabs defaultValue="interfaces">
         <TabsList>
@@ -172,6 +176,13 @@ export default function DeviceDetailPage() {
                   <TableCell className="text-sm text-muted-foreground">{iface.comment || "—"}</TableCell>
                 </TableRow>
               ))}
+              {interfaces.length === 0 && (
+                <TableRow>
+                  <TableCell colSpan={6} className="py-8 text-center text-muted-foreground">
+                    No interfaces read yet
+                  </TableCell>
+                </TableRow>
+              )}
             </TableBody>
           </Table>
         </TabsContent>
