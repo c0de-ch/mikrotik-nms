@@ -159,6 +159,28 @@ func TestPingHonoursPolicy(t *testing.T) {
 	}
 }
 
+// The login watch's outbound-address lookup is fenced like a dial: with
+// polling off, or a target outside the allow-list, it opens no socket and
+// reports nothing; inside the fence (or without a policy) it answers.
+func TestOutboundAddressFenced(t *testing.T) {
+	withPolicy(t, nil)
+	if a, ok := OutboundAddress("127.0.0.1", 8728); !ok || a != netip.MustParseAddr("127.0.0.1") {
+		t.Fatalf("without a policy = %v %v, want 127.0.0.1", a, ok)
+	}
+	withPolicy(t, &DialPolicy{Enabled: false, Allowed: prefixes(t, "0.0.0.0/0", "::/0")})
+	if a, ok := OutboundAddress("127.0.0.1", 8728); ok {
+		t.Errorf("with polling off = %v, want nothing", a)
+	}
+	withPolicy(t, &DialPolicy{Enabled: true, Allowed: prefixes(t, "192.0.2.0/24")})
+	if a, ok := OutboundAddress("127.0.0.1", 8728); ok {
+		t.Errorf("outside the allow-list = %v, want nothing", a)
+	}
+	withPolicy(t, &DialPolicy{Enabled: true, Allowed: prefixes(t, "127.0.0.0/8")})
+	if _, ok := OutboundAddress("127.0.0.1", 8728); !ok {
+		t.Error("inside the allow-list: no address")
+	}
+}
+
 func contains(s, sub string) bool {
 	return len(sub) == 0 || (len(s) >= len(sub) && indexOf(s, sub) >= 0)
 }

@@ -10,7 +10,15 @@ import (
 // consults the routing table. It is how the NMS learns which source address
 // a device sees its API sessions arrive from (barring NAT in between), so the
 // login watch can tell the NMS's own sessions from someone else's.
+//
+// It goes through the dial policy like every device dial: with polling off
+// (MIKROTIK_NMS_POLLERS=off) or a target outside the allowed subnets it
+// reports nothing and opens no socket — no device is polled then, so there
+// is no session of ours to recognise.
 func OutboundAddress(host string, port int) (netip.Addr, bool) {
+	if CheckTarget(host) != nil {
+		return netip.Addr{}, false
+	}
 	conn, err := net.Dial("udp", JoinHostPort(host, port))
 	if err != nil {
 		return netip.Addr{}, false
