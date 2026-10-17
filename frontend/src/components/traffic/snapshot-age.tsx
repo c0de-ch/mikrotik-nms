@@ -23,6 +23,10 @@ export function SnapshotAge({
   if (!meta || meta.age_seconds === null) {
     return <span className={cn("text-xs text-muted-foreground", className)}>No port counters yet</span>;
   }
+  if (!meta.ready) {
+    // A cycle has run but rates need two readings: the zeros are not data.
+    return <span className={cn("text-xs text-muted-foreground", className)}>Collecting first samples…</span>;
+  }
   const age = ageNow(meta.age_seconds, receivedAt, now);
   const interval = meta.interval_seconds || 15;
   const stale = age > 3 * interval;
