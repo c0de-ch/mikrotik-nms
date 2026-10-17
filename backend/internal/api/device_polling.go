@@ -76,7 +76,7 @@ func (s *Server) handlePausePolling(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, d)
+	writeJSON(w, http.StatusOK, withPolling(d))
 }
 
 // handleResumePolling — POST /devices/{id}/polling/resume
@@ -96,7 +96,7 @@ func (s *Server) handleResumePolling(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	writeJSON(w, http.StatusOK, d)
+	writeJSON(w, http.StatusOK, withPolling(d))
 }
 
 // handleUpdatePolling — PUT /devices/{id}/polling
@@ -172,7 +172,7 @@ func (s *Server) handleUpdatePolling(w http.ResponseWriter, r *http.Request) {
 	if d, ok = s.loadDevice(w, id); !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, d)
+	writeJSON(w, http.StatusOK, withPolling(d))
 }
 
 func describeOverrideChange(from, to string) string {

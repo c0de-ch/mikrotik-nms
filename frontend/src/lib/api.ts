@@ -667,6 +667,18 @@ export interface Device {
   polling_paused: boolean;
   cpu_count: number | null;
   cpu_mhz_max: number | null;
+  // How the pollers treat the device right now — GET /devices/{id} and the
+  // polling-control responses only.
+  polling?: DevicePolling;
+}
+
+// next_runs maps a scheduled read (counters, neighbors, bridge_ports, …) to
+// when it runs next; empty while the device is paused or offline.
+export interface DevicePolling {
+  class: DeviceClass;
+  profile: PollProfile;
+  paused_until: string | null;
+  next_runs: Record<string, string>;
 }
 
 export type DeviceClass = "C0" | "C1" | "C2" | "C3";

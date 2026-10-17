@@ -4,9 +4,11 @@ import (
 	"database/sql"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/mikrotik-nms/backend/internal/database/queries"
+	"github.com/mikrotik-nms/backend/internal/poller"
 	rosutil "github.com/mikrotik-nms/backend/internal/routeros"
 )
 
@@ -55,7 +57,14 @@ func (s *Server) handleGetDevice(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to get device")
 		return
 	}
-	writeJSON(w, http.StatusOK, device)
+	writeJSON(w, http.StatusOK, withPolling(device))
+}
+
+// withPolling attaches how the pollers treat the device right now — class,
+// profile, pause and each scheduled read's next run — for the device page.
+func withPolling(d *queries.Device) *queries.Device {
+	d.Polling = poller.Schedule().Polling(*d, time.Now())
+	return d
 }
 
 func (s *Server) handleCreateDevice(w http.ResponseWriter, r *http.Request) {

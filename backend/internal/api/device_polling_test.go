@@ -157,3 +157,46 @@ func TestUpdatePollingProfileAndOverride(t *testing.T) {
 		t.Fatalf("limit=1: %d %s (%v)", rec.Code, rec.Body.String(), err)
 	}
 }
+
+// GET /devices/{id} carries the pollers' live view of the device: class,
+// profile, pause and the next scheduled reads (none while paused).
+func TestGetDeviceCarriesPollingView(t *testing.T) {
+	s, d := pollingTestServer(t)
+	get := func() map[string]any {
+		t.Helper()
+		var dev map[string]any
+		if rec := call(t, s.handleGetDevice, http.MethodGet, d.ID, "", &dev); rec.Code != http.StatusOK {
+			t.Fatalf("get: %d %s", rec.Code, rec.Body.String())
+		}
+		p, ok := dev["polling"].(map[string]any)
+		if !ok {
+			t.Fatalf("no polling view in %v", dev)
+		}
+		return p
+	}
+	p := get()
+	if p["class"] != "C1" || p["profile"] != "auto" || p["paused_until"] != nil {
+		t.Fatalf("unprobed device view = %v", p)
+	}
+	if runs, ok := p["next_runs"].(map[string]any); !ok || len(runs) != 0 {
+		t.Fatalf("next_runs = %v, want an empty object before any loop ran", p["next_runs"])
+	}
+
+	var dev map[string]any
+	if rec := call(t, s.handlePausePolling, http.MethodPost, d.ID, `{"hours": 1}`, &dev); rec.Code != http.StatusOK {
+		t.Fatalf("pause: %d", rec.Code)
+	}
+	if pv, ok := dev["polling"].(map[string]any); !ok || pv["paused_until"] == nil {
+		t.Fatalf("the pause response carries the view: %v", dev["polling"])
+	}
+	if p = get(); p["paused_until"] == nil {
+		t.Fatalf("paused view = %v", p)
+	}
+
+	// The device list stays lean: no polling view per row.
+	rec := httptest.NewRecorder()
+	s.handleListDevices(rec, httptest.NewRequest(http.MethodGet, "/api/v1/devices", nil))
+	if strings.Contains(rec.Body.String(), `"polling"`) {
+		t.Fatalf("list carries polling views: %s", rec.Body.String())
+	}
+}

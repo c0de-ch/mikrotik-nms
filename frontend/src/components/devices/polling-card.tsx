@@ -73,6 +73,13 @@ function remaining(iso: string): string {
   return h > 0 ? `${h} h ${m} min` : `${m} min`;
 }
 
+// "in 42 s" / "in 4 min" / "now" for a scheduled read, as of page load.
+function inWords(iso: string): string {
+  const s = Math.round((new Date(iso).getTime() - Date.now()) / 1000);
+  if (!Number.isFinite(s) || s <= 0) return "now";
+  return s < 90 ? `in ${s} s` : `in ${Math.round(s / 60)} min`;
+}
+
 interface Props {
   device: Device;
   token: string;
@@ -171,6 +178,8 @@ export function PollingCard({ device, token, isAdmin, onChange }: Props) {
             {remaining(device.polling_paused_until!) ? ` (${remaining(device.polling_paused_until!)} left)` : ""}. Only the
             liveness check runs; charts show this time as a gap.
           </p>
+        ) : device.polling?.next_runs.counters ? (
+          <p className="text-xs text-muted-foreground">Next counters read {inWords(device.polling.next_runs.counters)}.</p>
         ) : null}
 
         <div className="grid gap-3 sm:grid-cols-2">
