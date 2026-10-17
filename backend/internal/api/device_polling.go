@@ -102,6 +102,8 @@ func (s *Server) handleResumePolling(w http.ResponseWriter, r *http.Request) {
 // handleUpdatePolling — PUT /devices/{id}/polling
 // {"profile": "auto"|"light", "class_override": "C1"|"C2"|"C3"|null}
 // Omitted keys are left alone; class_override null or "" clears the override.
+// The request is validated as a whole before anything is written: a 400 for
+// one key never leaves the other one changed.
 func (s *Server) handleUpdatePolling(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	d, ok := s.loadDevice(w, id)
@@ -114,28 +116,24 @@ func (s *Server) handleUpdatePolling(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var profile *devclass.Profile
 	if v, present := raw["profile"]; present {
 		var p string
 		if err := json.Unmarshal(v, &p); err != nil {
 			writeError(w, http.StatusBadRequest, "profile must be a string")
 			return
 		}
-		profile, ok := devclass.ParseProfile(p)
+		parsed, ok := devclass.ParseProfile(p)
 		if !ok {
 			writeError(w, http.StatusBadRequest, `profile must be "auto" or "light"`)
 			return
 		}
-		if profile != d.Profile() {
-			if err := queries.SetDevicePollProfile(s.db, id, profile); err != nil {
-				writeError(w, http.StatusInternalServerError, "failed to update polling profile")
-				return
-			}
-			s.audit(r, "poll_profile_changed", id, fmt.Sprintf("%s → %s", d.Profile(), profile))
-		}
+		profile = &parsed
 	}
 
+	var override *devclass.Class // "" = clear
 	if v, present := raw["class_override"]; present {
-		var override devclass.Class
+		var c devclass.Class
 		if string(v) != "null" {
 			var str string
 			if err := json.Unmarshal(v, &str); err != nil {
@@ -143,30 +141,39 @@ func (s *Server) handleUpdatePolling(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if str != "" {
-				c, ok := devclass.ParseClass(str)
-				if !ok || c == devclass.C0Unknown {
+				parsed, ok := devclass.ParseClass(str)
+				if !ok || parsed == devclass.C0Unknown {
 					writeError(w, http.StatusBadRequest, `class_override must be "C1", "C2", "C3" or null`)
 					return
 				}
-				override = c
+				c = parsed
 			}
 		}
-		if override != "" {
+		if c != "" {
 			probed := d.ProbedClass()
-			if _, clamped := devclass.Effective(probed, override); clamped {
+			if _, clamped := devclass.Effective(probed, c); clamped {
 				writeError(w, http.StatusBadRequest, fmt.Sprintf(
 					"class override %s is more capable than the probed class %s; an override may only make polling gentler",
-					override, probed.Budgeted()))
+					c, probed.Budgeted()))
 				return
 			}
 		}
-		if string(override) != d.ClassOverride {
-			if err := queries.SetDeviceClassOverride(s.db, id, override); err != nil {
-				writeError(w, http.StatusInternalServerError, "failed to update class override")
-				return
-			}
-			s.audit(r, "class_override_changed", id, describeOverrideChange(d.ClassOverride, string(override)))
+		override = &c
+	}
+
+	if profile != nil && *profile != d.Profile() {
+		if err := queries.SetDevicePollProfile(s.db, id, *profile); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to update polling profile")
+			return
 		}
+		s.audit(r, "poll_profile_changed", id, fmt.Sprintf("%s → %s", d.Profile(), *profile))
+	}
+	if override != nil && string(*override) != d.ClassOverride {
+		if err := queries.SetDeviceClassOverride(s.db, id, *override); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to update class override")
+			return
+		}
+		s.audit(r, "class_override_changed", id, describeOverrideChange(d.ClassOverride, string(*override)))
 	}
 
 	if d, ok = s.loadDevice(w, id); !ok {

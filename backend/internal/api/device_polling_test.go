@@ -102,10 +102,14 @@ func TestUpdatePollingProfileAndOverride(t *testing.T) {
 		t.Fatalf("after update: %v", dev)
 	}
 
-	// More capable than the probed C2: refused, nothing changes.
-	rec = call(t, s.handleUpdatePolling, http.MethodPut, d.ID, `{"class_override": "C3"}`, nil)
+	// More capable than the probed C2: refused, nothing changes — not even
+	// a valid profile sent alongside.
+	rec = call(t, s.handleUpdatePolling, http.MethodPut, d.ID, `{"profile": "auto", "class_override": "C3"}`, nil)
 	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "gentler") {
 		t.Fatalf("clamped override: %d %s", rec.Code, rec.Body.String())
+	}
+	if got, err := queries.GetDevice(s.db, d.ID); err != nil || got.Profile() != devclass.ProfileLight || got.ClassOverride != "C1" {
+		t.Fatalf("after a refused update: profile %v override %q (%v), want light / C1 untouched", got.Profile(), got.ClassOverride, err)
 	}
 	// Omitted keys stay; null clears the override.
 	rec = call(t, s.handleUpdatePolling, http.MethodPut, d.ID, `{"class_override": null}`, &dev)
