@@ -83,16 +83,16 @@ type LinkTrafficInput struct {
 	Devices  []queries.Device
 	Uplinks  []queries.DeviceUplink
 	Snapshot PortSnapshot
-	// SampledAt is when each device's counters were last read. A device
-	// missing from it counts as read at Snapshot.TS — which is every device
-	// today, since the snapshot carries one cycle time; per-device read
-	// times (per-class counter cadences) slot in here.
+	// SampledAt is when each device's counters were last read
+	// (PortStatsCollector.DeviceSampleTimes, or a readTracker); a device
+	// missing from it counts as read at Snapshot.TS.
 	SampledAt map[string]time.Time
 }
 
 // LoadLinkTraffic derives every measurable link's rate from snap and the
-// links, devices and uplinks tables. It never calls a device.
-func LoadLinkTraffic(db *sql.DB, snap PortSnapshot, now time.Time) (LinkTrafficPayload, error) {
+// links, devices and uplinks tables, reading each link on its fresher end by
+// sampledAt (nil: every device at snap.TS). It never calls a device.
+func LoadLinkTraffic(db *sql.DB, snap PortSnapshot, sampledAt map[string]time.Time, now time.Time) (LinkTrafficPayload, error) {
 	out := LinkTrafficPayload{SnapshotMeta: NewSnapshotMeta(snap, now), Links: []LinkTraffic{}}
 	if len(snap.Ports) == 0 {
 		return out, nil
@@ -109,7 +109,7 @@ func LoadLinkTraffic(db *sql.DB, snap PortSnapshot, now time.Time) (LinkTrafficP
 	if err != nil {
 		return out, err
 	}
-	out.Links = BuildLinkTraffic(LinkTrafficInput{Links: links, Devices: devices, Uplinks: ups, Snapshot: snap})
+	out.Links = BuildLinkTraffic(LinkTrafficInput{Links: links, Devices: devices, Uplinks: ups, Snapshot: snap, SampledAt: sampledAt})
 	return out, nil
 }
 
@@ -124,13 +124,14 @@ type linkEnd struct {
 }
 
 // preferredTo reports whether a is the better end to read a link from: the
-// fresher reading first; on a tie the online device, then the device on the
-// shorter counter cadence (with per-class cadences a C3 switch's counters
-// are up to four times fresher than a C1's, and reading them spares nothing
-// on the weak one), else false so the caller keeps its first choice.
-func (a linkEnd) preferredTo(b linkEnd) bool {
-	if !a.at.Equal(b.at) {
-		return a.at.After(b.at)
+// reading fresher by more than slack first (readings of one counter cycle
+// arrive seconds apart and count as equally fresh); on a tie the online
+// device, then the device on the shorter counter cadence (with per-class
+// cadences a C3 switch's counters are up to four times fresher than a C1's),
+// else false so the caller keeps its first choice.
+func (a linkEnd) preferredTo(b linkEnd, slack time.Duration) bool {
+	if d := a.at.Sub(b.at); d > slack || d < -slack {
+		return d > 0
 	}
 	if a.online != b.online {
 		return a.online
@@ -175,6 +176,9 @@ func BuildLinkTraffic(in LinkTrafficInput) []LinkTraffic {
 	if in.Snapshot.TS != nil {
 		ts = *in.Snapshot.TS
 	}
+	// Half a counter interval: a device that missed a read is a whole
+	// interval behind, one cycle's replies are seconds apart.
+	slack := time.Duration(in.Snapshot.IntervalSeconds) * time.Second / 2
 
 	end := func(deviceID, iface string) (linkEnd, bool) {
 		port := linkPort(iface)
@@ -214,7 +218,7 @@ func BuildLinkTraffic(in LinkTrafficInput) []LinkTraffic {
 		a, okA := end(l.DeviceAID, l.InterfaceA)
 		b, okB := end(l.DeviceBID, l.InterfaceB)
 		switch {
-		case okA && (!okB || !b.preferredTo(a)):
+		case okA && (!okB || !b.preferredTo(a, slack)):
 			out = append(out, measured(l.ID, l.DeviceAID, l.DeviceBID, a))
 		case okB:
 			out = append(out, measured(l.ID, l.DeviceAID, l.DeviceBID, b))
@@ -319,6 +323,9 @@ func (c *LiveTrafficCollector) Run(ctx context.Context) {
 			stop()
 		}
 	}()
+	// Read times come from the sequence of snapshots this collector sees
+	// (it is handed snapshots, not the collector that holds the times).
+	var reads *readTracker
 	for {
 		select {
 		case <-ctx.Done():
@@ -328,15 +335,16 @@ func (c *LiveTrafficCollector) Run(ctx context.Context) {
 			switch {
 			case watching && stop == nil:
 				stop = c.hub.Listen(PortRatesTopic, c.offer)
+				reads = newReadTracker()
 			case !watching && stop != nil:
 				stop()
-				stop = nil
+				stop, reads = nil, nil
 			}
 		case snap := <-c.snaps:
-			if c.hub.TopicSubscriberCount(LiveTrafficTopic) == 0 {
+			if c.hub.TopicSubscriberCount(LiveTrafficTopic) == 0 || reads == nil {
 				continue
 			}
-			payload, err := LoadLinkTraffic(c.db, snap, c.now())
+			payload, err := LoadLinkTraffic(c.db, snap, reads.observe(snap), c.now())
 			if err != nil {
 				log.Printf("poller livetraffic: %v", err)
 				continue
@@ -344,6 +352,56 @@ func (c *LiveTrafficCollector) Run(ctx context.Context) {
 			c.hub.Publish(LiveTrafficTopic, payload)
 		}
 	}
+}
+
+// readTracker infers when each device's counters were last read from the
+// snapshots published one after another: a successful read recomputes the
+// device's rates, a failed one leaves them exactly as they were (for up to
+// three intervals), so the snapshot time of a device's last change is its
+// last read. A device whose every port is idle looks unread even when read;
+// that only ever hands its links to the other end, which reads the same idle
+// link.
+type readTracker struct {
+	prev    map[portStatsKey]PortRate
+	changed map[string]time.Time // by device id
+}
+
+func newReadTracker() *readTracker {
+	return &readTracker{prev: map[portStatsKey]PortRate{}, changed: map[string]time.Time{}}
+}
+
+// observe takes the next snapshot (Ready, with a TS) and returns every
+// present device's inferred read time.
+func (r *readTracker) observe(snap PortSnapshot) map[string]time.Time {
+	ts := *snap.TS
+	next := make(map[portStatsKey]PortRate, len(snap.Ports))
+	present := make(map[string]bool)
+	for _, p := range snap.Ports {
+		k := portStatsKey{p.DeviceID, p.Iface}
+		next[k] = p
+		present[p.DeviceID] = true
+		if old, ok := r.prev[k]; !ok || !sameReading(old, p) {
+			r.changed[p.DeviceID] = ts
+		}
+	}
+	for dev := range r.changed {
+		if !present[dev] {
+			delete(r.changed, dev)
+		}
+	}
+	r.prev = next
+	out := make(map[string]time.Time, len(r.changed))
+	for dev, at := range r.changed {
+		out[dev] = at
+	}
+	return out
+}
+
+// sameReading reports whether two snapshots carry the same reading of a port:
+// the fields every counter read recomputes.
+func sameReading(a, b PortRate) bool {
+	return a.RxBps == b.RxBps && a.TxBps == b.TxBps && a.RxPps == b.RxPps && a.TxPps == b.TxPps &&
+		a.Running == b.Running && a.Disabled == b.Disabled
 }
 
 // offer hands a published snapshot to Run, replacing one Run has not picked

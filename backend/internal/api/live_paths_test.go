@@ -123,6 +123,18 @@ func TestDevicePortsFromSnapshot(t *testing.T) {
 		t.Error("ether7 running from the hourly inventory instead of the snapshot")
 	}
 
+	// A device whose last reads failed keeps its old rates in the snapshot;
+	// its grid must show their real age, not the fleet cycle's.
+	f.fake.reads = map[string]time.Time{"s": f.fake.snap.TS.Add(-40 * time.Second)}
+	resp = devicePortsResponse{}
+	if code := liveGet(t, h, "/devices/s/ports", &resp); code != http.StatusOK {
+		t.Fatalf("status %d", code)
+	}
+	if resp.SampledAt == nil || !resp.SampledAt.Equal(f.fake.reads["s"]) || resp.AgeSeconds == nil || *resp.AgeSeconds < 40 {
+		t.Errorf("stale device meta = %+v (age %v)", resp.SnapshotMeta, resp.AgeSeconds)
+	}
+	f.fake.reads = nil
+
 	// A device the snapshot has nothing for: inventory only, no timestamp.
 	if err := queries.CreateDevice(f.db, &queries.Device{ID: "z", Identity: "Z", Address: "10.0.0.9", Username: "admin", APIPort: 8728, Status: "offline"}); err != nil {
 		t.Fatal(err)
@@ -182,6 +194,20 @@ func TestTrafficLinksFromSnapshot(t *testing.T) {
 	if l := got[rc]; l.DeviceID != "r" || l.Iface != "sfp1" || l.RxBps != 9*mbps || l.TxBps != 95*mbps {
 		t.Errorf("R–C link = %+v", l)
 	}
+	// R's reads have been failing: the link is read on C's fresh end.
+	f.fake.reads = map[string]time.Time{"r": f.fake.snap.TS.Add(-30 * time.Second), "c": *f.fake.snap.TS}
+	resp = poller.LinkTrafficPayload{}
+	if code := liveGet(t, liveRouter(f.s, "viewer"), "/traffic/links", &resp); code != http.StatusOK {
+		t.Fatalf("status %d", code)
+	}
+	stale := map[string]poller.LinkTraffic{}
+	for _, l := range resp.Links {
+		stale[l.ID] = l
+	}
+	if l := stale[rc]; l.DeviceID != "c" || l.Iface != "sfp2" || l.RxBps != 9*mbps || l.TxBps != 95*mbps {
+		t.Errorf("R–C link with R stale = %+v, want C's sfp2 in R's frame", l)
+	}
+	f.fake.reads = nil
 	if l := got["up:r:eth1-wan:203.0.113.1"]; l.Target != "internet" || l.RxBps != 100*mbps || l.TxBps != 10*mbps {
 		t.Errorf("R's WAN edge = %+v", l)
 	}

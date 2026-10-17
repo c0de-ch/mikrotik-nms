@@ -32,7 +32,8 @@ func (s *Server) handleDeviceLiveLimits(w http.ResponseWriter, r *http.Request) 
 	if u := auth.UserFromContext(r.Context()); u != nil {
 		admin = u.Role == "admin"
 	}
-	interval := time.Duration(s.portSnapshot().IntervalSeconds) * time.Second
+	// The same interval source the stream's subscribe.error quotes.
+	interval := poller.PortStatsInterval(s.db)
 	pollingOn := s.pollersMode() == config.PollersLocal
 	limits, code := poller.LiveAccessFor(d, admin, pollingOn, time.Now(), interval)
 	resp := liveLimitsResponse{DeviceID: d.ID, LiveLimits: limits, Allowed: code == "", Reason: code}

@@ -1,8 +1,6 @@
 package api
 
 import (
-	"database/sql"
-	"errors"
 	"net/http"
 	"sort"
 	"time"
@@ -23,8 +21,9 @@ type portInfo struct {
 }
 
 // devicePortsResponse is one device's faceplate with the snapshot's rates.
-// sampled_at is null while the snapshot has none of the device's interfaces
-// (offline, or not polled yet): the rates are then zero, not measured.
+// sampled_at is when the device's counters were last read — null while the
+// snapshot has none of its interfaces (offline, or not polled yet): the
+// rates are then zero, not measured.
 type devicePortsResponse struct {
 	DeviceID string `json:"device_id"`
 	poller.SnapshotMeta
@@ -34,15 +33,10 @@ type devicePortsResponse struct {
 // handleGetDevicePorts returns each physical port with its running/disabled
 // state and its rx/tx rate from the port-stats snapshot — never a device
 // call, so the map's port grid costs a weak switch nothing however many tabs
-// show it. The rates are as fresh as the counter cycle (SnapshotMeta).
+// show it. The rates are as fresh as the device's last counter read.
 func (s *Server) handleGetDevicePorts(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if _, err := queries.GetDevice(s.db, id); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			writeError(w, http.StatusNotFound, "device not found")
-		} else {
-			writeError(w, http.StatusInternalServerError, "failed to get device")
-		}
+	if _, ok := s.loadDevice(w, id); !ok {
 		return
 	}
 	ifaces, err := queries.ListInterfacesByDevice(s.db, id)
@@ -50,15 +44,17 @@ func (s *Server) handleGetDevicePorts(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to list interfaces")
 		return
 	}
-	snap := s.portSnapshot()
-	writeJSON(w, http.StatusOK, devicePorts(id, ifaces, snap, time.Now()))
+	times, snap := s.liveSnapshot()
+	writeJSON(w, http.StatusOK, devicePorts(id, ifaces, snap, times[id], time.Now()))
 }
 
 // devicePorts joins the interface inventory with the snapshot. The snapshot
 // wins for running/disabled/comment (it is seconds old; the inventory is
 // refreshed hourly), and a faceplate port the inventory has not caught up
 // with yet is listed from the snapshot alone, after the inventory's ports.
-func devicePorts(deviceID string, ifaces []queries.Interface, snap poller.PortSnapshot, now time.Time) devicePortsResponse {
+// readAt is when the device's counters were last read (zero: the snapshot's
+// cycle time), so a device whose reads fail shows its rates' true age.
+func devicePorts(deviceID string, ifaces []queries.Interface, snap poller.PortSnapshot, readAt, now time.Time) devicePortsResponse {
 	live := make(map[string]poller.PortRate)
 	for _, p := range snap.Ports {
 		if p.DeviceID == deviceID {
@@ -66,6 +62,9 @@ func devicePorts(deviceID string, ifaces []queries.Interface, snap poller.PortSn
 		}
 	}
 
+	if !readAt.IsZero() {
+		snap.TS = &readAt // meta only; snap is a copy
+	}
 	resp := devicePortsResponse{DeviceID: deviceID, SnapshotMeta: poller.NewSnapshotMeta(snap, now), Ports: []portInfo{}}
 	if len(live) == 0 {
 		resp.SampledAt, resp.AgeSeconds = nil, nil
