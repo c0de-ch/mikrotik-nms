@@ -39,10 +39,6 @@ const (
 	// (capped at a tenth of its interval) ride along with the current
 	// wake-up instead of costing one of its own: timers and replies jitter.
 	dueSlack = time.Second
-	// portStatsMaxHold caps how far a flush holds the minutes back for a
-	// device whose next interval will still credit them (flushBoundary).
-	portStatsMaxHold = time.Minute
-
 	// portStatsMaxWait caps how long a cycle waits for device replies. Slower
 	// replies still land in the state when they arrive (see pollDevice).
 	portStatsMaxWait = 10 * time.Second
@@ -767,23 +763,29 @@ func (c *PortStatsCollector) finishCycle(now time.Time, interval time.Duration) 
 
 // flushBoundaryLocked is the exclusive end of the minutes a flush at now may
 // finalise: the start of now's minute, held back to the minute of the oldest
-// fresh device sample. Devices poll on their own cadence, so another
-// device's cycle can flush while a slower device's interval is still open;
-// its next delta starts at that sample and must find the minute it starts
-// in still open, or its share would land a minute late. The hold is capped
-// at portStatsMaxHold — a share for a minute older than that is carried into
-// the first open minute instead (accumulate). The pause does not extend the
-// hold: a paused device's next delta is a gap once its last read is past the
-// gap rule, which stays on the wall clock. c.mu held.
+// open interval. Devices poll on their own cadence and phase, so another
+// device's cycle can flush while a device's interval is still open; its next
+// delta starts at its last sample and must find every minute from there on
+// still open, or its shares would pile into a later minute (a 5-minute
+// interval read between other devices' cycles would comb into one minute of
+// five minutes' bytes and four empty ones). An interval counts as open for as
+// long as its device's next read is expected (deviceState.openFor: one
+// interval with the full jitter plus the reply wait), so the newest final
+// minute lags by at most about one interval — about a minute for the
+// default cadences, as long as the old fleet-wide cycle at long intervals. A
+// device whose read is overdue (failing, offline) no longer holds anything:
+// its late shares are carried into the first open minute (accumulate). The
+// pause does not extend the hold either: a paused device's next delta is a
+// gap once its last read is past the gap rule, which stays on the wall
+// clock. c.mu held.
 func (c *PortStatsCollector) flushBoundaryLocked(now time.Time) time.Time {
 	boundary := now.UTC().Truncate(time.Minute)
-	floor := boundary.Add(-portStatsMaxHold)
 	for _, st := range c.devs {
-		if !st.current(now) {
-			continue // its next delta is past the gap rule anyway
+		if st.at.IsZero() || now.Sub(st.at) > st.openFor() {
+			continue
 		}
 		if m := st.at.Truncate(time.Minute); m.Before(boundary) {
-			boundary = maxTime(m, floor)
+			boundary = m
 		}
 	}
 	return boundary

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -381,28 +382,51 @@ func TestPortStatsFlushHoldsMinuteOfOpenInterval(t *testing.T) {
 	}
 }
 
-// The hold is capped at a minute. A share for a minute older than that — a
-// device on a long interval — is carried into the first open minute, so
-// the bytes still add up exactly.
-func TestPortStatsShareBeyondHoldCarriedIntoOpenMinute(t *testing.T) {
+// A device on a long interval holds the flush for as long as its next read
+// is expected (one interval with the jitter): another device's cycle at 12:03
+// keeps 12:00 open for the 12:00:10–12:05:10 delta, whose shares then land
+// in their own minutes.
+func TestPortStatsFlushHoldsLongInterval(t *testing.T) {
 	c := NewPortStatsCollector(pollerTestDB(t), nil, nil)
 	const iv = 5 * time.Minute
 	c.ingest("d1", []routeros.InterfaceStats{ifStats("ether1", 0, 0, 0, 0)}, at(12, 0, 10), iv)
 	c.finishCycle(at(12, 3, 0), iv) // another device's cycle
-	if got := c.FlushedThrough(); !got.Equal(at(12, 2, 0)) {
-		t.Fatalf("FlushedThrough = %v, want 12:02 (held at most a minute)", got)
+	if got := c.FlushedThrough(); !got.Equal(at(12, 0, 0)) {
+		t.Fatalf("FlushedThrough = %v, want 12:00 held for d1's open interval", got)
 	}
 
 	c.ingest("d1", []routeros.InterfaceStats{ifStats("ether1", 30_000, 0, 0, 0)}, at(12, 5, 10), iv) // 100 B/s
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for m, want := range map[time.Time]int64{at(12, 0, 0): 5_000, at(12, 1, 0): 6_000, at(12, 4, 0): 6_000, at(12, 5, 0): 1_000} {
+		if acc := c.minutes[m.Unix()][portStatsKey{"d1", "ether1"}]; acc == nil || acc.rxBytes != want {
+			t.Errorf("%s = %+v, want %d B", m.Format("15:04"), acc, want)
+		}
+	}
+}
+
+// A device whose read is overdue (a failed read, offline) holds nothing: the
+// flush moves on, and the late delta's shares for minutes already flushed are
+// carried into the first open minute, so the bytes still add up exactly.
+func TestPortStatsShareBeyondHoldCarriedIntoOpenMinute(t *testing.T) {
+	c := NewPortStatsCollector(pollerTestDB(t), nil, nil)
+	const iv = 5 * time.Minute
+	c.ingest("d1", []routeros.InterfaceStats{ifStats("ether1", 0, 0, 0, 0)}, at(12, 0, 10), iv)
+	c.finishCycle(at(12, 8, 0), iv) // its 12:05 read failed: overdue by now
+	if got := c.FlushedThrough(); !got.Equal(at(12, 8, 0)) {
+		t.Fatalf("FlushedThrough = %v, want 12:08 (an overdue device holds nothing)", got)
+	}
+
+	c.ingest("d1", []routeros.InterfaceStats{ifStats("ether1", 60_000, 0, 0, 0)}, at(12, 10, 10), iv) // 100 B/s
 	if minuteSamples(c, at(12, 0, 0), "d1", "ether1") != 0 {
 		t.Error("a flushed minute must not be reopened")
 	}
 	c.mu.Lock()
-	carried := *c.minutes[at(12, 2, 0).Unix()][portStatsKey{"d1", "ether1"}]
+	carried := *c.minutes[at(12, 8, 0).Unix()][portStatsKey{"d1", "ether1"}]
 	c.mu.Unlock()
-	// 12:00 (50 s) and 12:01 (60 s) carried into 12:02, plus its own 60 s.
-	if carried.seconds != 170 || carried.rxBytes != 17_000 {
-		t.Errorf("12:02 = %+v, want 170 s and 17000 B", carried)
+	// 12:00 (50 s) to 12:07 (60 s each) carried into 12:08, plus its own 60 s.
+	if carried.seconds != 530 || carried.rxBytes != 53_000 {
+		t.Errorf("12:08 = %+v, want 530 s and 53000 B", carried)
 	}
 	var total int64
 	c.mu.Lock()
@@ -410,8 +434,8 @@ func TestPortStatsShareBeyondHoldCarriedIntoOpenMinute(t *testing.T) {
 		total += ports[portStatsKey{"d1", "ether1"}].rxBytes
 	}
 	c.mu.Unlock()
-	if total != 30_000 {
-		t.Errorf("accumulated %d B, want the whole 30000 B delta", total)
+	if total != 60_000 {
+		t.Errorf("accumulated %d B, want the whole 60000 B delta", total)
 	}
 }
 
@@ -421,9 +445,45 @@ func TestPortStatsShareBeyondHoldCarriedIntoOpenMinute(t *testing.T) {
 // overlap it (proration by overlap), not a share pushed into a later minute.
 // The rate steps up mid-run, which is what tells the two apart.
 func TestPortStatsPerDeviceIntervalsProrateExactly(t *testing.T) {
+	want := prorateFleet(t, []prorateDevice{{"fast", 15 * time.Second, at(10, 0, 5)}, {"slow", time.Minute, at(10, 0, 30)}})
+	// The step at 10:30 straddles the slow device's 10:29:30–10:30:30
+	// interval: half of its 30 MB belongs to 10:29.
+	if w := want["slow"][at(10, 29, 0)]; w != 15e6 {
+		t.Fatalf("reference for slow 10:29 = %.0f, the fixture no longer exercises the hold", w)
+	}
+}
+
+// The same at port_stats_interval = 300 s: two devices five minutes apart in
+// period but on different phases, with a fast one flushing in between — each
+// 5-minute delta still spreads over its own minutes instead of combing into
+// one.
+func TestPortStatsLongIntervalsProrateExactly(t *testing.T) {
+	prorateFleet(t, []prorateDevice{
+		{"fast", 15 * time.Second, at(10, 0, 5)},
+		{"slow", 5 * time.Minute, at(10, 0, 10)},
+		{"late", 5 * time.Minute, at(10, 2, 30)},
+	})
+}
+
+// prorateDevice is one device of prorateFleet: its Tier 0 interval and first
+// read.
+type prorateDevice struct {
+	id    string
+	iv    time.Duration
+	first time.Time
+}
+
+// prorateFleet reads every device on its own interval from first until 11:10
+// — a rate stepping up at 10:30 and 10:45 — finishing a cycle after each
+// read as the collector does, and checks that every device's 1-minute rows
+// from 10:10 to 11:00 hold exactly the shares of the intervals overlapping
+// them. It returns the reference shares.
+func prorateFleet(t *testing.T, devs []prorateDevice) map[string]map[time.Time]float64 {
+	t.Helper()
 	db := pollerTestDB(t)
-	mustCreateDevice(t, db, &queries.Device{ID: "fast", Identity: "fast", Address: "192.0.2.10"})
-	mustCreateDevice(t, db, &queries.Device{ID: "slow", Identity: "slow", Address: "192.0.2.11"})
+	for i, d := range devs {
+		mustCreateDevice(t, db, &queries.Device{ID: d.id, Identity: d.id, Address: fmt.Sprintf("192.0.2.%d", 10+i)})
+	}
 	c := NewPortStatsCollector(db, nil, nil)
 
 	// Idle until 10:30, 1 MB/s until 10:45, 3 MB/s after.
@@ -443,15 +503,15 @@ func TestPortStatsPerDeviceIntervalsProrateExactly(t *testing.T) {
 		t   time.Time
 	}
 	var polls []poll
-	for ts := at(10, 0, 5); !ts.After(at(11, 2, 0)); ts = ts.Add(15 * time.Second) {
-		polls = append(polls, poll{"fast", 15 * time.Second, ts})
-	}
-	for ts := at(10, 0, 30); !ts.After(at(11, 2, 0)); ts = ts.Add(time.Minute) {
-		polls = append(polls, poll{"slow", time.Minute, ts})
+	want := map[string]map[time.Time]float64{}
+	for _, d := range devs {
+		want[d.id] = map[time.Time]float64{}
+		for ts := d.first; !ts.After(at(11, 10, 0)); ts = ts.Add(d.iv) {
+			polls = append(polls, poll{d.id, d.iv, ts})
+		}
 	}
 	sort.Slice(polls, func(i, j int) bool { return polls[i].t.Before(polls[j].t) })
 
-	want := map[string]map[time.Time]float64{"fast": {}, "slow": {}}
 	last := map[string]time.Time{}
 	for _, p := range polls {
 		c.ingest(p.dev, []routeros.InterfaceStats{ifStats("ether1", bytesAt(p.t), 0, 0, 0)}, p.t, p.iv)
@@ -469,8 +529,8 @@ func TestPortStatsPerDeviceIntervalsProrateExactly(t *testing.T) {
 		last[p.dev] = p.t
 	}
 
-	for _, dev := range []string{"fast", "slow"} {
-		rows, err := queries.GetPortStatsSeries(db, queries.PortStats1m, dev, "ether1", at(10, 2, 0), at(11, 0, 0))
+	for _, d := range devs {
+		rows, err := queries.GetPortStatsSeries(db, queries.PortStats1m, d.id, "ether1", at(10, 10, 0), at(11, 0, 0))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -478,17 +538,13 @@ func TestPortStatsPerDeviceIntervalsProrateExactly(t *testing.T) {
 		for _, r := range rows {
 			got[r.Bucket] = r.RxBytes
 		}
-		for m := at(10, 2, 0); m.Before(at(11, 0, 0)); m = m.Add(time.Minute) {
-			if d := float64(got[m]) - want[dev][m]; d > 2 || d < -2 {
-				t.Errorf("%s %s: %d B, want %.0f B", dev, m.Format("15:04"), got[m], want[dev][m])
+		for m := at(10, 10, 0); m.Before(at(11, 0, 0)); m = m.Add(time.Minute) {
+			if diff := float64(got[m]) - want[d.id][m]; diff > 2 || diff < -2 {
+				t.Errorf("%s %s: %d B, want %.0f B", d.id, m.Format("15:04"), got[m], want[d.id][m])
 			}
 		}
 	}
-	// The step at 10:30 straddles the slow device's 10:29:30–10:30:30
-	// interval: half of its 30 MB belongs to 10:29.
-	if w := want["slow"][at(10, 29, 0)]; w != 15e6 {
-		t.Fatalf("reference for slow 10:29 = %.0f, the fixture no longer exercises the hold", w)
-	}
+	return want
 }
 
 func TestPortStatsSnapshotPruneAndShape(t *testing.T) {

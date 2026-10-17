@@ -78,6 +78,14 @@ func (st *deviceState) current(now time.Time) bool {
 	return !st.at.IsZero() && now.Sub(st.at) <= 3*st.interval
 }
 
+// openFor is how long after its last Tier 0 read the device's next counter
+// delta is still expected — its interval with the full ±10 % jitter, plus the
+// cycle's reply wait — and the flush keeps the minutes it will credit open
+// (flushBoundaryLocked).
+func (st *deviceState) openFor() time.Duration {
+	return st.interval + st.interval/10 + portStatsMaxWait
+}
+
 // fresh reports whether the Tier 0 rows may still be served at now: current,
 // or the device is paused — its last read stays the device's state while
 // nobody reads it, it does not age into "gone".
