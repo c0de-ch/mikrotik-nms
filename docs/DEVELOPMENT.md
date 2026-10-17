@@ -68,7 +68,8 @@ mikrotik-c0de/
         └── lib/
             ├── api.ts             # typed REST client
             ├── ws.ts              # auto-reconnecting WS client
-            └── status.ts          # device-status presentation helpers
+            ├── status.ts          # device-status presentation helpers
+            └── device-load.ts     # class budget / pause / cadence helpers
 ```
 
 ## 3. Running locally
@@ -372,6 +373,42 @@ import { deviceStatusLabel, deviceStatusBadgeClass, deviceStatusColor } from "@/
   {deviceStatusLabel(d.status)}
 </Badge>
 <span className={`h-2 w-2 rounded-full ${deviceStatusColor(d.status)}`} />
+```
+
+### Device-load marks
+
+How hard the NMS may poll a device (its CPU class budget), whether its
+polling is paused, and how fresh snapshot rates are read as one system. Use
+the shared pieces rather than ad-hoc badges:
+
+- [`lib/device-load.ts`](../frontend/src/lib/device-load.ts) — pure helpers:
+  `budgetClass` (the effective class, `C1` on the light profile — what the
+  cadences and live caps follow), `budgetReason` (`unprobed` / `light` /
+  `override`), `counterIntervalSeconds` (the device's own counter cadence:
+  class cadence floored by the fleet `interval_seconds` — a weak device is
+  read every 60 s, not 15 s), `isPollingPaused`, `liveRefusalText` and the
+  time formatters. The class tables mirror `internal/devclass`; keep them in
+  step.
+- [`components/devices/device-load.tsx`](../frontend/src/components/devices/device-load.tsx)
+  — `ClassMeter` (three equal bars, filled up to the budget class;
+  monochrome — a weak device is a fact, not a fault), `DeviceClassBadge`,
+  `PausedBadge` (the one loud mark) and `DeviceLoadBadges` (both, in that
+  order, after the status badge wherever a device is named).
+- [`components/traffic/snapshot-age.tsx`](../frontend/src/components/traffic/snapshot-age.tsx)
+  — "Updated 12 s ago"; pass `intervalSeconds` (the device's cadence) and
+  `paused` when the view is about one device.
+
+Colours are the `--load-meter`, `--load-track` and `--load-hold` tokens in
+`globals.css` (Tailwind `bg-load-meter`, `text-load-hold`, …). "Hold" amber
+means *this is not moving* — polling paused, or a reading gone stale — and
+nothing else.
+
+```tsx
+import { DeviceLoadBadges } from "@/components/devices/device-load";
+
+<Badge variant="outline" className={deviceStatusBadgeClass(d.status)}>{deviceStatusLabel(d.status)}</Badge>
+<DeviceLoadBadges device={d} />            {/* ▮▯▯ C1  ‖ Paused */}
+<DeviceLoadBadges device={d} detail="full" /> {/* ▮▯▯ C1 weak  ‖ Paused until 14:30 */}
 ```
 
 ## 7. Testing patterns

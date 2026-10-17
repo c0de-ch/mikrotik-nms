@@ -7,6 +7,7 @@ import { useWebSocket } from "@/hooks/use-websocket";
 import {
   api,
   type Device,
+  type DevicePortsResponse,
   type FlowDirection,
   type FlowRemoteGrouping,
   type FlowSource,
@@ -333,6 +334,57 @@ export function useDevices(): DevicesState {
   return { devices, byId, loaded, error, reload };
 }
 
+// ---- one device's ports -----------------------------------------------------
+
+export interface DevicePortsState {
+  data: DevicePortsResponse;
+  // Date.now() when the answer arrived (SnapshotAge adds the time since).
+  receivedAt: number;
+}
+
+// useDevicePorts follows GET /devices/{id}/ports — the device's faceplate
+// ports with their snapshot rates and the device's own read time — once per
+// fleet counter cycle (the floor; a weak device's own reads are rarer and
+// SnapshotAge ticks the age between answers). Database only: following it
+// costs the device nothing. slow refetches once a minute instead (a paused
+// device's rates do not move). null until this device's first answer.
+export function useDevicePorts(deviceId: string | null, slow = false): DevicePortsState | null {
+  const { token } = useAuth();
+  const [state, setState] = useState<DevicePortsState | null>(null);
+  const slowRef = useRef(slow);
+  useEffect(() => {
+    slowRef.current = slow;
+  }, [slow]);
+
+  useEffect(() => {
+    if (!token || !deviceId) return;
+    let alive = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const load = () => {
+      api.devices
+        .ports(token, deviceId)
+        .then((data) => {
+          if (!alive) return;
+          setState({ data, receivedAt: Date.now() });
+          const secs = slowRef.current ? 60 : Math.max(5, data.interval_seconds || 15);
+          timer = setTimeout(load, secs * 1000);
+        })
+        .catch(() => {
+          if (alive) timer = setTimeout(load, 15_000);
+        });
+    };
+    load();
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+    };
+  }, [token, deviceId]);
+
+  // Until the new device's answer arrives, nothing rather than the previous
+  // device's ports.
+  return state && state.data.device_id === deviceId ? state : null;
+}
+
 // ---- live-stream limits -----------------------------------------------------
 
 // useLiveLimits fetches what a per-port live stream of the device may do for
@@ -347,39 +399,9 @@ export function useLiveLimits(deviceId: string | null, session = 0) {
 
 // ---- clock ------------------------------------------------------------------
 
-// One shared 1 s clock for "updated 12 s ago" hints, however many components
-// read it; it only ticks while something is subscribed. Reading the time in
-// the store rather than during render keeps renders pure.
-let clockNow = 0;
-let clockTimer: ReturnType<typeof setInterval> | null = null;
-const clockListeners = new Set<() => void>();
-
-function subscribeClock(onChange: () => void): () => void {
-  clockListeners.add(onChange);
-  if (!clockTimer) {
-    clockNow = Date.now();
-    clockTimer = setInterval(() => {
-      clockNow = Date.now();
-      for (const l of clockListeners) l();
-    }, 1000);
-  }
-  return () => {
-    clockListeners.delete(onChange);
-    if (clockListeners.size === 0 && clockTimer) {
-      clearInterval(clockTimer);
-      clockTimer = null;
-    }
-  };
-}
-
-// useNow returns the current time (ms), refreshed every second.
-export function useNow(): number {
-  return useSyncExternalStore(
-    subscribeClock,
-    () => clockNow,
-    () => 0,
-  );
-}
+// The shared 1 s clock lives in @/hooks/use-now (the device-load badges read
+// it too); re-exported for the traffic views.
+export { useNow } from "@/hooks/use-now";
 
 // Dark-mode flag. The authenticated layout toggles the "dark" class on <html>
 // only after the settings fetch resolves — after the page's first render on a

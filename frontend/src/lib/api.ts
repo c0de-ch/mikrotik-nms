@@ -245,6 +245,10 @@ export const api = {
     // Operator actions on the device (pauses, profile and class changes), newest first.
     audit: (token: string, id: string, limit = 20) =>
       apiFetch<DeviceAuditEntry[]>(`/devices/${id}/audit?limit=${limit}`, { token }),
+    // What the pollers noticed about the device (another API poller, login
+    // failures, …), most recently seen first.
+    findings: (token: string, id: string, limit = 50) =>
+      apiFetch<DeviceFinding[]>(`/devices/${id}/findings?limit=${limit}`, { token }),
   },
 
   // Topology
@@ -698,6 +702,21 @@ export interface DeviceAuditEntry {
   action: string;
   device_id: string;
   detail: string;
+}
+
+// One device_findings row: something a poller noticed about the device,
+// deduplicated by (kind, detail) — count and last_seen grow on repeats.
+// kind: parallel_api_poller (an API login from an address that is not this
+// NMS) or login_failure; others may follow.
+export interface DeviceFinding {
+  id: number;
+  device_id: string;
+  kind: string;
+  severity: "info" | "warn" | "critical";
+  detail: string;
+  first_seen: string;
+  last_seen: string;
+  count: number;
 }
 
 export interface CreateDeviceRequest {
@@ -1491,8 +1510,27 @@ export interface BridgePortStatus {
   point_to_point: boolean;
   path_cost: number;
   designated_bridge: string;
+  // Runtime fields a device may not report: null means unknown (never read
+  // as 0 or false). Optional for backends older than the 7.24 bridge reader.
+  topology_changes?: number | null;
+  forwarding?: boolean | null;
+  learning?: boolean | null;
+  inactive?: boolean | null;
+  disabled?: boolean | null;
+  hw_offload?: boolean | null;
+  hw_offload_group?: string;
+  pvid?: number | null;
+  // Raw RouterOS status ("in-bridge" | "inactive") and the configured edge
+  // (auto | yes | no | yes-discover | no-discover).
+  port_state?: string;
+  edge_config?: string;
   last_polled: string;
 }
+
+// How a bridge's port STP state was read: the port print itself (RouterOS
+// >= 7.24, cheapest), one monitor over all active ports, a monitor per port
+// (last resort), or not at all.
+export type StpSource = "print" | "monitor-batched" | "monitor-per-port" | "none";
 
 export interface BridgeWithPorts {
   id: string;
@@ -1505,9 +1543,11 @@ export interface BridgeWithPorts {
   root_bridge_id: string;
   root_path_cost: number;
   root_port: string;
+  // Sum of the member ports' topology-change counters.
   topology_changes: number;
   last_topology_change: string;
   port_count: number;
+  stp_source?: StpSource | "";
   last_polled: string;
   ports: BridgePortStatus[];
 }
