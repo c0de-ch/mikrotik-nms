@@ -116,7 +116,8 @@ func (sp *SpeedTestPoller) poll(ctx context.Context) {
 		default:
 		}
 		// A scheduled download from a paused device is skipped without a
-		// sample (paused time is a gap, not an error); run-now still works.
+		// sample (paused time is a gap, not an error); the API refuses a
+		// run-now with 409 meanwhile.
 		if dev, err := queries.GetDevice(sp.db, test.DeviceID); err == nil && dev.PollingPaused(time.Now()) {
 			pauseLog.skip("speed tests", *dev)
 			continue

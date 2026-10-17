@@ -251,6 +251,9 @@ func (s *Server) handleDeviceAddresses(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to get device")
 		return
 	}
+	if s.writePollingPaused(w, dev.ID) {
+		return
+	}
 	if dev.Status != "online" {
 		status := dev.Status
 		if status == "unknown" {

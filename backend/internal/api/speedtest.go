@@ -204,6 +204,9 @@ func (s *Server) handleRunSpeedTest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "device no longer exists")
 		return
 	}
+	if s.writePollingPaused(w, dev.ID) {
+		return
+	}
 	if dev.Status != "online" {
 		writeError(w, http.StatusConflict, "device is "+dev.Status)
 		return

@@ -217,11 +217,18 @@ func poolRunner(pool *routeros.Pool, deviceID string) routeros.Runner {
 // pause too (the on-demand live stream, run-now actions). A device that cannot
 // be read counts as not paused.
 func DevicePaused(db *sql.DB, deviceID string, now time.Time) bool {
+	_, paused := PausedUntil(db, deviceID, now)
+	return paused
+}
+
+// PausedUntil is DevicePaused with the end of the pause (UTC), for the
+// refusal that names it.
+func PausedUntil(db *sql.DB, deviceID string, now time.Time) (time.Time, bool) {
 	dev, err := queries.GetDevice(db, deviceID)
-	if err != nil {
-		return false
+	if err != nil || !dev.PollingPaused(now) {
+		return time.Time{}, false
 	}
-	return dev.PollingPaused(now)
+	return dev.PollingPausedUntil.UTC(), true
 }
 
 // pauseNotices logs, once per pause, that a consumer skips a paused device.

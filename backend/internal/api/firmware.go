@@ -51,8 +51,13 @@ func (s *Server) handleUpgradeFirmware(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "device_ids required")
 		return
 	}
-	// A job that could never reach a device must not be created at all.
+	// A job that could never reach a device must not be created at all —
+	// nor one that would upgrade a device whose polling is paused (a job
+	// already running when the pause starts is not interrupted).
 	if writeDialPolicyError(w, routeros.PollingAllowed()) {
+		return
+	}
+	if s.writePollingPaused(w, req.DeviceIDs...) {
 		return
 	}
 
@@ -135,6 +140,9 @@ func (s *Server) handleSetChannel(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "device_ids required")
 		return
 	}
+	if s.writePollingPaused(w, req.DeviceIDs...) {
+		return
+	}
 
 	var changed int
 	var errors []string
@@ -168,6 +176,9 @@ func (s *Server) handleUpgradeRouterboard(w http.ResponseWriter, r *http.Request
 	}
 	if len(req.DeviceIDs) == 0 {
 		writeError(w, http.StatusBadRequest, "device_ids required")
+		return
+	}
+	if s.writePollingPaused(w, req.DeviceIDs...) {
 		return
 	}
 

@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/mikrotik-nms/backend/internal/config"
+	"github.com/mikrotik-nms/backend/internal/database/queries"
 	"github.com/mikrotik-nms/backend/internal/poller"
 	"github.com/mikrotik-nms/backend/internal/routeros"
 )
@@ -41,6 +43,35 @@ func writeDialPolicyError(w http.ResponseWriter, err error) bool {
 		return true
 	case errors.Is(err, routeros.ErrTargetNotAllowed):
 		writeError(w, http.StatusForbidden, err.Error())
+		return true
+	}
+	return false
+}
+
+// writePollingPaused refuses an on-demand device action while an admin pause
+// of the device's polling is in force — 409 "polling paused until <RFC 3339
+// time>" — and reports whether it did, so handlers can write
+// `if s.writePollingPaused(w, id) { return }` ahead of reaching the device.
+// A pause means only the liveness ping reaches the device; run-now actions
+// honour it like the scheduled pollers (resume the device to act on it). An
+// action on several devices (firmware) is refused when any of them is
+// paused, naming that one. Work already running is not interrupted.
+func (s *Server) writePollingPaused(w http.ResponseWriter, deviceIDs ...string) bool {
+	now := time.Now()
+	for _, id := range deviceIDs {
+		until, paused := poller.PausedUntil(s.db, id, now)
+		if !paused {
+			continue
+		}
+		msg := "polling paused until " + until.Format(time.RFC3339)
+		if len(deviceIDs) > 1 {
+			name := id
+			if d, err := queries.GetDevice(s.db, id); err == nil {
+				name = deviceDisplayName(*d)
+			}
+			msg = name + ": " + msg
+		}
+		writeError(w, http.StatusConflict, msg)
 		return true
 	}
 	return false
