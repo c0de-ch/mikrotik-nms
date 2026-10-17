@@ -14,19 +14,33 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useAuth } from "@/context/auth";
-import { api, type NetworkHealth, type LoopEvent, type BridgeWithPorts, type InterfaceState } from "@/lib/api";
+import {
+  api,
+  type BridgePortStatus,
+  type BridgeWithPorts,
+  type Device,
+  type InterfaceState,
+  type LoopEvent,
+  type NetworkHealth,
+  type StpSource,
+} from "@/lib/api";
+import { DeviceLoadBadges } from "@/components/devices/device-load";
 import { useWebSocket } from "@/hooks/use-websocket";
 import { foldEvents, foldOptions, type FoldBucket } from "@/lib/fold";
 import { explainEvent, explainPortState, type HealthHint } from "@/lib/health-hints";
 
 // Expanded "what is this & how do I fix it" panel under a clicked row.
-function HintPanel({ hint }: { hint: HealthHint }) {
+// extra: event-specific evidence (the ports behind a TCN storm). Table cells
+// do not wrap (whitespace-nowrap), so the panel wraps on its own and stays
+// within the visible width even when the table beside it scrolls.
+function HintPanel({ hint, extra }: { hint: HealthHint; extra?: ReactNode }) {
   return (
-    <div className="space-y-2 py-1 text-xs">
+    <div className="max-w-[min(48rem,calc(100vw-4.5rem))] space-y-2 whitespace-normal py-1 text-xs">
       <p className="flex items-start gap-1.5">
         <Lightbulb className="h-3.5 w-3.5 mt-0.5 shrink-0 text-amber-500" />
         <span>{hint.meaning}</span>
       </p>
+      {extra && <div className="pl-5">{extra}</div>}
       <div className="grid gap-3 md:grid-cols-2 pl-5">
         <div>
           <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Likely causes</p>
@@ -67,8 +81,69 @@ function timeAgo(dateStr: string): string {
 
 function severityBadge(severity: string) {
   if (severity === "critical")
-    return <Badge className="bg-red-100 text-red-700">critical</Badge>;
-  return <Badge className="bg-amber-100 text-amber-700">warn</Badge>;
+    return <Badge className="bg-red-100 text-red-700 dark:bg-red-500/15 dark:text-red-400">critical</Badge>;
+  return <Badge className="bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300">warn</Badge>;
+}
+
+// How a bridge's port STP state was read (bridge_status.stp_source): a quiet
+// provenance hint, since the cheaper the read the more often it can run.
+const STP_SOURCE: Record<StpSource, { label: string; title: string }> = {
+  print: {
+    label: "STP via port print",
+    title: "RouterOS 7.24+ reports STP state in the bridge port print — the cheapest read: one command for every port.",
+  },
+  "monitor-batched": {
+    label: "STP via batched monitor",
+    title: "Read with one bridge-port monitor over all active ports (RouterOS before 7.24).",
+  },
+  "monitor-per-port": {
+    label: "STP via per-port monitor",
+    title: "Read with one monitor per active port — the costliest fallback, used when this RouterOS accepts no batched monitor.",
+  },
+  none: {
+    label: "No STP state",
+    title: "The device reported no STP runtime state: no active ports, or none of the read forms worked.",
+  },
+};
+
+// A port's STP state: the status the device reported, else what the runtime
+// flags say. "" when nothing is known (an older read, or STP off).
+function stpState(p: BridgePortStatus): string {
+  if (p.inactive || p.port_state === "inactive" || p.status === "inactive") return "inactive";
+  if (p.status) return p.status;
+  if (p.forwarding) return "forwarding";
+  if (p.learning) return "learning";
+  if (p.forwarding === false && p.learning === false) return "discarding";
+  return "";
+}
+
+// Natural port order: ether2 before ether10.
+function byPortName(a: string, b: string): number {
+  return a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
+}
+
+// Rows grouped by device id, in the API's order, with the device's name.
+function groupByDevice<T extends { device_id: string; device_name: string }>(
+  rows: T[],
+): { id: string; name: string; rows: T[] }[] {
+  const out = new Map<string, { id: string; name: string; rows: T[] }>();
+  for (const r of rows) {
+    let g = out.get(r.device_id);
+    if (!g) {
+      g = { id: r.device_id, name: r.device_name || r.device_id, rows: [] };
+      out.set(r.device_id, g);
+    }
+    g.rows.push(r);
+  }
+  return [...out.values()];
+}
+
+// The ports of a bridge with the most topology changes, most first.
+function topChangedPorts(b: BridgeWithPorts | undefined, n: number): BridgePortStatus[] {
+  return (b?.ports ?? [])
+    .filter((p) => (p.topology_changes ?? 0) > 0)
+    .sort((x, y) => (y.topology_changes ?? 0) - (x.topology_changes ?? 0))
+    .slice(0, n);
 }
 
 function eventTypeLabel(t: string): string {
@@ -89,10 +164,10 @@ function eventTypeLabel(t: string): string {
 
 function roleColor(role: string): string {
   switch (role) {
-    case "root":       return "bg-blue-100 text-blue-700";
-    case "designated": return "bg-green-100 text-green-700";
-    case "alternate":  return "bg-amber-100 text-amber-700";
-    case "backup":     return "bg-amber-100 text-amber-700";
+    case "root":       return "bg-blue-100 text-blue-700 dark:bg-blue-500/15 dark:text-blue-300";
+    case "designated": return "bg-green-100 text-green-700 dark:bg-green-500/15 dark:text-green-400";
+    case "alternate":  return "bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300";
+    case "backup":     return "bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300";
     case "disabled":   return "bg-muted text-muted-foreground";
     default:           return "bg-muted text-muted-foreground";
   }
@@ -100,11 +175,12 @@ function roleColor(role: string): string {
 
 function statusColor(status: string): string {
   switch (status) {
-    case "forwarding": return "text-green-600";
-    case "learning":   return "text-amber-600";
+    case "forwarding": return "text-green-600 dark:text-green-400";
+    case "learning":   return "text-amber-600 dark:text-amber-300";
     case "discarding":
-    case "blocking":   return "text-red-600";
-    case "disabled":   return "text-muted-foreground";
+    case "blocking":   return "text-red-600 dark:text-red-400";
+    case "disabled":
+    case "inactive":   return "text-muted-foreground";
     default:           return "";
   }
 }
@@ -193,10 +269,31 @@ export default function NetworkHealthPage() {
   const [showAcked, setShowAcked] = useState(false);
   const [hintOpen, setHintOpen] = useState<Record<number, boolean>>({});
   const [portHintOpen, setPortHintOpen] = useState<Record<string, boolean>>({});
+  // The device list, for the class and pause marks next to each device name
+  // (a paused device's rows hold their last reading).
+  const [devices, setDevices] = useState<Map<string, Device>>(new Map());
 
   const load = useCallback(() => {
     if (!token) return;
     api.networkHealth.get(token).then(setData).catch(console.error);
+  }, [token]);
+
+  useEffect(() => {
+    if (!token) return;
+    let alive = true;
+    const loadDevices = () =>
+      api.devices
+        .list(token)
+        .then((list) => {
+          if (alive) setDevices(new Map(list.map((d) => [d.id, d])));
+        })
+        .catch(console.error);
+    loadDevices();
+    const t = setInterval(loadDevices, 60_000);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
   }, [token]);
 
   const toggleFilter = useCallback((key: Exclude<FilterKey, "none">) => {
@@ -282,19 +379,48 @@ export default function NetworkHealthPage() {
   });
   const hasUnackedEvents = events.some((e) => !e.acknowledged);
 
-  // Group ports by device for display.
-  const portsByDevice = filteredPorts.reduce<Record<string, InterfaceState[]>>((acc, p) => {
-    const key = p.device_name || p.device_id;
-    (acc[key] ??= []).push(p);
-    return acc;
-  }, {});
+  // Group ports and bridges by device (id: two devices may share a name),
+  // in the order the API lists them.
+  const portsByDevice = groupByDevice(filteredPorts).map((g) => ({
+    ...g,
+    rows: [...g.rows].sort((a, b) => byPortName(a.interface_name, b.interface_name)),
+  }));
+  const grouped = groupByDevice(filteredBridges);
+  const bridgeOf = (deviceId: string, bridge: string) =>
+    bridges.find((b) => b.device_id === deviceId && b.bridge_name === bridge);
 
-  // Group bridges by device for display.
-  const grouped = filteredBridges.reduce<Record<string, BridgeWithPorts[]>>((acc, b) => {
-    const key = b.device_name || b.device_id;
-    (acc[key] ??= []).push(b);
-    return acc;
-  }, {});
+  // The device's name with its class and pause marks, as every device card
+  // title on the page shows it.
+  const deviceTitle = (id: string, name: string) => {
+    const dev = devices.get(id);
+    return (
+      <CardTitle className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
+        <span>{name}</span>
+        {dev && <DeviceLoadBadges device={dev} />}
+      </CardTitle>
+    );
+  };
+
+  // A TCN storm's evidence: the bridge's ports whose topology-change
+  // counters are highest — usually the flapping link.
+  const tcnEvidence = (e: LoopEvent) => {
+    if (e.event_type !== "tcn_storm") return null;
+    const top = topChangedPorts(bridgeOf(e.device_id, e.bridge_name), 3);
+    if (top.length === 0) return null;
+    return (
+      <p className="text-muted-foreground">
+        Most topology changes on {e.bridge_name || "this bridge"}:{" "}
+        {top.map((p, i) => (
+          <span key={p.id}>
+            {i > 0 && ", "}
+            <span className="font-mono text-foreground">{p.port_interface}</span>{" "}
+            <span className="tabular-nums">{p.topology_changes}</span>
+          </span>
+        ))}
+        . Start with the first port in Bridges below.
+      </p>
+    );
+  };
 
   const renderEventRow = (e: LoopEvent, nested = false) => {
     const open = hintOpen[e.id] ?? false;
@@ -333,7 +459,7 @@ export default function NetworkHealthPage() {
         {open && (
           <TableRow className="bg-muted/30 hover:bg-muted/30">
             <TableCell colSpan={8} className={nested ? "pl-8" : ""}>
-              <HintPanel hint={explainEvent(e)} />
+              <HintPanel hint={explainEvent(e)} extra={tcnEvidence(e)} />
             </TableCell>
           </TableRow>
         )}
@@ -342,7 +468,7 @@ export default function NetworkHealthPage() {
   };
 
   return (
-    <div className="space-y-4">
+    <div className="min-w-0 space-y-4 [contain:inline-size]">
       <div>
         <h1 className="text-2xl font-bold">Network Health</h1>
         <p className="text-sm text-muted-foreground">
@@ -350,7 +476,7 @@ export default function NetworkHealthPage() {
         </p>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-4 lg:grid-cols-9">
+      <div className="grid grid-cols-2 gap-3 sm:gap-4 md:grid-cols-4 lg:grid-cols-9">
         <StatCard
           title="Bridges"
           value={bridges.length}
@@ -518,14 +644,12 @@ export default function NetworkHealthPage() {
       )}
 
       {/* Per-device port state */}
-      {showPortsSection && Object.keys(portsByDevice).length > 0 && (
+      {showPortsSection && portsByDevice.length > 0 && (
         <div className="space-y-4">
           <h2 className="text-lg font-semibold">Port State by Device</h2>
-          {Object.entries(portsByDevice).map(([dev, ports]) => (
-            <Card key={`ports-${dev}`}>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-sm">{dev}</CardTitle>
-              </CardHeader>
+          {portsByDevice.map(({ id: devId, name: dev, rows: ports }) => (
+            <Card key={`ports-${devId}`}>
+              <CardHeader className="pb-2">{deviceTitle(devId, dev)}</CardHeader>
               <CardContent>
                 <Table>
                   <TableHeader>
@@ -536,7 +660,9 @@ export default function NetworkHealthPage() {
                       <TableHead>Reason / comment</TableHead>
                       <TableHead>Last link up</TableHead>
                       <TableHead>Last link down</TableHead>
-                      <TableHead className="text-right">Recent flaps</TableHead>
+                      <TableHead className="text-right" title="Link-downs within the flap window (Settings → Port Monitoring); 3 or more is a flapping port">
+                        Recent link-downs
+                      </TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -544,9 +670,9 @@ export default function NetworkHealthPage() {
                       const lpOn = (p.loop_protect_status || "").toLowerCase() === "on";
                       let stateBadge;
                       if (p.disabled) stateBadge = <Badge variant="secondary">disabled</Badge>;
-                      else if (!p.running) stateBadge = <Badge className="bg-red-100 text-red-700">link down</Badge>;
-                      else if (lpOn) stateBadge = <Badge className="bg-blue-100 text-blue-700">loop-protect on</Badge>;
-                      else stateBadge = <Badge className="bg-green-100 text-green-700">up</Badge>;
+                      else if (!p.running) stateBadge = <Badge className="bg-red-100 text-red-700 dark:bg-red-500/15 dark:text-red-400">link down</Badge>;
+                      else if (lpOn) stateBadge = <Badge className="bg-blue-100 text-blue-700 dark:bg-blue-500/15 dark:text-blue-300">loop-protect on</Badge>;
+                      else stateBadge = <Badge className="bg-green-100 text-green-700 dark:bg-green-500/15 dark:text-green-400">up</Badge>;
 
                       // Reason column: loop-protect (enabled) > slave > comment.
                       const reasonParts: string[] = [];
@@ -602,71 +728,114 @@ export default function NetworkHealthPage() {
       {showBridgesSection && (
       <div className="space-y-4">
         <h2 className="text-lg font-semibold">Bridges by Device</h2>
-        {Object.keys(grouped).length === 0 && (
+        {grouped.length === 0 && (
           <Card>
             <CardContent className="py-12 text-center text-sm text-muted-foreground">
               {filter === "stp_disabled"
                 ? "No bridges with STP disabled — all multi-port bridges have spanning tree enabled."
-                : "No bridges discovered yet. Data appears after the first network-health poll cycle (60s)."}
+                : "No bridges discovered yet. They appear after each device's first bridge read — every 2 min on capable and small devices, every 5 min on weak ones."}
             </CardContent>
           </Card>
         )}
-        {Object.entries(grouped).map(([dev, brs]) => (
-          <Card key={dev}>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm">{dev}</CardTitle>
-            </CardHeader>
+        {grouped.map(({ id: devId, name: dev, rows: brs }) => (
+          <Card key={devId}>
+            <CardHeader className="pb-2">{deviceTitle(devId, dev)}</CardHeader>
             <CardContent className="space-y-4">
-              {brs.map((b) => (
-                <div key={b.id} className="rounded-lg border p-3 space-y-2">
-                  <div className="flex flex-wrap items-center gap-3 text-sm">
-                    <span className="font-semibold">{b.bridge_name}</span>
-                    <Badge variant={b.stp_enabled ? "default" : "secondary"} title={b.protocol}>
-                      {b.stp_enabled ? b.protocol.toUpperCase() : "STP off"}
-                    </Badge>
-                    <span className="text-xs text-muted-foreground">{b.port_count} ports</span>
-                    {b.topology_changes > 0 && (
-                      <span className="text-xs text-muted-foreground" title="STP topology changes counter">
-                        TCN: {b.topology_changes}
-                        {b.last_topology_change && ` (last: ${b.last_topology_change})`}
-                      </span>
-                    )}
-                    {b.root_bridge_id && (
-                      <span className="text-xs font-mono text-muted-foreground" title="Root bridge ID">
-                        root: {b.root_bridge_id}
-                      </span>
+              {brs.map((b) => {
+                // "No STP state" says nothing new next to "STP off".
+                const source =
+                  b.stp_source && !(b.stp_source === "none" && !b.stp_enabled) ? STP_SOURCE[b.stp_source as StpSource] : undefined;
+                const maxChanges = Math.max(0, ...(b.ports ?? []).map((p) => p.topology_changes ?? 0));
+                const hasChanges = (b.ports ?? []).some((p) => p.topology_changes != null);
+                return (
+                  <div key={b.id} className="rounded-lg border p-3 space-y-2">
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
+                      <span className="font-semibold">{b.bridge_name}</span>
+                      <Badge variant={b.stp_enabled ? "default" : "secondary"} title={b.protocol}>
+                        {b.stp_enabled ? b.protocol.toUpperCase() : "STP off"}
+                      </Badge>
+                      <span className="text-xs text-muted-foreground">{b.port_count} ports</span>
+                      {b.topology_changes > 0 && (
+                        <span className="text-xs text-muted-foreground" title="Topology changes, summed over the bridge's ports">
+                          {b.topology_changes} topology changes
+                          {b.last_topology_change && ` (last ${b.last_topology_change})`}
+                        </span>
+                      )}
+                      {b.root_bridge_id && (
+                        <span className="text-xs font-mono text-muted-foreground" title="Root bridge ID">
+                          root: {b.root_bridge_id}
+                        </span>
+                      )}
+                      {source && (
+                        <span className="text-[11px] text-muted-foreground sm:ml-auto" title={source.title}>
+                          {source.label}
+                        </span>
+                      )}
+                    </div>
+                    {b.ports?.length > 0 && (
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>Port</TableHead>
+                            <TableHead>Role</TableHead>
+                            <TableHead>State</TableHead>
+                            <TableHead>Edge</TableHead>
+                            <TableHead>Path Cost</TableHead>
+                            {hasChanges && (
+                              <TableHead className="text-right" title="The port's topology-change counter: a fast-growing one points at a flapping link">
+                                Topology changes
+                              </TableHead>
+                            )}
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {[...b.ports].sort((x, y) => byPortName(x.port_interface, y.port_interface)).map((p) => {
+                            const state = stpState(p);
+                            const changes = p.topology_changes;
+                            return (
+                              <TableRow key={p.id}>
+                                <TableCell className="font-mono text-xs">
+                                  <span className="inline-flex items-center gap-1.5">
+                                    {p.port_interface}
+                                    {p.hw_offload && (
+                                      <span
+                                        className="rounded border px-1 font-sans text-[10px] leading-4 text-muted-foreground"
+                                        title={`Hardware-offloaded${p.hw_offload_group ? ` (${p.hw_offload_group})` : ""}: the switch chip forwards this port's traffic`}
+                                      >
+                                        HW
+                                      </span>
+                                    )}
+                                  </span>
+                                </TableCell>
+                                <TableCell>
+                                  {p.role
+                                    ? <Badge className={`text-[10px] font-normal ${roleColor(p.role)}`}>{p.role}</Badge>
+                                    : <span className="text-xs text-muted-foreground">—</span>}
+                                </TableCell>
+                                <TableCell className={`text-xs ${statusColor(state)}`}>{state || "—"}</TableCell>
+                                <TableCell className="text-xs" title={p.edge_config ? `Configured edge=${p.edge_config}` : undefined}>
+                                  {p.edge ? "yes" : "no"}
+                                  {p.edge_config && p.edge_config !== (p.edge ? "yes" : "no") && (
+                                    <span className="text-muted-foreground"> ({p.edge_config})</span>
+                                  )}
+                                </TableCell>
+                                <TableCell className="text-xs">{p.path_cost || "—"}</TableCell>
+                                {hasChanges && (
+                                  <TableCell
+                                    className={`text-right text-xs tabular-nums ${changes && changes === maxChanges ? "font-semibold text-foreground" : "text-muted-foreground"}`}
+                                  >
+                                    {changes ?? "—"}
+                                  </TableCell>
+                                )}
+                              </TableRow>
+                            );
+                          })}
+                        </TableBody>
+                      </Table>
                     )}
                   </div>
-                  {b.ports?.length > 0 && (
-                    <Table>
-                      <TableHeader>
-                        <TableRow>
-                          <TableHead>Port</TableHead>
-                          <TableHead>Role</TableHead>
-                          <TableHead>Status</TableHead>
-                          <TableHead>Edge</TableHead>
-                          <TableHead>Path Cost</TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {b.ports.map((p) => (
-                          <TableRow key={p.id}>
-                            <TableCell className="font-mono text-xs">{p.port_interface}</TableCell>
-                            <TableCell>
-                              {p.role
-                                ? <Badge className={`text-[10px] font-normal ${roleColor(p.role)}`}>{p.role}</Badge>
-                                : <span className="text-xs text-muted-foreground">—</span>}
-                            </TableCell>
-                            <TableCell className={`text-xs ${statusColor(p.status)}`}>{p.status || "—"}</TableCell>
-                            <TableCell className="text-xs">{p.edge ? "yes" : "no"}</TableCell>
-                            <TableCell className="text-xs">{p.path_cost || "—"}</TableCell>
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  )}
-                </div>
-              ))}
+                );
+              })}
             </CardContent>
           </Card>
         ))}
