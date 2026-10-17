@@ -42,6 +42,9 @@ type Manager struct {
 	// that changes.
 	ipRejectMu   sync.Mutex
 	ipRejectSeen map[string]time.Time
+
+	// classes holds the class probe's pending changes (hysteresis).
+	classes *classGate
 }
 
 func NewManager(db *sql.DB, pool *routeros.Pool, hub *ws.Hub, cfg *config.Config) *Manager {
@@ -59,6 +62,7 @@ func NewManager(db *sql.DB, pool *routeros.Pool, hub *ws.Hub, cfg *config.Config
 		ipRejectSeen: make(map[string]time.Time),
 		portStats:    NewPortStatsCollector(db, pool, hub),
 		flows:        flow.New(db, pool, hub, flowCfg),
+		classes:      newClassGate(),
 	}
 	// The port-stats collector's Tier 0 read is the one interface print:
 	// the flow ifIndex sync (here), the port monitor and the uplink pass
@@ -168,6 +172,7 @@ func (m *Manager) pollAllDevices(ctx context.Context) {
 		log.Printf("poller: list devices: %v", err)
 		return
 	}
+	m.classes.forget(deviceIDs(devices))
 
 	for _, dev := range devices {
 		select {
@@ -279,7 +284,7 @@ func (m *Manager) markUnreachable(dev queries.Device, pollErr error) {
 }
 
 // defaultInfoInterval is how often the full device info (cpu/memory/uptime,
-// version/board/platform/arch and interfaces) is refreshed when the admin
+// version/board/platform/arch and the CPU class) is refreshed when the admin
 // hasn't configured info_interval. Static details rarely change, so the
 // frequent liveness poll just pings while this heavier refresh runs rarely.
 const defaultInfoInterval = 60 * time.Minute
@@ -349,12 +354,13 @@ func (m *Manager) safeRefreshInfo(dev queries.Device) {
 
 // refreshDeviceInfo does the heavy lifting: a full RouterOS API session to read
 // system resources (cpu/memory/uptime) and static details (version/board/
-// platform/arch), caching them in the DB. The interface inventory is not read
-// here: the port-stats collector's Tier 0 print keeps the interfaces table
-// current (PortStatsCollector.syncInventory). Dialling the pooled connection
-// here is still what lets that collector reach a freshly added device. Status
-// stays owned by the liveness poll — on a connection failure here we leave
-// status alone.
+// platform/arch), caching them in the DB, and the CPU class derived from the
+// same print (probeClass). The interface inventory is not read here: the
+// port-stats collector's Tier 0 print keeps the interfaces table current
+// (PortStatsCollector.syncInventory). Dialling the pooled connection here is
+// still what lets that collector reach a freshly added device. Status stays
+// owned by the liveness poll — on a connection failure here we leave status
+// alone.
 func (m *Manager) refreshDeviceInfo(dev queries.Device) {
 	client, err := m.pool.EnsureConnection(
 		dev.ID, dev.Address, dev.APIPort, dev.Username, dev.PasswordEnc, dev.UseTLS,
@@ -368,6 +374,7 @@ func (m *Manager) refreshDeviceInfo(dev queries.Device) {
 		m.pool.Close(dev.ID)
 		return
 	}
+	m.probeClass(dev, res.Fields, time.Now())
 
 	memUsed := res.MemoryTotal - res.MemoryFree
 	_ = queries.UpdateDeviceHealth(m.db, dev.ID, "online",
