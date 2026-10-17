@@ -21,15 +21,33 @@ type SystemResource struct {
 	MemoryFree   int64
 	MemoryTotal  int64
 	Uptime       string
+
+	// Fields is the proplisted sentence as the device returned it, for
+	// readers that need more than the typed fields: the class probe hands it
+	// to devclass.ParseResourceFacts (cpu-count, cpu-frequency, …).
+	Fields map[string]string
 }
 
+// systemResourceProplist limits the resource print to what its readers use:
+// the inventory and health fields above plus the CPU facts the device class
+// is derived from. Without it RouterOS formats every field (bad blocks,
+// write-sector counters, build time, …) on each print.
+const systemResourceProplist = "=.proplist=board-name,version,platform,architecture-name," +
+	"cpu,cpu-count,cpu-frequency,cpu-load,total-memory,free-memory,uptime"
+
 func GetSystemResource(client *ros.Client) (*SystemResource, error) {
-	reply, err := RunCommand(client, "/system/resource/print")
+	return ReadSystemResource(ClientRunner{Client: client})
+}
+
+// ReadSystemResource is GetSystemResource on a Runner: one proplisted
+// /system/resource/print.
+func ReadSystemResource(run Runner) (*SystemResource, error) {
+	reply, err := run.Run("/system/resource/print", systemResourceProplist)
 	if err != nil {
 		return nil, err
 	}
 
-	if len(reply.Re) == 0 {
+	if reply == nil || len(reply.Re) == 0 {
 		return nil, ErrEmptyReply
 	}
 
@@ -40,6 +58,7 @@ func GetSystemResource(client *ros.Client) (*SystemResource, error) {
 		Version:      m["version"],
 		Architecture: m["architecture-name"],
 		Uptime:       m["uptime"],
+		Fields:       m,
 	}
 
 	if v, err := strconv.Atoi(m["cpu-load"]); err == nil {
