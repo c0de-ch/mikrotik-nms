@@ -142,6 +142,49 @@ func (c *CapabilityCache) Ensure(deviceID, version string, run routeros.Runner, 
 	return fresh
 }
 
+// NoteReadTrap tells the cache that a registration read of menu (RegMenu*),
+// sent because the probe found the menu present, trapped as if it were not:
+// "no such command" (a package was removed or swapped — legacy wireless for
+// wifi-qcom keeps the RouterOS version, so the version check never fires) or
+// "not enough permissions" (a policy was taken from the API user). The menu
+// takes the state the trap says, and the device is re-probed after
+// capIncompleteRetry instead of a day later: until then the gone menu is not
+// printed into the trap again, and a menu the device gained (the new wifi
+// package) is found within a minute. Any other error (transport) changes
+// nothing. It reports whether the cache changed.
+func (c *CapabilityCache) NoteReadTrap(deviceID, menu string, err error, now time.Time) bool {
+	var state CapState
+	switch {
+	case routeros.IsNoSuchCommand(err):
+		state = CapAbsent
+	case routeros.IsPermissionDenied(err):
+		state = CapPermissionMissing
+	default:
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	caps, ok := c.devs[deviceID]
+	if !ok {
+		return false
+	}
+	var field *CapState
+	switch menu {
+	case routeros.RegMenuWifi:
+		field = &caps.Wifi
+	case routeros.RegMenuCAPsMAN:
+		field = &caps.CAPsMAN
+	case routeros.RegMenuWireless:
+		field = &caps.Wireless
+	default:
+		return false
+	}
+	*field = state
+	caps.Partial, caps.ProbedAt = true, now
+	c.devs[deviceID] = caps
+	return true
+}
+
 // Forget drops a device's probe (deleted device, or force a re-probe).
 func (c *CapabilityCache) Forget(deviceID string) {
 	c.mu.Lock()

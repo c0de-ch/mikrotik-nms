@@ -122,3 +122,46 @@ func TestCapabilityCacheEnsureMergesPartialProbes(t *testing.T) {
 		t.Fatal("Forget")
 	}
 }
+
+// A registration read that traps on a menu the probe found present — the
+// legacy wireless package swapped for wifi, same RouterOS version — marks the
+// menu gone and has the device re-probed within a minute, which finds the new
+// menu; a transport error changes nothing.
+func TestCapabilityCacheReadTrapReprobes(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	c := NewCapabilityCache()
+	legacy := &fakeRunner{byCmd: map[string]fakeReply{
+		routeros.WirelessProbeCommand:   {done: map[string]string{"ret": "1"}},
+		routeros.DHCPServerProbeCommand: {done: map[string]string{"ret": "0"}},
+		routeros.BridgeProbeCommand:     {done: map[string]string{"ret": "1"}},
+	}}
+	caps := c.Ensure("ap", "7.24.5", legacy, now)
+	if menus := caps.RegistrationMenus(); len(menus) != 1 || menus[0] != routeros.RegMenuWireless {
+		t.Fatalf("menus = %v", menus)
+	}
+	if c.NoteReadTrap("ap", routeros.RegMenuWireless, errors.New("i/o timeout"), now.Add(time.Hour)) {
+		t.Fatal("a transport error must not change the cache")
+	}
+	if !c.NoteReadTrap("ap", routeros.RegMenuWireless, trapErr("no such command prefix"), now.Add(time.Hour)) {
+		t.Fatal("the trap did not reach the cache")
+	}
+	got, _ := c.Get("ap")
+	if got.HasWifiRole() || probeDue(got, "7.24.5", now.Add(time.Hour+10*time.Second)) || !probeDue(got, "7.24.5", now.Add(time.Hour+capIncompleteRetry)) {
+		t.Fatalf("after the trap: %+v, want the menu gone and a re-probe due in a minute", got)
+	}
+	swapped := &fakeRunner{byCmd: map[string]fakeReply{
+		routeros.WifiProbeCommand:       {done: map[string]string{"ret": "1"}},
+		routeros.DHCPServerProbeCommand: {done: map[string]string{"ret": "0"}},
+		routeros.BridgeProbeCommand:     {done: map[string]string{"ret": "1"}},
+	}}
+	caps = c.Ensure("ap", "7.24.5", swapped, now.Add(time.Hour+capIncompleteRetry))
+	if menus := caps.RegistrationMenus(); len(menus) != 1 || menus[0] != routeros.RegMenuWifi || caps.Partial {
+		t.Fatalf("after the re-probe: %+v, want the wifi menu only", caps)
+	}
+	if !c.NoteReadTrap("ap", routeros.RegMenuWifi, trapErr("not enough permissions (9)"), now.Add(2*time.Hour)) {
+		t.Fatal("permission trap ignored")
+	}
+	if got, _ := c.Get("ap"); got.Wifi != CapPermissionMissing {
+		t.Fatalf("after a permission trap: %+v", got)
+	}
+}

@@ -352,6 +352,9 @@ func (wt *WifiTracker) readController(dev queries.Device, run routeros.Runner, n
 	for _, menu := range caps.RegistrationMenus() {
 		rows, err := routeros.GetRegistrations(run, menu)
 		if err != nil {
+			// A trap on a menu the probe found: the package or the policy
+			// changed since — re-probe soon rather than trap all day.
+			wt.caps.NoteReadTrap(dev.ID, menu, err, now)
 			continue
 		}
 		answered = true

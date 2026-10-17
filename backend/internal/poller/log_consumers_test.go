@@ -8,6 +8,7 @@ import (
 
 	"github.com/mikrotik-nms/backend/internal/config"
 	"github.com/mikrotik-nms/backend/internal/devclass"
+	"github.com/mikrotik-nms/backend/internal/routeros"
 	"github.com/mikrotik-nms/backend/internal/ws"
 )
 
@@ -61,6 +62,55 @@ func TestBridgeLoopsRecordedAfterQuietPeriods(t *testing.T) {
 				t.Errorf("recorded %d of the 2 loops logged after startup", c)
 			}
 		})
+	}
+}
+
+// An AP whose legacy wireless package is swapped for wifi (same RouterOS
+// version, so the version check never re-probes): the first trapping
+// registration read has the device re-probed, the new menu is read from then
+// on, a new client joins and the client still there is not reported gone.
+func TestWifiTrackerReprobesAfterPackageSwap(t *testing.T) {
+	const x, y = "02:00:00:00:A0:01", "02:00:00:00:A0:02"
+	db := pollerTestDB(t)
+	classFleet(t, db, map[string]devclass.Class{"ap": devclass.C3})
+	run := &fakeRunner{byCmd: map[string]fakeReply{
+		routeros.WirelessProbeCommand:                  {done: map[string]string{"ret": "1"}},
+		routeros.DHCPServerProbeCommand:                {done: map[string]string{"ret": "0"}},
+		routeros.BridgeProbeCommand:                    {done: map[string]string{"ret": "1"}},
+		"/log/print":                                   rep(),
+		"/interface/wireless/registration-table/print": rep(map[string]string{"mac-address": x, "interface": "wlan1", "signal-strength": "-60"}),
+	}}
+	wt := NewWifiTracker(db, nil, ws.NewHub(), 30*time.Second)
+	clock := &testClock{t: at(12, 0, 0)}
+	wt.now = clock.now
+	wt.clock = newTierClock(NewScheduleRegistry())
+	wt.clock.phase = noJitter
+	wt.UseCadence(NewCadence(db, nil))
+	wt.runner = scriptedRunners(map[string]*fakeRunner{"ap": run})
+	wt.poll(context.Background())
+	if joins := wifiEvents(t, db, "join"); len(joins) != 1 {
+		t.Fatalf("joins = %v, want x", joins)
+	}
+
+	delete(run.byCmd, routeros.WirelessProbeCommand)
+	delete(run.byCmd, "/interface/wireless/registration-table/print")
+	run.byCmd[routeros.WifiProbeCommand] = fakeReply{done: map[string]string{"ret": "1"}}
+	setRegistrations(run, x, y)
+	for ts := at(12, 10, 0); !ts.After(at(14, 0, 0)); ts = ts.Add(30 * time.Second) {
+		clock.set(ts)
+		wt.poll(context.Background())
+	}
+	if n := run.countCalls("/interface/wireless/registration-table/print"); n != 2 {
+		t.Errorf("trapping legacy reads = %d, want the first read and the one after it only", n)
+	}
+	if n := run.countCalls("/interface/wifi/registration-table/print"); n < 200 {
+		t.Errorf("wifi registration reads = %d, want the new menu read from the re-probe on", n)
+	}
+	if joins := wifiEvents(t, db, "join"); joins[y] == "" {
+		t.Errorf("joins = %v, want y from the new menu", joins)
+	}
+	if left := wifiEvents(t, db, "leave"); left[x] != "" {
+		t.Errorf("leaves = %v: x never left", left)
 	}
 }
 
