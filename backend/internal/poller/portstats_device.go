@@ -308,14 +308,6 @@ func (c *PortStatsCollector) countCommand(deviceID string, t time.Time) {
 	st.cmdCount++
 }
 
-// PortHostsFreshness is how recent a port_hosts row must be to count as
-// current on a device dumped at the fleet-wide port_hosts_interval: three
-// dump intervals, at least 15 min. Devices dump on their own cadence; judge
-// rows with FreshPortHosts / portHostsWindow instead.
-func PortHostsFreshness(db *sql.DB) time.Duration {
-	return max(3*PortHostsInterval(db), minPortHostsWindow)
-}
-
 // minPortHostsWindow is the shortest a device's FDB rows stay current.
 const minPortHostsWindow = 15 * time.Minute
 

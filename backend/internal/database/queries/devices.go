@@ -212,8 +212,9 @@ func SetDeviceClassOverride(db *sql.DB, id string, override devclass.Class) erro
 // the bound time (bind sqlTime(now)), for staleness rules that must not age a
 // paused device's rows. The stored pause end is compared to the second: it is
 // written as a time.Time (its String form, "… +0000 UTC"), which is longer than
-// the bound layout and would otherwise outlast its own second.
-const pausedDevicesSQL = `SELECT id FROM devices WHERE substr(polling_paused_until, 1, 19) > ?`
+// the bound layout and would otherwise outlast its own second; an ISO "T"
+// separator compares like the space.
+const pausedDevicesSQL = `SELECT id FROM devices WHERE replace(substr(polling_paused_until, 1, 19), 'T', ' ') > ?`
 
 // PauseDevicePolling suspends every poller but liveness for the device until
 // the given time.
