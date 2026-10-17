@@ -37,6 +37,14 @@ func deviceMessage(err error) string {
 	return strings.ToLower(de.Sentence.Map["message"])
 }
 
+// isTrap reports an error the device itself answered (!trap / !fatal), as
+// opposed to a transport failure or a timeout, which says nothing about what
+// the device supports.
+func isTrap(err error) bool {
+	var de *ros.DeviceError
+	return errors.As(err, &de)
+}
+
 // IsNoSuchCommand reports a trap that means the menu or command does not
 // exist on this device: the package is not installed (wifi, wireless,
 // caps-man, …) or the RouterOS version predates it. Distinct from a transport

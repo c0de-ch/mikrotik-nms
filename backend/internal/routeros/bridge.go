@@ -30,16 +30,19 @@ const bridgeCapsTTL = 24 * time.Hour
 // Proplists keep every read at the fields the detectors use. The port print
 // is the hot one (one row per port, 55+ on a core switch); unknown names in a
 // proplist are ignored by RouterOS, so the runtime fields can be requested on
-// versions that do not have them.
+// versions that do not have them — and the monitor proplists also name the
+// pre-7.19 keys the parsers fall back to (port-state, designated-bridge) and
+// the bridge monitor's protocol-mode, which some firmware only reports
+// there: a proplisted batched monitor returns nothing else.
 const (
 	bridgeProplist     = ".id,name,protocol-mode,vlan-filtering,disabled,running,comment"
 	bridgePortProplist = ".id,bridge,interface,disabled,inactive,dynamic,hw,hw-offload,hw-offload-group," +
 		"edge,point-to-point,horizon,pvid,path-cost," +
 		"status,role,forwarding,learning,edge-port,point-to-point-port,designated-bridge-id,topology-changes"
-	bridgePortMonitorProplist = "interface,status,role,edge-port,point-to-point-port,learning,forwarding," +
-		"designated-bridge-id,topology-changes"
+	bridgePortMonitorProplist = "interface,status,port-state,role,edge-port,point-to-point-port,learning,forwarding," +
+		"designated-bridge-id,designated-bridge,topology-changes"
 	bridgeMonitorProplist = "bridge-id,root-bridge,root-bridge-id,root-port,root-path-cost,port-count," +
-		"last-topology-change,topology-changes"
+		"last-topology-change,topology-changes,protocol-mode"
 )
 
 // How a device's port STP state was obtained (BridgeState.Path).
@@ -223,9 +226,13 @@ func readBridgeState(r Runner, bridges []BridgeInfo, caps BridgeCaps, version st
 
 	// The first print is also the probe. It is only conclusive with an active
 	// port in the reply: RouterOS reports no runtime state for inactive ones.
+	// ProbedAt dates the caps record, not the latest read: the monitor forms
+	// it learned are re-tried bridgeCapsTTL after it was started.
 	probe := probeSTPInPrint(ports)
 	if probe.conclusive {
-		st.Caps.ProbedAt = now
+		if st.Caps.ProbedAt.IsZero() {
+			st.Caps.ProbedAt = now
+		}
 		st.Caps.RoleInPrint = probe.roleStatus
 		st.Caps.TCNInPrint = probe.tcn
 		st.Caps.StpInPrint = probe.roleStatus && probe.tcn
@@ -234,10 +241,14 @@ func readBridgeState(r Runner, bridges []BridgeInfo, caps BridgeCaps, version st
 	case probe.roleStatus:
 		st.Path = BridgePathPrint
 	case probe.conclusive:
-		st.Path = monitorPorts(r, ports, &st.Caps, &st.Commands)
+		if st.Path, err = monitorPorts(r, ports, &st.Caps, &st.Commands); err != nil {
+			return nil, err
+		}
 	}
 
-	st.Bridges = monitorBridges(r, bridges, &st.Caps, &st.Commands)
+	if st.Bridges, err = monitorBridges(r, bridges, &st.Caps, &st.Commands); err != nil {
+		return nil, err
+	}
 
 	// TCN per bridge is the sum of its ports' counters: the bridge monitor
 	// has no topology-changes field, so this is the only source.
@@ -410,13 +421,27 @@ const (
 	monitorOK       monitorOutcome = iota
 	monitorRejected                // the device trapped: this form is not supported
 	monitorEmpty                   // no usable sentence this time; not a verdict on the form
+	monitorFailed                  // the device did not answer (transport error, timeout): no verdict at all
 )
+
+// batchedOutcome classifies a batched monitor's error: only a trap is a
+// verdict on the form. A timeout or a dead session says nothing about what
+// the device accepts — learning "per item" from it would turn one bad
+// moment into a monitor per port every cycle for a day.
+func batchedOutcome(err error) monitorOutcome {
+	if isTrap(err) {
+		return monitorRejected
+	}
+	return monitorFailed
+}
 
 // monitorPorts fills the runtime state of the active ports on a device whose
 // print lacks it, learning the cheapest monitor form the device accepts:
 // batched with a proplist, batched without, else one call per port. Returns
-// the BridgePath* taken.
-func monitorPorts(r Runner, ports []BridgePortInfo, caps *BridgeCaps, commands *int) string {
+// the BridgePath* taken, or the error of a monitor the device did not answer
+// (the read is abandoned: half-read ports must not replace the stored ones,
+// and nothing is learned).
+func monitorPorts(r Runner, ports []BridgePortInfo, caps *BridgeCaps, commands *int) (string, error) {
 	var active []int
 	for i := range ports {
 		if p := &ports[i]; !p.Disabled && !p.Inactive && p.ID != "" {
@@ -424,7 +449,7 @@ func monitorPorts(r Runner, ports []BridgePortInfo, caps *BridgeCaps, commands *
 		}
 	}
 	if len(active) == 0 {
-		return BridgePathNone
+		return BridgePathNone, nil
 	}
 	if caps.PortMonitor != monitorPerItem {
 		forms := []string{monitorBatched, monitorBatchedPlain}
@@ -434,13 +459,17 @@ func monitorPorts(r Runner, ports []BridgePortInfo, caps *BridgeCaps, commands *
 		rejected := true
 		for _, form := range forms {
 			*commands++
-			out := monitorPortsBatched(r, ports, active, form == monitorBatched)
-			if out == monitorOK {
+			out, err := monitorPortsBatched(r, ports, active, form == monitorBatched)
+			switch out {
+			case monitorOK:
 				caps.PortMonitor = form
-				return BridgePathMonitorBatched
-			}
-			if out == monitorEmpty {
+				return BridgePathMonitorBatched, nil
+			case monitorFailed:
+				return "", err
+			case monitorEmpty:
 				rejected = false
+			}
+			if !rejected {
 				break
 			}
 		}
@@ -452,6 +481,9 @@ func monitorPorts(r Runner, ports []BridgePortInfo, caps *BridgeCaps, commands *
 	for _, i := range active {
 		*commands++
 		reply, err := r.Run("/interface/bridge/port/monitor", "=numbers="+ports[i].ID, "=once=")
+		if err != nil && !isTrap(err) {
+			return "", err
+		}
 		if err != nil || reply == nil || len(reply.Re) == 0 {
 			continue
 		}
@@ -459,15 +491,16 @@ func monitorPorts(r Runner, ports []BridgePortInfo, caps *BridgeCaps, commands *
 		got = got || ports[i].HasRuntime
 	}
 	if !got {
-		return BridgePathNone
+		return BridgePathNone, nil
 	}
-	return BridgePathMonitorPerPort
+	return BridgePathMonitorPerPort, nil
 }
 
 // monitorPortsBatched runs one monitor over the active ports. Replies are
 // matched to ports by interface name; a reply that names no interface is
-// accepted only when it is complete and in request order.
-func monitorPortsBatched(r Runner, ports []BridgePortInfo, active []int, proplist bool) monitorOutcome {
+// accepted only when it is complete and in request order. The error is the
+// device's, for monitorFailed.
+func monitorPortsBatched(r Runner, ports []BridgePortInfo, active []int, proplist bool) (monitorOutcome, error) {
 	ids := make([]string, len(active))
 	for j, i := range active {
 		ids[j] = ports[i].ID
@@ -478,10 +511,10 @@ func monitorPortsBatched(r Runner, ports []BridgePortInfo, active []int, proplis
 	}
 	reply, err := r.Run(args[0], args[1:]...)
 	if err != nil {
-		return monitorRejected
+		return batchedOutcome(err), err
 	}
 	if reply == nil || len(reply.Re) == 0 {
-		return monitorEmpty
+		return monitorEmpty, nil
 	}
 	byIface := make(map[string]int, len(active))
 	for _, i := range active {
@@ -496,21 +529,23 @@ func monitorPortsBatched(r Runner, ports []BridgePortInfo, active []int, proplis
 		}
 	}
 	if named > 0 {
-		return monitorOK
+		return monitorOK, nil
 	}
 	if len(reply.Re) != len(active) {
-		return monitorEmpty
+		return monitorEmpty, nil
 	}
 	for j, re := range reply.Re {
 		applyPortRuntime(&ports[active[j]], GetSentenceMap(re))
 	}
-	return monitorOK
+	return monitorOK, nil
 }
 
 // monitorBridges adds each bridge's monitor summary, batched when the device
 // accepts it. The bridge monitor names no bridge in its reply, so a batched
-// reply is only trusted when it is complete and in request order.
-func monitorBridges(r Runner, bridges []BridgeInfo, caps *BridgeCaps, commands *int) []BridgeInfo {
+// reply is only trusted when it is complete and in request order. A monitor
+// the device did not answer abandons the read with its error, as in
+// monitorPorts.
+func monitorBridges(r Runner, bridges []BridgeInfo, caps *BridgeCaps, commands *int) ([]BridgeInfo, error) {
 	out := make([]BridgeInfo, len(bridges))
 	copy(out, bridges)
 	if caps.BridgeMonitor != monitorPerItem {
@@ -521,13 +556,17 @@ func monitorBridges(r Runner, bridges []BridgeInfo, caps *BridgeCaps, commands *
 		rejected := true
 		for _, form := range forms {
 			*commands++
-			res := monitorBridgesBatched(r, out, form == monitorBatched)
-			if res == monitorOK {
+			res, err := monitorBridgesBatched(r, out, form == monitorBatched)
+			switch res {
+			case monitorOK:
 				caps.BridgeMonitor = form
-				return out
-			}
-			if res == monitorEmpty {
+				return out, nil
+			case monitorFailed:
+				return nil, err
+			case monitorEmpty:
 				rejected = false
+			}
+			if !rejected {
 				break
 			}
 		}
@@ -538,15 +577,18 @@ func monitorBridges(r Runner, bridges []BridgeInfo, caps *BridgeCaps, commands *
 	for i := range out {
 		*commands++
 		reply, err := r.Run("/interface/bridge/monitor", "=numbers="+bridgeNumber(out[i]), "=once=")
+		if err != nil && !isTrap(err) {
+			return nil, err
+		}
 		if err != nil || reply == nil || len(reply.Re) == 0 {
 			continue
 		}
 		applyBridgeMonitor(&out[i], GetSentenceMap(reply.Re[0]))
 	}
-	return out
+	return out, nil
 }
 
-func monitorBridgesBatched(r Runner, bridges []BridgeInfo, proplist bool) monitorOutcome {
+func monitorBridgesBatched(r Runner, bridges []BridgeInfo, proplist bool) (monitorOutcome, error) {
 	nums := make([]string, len(bridges))
 	for i := range bridges {
 		nums[i] = bridgeNumber(bridges[i])
@@ -557,15 +599,15 @@ func monitorBridgesBatched(r Runner, bridges []BridgeInfo, proplist bool) monito
 	}
 	reply, err := r.Run(args[0], args[1:]...)
 	if err != nil {
-		return monitorRejected
+		return batchedOutcome(err), err
 	}
 	if reply == nil || len(reply.Re) != len(bridges) {
-		return monitorEmpty
+		return monitorEmpty, nil
 	}
 	for i, re := range reply.Re {
 		applyBridgeMonitor(&bridges[i], GetSentenceMap(re))
 	}
-	return monitorOK
+	return monitorOK, nil
 }
 
 // bridgeNumber is the =numbers= reference for a bridge: its .id, or the name

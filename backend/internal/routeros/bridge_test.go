@@ -41,7 +41,12 @@ func sentences(rows ...map[string]string) *ros.Reply {
 	return r
 }
 
-var errTrap = errors.New("from RouterOS device: no such command or argument")
+// errTrap is how go-routeros reports a !trap: a *ros.DeviceError — the only
+// error the readers take as a verdict on a command form.
+var errTrap error = &ros.DeviceError{Sentence: &proto.Sentence{Word: "!trap", Map: map[string]string{"message": "no such command or argument"}}}
+
+// errDead is a transport failure: the session died, nothing was answered.
+var errDead = errors.New("write tcp 192.0.2.10:51234->192.0.2.1:8728: use of closed network connection")
 
 func argValue(args []string, prefix string) string {
 	for _, a := range args {
@@ -326,6 +331,139 @@ func TestReadBridgeStateMonitorFallbackCascade(t *testing.T) {
 	}
 }
 
+// A batched monitor the device did not answer (a timeout, a dead session) is
+// no verdict on the form: the read is abandoned with the error — the stored
+// rows stay, nothing is learned — and the next read uses the batched form
+// again. Only a trap teaches "one monitor per port".
+func TestReadBridgeStateTransportFailureLearnsNothing(t *testing.T) {
+	broken, batched := false, 0
+	dev := device723(func(args []string) (*ros.Reply, error) {
+		if broken {
+			return nil, errDead
+		}
+		if isBatchedMonitor(args) {
+			batched++
+			return sentences(
+				map[string]string{"interface": "ether1", "status": "in-bridge", "role": "root-port", "forwarding": "true"},
+				map[string]string{"interface": "ether2", "status": "in-bridge", "role": "designated-port", "forwarding": "true"},
+			), nil
+		}
+		return perPortReply(args)
+	})
+	bridges := []BridgeInfo{{ID: "*1", Name: "bridge", ProtocolMode: "rstp"}}
+	st, err := readBridgeState(dev, bridges, BridgeCaps{}, "7.23.1", testNow)
+	if err != nil || st.Caps.PortMonitor != monitorBatched {
+		t.Fatalf("setup: %v %+v", err, st)
+	}
+	caps := st.Caps
+	broken = true
+	if st, err := readBridgeState(dev, bridges, caps, "7.23.1", testNow.Add(2*time.Minute)); err == nil {
+		t.Fatalf("a dead session must abandon the read, got %+v", st)
+	}
+	broken = false
+	st, err = readBridgeState(dev, bridges, caps, "7.23.1", testNow.Add(4*time.Minute))
+	if err != nil || st.Path != BridgePathMonitorBatched || batched != 2 || dev.count("/interface/bridge/port/monitor =numbers=*1 ") != 0 {
+		t.Fatalf("after the failure: path %q err %v batched %d calls %v", st.Path, err, batched, dev.calls)
+	}
+
+	// The bridge monitor the same way.
+	dead := &scriptedDevice{handle: func(string, []string) (*ros.Reply, error) { return nil, errDead }}
+	cmds := 0
+	if _, err := monitorBridges(dead, bridges, &caps, &cmds); err == nil || caps.BridgeMonitor == monitorPerItem || cmds != 1 {
+		t.Fatalf("bridge monitor on a dead session: err %v, form %q, %d commands", err, caps.BridgeMonitor, cmds)
+	}
+}
+
+// A form learned as unsupported is re-tried bridgeCapsTTL after the caps
+// record was started, however often the device is read in between: the
+// record's ProbedAt is not refreshed by every read.
+func TestReadBridgeStatePerItemRetriedAfterTTL(t *testing.T) {
+	batched := 0
+	dev := device723(func(args []string) (*ros.Reply, error) {
+		if isBatchedMonitor(args) {
+			batched++
+			return nil, errTrap
+		}
+		return perPortReply(args)
+	})
+	bridges := []BridgeInfo{{ID: "*1", Name: "bridge", ProtocolMode: "rstp"}}
+	st, err := readBridgeState(dev, bridges, BridgeCaps{}, "7.20.8", testNow)
+	if err != nil || st.Caps.PortMonitor != monitorPerItem || batched != 2 {
+		t.Fatalf("setup: %v caps %+v batched %d", err, st.Caps, batched)
+	}
+	caps := st.Caps
+	for ts := testNow.Add(2 * time.Minute); ts.Before(testNow.Add(bridgeCapsTTL + 10*time.Minute)); ts = ts.Add(2 * time.Minute) {
+		st, err := readBridgeState(dev, bridges, caps, "7.20.8", ts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		caps = st.Caps
+	}
+	if batched != 4 {
+		t.Errorf("batched attempts over a day of 2-minute reads = %d, want the 2 of the first read and 2 after the TTL", batched)
+	}
+}
+
+// filterProplist answers like RouterOS: with a =.proplist= only the named
+// keys come back.
+func filterProplist(args []string, rows ...map[string]string) *ros.Reply {
+	pl := argValue(args, "=.proplist=")
+	if pl == "" {
+		return sentences(rows...)
+	}
+	want := map[string]bool{}
+	for _, k := range strings.Split(pl, ",") {
+		want[k] = true
+	}
+	out := make([]map[string]string, 0, len(rows))
+	for _, r := range rows {
+		m := map[string]string{}
+		for k, v := range r {
+			if want[k] {
+				m[k] = v
+			}
+		}
+		out = append(out, m)
+	}
+	return sentences(out...)
+}
+
+// A pre-7.19 device accepts the proplisted batched monitors (RouterOS ignores
+// unknown names) and answers in its own vocabulary — port-state and
+// designated-bridge, protocol-mode only from the bridge monitor. The
+// proplists ask for those keys too, so nothing the parsers read is dropped.
+func TestBatchedMonitorsKeepPre719Keys(t *testing.T) {
+	dev := &scriptedDevice{handle: func(cmd string, args []string) (*ros.Reply, error) {
+		switch cmd {
+		case "/interface/bridge/port/print":
+			return sentences(
+				map[string]string{".id": "*1", "bridge": "bridge", "interface": "ether1", "disabled": "false", "inactive": "false"},
+				map[string]string{".id": "*2", "bridge": "bridge", "interface": "ether2", "disabled": "false", "inactive": "false"},
+			), nil
+		case "/interface/bridge/port/monitor":
+			return filterProplist(args,
+				map[string]string{"interface": "ether1", "port-state": "forwarding", "role": "root-port", "designated-bridge": "0x8000.BB"},
+				map[string]string{"interface": "ether2", "port-state": "discarding", "role": "alternate-port", "designated-bridge": "0x8000.CC"}), nil
+		case "/interface/bridge/monitor":
+			return filterProplist(args, map[string]string{"bridge-id": "0x8000.AA", "protocol-mode": "rstp", "root-port": "ether1"}), nil
+		}
+		return nil, errTrap
+	}}
+	st, err := readBridgeState(dev, []BridgeInfo{{ID: "*1", Name: "bridge"}}, BridgeCaps{}, "7.18.2", testNow)
+	if err != nil || st.Path != BridgePathMonitorBatched {
+		t.Fatalf("path %q err %v (calls %v)", st.Path, err, dev.calls)
+	}
+	if p := portByName(t, st.Ports, "ether1"); p.DesignatedBridge != "0x8000.BB" || p.Status != "forwarding" || p.Role != "root" {
+		t.Errorf("ether1 = %+v", p)
+	}
+	if p := portByName(t, st.Ports, "ether2"); p.DesignatedBridge != "0x8000.CC" || p.Status != "discarding" {
+		t.Errorf("ether2 = %+v", p)
+	}
+	if b := st.Bridges[0]; b.ProtocolMode != "rstp" || b.BridgeID != "0x8000.AA" {
+		t.Errorf("bridge = %+v, want protocol-mode from the monitor", b)
+	}
+}
+
 func TestReadBridgeStateEmptyBatchedReplyIsNotLearned(t *testing.T) {
 	batched := 0
 	dev := device723(func(args []string) (*ros.Reply, error) {
@@ -427,7 +565,7 @@ func TestMonitorBridgesBatchedOrderAndFallback(t *testing.T) {
 	}}
 	caps := BridgeCaps{}
 	cmds := 0
-	out := monitorBridges(dev, bridges, &caps, &cmds)
+	out, _ := monitorBridges(dev, bridges, &caps, &cmds)
 	if cmds != 1 || caps.BridgeMonitor != monitorBatched || out[0].BridgeID != "0x8000.AA" || !out[0].IsRoot ||
 		out[1].BridgeID != "0x8000.BB" || out[1].RootPort != "ether9" || out[1].PortCount != 2 {
 		t.Fatalf("cmds %d, caps %+v, out %+v", cmds, caps, out)
@@ -442,7 +580,7 @@ func TestMonitorBridgesBatchedOrderAndFallback(t *testing.T) {
 		return sentences(map[string]string{"bridge-id": "per-" + argValue(args, "=numbers=")}), nil
 	}}
 	caps, cmds = BridgeCaps{}, 0
-	out = monitorBridges(dev, bridges, &caps, &cmds)
+	out, _ = monitorBridges(dev, bridges, &caps, &cmds)
 	if cmds != 3 || caps.BridgeMonitor != "" || out[0].BridgeID != "per-*1" || out[1].BridgeID != "per-*2" {
 		t.Fatalf("cmds %d, caps %+v, out %+v", cmds, caps, out)
 	}
@@ -455,7 +593,7 @@ func TestMonitorBridgesBatchedOrderAndFallback(t *testing.T) {
 		return sentences(map[string]string{"bridge-id": "per-" + argValue(args, "=numbers=")}), nil
 	}}
 	caps, cmds = BridgeCaps{}, 0
-	out = monitorBridges(dev, bridges, &caps, &cmds)
+	out, _ = monitorBridges(dev, bridges, &caps, &cmds)
 	if cmds != 4 || caps.BridgeMonitor != monitorPerItem || out[1].BridgeID != "per-*2" {
 		t.Fatalf("cmds %d, caps %+v, out %+v", cmds, caps, out)
 	}
