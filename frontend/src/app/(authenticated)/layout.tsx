@@ -4,6 +4,7 @@ import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/context/auth";
 import { AppSidebar } from "@/components/layout/app-sidebar";
+import { PollingOffBanner } from "@/components/layout/polling-off-banner";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { api } from "@/lib/api";
 import { useVersionWatchdog } from "@/hooks/use-version-watchdog";
@@ -53,7 +54,9 @@ export default function AuthenticatedLayout({
     <SidebarProvider>
       <AppSidebar />
       <SidebarInset>
-        <main className="flex-1 p-6">{children}</main>
+        <PollingOffBanner />
+        {/* 16 px gutters on phones, 24 px from sm up. */}
+        <main className="min-w-0 flex-1 p-4 sm:p-6">{children}</main>
       </SidebarInset>
     </SidebarProvider>
   );

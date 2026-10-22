@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/mikrotik-nms/backend/internal/database/queries"
 	"github.com/mikrotik-nms/backend/internal/poller"
+	"github.com/mikrotik-nms/backend/internal/routeros"
 )
 
 // enrichedSpeedTest is a SpeedTest plus display-only context: the measuring
@@ -203,8 +204,15 @@ func (s *Server) handleRunSpeedTest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "device no longer exists")
 		return
 	}
+	if s.writePollingPaused(w, dev.ID) {
+		return
+	}
 	if dev.Status != "online" {
 		writeError(w, http.StatusConflict, "device is "+dev.Status)
+		return
+	}
+	// Refuse a fenced device synchronously rather than recording a failed sample.
+	if writeDialPolicyError(w, routeros.CheckTarget(dev.Address)) {
 		return
 	}
 

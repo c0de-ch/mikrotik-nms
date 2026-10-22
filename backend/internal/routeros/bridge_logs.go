@@ -93,41 +93,39 @@ func ParseBridgeLogMessage(msg string) *BridgeLogEvent {
 	return nil
 }
 
-// GetBridgeLogEvents pulls /log/print and returns parsed bridge anomaly
-// events. The wireless poller already consumes /log/print for wifi events;
-// running this in parallel is fine — both filter on the topic field.
-func GetBridgeLogEvents(client *ros.Client) ([]BridgeLogEvent, error) {
-	reply, err := RunCommand(client, "/log/print")
-	if err != nil {
-		return nil, err
-	}
+// BridgeLogEventsFrom returns the loop / flap signals among a log read. The
+// wireless parser consumes the same read (poller.LogReader hands both the
+// same lines); each filters on the topic field.
+func BridgeLogEventsFrom(entries []LogEntry) []BridgeLogEvent {
 	out := make([]BridgeLogEvent, 0, 8)
-	for _, re := range reply.Re {
-		m := GetSentenceMap(re)
-		if !isBridgeTopic(m["topics"]) {
+	for i := range entries {
+		e := &entries[i]
+		if !isBridgeTopic(e.Topics) {
 			continue
 		}
-		parsed := ParseBridgeLogMessage(m["message"])
+		parsed := ParseBridgeLogMessage(e.Message)
 		if parsed == nil {
 			continue
 		}
-		parsed.Time = m["time"]
-		parsed.Topics = m["topics"]
-		parsed.Message = m["message"]
+		parsed.Time = e.Time
+		parsed.Topics = e.Topics
+		parsed.Message = e.Message
 		out = append(out, *parsed)
 	}
-	return out, nil
+	return out
+}
+
+// GetBridgeLogEvents reads the device's whole log buffer and returns its
+// bridge anomaly events. One-shot callers only; pollers go through the shared
+// cursored read in poller.LogReader.
+func GetBridgeLogEvents(client *ros.Client) ([]BridgeLogEvent, error) {
+	entries, err := ReadLog(ClientRunner{Client: client})
+	if err != nil {
+		return nil, err
+	}
+	return BridgeLogEventsFrom(entries), nil
 }
 
 func isBridgeTopic(topics string) bool {
-	if topics == "" {
-		return false
-	}
-	for _, t := range strings.Split(topics, ",") {
-		switch strings.TrimSpace(t) {
-		case "bridge", "stp", "rstp":
-			return true
-		}
-	}
-	return false
+	return hasTopic(topics, "bridge", "stp", "rstp")
 }

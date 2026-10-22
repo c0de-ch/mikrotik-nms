@@ -13,10 +13,6 @@ import (
 	"github.com/mikrotik-nms/backend/internal/topology"
 )
 
-// uplinkFreshness is how old a device_uplinks row may be to count (the
-// topology poller refreshes them every cycle).
-const uplinkFreshness = 10 * time.Minute
-
 // pointKey is one (exporter, ifIndex) native point.
 type pointKey struct {
 	exporterID int64
@@ -33,8 +29,9 @@ type pointContext struct {
 	internal  []netip.Prefix               // flow_prefixes internal/vpn + flow_internal_prefixes
 }
 
-// loadPointContext reads the context for the given exporters (all when nil).
-func loadPointContext(db *sql.DB) (*pointContext, error) {
+// loadPointContext reads the context for the given exporters (all when nil);
+// the uplink rows are the ones current at now by age (UseUplinkAge).
+func loadPointContext(db *sql.DB, age queries.UplinkAge, now time.Time) (*pointContext, error) {
 	exps, err := queries.ListFlowExporters(db)
 	if err != nil {
 		return nil, err
@@ -68,7 +65,7 @@ func loadPointContext(db *sql.DB) (*pointContext, error) {
 		}
 		m[f.IfIndex] = f
 	}
-	if ctx.uplinks, err = queries.ListDeviceUplinks(db, uplinkFreshness); err != nil {
+	if ctx.uplinks, err = queries.ListFreshDeviceUplinks(db, age, now); err != nil {
 		return nil, err
 	}
 	if plan, err := queries.ListFlowPrefixes(db); err == nil {
@@ -178,7 +175,7 @@ func (ctx *pointContext) learnedIfaceFacesUp(exp queries.FlowExporter, iface que
 // goroutine, after the flush that saw their bytes) in one transaction. The
 // log line naming them is throttled per exporter (wireLogEvery).
 func (c *Collector) ensureNativePoints(cands []pointKey) {
-	ctx, err := loadPointContext(c.db)
+	ctx, err := loadPointContext(c.db, c.uplinkAge, c.now())
 	if err != nil {
 		log.Printf("flow collector: native points: %v", err)
 		return
@@ -257,9 +254,10 @@ func staleUplinkDevices(fresh, all []queries.DeviceUplink) map[string]bool {
 // evidence and only down → up: stale uplink rows (device not polled) and a
 // vanished default route (WAN link down: the route is inactive) must not
 // swap a WAN point's download and upload for its whole history. up → down
-// is an admin edit (or the ifIndex now names another interface).
-func reconcileNativePoints(db *sql.DB) {
-	ctx, err := loadPointContext(db)
+// is an admin edit (or the ifIndex now names another interface). Uplink
+// rows are judged by age at now (UseUplinkAge).
+func reconcileNativePoints(db *sql.DB, age queries.UplinkAge, now time.Time) {
+	ctx, err := loadPointContext(db, age, now)
 	if err != nil {
 		log.Printf("flow collector: reconcile points: %v", err)
 		return

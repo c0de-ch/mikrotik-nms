@@ -47,7 +47,6 @@ export default function FirmwarePage() {
 
   useEffect(() => { load(); }, [load]);
 
-  const deviceMap = new Map(devices.map((d) => [d.id, d]));
   const firmwareMap = new Map(firmware.map((f) => [f.device_id, f]));
   const isAdmin = user?.role === "admin";
   // Show all online devices, merging firmware data

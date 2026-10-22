@@ -260,3 +260,72 @@ func TestFlowListen(t *testing.T) {
 		t.Errorf("FlowCaptureDir = %q", cfg.FlowCaptureDir)
 	}
 }
+
+func TestPollersAndTargetCIDRs(t *testing.T) {
+	t.Setenv("MIKROTIK_NMS_JWT_SECRET", "test-secret")
+	t.Setenv("MIKROTIK_NMS_POLLERS", "")
+	t.Setenv("MIKROTIK_NMS_ALLOWED_TARGET_CIDRS", "")
+
+	// The code default is off: no device I/O, and no fence is needed.
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.PollersEnabled() || cfg.PollersMode() != PollersOff || len(cfg.AllowedTargetCIDRs) != 0 {
+		t.Fatalf("defaults: Pollers=%q cidrs=%v; want off and none", cfg.Pollers, cfg.AllowedTargetCIDRs)
+	}
+	if got := cfg.AllowedTargetCIDRStrings(); got == nil || len(got) != 0 {
+		t.Errorf("AllowedTargetCIDRStrings() = %#v, want an empty non-nil slice", got)
+	}
+	if (&Config{}).PollersEnabled() {
+		t.Error("a zero Config must not poll")
+	}
+
+	// local without a fence refuses to start.
+	t.Setenv("MIKROTIK_NMS_POLLERS", "local")
+	if _, err := Load(); err == nil {
+		t.Fatal("Load with MIKROTIK_NMS_POLLERS=local and no CIDRs should fail")
+	}
+
+	// local with a fence: parsed, normalised, deduplicated.
+	t.Setenv("MIKROTIK_NMS_POLLERS", " Local ")
+	t.Setenv("MIKROTIK_NMS_ALLOWED_TARGET_CIDRS", " 192.0.2.5/24, 192.0.2.0/24 ,2001:db8::/48, 198.51.100.7, ::ffff:203.0.113.0/120, fe80::1%eth0 ")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.PollersEnabled() || cfg.PollersMode() != PollersLocal {
+		t.Errorf("Pollers = %q, want local", cfg.Pollers)
+	}
+	want := []string{"192.0.2.0/24", "2001:db8::/48", "198.51.100.7/32", "203.0.113.0/24", "fe80::1/128"}
+	got := cfg.AllowedTargetCIDRStrings()
+	if len(got) != len(want) {
+		t.Fatalf("AllowedTargetCIDRs = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("AllowedTargetCIDRs[%d] = %s, want %s", i, got[i], want[i])
+		}
+	}
+
+	// Mistakes are errors, not silently dropped entries.
+	for _, bad := range []string{"192.0.2.0/33", "not-an-address", "10.0.0.0/8,oops", "::ffff:10.0.0.0/8"} {
+		t.Setenv("MIKROTIK_NMS_ALLOWED_TARGET_CIDRS", bad)
+		if _, err := Load(); err == nil {
+			t.Errorf("Load with MIKROTIK_NMS_ALLOWED_TARGET_CIDRS=%q should fail", bad)
+		}
+	}
+
+	// Anything but local/off is refused rather than guessed.
+	t.Setenv("MIKROTIK_NMS_ALLOWED_TARGET_CIDRS", "192.0.2.0/24")
+	t.Setenv("MIKROTIK_NMS_POLLERS", "remote")
+	if _, err := Load(); err == nil {
+		t.Error("Load with MIKROTIK_NMS_POLLERS=remote should fail")
+	}
+
+	// off with a fence configured is fine (the fence is simply unused).
+	t.Setenv("MIKROTIK_NMS_POLLERS", "off")
+	if cfg, err := Load(); err != nil || cfg.PollersEnabled() {
+		t.Errorf("Load off+cidrs: cfg=%+v err=%v", cfg, err)
+	}
+}

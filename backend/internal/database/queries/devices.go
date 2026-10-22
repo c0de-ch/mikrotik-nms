@@ -2,7 +2,10 @@ package queries
 
 import (
 	"database/sql"
+	"encoding/json"
 	"time"
+
+	"github.com/mikrotik-nms/backend/internal/devclass"
 )
 
 type Device struct {
@@ -29,6 +32,100 @@ type Device struct {
 	Notes           string     `json:"notes"`
 	CreatedAt       time.Time  `json:"created_at"`
 	UpdatedAt       time.Time  `json:"updated_at"`
+
+	// CPU class and polling controls (internal/devclass). DeviceClass is
+	// what the last /system/resource probe derived ("" = never probed);
+	// ClassOverride is an admin's gentler-only override; the JSON also
+	// carries the computed effective_class (see MarshalJSON).
+	DeviceClass        string     `json:"device_class"`
+	ClassOverride      string     `json:"class_override"`
+	ClassProbedAt      *time.Time `json:"class_probed_at"`
+	PollProfile        string     `json:"poll_profile"` // "auto" | "light"
+	PollingPausedUntil *time.Time `json:"polling_paused_until"`
+	CPUCount           *int       `json:"cpu_count"`
+	CPUMHzMax          *int       `json:"cpu_mhz_max"`
+
+	// Polling is the live schedule the API attaches to a single device
+	// (GET /devices/{id}); never stored, nil elsewhere.
+	Polling *DevicePolling `json:"polling,omitempty"`
+}
+
+// DevicePolling is how the pollers currently treat a device: the class and
+// profile they budget it by, the pause in force, and when each scheduled
+// read (devclass tier name → time) runs next. A paused device lists no next
+// runs — nothing but liveness runs until the pause ends.
+type DevicePolling struct {
+	Class       devclass.Class       `json:"class"`
+	Profile     devclass.Profile     `json:"profile"`
+	PausedUntil *time.Time           `json:"paused_until"`
+	NextRuns    map[string]time.Time `json:"next_runs"`
+}
+
+// deviceColumns is the SELECT list every Device scan reads, in scanDevice's
+// order.
+const deviceColumns = `id, address, identity, platform, board, ros_version, firmware_version, architecture,
+		        username, password_enc, use_tls, api_port,
+		        status, cpu_load, memory_used, memory_total, uptime, last_seen, last_error,
+		        tags, notes, created_at, updated_at,
+		        COALESCE(device_class, ''), COALESCE(class_override, ''), class_probed_at,
+		        poll_profile, polling_paused_until, cpu_count, cpu_mhz_max`
+
+func scanDevice(row rowScanner, d *Device) error {
+	if err := row.Scan(
+		&d.ID, &d.Address, &d.Identity, &d.Platform, &d.Board, &d.ROSVersion, &d.FirmwareVersion, &d.Architecture,
+		&d.Username, &d.PasswordEnc, &d.UseTLS, &d.APIPort,
+		&d.Status, &d.CPULoad, &d.MemoryUsed, &d.MemoryTotal, &d.Uptime, &d.LastSeen, &d.LastError,
+		&d.Tags, &d.Notes, &d.CreatedAt, &d.UpdatedAt,
+		&d.DeviceClass, &d.ClassOverride, &d.ClassProbedAt,
+		&d.PollProfile, &d.PollingPausedUntil, &d.CPUCount, &d.CPUMHzMax,
+	); err != nil {
+		return err
+	}
+	d.PasswordEnc = decryptSecret(d.PasswordEnc)
+	return nil
+}
+
+// ProbedClass is the class the last probe derived, C0 when never probed.
+func (d *Device) ProbedClass() devclass.Class {
+	c, ok := devclass.ParseClass(d.DeviceClass)
+	if !ok {
+		return devclass.C0Unknown
+	}
+	return c
+}
+
+// EffectiveClass is the class the pollers budget this device as: the probed
+// class, or the admin override when it is gentler. Never C0 — an unprobed
+// device is budgeted as C1.
+func (d *Device) EffectiveClass() devclass.Class {
+	c, _ := devclass.Effective(d.ProbedClass(), devclass.Class(d.ClassOverride))
+	return c
+}
+
+// Profile is the device's polling profile (auto when unset or invalid).
+func (d *Device) Profile() devclass.Profile {
+	p, ok := devclass.ParseProfile(d.PollProfile)
+	if !ok {
+		return devclass.ProfileAuto
+	}
+	return p
+}
+
+// PollingPaused reports whether an admin pause is in force at now. Liveness
+// keeps running while paused; every other poller skips the device.
+func (d *Device) PollingPaused(now time.Time) bool {
+	return d.PollingPausedUntil != nil && now.Before(*d.PollingPausedUntil)
+}
+
+// MarshalJSON adds the computed effective_class and polling_paused fields so
+// every API response carries them without each handler recomputing.
+func (d Device) MarshalJSON() ([]byte, error) {
+	type plain Device // no methods: avoids recursing into MarshalJSON
+	return json.Marshal(struct {
+		plain
+		EffectiveClass devclass.Class `json:"effective_class"`
+		PollingPaused  bool           `json:"polling_paused"`
+	}{plain(d), d.EffectiveClass(), d.PollingPaused(time.Now())})
 }
 
 func CreateDevice(db *sql.DB, d *Device) error {
@@ -44,33 +141,14 @@ func CreateDevice(db *sql.DB, d *Device) error {
 
 func GetDevice(db *sql.DB, id string) (*Device, error) {
 	d := &Device{}
-	err := db.QueryRow(
-		`SELECT id, address, identity, platform, board, ros_version, firmware_version, architecture,
-		        username, password_enc, use_tls, api_port,
-		        status, cpu_load, memory_used, memory_total, uptime, last_seen, last_error,
-		        tags, notes, created_at, updated_at
-		 FROM devices WHERE id = ?`, id,
-	).Scan(
-		&d.ID, &d.Address, &d.Identity, &d.Platform, &d.Board, &d.ROSVersion, &d.FirmwareVersion, &d.Architecture,
-		&d.Username, &d.PasswordEnc, &d.UseTLS, &d.APIPort,
-		&d.Status, &d.CPULoad, &d.MemoryUsed, &d.MemoryTotal, &d.Uptime, &d.LastSeen, &d.LastError,
-		&d.Tags, &d.Notes, &d.CreatedAt, &d.UpdatedAt,
-	)
-	if err != nil {
+	if err := scanDevice(db.QueryRow(`SELECT `+deviceColumns+` FROM devices WHERE id = ?`, id), d); err != nil {
 		return nil, err
 	}
-	d.PasswordEnc = decryptSecret(d.PasswordEnc)
 	return d, nil
 }
 
 func ListDevices(db *sql.DB) ([]Device, error) {
-	rows, err := db.Query(
-		`SELECT id, address, identity, platform, board, ros_version, firmware_version, architecture,
-		        username, password_enc, use_tls, api_port,
-		        status, cpu_load, memory_used, memory_total, uptime, last_seen, last_error,
-		        tags, notes, created_at, updated_at
-		 FROM devices ORDER BY identity, address`,
-	)
+	rows, err := db.Query(`SELECT ` + deviceColumns + ` FROM devices ORDER BY identity, address`)
 	if err != nil {
 		return nil, err
 	}
@@ -79,18 +157,76 @@ func ListDevices(db *sql.DB) ([]Device, error) {
 	var devices []Device
 	for rows.Next() {
 		var d Device
-		if err := rows.Scan(
-			&d.ID, &d.Address, &d.Identity, &d.Platform, &d.Board, &d.ROSVersion, &d.FirmwareVersion, &d.Architecture,
-			&d.Username, &d.PasswordEnc, &d.UseTLS, &d.APIPort,
-			&d.Status, &d.CPULoad, &d.MemoryUsed, &d.MemoryTotal, &d.Uptime, &d.LastSeen, &d.LastError,
-			&d.Tags, &d.Notes, &d.CreatedAt, &d.UpdatedAt,
-		); err != nil {
+		if err := scanDevice(rows, &d); err != nil {
 			return nil, err
 		}
-		d.PasswordEnc = decryptSecret(d.PasswordEnc)
 		devices = append(devices, d)
 	}
 	return devices, rows.Err()
+}
+
+// SetDeviceClass caches the class a /system/resource probe derived, with the
+// facts behind it. cpu_mhz_max only ever grows: cpu-frequency is the current
+// (possibly scaled-down) frequency, and the class wants the nominal one.
+func SetDeviceClass(db *sql.DB, id string, class devclass.Class, facts devclass.ResourceFacts, probedAt time.Time) error {
+	var cpuCount, mhz any
+	if facts.CPUCount > 0 {
+		cpuCount = facts.CPUCount
+	}
+	if facts.CPUFrequencyMHz > 0 {
+		mhz = facts.CPUFrequencyMHz
+	}
+	_, err := db.Exec(
+		`UPDATE devices SET device_class=?, class_probed_at=?,
+		        cpu_count=COALESCE(?, cpu_count),
+		        cpu_mhz_max=MAX(COALESCE(?, 0), COALESCE(cpu_mhz_max, 0)),
+		        updated_at=CURRENT_TIMESTAMP
+		 WHERE id=?`,
+		string(class), probedAt.UTC(), cpuCount, mhz, id,
+	)
+	return err
+}
+
+// SetDevicePollProfile stores the polling profile ("auto" or "light").
+func SetDevicePollProfile(db *sql.DB, id string, profile devclass.Profile) error {
+	if !profile.Valid() {
+		profile = devclass.ProfileAuto
+	}
+	_, err := db.Exec(`UPDATE devices SET poll_profile=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`, string(profile), id)
+	return err
+}
+
+// SetDeviceClassOverride stores an admin class override; an empty class
+// clears it. Callers validate that the override is gentler than the probed
+// class (devclass.Effective); the row stores whatever it is given.
+func SetDeviceClassOverride(db *sql.DB, id string, override devclass.Class) error {
+	var v any
+	if override != "" {
+		v = string(override)
+	}
+	_, err := db.Exec(`UPDATE devices SET class_override=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`, v, id)
+	return err
+}
+
+// pausedDevicesSQL selects the ids of the devices whose polling is paused at
+// the bound time (bind sqlTime(now)), for staleness rules that must not age a
+// paused device's rows. The stored pause end is compared to the second: it is
+// written as a time.Time (its String form, "… +0000 UTC"), which is longer than
+// the bound layout and would otherwise outlast its own second; an ISO "T"
+// separator compares like the space.
+const pausedDevicesSQL = `SELECT id FROM devices WHERE replace(substr(polling_paused_until, 1, 19), 'T', ' ') > ?`
+
+// PauseDevicePolling suspends every poller but liveness for the device until
+// the given time.
+func PauseDevicePolling(db *sql.DB, id string, until time.Time) error {
+	_, err := db.Exec(`UPDATE devices SET polling_paused_until=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`, until.UTC(), id)
+	return err
+}
+
+// ResumeDevicePolling clears a pause.
+func ResumeDevicePolling(db *sql.DB, id string) error {
+	_, err := db.Exec(`UPDATE devices SET polling_paused_until=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?`, id)
+	return err
 }
 
 func UpdateDevice(db *sql.DB, d *Device) error {

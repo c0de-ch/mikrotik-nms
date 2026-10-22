@@ -17,7 +17,12 @@ type NeighborInfo struct {
 }
 
 func GetNeighbors(client *ros.Client) ([]NeighborInfo, error) {
-	reply, err := RunCommand(client, "/ip/neighbor/print")
+	return ReadNeighbors(ClientRunner{Client: client})
+}
+
+// ReadNeighbors is GetNeighbors on a Runner (the topology loop's Tier 3d).
+func ReadNeighbors(run Runner) ([]NeighborInfo, error) {
+	reply, err := run.Run("/ip/neighbor/print")
 	if err != nil {
 		return nil, err
 	}

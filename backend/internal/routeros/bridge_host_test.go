@@ -114,9 +114,17 @@ func TestParseInterfaceRelations(t *testing.T) {
 		t.Errorf("nameless bond = %+v", got)
 	}
 
-	if got := parseCarrier(map[string]string{"name": "net28", "interface": "bridge", "vlan-id": "28"}, RelationVLAN); len(got) != 1 ||
-		got[0] != (InterfaceRelation{Iface: "net28", Parent: "bridge", Kind: RelationVLAN}) {
+	if got := parseVLANCarrier(map[string]string{"name": "net28", "interface": "bridge", "vlan-id": "28"}); len(got) != 1 ||
+		got[0] != (InterfaceRelation{Iface: "net28", Parent: "bridge", Kind: RelationVLAN, VLANID: 28}) {
 		t.Errorf("vlan = %+v", got)
+	}
+	if got := VLANs([]InterfaceRelation{{Iface: "ether7", Parent: "bond1", Kind: RelationBond},
+		{Iface: "net28", Parent: "bridge", Kind: RelationVLAN, VLANID: 28}}); len(got) != 1 ||
+		got[0] != (VLANInfo{Name: "net28", VLANID: 28, Parent: "bridge"}) {
+		t.Errorf("VLANs = %+v", got)
+	}
+	if got := VLANs(nil); got == nil || len(got) != 0 {
+		t.Errorf("VLANs of no relations = %#v, want an empty, non-nil list (read, none)", got)
 	}
 	if got := parseCarrier(map[string]string{"name": "pppoe-out1", "interface": "ether1"}, RelationPPPoE); len(got) != 1 ||
 		got[0] != (InterfaceRelation{Iface: "pppoe-out1", Parent: "ether1", Kind: RelationPPPoE}) {

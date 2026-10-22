@@ -87,6 +87,9 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		"port_flap_window_seconds":      true,
 		"tcn_storm_threshold":           true,
 		"auto_follow_ip":                true,
+		// Addresses the NMS's own API sessions come from (CSV), for the
+		// login watch (poller/login_watch.go); auto-learned when empty.
+		"nms_source_addresses": true,
 		// Traffic analytics (poller/portstats.go): read and clamped by the
 		// collector each cycle and by the retention sweep.
 		"port_stats_interval":   true,

@@ -38,6 +38,12 @@ type Server struct {
 	// wired (tests); handlers then serve DB state only.
 	flows flowSource
 
+	// cadence is the poller manager's schedule — per-device class cadences,
+	// floors and the pause — by which the API judges the staleness of what
+	// the pollers wrote (links, egress rows, FDB rows) exactly as the loops
+	// do. nil (tests) = a schedule built from the database and config.
+	cadence poller.CadenceSource
+
 	// flowCache holds aggregated flow rows of recent /flows/* queries;
 	// cleared by every flow admin write (see flowChanged).
 	flowCache flowAggCache
@@ -59,8 +65,8 @@ type flowSource interface {
 }
 
 func NewRouter(db *sql.DB, hub *ws.Hub, cfg *config.Config, pool *routeros.Pool, m mailer.Sender,
-	portStats *poller.PortStatsCollector, flows *flow.Collector) http.Handler {
-	s := &Server{db: db, hub: hub, cfg: cfg, pool: pool, mailer: m, resolver: resolver.New(db)}
+	portStats *poller.PortStatsCollector, flows *flow.Collector, cadence poller.CadenceSource) http.Handler {
+	s := &Server{db: db, hub: hub, cfg: cfg, pool: pool, mailer: m, resolver: resolver.New(db), cadence: cadence}
 	if portStats != nil {
 		s.portStats = portStats
 	}
@@ -125,6 +131,9 @@ func NewRouter(db *sql.DB, hub *ws.Hub, cfg *config.Config, pool *routeros.Pool,
 			r.Post("/auth/logout", s.handleLogout)
 			r.Get("/auth/me", s.handleMe)
 
+			// How this instance runs: polling mode + the subnets it may reach.
+			r.Get("/system", s.handleSystemInfo)
+
 			// Users (admin only)
 			r.Route("/users", func(r chi.Router) {
 				r.Use(auth.RequireRole("admin"))
@@ -149,8 +158,11 @@ func NewRouter(db *sql.DB, hub *ws.Hub, cfg *config.Config, pool *routeros.Pool,
 			r.Get("/devices/{id}", s.handleGetDevice)
 			r.Get("/devices/{id}/interfaces", s.handleListInterfaces)
 			r.Get("/devices/{id}/ports", s.handleGetDevicePorts)
+			r.Get("/devices/{id}/live-limits", s.handleDeviceLiveLimits)
 			r.Get("/devices/{id}/neighbors", s.handleListNeighbors)
 			r.Get("/devices/{id}/addresses", s.handleDeviceAddresses)
+			r.Get("/devices/{id}/audit", s.handleDeviceAudit)
+			r.Get("/devices/{id}/findings", s.handleListDeviceFindings)
 
 			// Device write operations + deep discovery (admin only)
 			r.Group(func(r chi.Router) {
@@ -158,6 +170,10 @@ func NewRouter(db *sql.DB, hub *ws.Hub, cfg *config.Config, pool *routeros.Pool,
 				r.Post("/devices", s.handleCreateDevice)
 				r.Put("/devices/{id}", s.handleUpdateDevice)
 				r.Delete("/devices/{id}", s.handleDeleteDevice)
+				// Polling controls: pause, profile and class override.
+				r.Post("/devices/{id}/polling/pause", s.handlePausePolling)
+				r.Post("/devices/{id}/polling/resume", s.handleResumePolling)
+				r.Put("/devices/{id}/polling", s.handleUpdatePolling)
 				r.Get("/discovery/deep", s.handleDeepScan)
 			})
 

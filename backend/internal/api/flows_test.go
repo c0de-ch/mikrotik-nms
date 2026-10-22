@@ -316,7 +316,7 @@ func TestFlowPointCRUD(t *testing.T) {
 func TestFlowRoutesAuth(t *testing.T) {
 	f := newFlowFixture(t)
 	const secret = "flow-test-secret-flow-test-secret"
-	h := NewRouter(f.db, nil, &config.Config{JWTSecret: secret, AllowedOrigins: []string{"http://x"}}, nil, nil, nil, nil)
+	h := NewRouter(f.db, nil, &config.Config{JWTSecret: secret, AllowedOrigins: []string{"http://x"}}, nil, nil, nil, nil, nil)
 	token := func(role string) string {
 		pair, err := auth.GenerateTokenPair(secret, "u-"+role, role, role, 0)
 		if err != nil {

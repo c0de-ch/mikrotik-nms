@@ -65,6 +65,8 @@ Open **http://localhost:3000** and create the first admin account (the setup scr
 | `ENCRYPTION_KEY` | `MIKROTIK_NMS_ENCRYPTION_KEY` | Optional (see [§10](#10-security-hardening-checklist)) |
 | `DEFAULT_ROS_USER` | `MIKROTIK_NMS_DEFAULT_ROS_USER` | Defaults to `admin` |
 | `DEFAULT_ROS_PASS` | `MIKROTIK_NMS_DEFAULT_ROS_PASS` | Optional |
+| `POLLERS` | `MIKROTIK_NMS_POLLERS` | Defaults to `local` (poll the devices). `off` = no device or UDP I/O at all — history only |
+| `ALLOWED_TARGET_CIDRS` | `MIKROTIK_NMS_ALLOWED_TARGET_CIDRS` | **Required with `local`**: the subnet(s) the devices live in, comma-separated CIDRs. The backend refuses to start while it is empty and refuses every dial outside it (see [§7](#7-configuration-reference)) |
 | `FLOW_LISTEN` | `MIKROTIK_NMS_FLOW_LISTEN` | Optional, empty = flow collector off. Set `:2055` **and** uncomment the `- "2055:2055/udp"` port mapping of the backend. Exporters are identified by their UDP source IP. Rootful Docker, default iptables: kept, nothing else to do. Rootful with `"iptables": false` (userland proxy for all traffic): use `network_mode: host` for the backend. Rootless Docker: `network_mode: host` does **not** reach the real host — keep the port mapping and set `DOCKERD_ROOTLESS_ROOTLESSKIT_PORT_DRIVER=slirp4netns` in the rootless daemon's environment (`~/.config/systemd/user/docker.service.d/override.conf`, then restart the user service), or use the pasta network driver with the implicit port driver. Check that the exporter's real IP, not the Docker gateway, appears under `unknown_senders` or `exporters` in `/api/v1/flows/status` |
 
 > The frontend's `NEXT_PUBLIC_API_URL` / `NEXT_PUBLIC_WS_URL` are **baked into the JS bundle at build time**. The default Compose values point at `http://backend:8080` / `ws://backend:8080` (the in-network service name). If you put a reverse proxy in front, change these in `docker-compose.yml` and rebuild the frontend image.
@@ -120,6 +122,7 @@ Key facts:
 
 - The backend `Deployment` is **fixed at `replicas: 1`** — SQLite has a single writer. Do **not** scale it.
 - Non-secret config (intervals, ports, RouterOS defaults) is in `configmap.yaml`; secrets in `secret.yaml`. Both are mounted via `envFrom`.
+- **Set `MIKROTIK_NMS_ALLOWED_TARGET_CIDRS` in `configmap.yaml` before applying.** The ConfigMap ships `MIKROTIK_NMS_POLLERS: "local"` with an empty allow-list, and the backend refuses to start until the list names the subnet(s) the devices live in (the pods must be able to reach them — see [§7](#7-configuration-reference)).
 - Persistence: a **1 GiB `ReadWriteOnce` PVC** (`mikrotik-nms-data`) is mounted at `/data`; the DB path is `/data/mikrotik-nms.db`.
 - Liveness and readiness probes hit `GET /api/v1/health`.
 - **Flow collector (optional, off by default).** Uncomment `MIKROTIK_NMS_FLOW_LISTEN: ":2055"` in `configmap.yaml` and apply [`optional/flow-service.yaml`](../deploy/k8s/optional/flow-service.yaml) explicitly (`kubectl apply -f deploy/k8s/` does not recurse into `optional/`). It is a UDP `LoadBalancer` (MetalLB or a cloud LB) with **`externalTrafficPolicy: Local`**: the default `Cluster` policy SNATs every datagram to a node IP and all exporters collapse into one unknown sender. Point exporters at the Service's external IP, port 2055/udp. With a `NodePort` instead, the port is in 30000–32767. Don't use an ingress controller's `udp-services` map (it SNATs too). The backend stays at `replicas: 1`, so there is exactly one collector.
@@ -147,6 +150,8 @@ What lands on disk:
 | `/etc/caddy/Caddyfile` | Reverse proxy config |
 
 Both services run as the unprivileged `mikrotik-nms` user under a strict systemd hardening matrix (`NoNewPrivileges`, `ProtectSystem=strict`, `SystemCallFilter=@system-service`, etc.). The backend binds `127.0.0.1:8080` and, when the flow collector is enabled, `:2055/udp` on all addresses (Caddy only proxies HTTP, so exporters talk to the backend directly); the frontend binds `127.0.0.1:3000`, and Caddy fronts both.
+
+**Device polling fence.** The installer writes `MIKROTIK_NMS_POLLERS=local` and `MIKROTIK_NMS_ALLOWED_TARGET_CIDRS=<the networks of the LXC's own addresses>` into `/etc/mikrotik-nms/env` on new installs, and appends the same two lines once to an existing env file that lacks them (so an upgraded production instance keeps polling); a line that is already there is never changed. Pass `--target-cidrs 192.0.2.0/24,198.51.100.0/24` when the devices live on other subnets than the LXC, or edit the env file and `systemctl restart mikrotik-nms-backend`. The backend refuses to start with polling on and an empty list, and refuses every dial outside it (see §7).
 
 **Flow collector.** The installer writes `# MIKROTIK_NMS_FLOW_LISTEN=:2055` **commented out** into `/etc/mikrotik-nms/env` — on new installs and, if the key is missing, on existing ones — and never changes a line that is already there. To turn it on, uncomment the line, `systemctl restart mikrotik-nms-backend`, and check `ss -lunp | grep ':2055 '`. The LXC's address must be stable (DHCP reservation or static IP), because exporters target a literal IP. Details, including an optional nftables allow-list, are in [`deploy/lxc/README.md`](../deploy/lxc/README.md#flow-collector-netflow--ipfix--sflow).
 
@@ -229,12 +234,14 @@ The backend is configured **entirely** via `MIKROTIK_NMS_*` environment variable
 | `MIKROTIK_NMS_LISTEN` | Backend bind address | `:8080` | No |
 | `MIKROTIK_NMS_DB_PATH` | SQLite database file path | `mikrotik-nms.db` | No |
 | `MIKROTIK_NMS_ENCRYPTION_KEY` | AES key for encrypting device passwords at rest (AES-256-GCM). Any non-empty value works; 32+ random bytes recommended. Existing plaintext rows are migrated on startup. Unset = plaintext + stripped from backups | — | No |
+| `MIKROTIK_NMS_POLLERS` | `local` = this backend polls the devices. `off` = **no device or UDP I/O at all**: no RouterOS dials from any poller or on-demand action, and the flow collector stays off even when `MIKROTIK_NMS_FLOW_LISTEN` is set; database-only jobs (retention, hourly rollups) still run, so a copied database keeps showing its history. The code default is `off`, so a dev checkout can never poll a production fleet by accident — every installer, Compose and K8s example sets `local` explicitly. The UI shows a banner on an instance that is off | `off` | No |
+| `MIKROTIK_NMS_ALLOWED_TARGET_CIDRS` | Comma-separated CIDRs (a bare address counts as `/32` or `/128`) the backend may dial — the management subnet(s) the devices live in, e.g. `192.0.2.0/24,2001:db8::/48`. Every device dial — pollers, the add-device connection test, MNDP/subnet discovery, run-now ping/traceroute/speed tests, firmware jobs — is refused outside it (API: `403`; `503` while polling is off); a hostname is checked on every address it resolves to. **Required with `MIKROTIK_NMS_POLLERS=local`:** the process refuses to start while it is empty, and an invalid entry is a startup error, never a silent skip | — | With `local` |
 | `MIKROTIK_NMS_ALLOWED_ORIGINS` | Comma-separated CORS / WebSocket origin allow-list (e.g. `https://nms.example.com`). Unset = reflect any origin (logs a warning) | — | No |
 | `MIKROTIK_NMS_ROS_TLS_VERIFY` | Verify RouterOS API-TLS device certificates. Off by default (self-signed certs) | `false` | No |
 | `MIKROTIK_NMS_HEALTH_INTERVAL` | Liveness ping cadence | `30s` | No |
-| `MIKROTIK_NMS_TOPOLOGY_INTERVAL` | `/ip/neighbor` poll + link-graph rebuild cadence | `60s` | No |
+| `MIKROTIK_NMS_TOPOLOGY_INTERVAL` | **Floor** of each device's `/ip/neighbor` and default-route reads (they run on the device's class cadence when slower), and the link-graph rebuild cadence | `60s` | No |
 | `MIKROTIK_NMS_FIRMWARE_INTERVAL` | RouterOS update-check cadence | `6h` | No |
-| `MIKROTIK_NMS_NETWORK_HEALTH_INTERVAL` | Bridge/STP + port-state poll cadence | `60s` | No |
+| `MIKROTIK_NMS_NETWORK_HEALTH_INTERVAL` | **Floor** of each device's bridge/STP, bridge-VLAN and log reads (class cadence when slower), and the port-state scan / stale-row prune cadence | `60s` | No |
 | `MIKROTIK_NMS_RETENTION_INTERVAL` | Cleanup sweep cadence | `1h` | No |
 | `MIKROTIK_NMS_RETENTION_DAYS` | Retention window for samples / events | `7` | No |
 | `MIKROTIK_NMS_DEFAULT_ROS_USER` | Default RouterOS username for new devices | `admin` | No |
@@ -251,9 +258,30 @@ Frontend (build-time only, inlined into the bundle):
 | `NEXT_PUBLIC_API_URL` | Backend API URL the browser uses | `http://localhost:8080` |
 | `NEXT_PUBLIC_WS_URL` | Backend WebSocket URL the browser uses | `ws://localhost:8080` |
 
+### Polling intervals are floors
+
+Every device is read on the cadence of its **CPU class**, probed from `/system/resource` (C1: MIPS or ≤ 128 MiB; C2: small ARM; C3: arm64/x86 with 2+ cores; an unprobed device counts as C1). The interval settings and env vars that once set one cadence for the whole fleet are now **floors**: a device runs at `max(its class cadence, the floor)`, so raising a setting still slows every device down, but no setting reads a device faster than its class allows. The pairs are:
+
+| Read | C3 / C2 / C1 cadence | Floor |
+|---|---|---|
+| Interface counters (Tier 0) | 15 s / 30 s / 60 s | `port_stats_interval` |
+| Ethernet / switch counters (4a) | 5 min | `port_stats_interval` |
+| Bridge FDB (3b) | 5 / 10 / 15 min | `port_hosts_interval` |
+| Bond / VLAN / PPPoE stacking (3c) | 5 / 15 / 15 min | `port_hosts_interval` |
+| Neighbors (3d) | 2 / 2 / 5 min | `MIKROTIK_NMS_TOPOLOGY_INTERVAL` |
+| Default routes (3e) | 60 s / 5 / 5 min | `MIKROTIK_NMS_TOPOLOGY_INTERVAL` |
+| Bridge ports + STP (2a–2c), log buffer | 2 / 2 / 5 min | `MIKROTIK_NMS_NETWORK_HEALTH_INTERVAL` |
+| Bridge VLAN table (3a) | 5 / 5 / 15 min | `MIKROTIK_NMS_NETWORK_HEALTH_INTERVAL` |
+| Wifi registration tables (5c) | 30 s / 60 s / 5 min | `wifi_interval` |
+| ARP (5a) | 5 / 30 / 30 min | `client_discovery_interval` |
+| DHCP leases (5b) | 5 min, C3 only | `client_discovery_interval` |
+| Resource + class probe (6) | 60 min | `info_interval` |
+
+Each device's next read is the end of its last one plus the interval, ±10 % by a per-device phase, so a fleet spreads out instead of polling in lockstep. On a device's page an admin can switch it to the **light** profile (the C1 cadences), override its class with a gentler one, or **pause** polling for 1–168 hours: during a pause only the liveness ping runs, nothing derived from the device ages (links stay up, rows are not pruned), and its charts show the time as a gap. The liveness ping (`MIKROTIK_NMS_HEALTH_INTERVAL`), firmware checks, connectivity probes and speed tests keep their fleet-wide cadences.
+
 ### Restart required vs. runtime-tunable
 
-- **Env-var pollers (restart required):** every `MIKROTIK_NMS_*` interval above (`HEALTH`, `TOPOLOGY`, `FIRMWARE`, `NETWORK_HEALTH`, `RETENTION`) is read once at startup, and so is the flow collector's `MIKROTIK_NMS_FLOW_LISTEN`. Changing them means editing the env/ConfigMap/Secret and restarting the backend.
+- **Env-var pollers (restart required):** every `MIKROTIK_NMS_*` interval above (`HEALTH`, `TOPOLOGY`, `FIRMWARE`, `NETWORK_HEALTH`, `RETENTION`) is read once at startup, and so are the flow collector's `MIKROTIK_NMS_FLOW_LISTEN` and the polling fence (`MIKROTIK_NMS_POLLERS`, `MIKROTIK_NMS_ALLOWED_TARGET_CIDRS`). Changing them means editing the env/ConfigMap/Secret and restarting the backend.
 - **Runtime-tunable via the Settings page (no restart):** settings stored in the `app_settings` table are picked up on the next poll cycle. These include the WiFi-tracking interval (`wifi_interval`), the client-discovery interval (`client_discovery_interval`), the Kea DHCP Control Agent URL, the OPNsense lease integration (`opnsense_*`), DNS resolvers for client lookups, the offline threshold (`offline_threshold_seconds`), the heavy info-refresh interval (`info_interval`), the TCN storm threshold (`tcn_storm_threshold`), the port-monitoring filter/thresholds (`port_monitor_*`), the traffic-analytics intervals and retention (`port_stats_*`, `port_hosts_*`), and the flow collector's knobs (`flow_*`: top-N per minute/hour, row cap, retention `flow_1m_days` / `flow_1h_days`, per-exporter rate limit, device auto-accept, internal/external prefixes, PTR lookups, advertised collector address — re-read within 30 s). Admins edit them on the **Settings** page; nothing in `.env` controls them.
 
 ---

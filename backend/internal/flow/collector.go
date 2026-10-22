@@ -66,8 +66,13 @@ type Collector struct {
 	syncWrites bool
 	drainBy    time.Time // shutdown: submit may wait until then
 
-	// Maintenance loop.
+	// Maintenance loop. ifaceSrc (UseIfaceSource) serves the ifIndex
+	// sync's interface rows from memory; uplinkAge (UseUplinkAge) judges
+	// the egress rows the plan and the point facing read. Both are set
+	// before Run and only read afterwards.
 	ifsyncReq chan int64
+	ifaceSrc  IfaceSource
+	uplinkAge queries.UplinkAge
 
 	// Status snapshot, rebuilt by the worker.
 	statusMu     sync.Mutex

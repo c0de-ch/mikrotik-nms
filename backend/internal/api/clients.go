@@ -51,6 +51,9 @@ func (s *Server) handleDebugWifiRaw(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "device_id required")
 		return
 	}
+	if s.writePollingPaused(w, deviceID) {
+		return
+	}
 	client := s.pool.GetLive(deviceID)
 	if client == nil {
 		writeError(w, http.StatusNotFound, "device not connected")
@@ -117,13 +120,16 @@ func (s *Server) handleScanClients(w http.ResponseWriter, r *http.Request) {
 		default:
 		}
 
-		if dev.Status != "online" {
+		// A paused device gets nothing but liveness pings — this fleet scan
+		// included.
+		if dev.Status != "online" || dev.PollingPaused(time.Now()) {
 			continue
 		}
 		client := s.pool.GetLive(dev.ID)
 		if client == nil {
 			continue
 		}
+		run := routeros.ClientRunner{Client: client}
 		devName := dev.Identity
 		if devName == "" {
 			devName = dev.Address
@@ -132,7 +138,7 @@ func (s *Server) handleScanClients(w http.ResponseWriter, r *http.Request) {
 		// ARP table
 		func() {
 			defer func() { recover() }()
-			arps, err := routeros.GetARPTable(client)
+			arps, err := routeros.GetARPTable(run)
 			if err != nil {
 				log.Printf("scan clients: arp %s: %v", devName, err)
 				return
@@ -160,7 +166,7 @@ func (s *Server) handleScanClients(w http.ResponseWriter, r *http.Request) {
 		// DHCP leases
 		func() {
 			defer func() { recover() }()
-			leases, err := routeros.GetDHCPLeases(client)
+			leases, err := routeros.GetDHCPLeases(run)
 			if err != nil {
 				log.Printf("scan clients: dhcp %s: %v", devName, err)
 				return

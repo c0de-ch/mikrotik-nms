@@ -479,9 +479,10 @@ func (s *Server) portParams(w http.ResponseWriter, r *http.Request) (deviceID, i
 
 // handleTrafficPortHistory returns one port's chart series and summary stats.
 // Query: device, iface (required), range (default 1h). live = the last 5
-// minutes of the 1 s traffic_samples stream (only recorded while someone
-// watches the port); other ranges = port_stats_1m / port_stats_1h, points
-// zero-filled from the start of coverage.
+// minutes of the traffic_samples a live stream recorded (only while someone
+// streams the port: every second, or every 15 s on a weak device — the UI
+// computes live stats from the points); other ranges = port_stats_1m /
+// port_stats_1h, points zero-filled from the start of coverage.
 func (s *Server) handleTrafficPortHistory(w http.ResponseWriter, r *http.Request) {
 	rng, ok := parseTrafficRange(r.URL.Query().Get("range"))
 	if !ok {

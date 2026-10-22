@@ -7,12 +7,16 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   useDarkFlag,
   useDevices,
+  useLiveLimits,
   usePortRoles,
   usePortSnapshot,
   useTrafficParams,
   type TrafficView,
 } from "@/components/traffic/hooks";
 import { deviceName } from "@/components/traffic/lib";
+import type { LiveLimits } from "@/lib/api";
+import { CLASSES, budgeted, counterIntervalSeconds, fmtInterval, liveRefusalText } from "@/lib/device-load";
+import type { LiveHint } from "@/components/traffic/range-picker";
 import { DeviceList } from "@/components/traffic/device-list";
 import { DeviceView } from "@/components/traffic/device-view";
 import { FlowsTab } from "@/components/traffic/flows/flows-tab";
@@ -21,6 +25,31 @@ import { Notice } from "@/components/traffic/notice";
 import { PortDetail } from "@/components/traffic/port-detail";
 import { RangePicker } from "@/components/traffic/range-picker";
 import { TopTalkers } from "@/components/traffic/top-talkers-table";
+
+// What the Live range will show for the open port, from the device's live
+// limits: its sampling period, or the counter cadence of the snapshot data
+// it falls back to — so a weak device's Live never surprises.
+function liveHintFor(l: LiveLimits, floorSeconds: number | undefined): LiveHint {
+  const cls = budgeted(l.class);
+  const counter = counterIntervalSeconds(cls, floorSeconds || l.snapshot_interval_seconds);
+  if (!l.allowed) {
+    if (l.reason === "polling_paused") {
+      return { suffix: "paused", title: "NMS polling is paused for this device: Live shows its last reading." };
+    }
+    if (l.reason === "pollers_off") return { title: "Polling is off on this instance: Live shows stored data only." };
+    return {
+      suffix: fmtInterval(counter),
+      title: liveRefusalText(l.reason, { counterSeconds: counter, maxIfaces: l.max_ifaces, serverMessage: l.message }),
+    };
+  }
+  if (l.min_period_seconds > 1) {
+    return {
+      suffix: fmtInterval(l.min_period_seconds),
+      title: `Live samples every ${fmtInterval(l.min_period_seconds)} on this ${CLASSES[cls].word} device, at most ${l.max_ifaces} ports at once.`,
+    };
+  }
+  return { title: `Live 1-second samples of this port; up to ${l.max_ifaces} of the device's ports can stream at once.` };
+}
 
 // /traffic — fleet-wide port analytics with a URL-addressable drill-down:
 // ?view=top|devices|flows &device= &iface= &range= &metric= &dir= &flow= &physical=
@@ -61,6 +90,19 @@ function TrafficPageInner() {
 
   const { view, device, iface } = params;
   const inDevices = view === "devices";
+
+  // With a port open, ask the device's live limits up front so the Live
+  // range already says what it will show (the history card asks again for
+  // each Live session).
+  const portOpen = inDevices && !!device && !!iface;
+  const preview = useLiveLimits(portOpen ? device : null);
+  const floorSeconds = snap.snapshot?.interval_seconds;
+  const liveHint = useMemo(
+    () => (portOpen && preview.data ? liveHintFor(preview.data, floorSeconds) : null),
+    [portOpen, preview.data, floorSeconds],
+  );
+  // Devices whose polling is paused: their rates are a held reading.
+  const pausedIds = useMemo(() => new Set(devices.filter((d) => d.polling_paused).map((d) => d.id)), [devices]);
 
   // A device id the list doesn't know (added while the page was open, or the
   // list is stale): refetch the list once per id rather than showing a
@@ -116,7 +158,7 @@ function TrafficPageInner() {
             )}
           </div>
         </div>
-        <RangePicker value={params.range} onChange={(r) => update({ range: r })} />
+        <RangePicker value={params.range} onChange={(r) => update({ range: r })} liveHint={liveHint} />
       </div>
 
       {snap.error && !snap.snapshot && <Notice kind="error">Live port counters unavailable: {snap.error}</Notice>}
@@ -167,6 +209,7 @@ function TrafficPageInner() {
           snapshot={snap.snapshot}
           roles={roles.byKey}
           nameOf={nameOf}
+          pausedIds={pausedIds}
           onOpenPort={openPort}
           onOpenDevice={openDevice}
         />

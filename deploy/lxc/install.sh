@@ -7,7 +7,8 @@
 #
 # Usage:
 #   sudo ./install.sh [--hostname HOST] [--public-url URL] [--source DIR]
-#                     [--no-tls] [--tls-internal] [--skip-deps]
+#                     [--target-cidrs CIDRS] [--no-tls] [--tls-internal]
+#                     [--skip-deps]
 #
 # Examples:
 #   # Internal LAN, plain HTTP on the LXC IP
@@ -18,6 +19,9 @@
 #
 #   # Internal hostname with self-signed TLS (Caddy "tls internal")
 #   sudo ./install.sh --hostname nms.lan --tls-internal
+#
+#   # Devices on subnets other than the LXC's own (the polling fence)
+#   sudo ./install.sh --no-tls --target-cidrs 192.0.2.0/24,198.51.100.0/24
 #
 # Do NOT pass --public-url unless the API genuinely lives on a different
 # origin than the frontend: it bakes an absolute API URL into the JS bundle,
@@ -43,6 +47,7 @@ HOSTNAME_ARG=""
 PUBLIC_URL=""
 PUBLIC_URL_EXPLICIT=0
 SOURCE_DIR=""
+TARGET_CIDRS=""
 NO_TLS=0
 TLS_INTERNAL=0
 SKIP_DEPS=0
@@ -60,8 +65,34 @@ require_root() {
 }
 
 usage() {
-    sed -n '2,22p' "$0"
+    sed -n '2,26p' "$0"
     exit "${1:-0}"
+}
+
+# detect_target_cidrs prints the networks of this host's global addresses as a
+# comma-separated CIDR list — an NMS normally sits on the management subnet,
+# so that is the default fence for MIKROTIK_NMS_ALLOWED_TARGET_CIDRS.
+# Container bridges (docker0, br-*, virbr*, veth*, lxc*, cni*, podman*) are
+# skipped: their subnets never hold a router. IPv4 network math is done here;
+# IPv6 prefixes are passed through as reported (the backend masks them).
+# Prints nothing when no address is found.
+detect_target_cidrs() {
+    local out=() cidr ip pfx a b c d n mask net
+    local skip='^(docker|br-|virbr|veth|lxc|cni|flannel|podman)'
+    while read -r cidr; do
+        ip=${cidr%/*}; pfx=${cidr#*/}
+        IFS=. read -r a b c d <<<"$ip"
+        [[ "$pfx" =~ ^[0-9]+$ && "$d" =~ ^[0-9]+$ ]] || continue
+        n=$(( (a << 24) | (b << 16) | (c << 8) | d ))
+        mask=$(( pfx == 0 ? 0 : (0xFFFFFFFF << (32 - pfx)) & 0xFFFFFFFF ))
+        net=$(( n & mask ))
+        out+=("$(( (net >> 24) & 255 )).$(( (net >> 16) & 255 )).$(( (net >> 8) & 255 )).$(( net & 255 ))/$pfx")
+    done < <(ip -4 -o addr show scope global 2>/dev/null | awk -v skip="$skip" '$2 !~ skip {print $4}')
+    while read -r cidr; do
+        [[ -n "$cidr" ]] && out+=("$cidr")
+    done < <(ip -6 -o addr show scope global 2>/dev/null | awk -v skip="$skip" '$2 !~ skip {print $4}')
+    [[ ${#out[@]} -gt 0 ]] || return 0
+    printf '%s\n' "${out[@]}" | sort -u | paste -sd, -
 }
 
 # ---- arg parsing ------------------------------------------------------------
@@ -71,6 +102,7 @@ while [[ $# -gt 0 ]]; do
         --hostname)   HOSTNAME_ARG="$2"; shift 2 ;;
         --public-url) PUBLIC_URL="$2"; PUBLIC_URL_EXPLICIT=1; shift 2 ;;
         --source)     SOURCE_DIR="$2";   shift 2 ;;
+        --target-cidrs) TARGET_CIDRS="$2"; shift 2 ;;
         --no-tls)        NO_TLS=1;       shift   ;;
         --tls-internal)  TLS_INTERNAL=1; shift   ;;
         --skip-deps)     SKIP_DEPS=1;    shift   ;;
@@ -233,6 +265,22 @@ install -d -m 0750 -o root           -g "$SERVICE_USER" "$CONFIG_DIR"
 
 # ---- 6. env file ------------------------------------------------------------
 
+# The device polling fence: the backend dials only inside
+# MIKROTIK_NMS_ALLOWED_TARGET_CIDRS and refuses to start with polling on while
+# the list is empty. Default: the networks of this host's own addresses; pass
+# --target-cidrs when the devices live elsewhere.
+if [[ -z "$TARGET_CIDRS" ]]; then
+    TARGET_CIDRS="$(detect_target_cidrs)"
+    if [[ -n "$TARGET_CIDRS" ]]; then
+        log "device polling fence (this host's subnets): $TARGET_CIDRS"
+    else
+        warn "could not detect this host's subnets: set MIKROTIK_NMS_ALLOWED_TARGET_CIDRS in $CONFIG_DIR/env"
+        warn "  (or pass --target-cidrs); the backend refuses to start while it is empty"
+    fi
+else
+    log "device polling fence: $TARGET_CIDRS"
+fi
+
 ENV_FILE="$CONFIG_DIR/env"
 if [[ ! -f "$ENV_FILE" ]]; then
     log "generating $ENV_FILE"
@@ -258,6 +306,16 @@ MIKROTIK_NMS_DEFAULT_ROS_TLS=false
 # --- flow collector (NetFlow v5/v9, IPFIX, sFlow over UDP) ---
 # Uncomment to accept flow exports (exporters must reach this host on udp/2055):
 # MIKROTIK_NMS_FLOW_LISTEN=:2055
+
+# --- device polling ---
+# local = this backend polls the devices (production); off = no device or UDP
+# I/O at all (a dev/staging copy of the database). Restart to apply.
+MIKROTIK_NMS_POLLERS=local
+# Comma-separated CIDRs the backend may contact: the management subnet(s) the
+# devices live in. Required with POLLERS=local — the backend refuses to start
+# while it is empty and refuses to dial any address outside it. Pre-filled
+# with this host's own subnets; adjust if the devices live elsewhere.
+MIKROTIK_NMS_ALLOWED_TARGET_CIDRS=${TARGET_CIDRS}
 
 # --- frontend (Next.js standalone) ---
 PORT=3000
@@ -291,6 +349,18 @@ fi
 if ! grep -Eq '^[#[:space:]]*MIKROTIK_NMS_FLOW_LISTEN=' "$ENV_FILE"; then
     printf '\n# --- flow collector (NetFlow v5/v9, IPFIX, sFlow over UDP) ---\n# Uncomment to accept flow exports (exporters must reach this host on udp/2055):\n# MIKROTIK_NMS_FLOW_LISTEN=:2055\n' >> "$ENV_FILE"
     log "added commented MIKROTIK_NMS_FLOW_LISTEN to $ENV_FILE (flow collector stays off until uncommented)"
+fi
+
+# Existing installs predate the polling fence: add its keys once, with
+# polling ON (these are production instances that must keep polling after
+# the upgrade) and the detected subnets. Lines already present are never
+# touched, so an operator's own value survives re-runs.
+if ! grep -Eq '^[#[:space:]]*MIKROTIK_NMS_POLLERS=' "$ENV_FILE"; then
+    printf '\n# --- device polling ---\n# local = this backend polls the devices; off = no device or UDP I/O at all.\nMIKROTIK_NMS_POLLERS=local\n# Comma-separated CIDRs the backend may contact (the management subnet(s)).\n# Required with POLLERS=local: refused outside, and empty = refuses to start.\nMIKROTIK_NMS_ALLOWED_TARGET_CIDRS=%s\n' "$TARGET_CIDRS" >> "$ENV_FILE"
+    log "added MIKROTIK_NMS_POLLERS=local and MIKROTIK_NMS_ALLOWED_TARGET_CIDRS=${TARGET_CIDRS:-<empty>} to $ENV_FILE"
+    if [[ -z "$TARGET_CIDRS" ]]; then
+        warn "MIKROTIK_NMS_ALLOWED_TARGET_CIDRS is empty: the backend will refuse to start until it is set"
+    fi
 fi
 
 # Source the file so we can use its values during build.
@@ -432,6 +502,7 @@ cat <<EOF
   Frontend   : 127.0.0.1:3000  (systemd: mikrotik-nms-frontend)
   Reverse pr.: caddy           (config: /etc/caddy/Caddyfile)
   Flow in    : ${MIKROTIK_NMS_FLOW_LISTEN:-off} (udp, MIKROTIK_NMS_FLOW_LISTEN)
+  Polling    : ${MIKROTIK_NMS_POLLERS:-off} — targets: ${MIKROTIK_NMS_ALLOWED_TARGET_CIDRS:-<none: set MIKROTIK_NMS_ALLOWED_TARGET_CIDRS>}
 
   Config     : $ENV_FILE
   Database   : $DATA_DIR/mikrotik-nms.db

@@ -21,6 +21,7 @@ import (
 	"github.com/mikrotik-nms/backend/internal/database/queries"
 	"github.com/mikrotik-nms/backend/internal/flow"
 	"github.com/mikrotik-nms/backend/internal/flowview"
+	"github.com/mikrotik-nms/backend/internal/poller"
 )
 
 // Flow export (NetFlow / IPFIX / sFlow) endpoints: collector status and setup
@@ -1022,7 +1023,7 @@ func (s *Server) handleFlowPointSuggestions(w http.ResponseWriter, r *http.Reque
 		fail()
 		return
 	}
-	if in.Uplinks, err = queries.ListDeviceUplinks(s.db, 10*time.Minute); err != nil {
+	if in.Uplinks, err = poller.FreshUplinks(s.db, s.cadenceSource(), time.Now()); err != nil {
 		fail()
 		return
 	}

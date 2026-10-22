@@ -101,9 +101,77 @@ func ListPortHosts(db *sql.DB, seenSince time.Time, deviceID string) ([]PortHost
 	return out, rows.Err()
 }
 
-// DeleteStalePortHosts removes rows with last_seen < cutoff.
-func DeleteStalePortHosts(db *sql.DB, cutoff time.Time) (int64, error) {
-	res, err := db.Exec(`DELETE FROM port_hosts WHERE last_seen < ?`, sqlTime(cutoff))
+// ListLatestPortHostsForMACs returns the rows of the given MACs (any case)
+// that belong to their device's latest FDB dump — last_seen equal to the
+// newest last_seen of that device — and were seen at or after seenSince,
+// ordered by device_id, interface_name, mac_address. A MAC the device's last
+// dump no longer contained (aged out of the FDB, moved to another port) is
+// therefore not reported even while its old row is still fresh. Every row of
+// one dump carries the same timestamp (UpsertPortHosts), which is what makes
+// the equality exact.
+func ListLatestPortHostsForMACs(db *sql.DB, seenSince time.Time, macs []string) ([]PortHost, error) {
+	if len(macs) == 0 {
+		return nil, nil
+	}
+	args := make([]any, 0, len(macs)+1)
+	for _, m := range macs {
+		args = append(args, strings.ToUpper(strings.TrimSpace(m)))
+	}
+	args = append(args, sqlTime(seenSince))
+	rows, err := db.Query(
+		`SELECT h.device_id, h.interface_name, h.mac_address, h.vid, h.bridge, h.first_seen, h.last_seen
+		 FROM port_hosts h
+		 WHERE h.mac_address IN (?`+strings.Repeat(`, ?`, len(macs)-1)+`)
+		   AND h.last_seen >= ?
+		   AND h.last_seen = (SELECT MAX(p.last_seen) FROM port_hosts p WHERE p.device_id = h.device_id)
+		 ORDER BY h.device_id, h.interface_name, h.mac_address`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []PortHost
+	for rows.Next() {
+		var h PortHost
+		var first, last dbTime
+		if err := rows.Scan(&h.DeviceID, &h.InterfaceName, &h.MACAddress, &h.VID, &h.Bridge, &first, &last); err != nil {
+			return nil, err
+		}
+		h.FirstSeen, h.LastSeen = first.Time, last.Time
+		out = append(out, h)
+	}
+	return out, rows.Err()
+}
+
+// LatestPortHostsDumps returns, per device, the last_seen of its newest FDB
+// dump (every row of one dump carries the same time).
+func LatestPortHostsDumps(db *sql.DB) (map[string]time.Time, error) {
+	rows, err := db.Query(`SELECT device_id, MAX(last_seen) FROM port_hosts GROUP BY device_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]time.Time{}
+	for rows.Next() {
+		var id string
+		var last dbTime
+		if err := rows.Scan(&id, &last); err != nil {
+			return nil, err
+		}
+		if last.Valid {
+			out[id] = last.Time
+		}
+	}
+	return out, rows.Err()
+}
+
+// DeleteStalePortHosts removes rows with last_seen < cutoff, except those of
+// devices whose polling is paused at now: nothing ages while nobody reads
+// the device (a pause can run as long as the stale-row retention).
+func DeleteStalePortHosts(db *sql.DB, cutoff, now time.Time) (int64, error) {
+	res, err := db.Exec(`DELETE FROM port_hosts WHERE last_seen < ?
+		AND device_id NOT IN (`+pausedDevicesSQL+`)`,
+		sqlTime(cutoff), sqlTime(now))
 	if err != nil {
 		return 0, err
 	}

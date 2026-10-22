@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/url"
 
+	"github.com/mikrotik-nms/backend/internal/auth"
 	"github.com/mikrotik-nms/backend/internal/ws"
 	"nhooyr.io/websocket"
 )
@@ -39,7 +40,13 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	client := ws.NewClient(s.hub, conn)
+	// The user rides along so topic owners can vet subscriptions by role
+	// (the per-interface live stream is admin-only on weak devices).
+	var info ws.ClientInfo
+	if u := auth.UserFromContext(r.Context()); u != nil {
+		info = ws.ClientInfo{UserID: u.ID, Username: u.Username, Role: u.Role}
+	}
+	client := ws.NewClientFor(s.hub, conn, info)
 	s.hub.Register(client)
 
 	go client.WritePump(r.Context())

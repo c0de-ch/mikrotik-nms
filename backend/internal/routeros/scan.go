@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/netip"
 	"sort"
 	"sync"
 	"time"
@@ -31,6 +32,14 @@ func ScanSubnet(ctx context.Context, cidr string, ports []int, timeout time.Dura
 	_, ipNet, err := net.ParseCIDR(cidr)
 	if err != nil {
 		return nil, fmt.Errorf("invalid CIDR %q: %w", cidr, err)
+	}
+	// The whole sweep must sit inside the dial policy's allow-list; the
+	// per-host Ping below checks again, but refusing here avoids a sweep
+	// that silently finds nothing.
+	if pfx, perr := netip.ParsePrefix(cidr); perr == nil {
+		if err := CheckPrefix(pfx); err != nil {
+			return nil, err
+		}
 	}
 
 	// Only IPv4 sweeps are supported (the managed devices speak IPv4 API).

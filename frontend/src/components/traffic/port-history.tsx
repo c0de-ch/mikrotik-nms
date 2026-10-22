@@ -5,10 +5,31 @@ import { Area, AreaChart, Brush, CartesianGrid, ResponsiveContainer, Tooltip, XA
 import { Activity } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { BRAND, fmtBps } from "@/components/graph/graph-style";
+import { ClassMeter, PauseGlyph } from "@/components/devices/device-load";
 import { useAuth } from "@/context/auth";
 import { useWebSocket } from "@/hooks/use-websocket";
-import { api, type PortRoleName, type SeriesPoint, type SeriesStats, type TrafficRange } from "@/lib/api";
-import { usePolledFetch } from "./hooks";
+import {
+  api,
+  type Device,
+  type LiveStreamStatus,
+  type PortRate,
+  type PortRoleName,
+  type PortSnapshot,
+  type SeriesPoint,
+  type SeriesStats,
+  type TrafficRange,
+} from "@/lib/api";
+import {
+  CLASSES,
+  budgetClass,
+  budgeted,
+  counterIntervalSeconds,
+  fmtInterval,
+  isPollingPaused,
+  liveRefusalText,
+} from "@/lib/device-load";
+import type { ControlType } from "@/lib/ws";
+import { useLiveLimits, useNow, usePolledFetch } from "./hooks";
 import {
   RANGE_LABEL,
   RX_COLOR,
@@ -35,21 +56,38 @@ function p95(vals: number[]): number {
   return s[Math.ceil(0.95 * s.length) - 1];
 }
 
-// Stats over 1 s live samples (the REST stats only cover the initial 5 min).
-function liveStats(points: SeriesPoint[]): SeriesStats {
-  const rx = points.flatMap((p) => (p.rx_bps === null ? [] : [p.rx_bps]));
-  const tx = points.flatMap((p) => (p.tx_bps === null ? [] : [p.tx_bps]));
-  const sum = (a: number[]) => a.reduce((s, v) => s + v, 0);
-  const n = points.length || 1;
+// Stats over the live points (the REST stats only cover the seed window).
+// Each point stands for the time until the next one — 1 s for the full
+// stream, 15 s on a weak device's stream, the device's counter cadence for
+// snapshot data — capped at three periods so a gap does not count as
+// traffic.
+function liveStats(points: SeriesPoint[], periodSeconds: number): SeriesStats {
+  const rx: number[] = [];
+  const tx: number[] = [];
+  let rxBits = 0;
+  let txBits = 0;
+  let secs = 0;
+  for (let i = 0; i < points.length; i++) {
+    const p = points[i];
+    if (p.rx_bps === null || p.tx_bps === null) continue;
+    const next = points[i + 1];
+    const dt = next ? Math.min((Date.parse(next.ts) - Date.parse(p.ts)) / 1000, 3 * periodSeconds) : periodSeconds;
+    const w = dt > 0 ? dt : periodSeconds;
+    rx.push(p.rx_bps);
+    tx.push(p.tx_bps);
+    rxBits += p.rx_bps * w;
+    txBits += p.tx_bps * w;
+    secs += w;
+  }
   return {
-    rx_avg: Math.round(sum(rx) / n),
-    tx_avg: Math.round(sum(tx) / n),
+    rx_avg: secs ? Math.round(rxBits / secs) : 0,
+    tx_avg: secs ? Math.round(txBits / secs) : 0,
     rx_max: Math.max(0, ...rx),
     tx_max: Math.max(0, ...tx),
     rx_p95: p95(rx),
     tx_p95: p95(tx),
-    rx_bytes: Math.round(sum(rx) / 8),
-    tx_bytes: Math.round(sum(tx) / 8),
+    rx_bytes: Math.round(rxBits / 8),
+    tx_bytes: Math.round(txBits / 8),
   };
 }
 
@@ -76,40 +114,117 @@ function YTick({ x, y, payload }: { x?: number; y?: number; payload?: { value: n
   );
 }
 
+// How the live range is fed: waiting for the device's limits, the port's own
+// traffic.<id>.<iface> stream, or — when the device may not stream for this
+// user (weak device, pause, another session holding its live view) — the
+// port-counter snapshot the page already follows.
+type LiveMode = "off" | "pending" | "stream" | "snapshot";
+
 // PortHistoryCard: history chart + stats for one port. Ranges ≥ 15m read the
-// 1-minute / hourly buckets; "live" seeds from the last 5 min of 1 s samples
-// and then appends the port's own traffic.<id>.<iface> stream — the only
-// place the traffic page still opens a per-port stream.
+// 1-minute / hourly buckets; "live" seeds from the last 5 min of stream
+// samples and then appends the port's own traffic.<id>.<iface> stream — the
+// only place the traffic page opens a per-port stream, and the one the
+// device's class caps: a weak device streams every 15 s and to admins only,
+// so everyone else sees the snapshot instead of a spinner — one point per
+// reading of the device's counters (every 60 s on a weak device), and none
+// while its polling is paused (the snapshot keeps its last rates then, which
+// would draw a flat line that looks measured).
 export function PortHistoryCard({
   deviceId,
+  device,
   iface,
   range,
   role,
+  snapshot,
+  rate,
 }: {
   deviceId: string;
+  // The managed device, for its class budget and pause (undefined while the
+  // device list loads; the live limits stand in then).
+  device: Device | undefined;
   iface: string;
   range: TrafficRange;
   role: PortRoleName;
+  // The fleet port-counter snapshot and this port's rate in it: the live
+  // range's fallback when the device may not stream.
+  snapshot: PortSnapshot | null;
+  rate: PortRate | undefined;
 }) {
   const { token } = useAuth();
+  const now = useNow(60_000);
   const live = range === "live";
   const key = token ? `hist|${deviceId}|${iface}|${range}` : null;
   const fetcher = useCallback(() => api.traffic.portHistory(token!, deviceId, iface, range), [token, deviceId, iface, range]);
   const { data, error, loading } = usePolledFetch(key, fetcher, live ? null : refreshMs(range));
 
-  // Live 1 s points, tagged with the fetch key they belong to.
+  // Live stream points, tagged with the fetch key they belong to.
   const [stream, setStream] = useState<{ key: string | null; points: SeriesPoint[] }>({ key: null, points: [] });
+  // Snapshot points, one per counter cycle, while the device may not stream.
+  const [snapSeries, setSnapSeries] = useState<{ key: string | null; lastTs: string | null; points: SeriesPoint[] }>({
+    key: null,
+    lastTs: null,
+    points: [],
+  });
+  // The server's answer to the subscription (subscribe.ack / .error).
+  const streamTopic = `traffic.${deviceId}.${iface}`;
+  const [answer, setAnswer] = useState<{ topic: string; type: ControlType; status: LiveStreamStatus } | null>(null);
+  // Counts Live sessions, so each re-asks for the device's limits.
+  const [session, setSession] = useState(0);
   // The card stays mounted across range changes and the live key is the same
-  // every session, so start each Live session with an empty stream — else
-  // points from an earlier session (maybe hours old) come back under "last
-  // 5 minutes". Adjusting state during render, per the React docs pattern.
+  // every session, so start each Live session afresh — else points from an
+  // earlier session (maybe hours old) come back under "last 5 minutes", and a
+  // refusal from then (another session held the live view) would stick.
+  // Adjusting state during render, per the React docs pattern.
   const [prevLive, setPrevLive] = useState(live);
   if (live !== prevLive) {
     setPrevLive(live);
-    if (live) setStream({ key: null, points: [] });
+    if (live) {
+      setStream({ key: null, points: [] });
+      setSnapSeries({ key: null, lastTs: null, points: [] });
+      setAnswer(null);
+      setSession((n) => n + 1);
+    }
   }
+
+  // Ask before subscribing, so a viewer of a weak device never opens a
+  // stream the server would refuse; a failed check subscribes anyway (the
+  // server vets every subscription).
+  const limits = useLiveLimits(live ? deviceId : null, session);
+  const ack = answer?.topic === streamTopic && answer.type === "subscribe.ack" ? answer.status : null;
+  const serverRefusal = answer?.topic === streamTopic && answer.type === "subscribe.error" ? answer.status : null;
+  const caps = ack ?? limits.data;
+  // The device's own counter cadence — what a snapshot point is worth: the
+  // class the caps follow (limits.class: the effective class, C1 on the
+  // light profile), floored by the fleet counter interval.
+  const budget = limits.data ? budgeted(limits.data.class) : device ? budgetClass(device) : null;
+  const floor = snapshot?.interval_seconds || limits.data?.snapshot_interval_seconds;
+  const counterSeconds = budget ? counterIntervalSeconds(budget, floor) : floor || 15;
+  const refusedByLimits = !!limits.data && !limits.data.allowed;
+  const refusalCode = !live ? undefined : refusedByLimits ? limits.data!.reason : serverRefusal?.code;
+  const refusal =
+    live && (refusedByLimits || serverRefusal)
+      ? liveRefusalText(refusalCode, {
+          counterSeconds,
+          maxIfaces: caps?.max_ifaces,
+          serverMessage: (refusedByLimits ? limits.data!.message : serverRefusal?.error) || undefined,
+        })
+      : null;
+  const mode: LiveMode = !live ? "off" : limits.loading ? "pending" : refusal ? "snapshot" : "stream";
+  // Nothing is read while the device's polling is paused or the instance
+  // polls nothing: the snapshot rates are a last reading, so no new points
+  // (and no promise of one).
+  const frozenCode =
+    refusalCode === "pollers_off"
+      ? "pollers_off"
+      : refusalCode === "polling_paused" || (!!device && isPollingPaused(device, now))
+        ? "polling_paused"
+        : null;
+  const frozen = frozenCode !== null;
+  const period =
+    mode === "snapshot" ? counterSeconds : ack?.period_seconds || Math.max(1, limits.data?.min_period_seconds ?? 1);
+
   useWebSocket(
-    live ? `traffic.${deviceId}.${iface}` : "",
+    mode === "stream" ? streamTopic : "",
     useCallback(
       (msg: unknown) => {
         const d = msg as { rx_bps?: number; tx_bps?: number; timestamp?: string };
@@ -122,11 +237,46 @@ export function PortHistoryCard({
       },
       [key],
     ),
+    useCallback(
+      (type: ControlType, status: unknown) => setAnswer({ topic: streamTopic, type, status: status as LiveStreamStatus }),
+      [streamTopic],
+    ),
   );
+
+  // Snapshot mode: a new reading of this port's counters adds a point (the
+  // page follows traffic.ports already, so this costs nothing extra). The
+  // fleet snapshot moves on every cycle while a weak device is read every
+  // 60 s, so a cycle only counts as a reading when the rate changed or the
+  // device's own interval has passed since the last point; a paused device
+  // adds none.
+  if (
+    mode === "snapshot" &&
+    !frozen &&
+    snapshot?.ready &&
+    snapshot.ts &&
+    rate &&
+    (snapSeries.key !== key || snapSeries.lastTs !== snapshot.ts)
+  ) {
+    const ts = snapshot.ts;
+    const prevPoints = snapSeries.key === key ? snapSeries.points : [];
+    const last = prevPoints[prevPoints.length - 1];
+    const reading =
+      !last ||
+      last.rx_bps !== rate.rx_bps ||
+      last.tx_bps !== rate.tx_bps ||
+      Date.parse(ts) - Date.parse(last.ts) >= 0.9 * counterSeconds * 1000;
+    const p: SeriesPoint = { ts, rx_bps: rate.rx_bps, tx_bps: rate.tx_bps };
+    setSnapSeries({
+      key,
+      lastTs: ts,
+      points: reading ? [...prevPoints, p].slice(-LIVE_MAX_POINTS) : prevPoints,
+    });
+  }
 
   const points = useMemo<SeriesPoint[]>(() => {
     if (!live) return data?.points ?? [];
-    const extra = stream.key === key ? stream.points : [];
+    const extra =
+      mode === "snapshot" ? (snapSeries.key === key ? snapSeries.points : []) : stream.key === key ? stream.points : [];
     if (!data) return extra;
     // Append only stream points newer than the seed and inside its window
     // (data.from and the WS timestamps are both server clock).
@@ -140,7 +290,7 @@ export function PortHistoryCard({
         return t > lastTs && t >= from;
       }),
     ].slice(-LIVE_MAX_POINTS);
-  }, [data, live, stream, key]);
+  }, [data, live, mode, stream, snapSeries, key]);
 
   const chart = useMemo(() => points.map((p) => ({ t: Date.parse(p.ts), ...splitPoint(role, p) })), [points, role]);
   // Points with data (null = a step the collector did not cover: a gap).
@@ -157,10 +307,19 @@ export function PortHistoryCard({
   const drawable = live ? plotted > 1 : plotted >= 1;
   const xDomain: [number | string, number | string] =
     single && data ? [Date.parse(data.from), Date.parse(data.to)] : ["dataMin", "dataMax"];
-  const stats = live ? liveStats(points) : data?.stats;
+  const stats = live ? liveStats(points, period) : data?.stats;
   const labels = dirLabels(role);
   const noHistory = !live && data && data.coverage_from === null;
   const coverageLate = !live && data?.coverage_from && data.from && Date.parse(data.coverage_from) > Date.parse(data.from);
+  const liveText =
+    mode === "snapshot"
+      ? frozen
+        ? `Snapshot data — no new readings while polling is ${frozenCode === "pollers_off" ? "off" : "paused"}.`
+        : `Snapshot data, one reading every ${fmtInterval(counterSeconds)}.`
+      : period > 1
+        ? `Live samples every ${fmtInterval(period)}.`
+        : "Live 1-second samples (last 5 minutes).";
+  const capsClass = caps ? budgeted(caps.class) : null;
 
   return (
     <Card>
@@ -170,7 +329,7 @@ export function PortHistoryCard({
             <CardTitle className="text-base">History</CardTitle>
             <p className="text-xs text-muted-foreground">
               {live
-                ? "Live 1-second samples (last 5 minutes)."
+                ? liveText
                 : `Last ${RANGE_LABEL[range]}${data ? ` · ${data.step_seconds >= 3600 ? "hourly" : data.step_seconds >= 60 ? `${data.step_seconds / 60}-minute` : `${data.step_seconds}s`} points` : ""}.`}
             </p>
           </div>
@@ -186,6 +345,28 @@ export function PortHistoryCard({
           <Notice>No history for this range yet — the collector writes 1-minute buckets; check back in a few minutes.</Notice>
         )}
         {coverageLate && <Notice>Data since {fmtDateTime(data!.coverage_from!)}</Notice>}
+        {mode === "snapshot" && refusal && (
+          <Notice
+            kind={frozen ? "hold" : "info"}
+            icon={
+              frozen ? (
+                <PauseGlyph />
+              ) : capsClass && (refusalCode === "admin_only" || refusalCode === "iface_limit" || refusalCode === "lease_limit") ? (
+                <ClassMeter cls={capsClass} className="text-[13px]" />
+              ) : undefined
+            }
+          >
+            {/* A pause outranks whatever else refused the stream: no
+                snapshot readings arrive either. */}
+            {frozenCode ? liveRefusalText(frozenCode, { counterSeconds }) : refusal}
+          </Notice>
+        )}
+        {mode === "stream" && period > 1 && capsClass && (
+          <Notice icon={<ClassMeter cls={capsClass} className="text-[13px]" />}>
+            Live samples every {fmtInterval(period)} on this {CLASSES[capsClass].word} device, at most{" "}
+            {caps!.max_ifaces} ports at once, to spare its CPU.
+          </Notice>
+        )}
 
         {drawable ? (
           <div className="h-[280px] w-full">
@@ -230,9 +411,19 @@ export function PortHistoryCard({
         ) : (
           !noHistory && (
             <EmptyState icon={Activity}>
-              {live
-                ? "Waiting for live samples — the 1-second stream starts when this view opens."
-                : "No samples for this port in the range."}
+              {mode === "snapshot"
+                ? frozenCode === "pollers_off"
+                  ? "Polling is off on this instance — no new readings."
+                  : frozen
+                    ? "Polling is paused for this device — no new readings until it resumes."
+                    : `Waiting for the next reading — one every ${fmtInterval(counterSeconds)}.`
+                : mode === "pending"
+                  ? "Checking whether this device can stream…"
+                  : live && period > 1
+                    ? `Waiting for live samples — one every ${period} s.`
+                    : live
+                      ? "Waiting for live samples — the 1-second stream starts when this view opens."
+                      : "No samples for this port in the range."}
             </EmptyState>
           )
         )}

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/mikrotik-nms/backend/internal/database/queries"
+	"github.com/mikrotik-nms/backend/internal/devclass"
 	"github.com/mikrotik-nms/backend/internal/routeros"
 )
 
@@ -31,7 +32,7 @@ import (
 // that reports the same board (and version/serial when known) commits a move.
 
 // defaultAutoFollowInterval is used to size the "recent sighting" window when
-// the configured topology interval is unavailable (e.g. in tests).
+// a reporting device's neighbor interval is unknown (see recentSighting).
 const defaultAutoFollowInterval = 60 * time.Second
 
 // ipRejectionTTL collapses repeated identical rejections (same device + same
@@ -106,12 +107,13 @@ func buildDeviceMACIndex(db *sql.DB, devices []queries.Device) (macToDeviceID ma
 
 // planMoves is the pure, DB/network-free core. Given the MAC index and the
 // freshly-upserted neighbor rows, it returns at most one proposed address move
-// per device. It applies: MAC normalization, staleness filtering, idempotency,
-// per-device collapse of duplicate sightings, multi-IP conflict rejection,
-// multi-homed-device suppression (current address still live on the same MAC),
-// and the target-IP-already-managed (UNIQUE) guard. Deterministic and fully
+// per device. It applies: MAC normalization, staleness filtering (recent
+// decides per row whether the sighting is recent), idempotency, per-device
+// collapse of duplicate sightings, multi-IP conflict rejection, multi-homed-
+// device suppression (current address still live on the same MAC), and the
+// target-IP-already-managed (UNIQUE) guard. Deterministic and fully
 // unit-testable.
-func planMoves(devices []queries.Device, macToDeviceID map[string]string, ambiguous map[string]bool, addrToDeviceID map[string]string, neighbors []queries.Neighbor, recentCutoff time.Time) []addressMove {
+func planMoves(devices []queries.Device, macToDeviceID map[string]string, ambiguous map[string]bool, addrToDeviceID map[string]string, neighbors []queries.Neighbor, recent func(queries.Neighbor) bool) []addressMove {
 	deviceByID := make(map[string]queries.Device, len(devices))
 	for _, d := range devices {
 		deviceByID[d.ID] = d
@@ -130,7 +132,7 @@ func planMoves(devices []queries.Device, macToDeviceID map[string]string, ambigu
 		if n.NeighborMAC == "" || n.NeighborAddress == "" {
 			continue
 		}
-		if n.LastSeen.Before(recentCutoff) {
+		if !recent(n) {
 			continue // stale sighting — ignore
 		}
 		if !isFollowableCandidate(n.NeighborAddress) {
@@ -268,21 +270,49 @@ func (m *Manager) reconcileAddresses(ctx context.Context) {
 
 	macToDeviceID, ambiguous, addrToDeviceID := buildDeviceMACIndex(m.db, devices)
 
-	interval := m.cfg.TopologyInterval
-	if interval <= 0 {
-		interval = defaultAutoFollowInterval
+	now := time.Now()
+	moves := planMoves(devices, macToDeviceID, ambiguous, addrToDeviceID, neighbors,
+		m.recentSighting(devices, now))
+	paused := make(map[string]queries.Device)
+	for _, d := range devices {
+		if m.cadence.Paused(d, now) {
+			paused[d.ID] = d
+		}
 	}
-	recentCutoff := time.Now().Add(-2 * interval)
-
-	moves := planMoves(devices, macToDeviceID, ambiguous, addrToDeviceID, neighbors, recentCutoff)
 	for _, mv := range moves {
 		select {
 		case <-ctx.Done():
 			return
 		default:
 		}
+		// Verifying a move dials the device; a paused one gets nothing but
+		// liveness pings, so its move waits for the pause to end.
+		if d, ok := paused[mv.DeviceID]; ok {
+			pauseLog.skip("IP auto-follow", d)
+			continue
+		}
 		m.verifyAndCommitMove(mv)
 		time.Sleep(time.Second) // respect the per-device topology stagger
+	}
+}
+
+// recentSighting is auto-follow's staleness rule: a neighbor row is a recent
+// sighting when the reporting device saw it within two of its own neighbor
+// reads (each device reads /ip/neighbor on its class cadence, so a fixed
+// window would drop every weak switch's sightings). Strictly by the wall
+// clock — a paused reporter's frozen rows are not fresh evidence of a move.
+func (m *Manager) recentSighting(devices []queries.Device, now time.Time) func(queries.Neighbor) bool {
+	window := make(map[string]time.Duration, len(devices))
+	for _, d := range devices {
+		iv := m.cadence.Interval(d, devclass.TierNeighbors, now)
+		if iv <= 0 {
+			iv = defaultAutoFollowInterval
+		}
+		window[d.ID] = 2 * iv
+	}
+	return func(n queries.Neighbor) bool {
+		w, ok := window[n.DeviceID]
+		return ok && now.Sub(n.LastSeen) <= w
 	}
 }
 
@@ -336,9 +366,11 @@ func (m *Manager) verifyAndCommitMove(mv addressMove) {
 	// we matched on. A board string ("cAP ax") is shared across every unit of a
 	// model, but the burned-in interface MAC is globally unique. Best-effort —
 	// a present-but-missing MAC is a hard reject; if interfaces can't be read we
-	// fall back to the board/version match already verified above.
+	// fall back to the board/version match already verified above. One
+	// proplisted print (name, type, MAC) on the verify connection: no
+	// snapshot covers a device answering at an address it is not known at.
 	if mv.MAC != "" {
-		if ifaces, ierr := routeros.GetInterfaces(client); ierr != nil {
+		if ifaces, ierr := routeros.GetInterfaces(routeros.ClientRunner{Client: client}); ierr != nil {
 			log.Printf("poller: auto-follow: %s could not list interfaces at %s to confirm MAC: %v (proceeding on board/version)", dev.Identity, mv.NewAddr, ierr)
 		} else if !interfacesContainMAC(ifaces, mv.MAC) {
 			m.recordIPRejection(dev.ID, "mac_mismatch", mv, fmt.Sprintf("matched MAC %s not present on the device answering at %s", mv.MAC, mv.NewAddr))

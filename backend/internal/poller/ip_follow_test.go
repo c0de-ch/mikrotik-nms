@@ -174,7 +174,7 @@ func TestPlanMoves(t *testing.T) {
 					tc.addrToDevice[d.Address] = d.ID
 				}
 			}
-			moves := planMoves(tc.devices, tc.macToDeviceID, tc.ambiguous, tc.addrToDevice, tc.neighbors, cutoff)
+			moves := planMoves(tc.devices, tc.macToDeviceID, tc.ambiguous, tc.addrToDevice, tc.neighbors, seenSince(cutoff))
 			if len(moves) != len(tc.wantAddrs) {
 				t.Fatalf("got %d moves %+v, want %d (%v)", len(moves), moves, len(tc.wantAddrs), tc.wantAddrs)
 			}
@@ -322,7 +322,7 @@ func TestPlanMoves_AuditMACIsDiscoveredMAC(t *testing.T) {
 	// Device owns two MACs; the sighting is on the SECOND one.
 	macIdx := map[string]string{"AA:BB:CC:DD:EE:01": "d1", "AA:BB:CC:DD:EE:02": "d1"}
 	neigh := []queries.Neighbor{{NeighborMAC: "aa:bb:cc:dd:ee:02", NeighborAddress: "192.168.78.50", LastSeen: now}}
-	moves := planMoves([]queries.Device{dev}, macIdx, map[string]bool{}, map[string]string{"192.168.78.10": "d1"}, neigh, cutoff)
+	moves := planMoves([]queries.Device{dev}, macIdx, map[string]bool{}, map[string]string{"192.168.78.10": "d1"}, neigh, seenSince(cutoff))
 	if len(moves) != 1 {
 		t.Fatalf("want 1 move, got %d", len(moves))
 	}
@@ -345,7 +345,7 @@ func TestPlanMoves_BatchReservesTargetIP(t *testing.T) {
 		{NeighborMAC: "AA:AA:AA:AA:AA:01", NeighborAddress: "192.168.78.99", LastSeen: now},
 		{NeighborMAC: "BB:BB:BB:BB:BB:02", NeighborAddress: "192.168.78.99", LastSeen: now},
 	}
-	moves := planMoves([]queries.Device{d1, d2}, macIdx, map[string]bool{}, addr, neigh, cutoff)
+	moves := planMoves([]queries.Device{d1, d2}, macIdx, map[string]bool{}, addr, neigh, seenSince(cutoff))
 	if len(moves) != 1 {
 		t.Fatalf("want exactly 1 move (in-batch IP reservation), got %d: %+v", len(moves), moves)
 	}
@@ -463,6 +463,11 @@ func TestRecordIPRejection_Dedup(t *testing.T) {
 }
 
 // --- test helpers ---
+
+// seenSince is planMoves' recency rule for one fixed cutoff.
+func seenSince(cutoff time.Time) func(queries.Neighbor) bool {
+	return func(n queries.Neighbor) bool { return !n.LastSeen.Before(cutoff) }
+}
 
 func mustCreateDevice(t *testing.T, db *sql.DB, d *queries.Device) {
 	t.Helper()
