@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/mikrotik-nms/backend/internal/database/queries"
+	"github.com/mikrotik-nms/backend/internal/devclass"
 	"github.com/mikrotik-nms/backend/internal/macvendor"
 	"github.com/mikrotik-nms/backend/internal/poller"
 	"github.com/mikrotik-nms/backend/internal/routeros"
@@ -138,24 +139,49 @@ func (s *Server) handleRefreshClients(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// defaultClientInactiveAfter is how long a cached client may go without being
-// re-seen before it's reported inactive, when the admin hasn't configured
-// client_inactive_after_seconds. Picked well above the client-discovery interval
-// so a live client never flickers, but far below the ~30-day cache retention so
-// a device that left (or a reservation on a disabled DHCP server) drops off the
-// active list promptly instead of lingering for weeks.
+// defaultClientInactiveAfter is the least time a cached client may go
+// without being re-seen before it is reported inactive, when the admin
+// hasn't configured client_inactive_after_seconds: far below the ~30-day
+// cache retention, so a device that left (or a reservation on a disabled
+// DHCP server) drops off the active list promptly instead of lingering for
+// weeks.
 const defaultClientInactiveAfter = 30 * time.Minute
 
-func (s *Server) clientInactiveAfter() time.Duration {
-	v, err := queries.GetSetting(s.db, "client_inactive_after_seconds")
+// clientReadMargin is added to two reads of the slowest ARP reader: a read
+// that runs a little late (jitter, a busy device) must not flip its clients
+// to inactive.
+const clientReadMargin = 10 * time.Minute
+
+// clientInactiveAfter is how long a cached client may go unseen before the
+// list reports it inactive: the client_inactive_after_seconds setting, else
+// two reads of the fleet's slowest ARP reader plus a margin (weak devices
+// are read every 30 minutes, so a fixed half hour would make their clients
+// flicker), never under defaultClientInactiveAfter.
+func (s *Server) clientInactiveAfter(now time.Time) time.Duration {
+	if v, err := queries.GetSetting(s.db, "client_inactive_after_seconds"); err == nil {
+		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && n > 0 {
+			return time.Duration(n) * time.Second
+		}
+	}
+	return max(defaultClientInactiveAfter, 2*s.slowestClientRead(now)+clientReadMargin)
+}
+
+// slowestClientRead is the longest ARP cadence among the devices being
+// polled right now (0 when there is none).
+func (s *Server) slowestClientRead(now time.Time) time.Duration {
+	devices, err := queries.ListDevices(s.db)
 	if err != nil {
-		return defaultClientInactiveAfter
+		return 0
 	}
-	n, err := strconv.Atoi(strings.TrimSpace(v))
-	if err != nil || n <= 0 {
-		return defaultClientInactiveAfter
+	cs := s.cadenceSource()
+	var slowest time.Duration
+	for _, d := range devices {
+		if d.Status != "online" || cs.Paused(d, now) {
+			continue
+		}
+		slowest = max(slowest, cs.Interval(d, devclass.TierARP, now))
 	}
-	return time.Duration(n) * time.Second
+	return slowest
 }
 
 // handleListClients serves the client list from the cache (mac_lookup) the
@@ -171,8 +197,8 @@ func (s *Server) handleListClients(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	threshold := s.clientInactiveAfter()
 	now := time.Now()
+	threshold := s.clientInactiveAfter(now)
 	active := 0
 	var newest time.Time
 	clients := make([]networkClient, 0, len(entries))

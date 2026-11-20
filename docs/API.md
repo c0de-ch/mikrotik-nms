@@ -646,6 +646,11 @@ devices_read, devices_skipped, timed_out?}`: `available` is false on an
 instance that polls nothing, `next_allowed_at` is set while a new refresh
 would be refused, and the counters describe the last finished refresh.
 
+A client is `active` until it has gone unseen for `client_inactive_after_seconds`
+(app setting); without the setting, for two reads of the fleet's slowest ARP
+reader plus 10 minutes, never under 30 minutes — weak devices are read every
+30 minutes, so their clients stay active for 70.
+
 A refresh reads a device only as its polling plan allows — nothing on a
 paused or offline device, DHCP leases only where the class plan has them
 (C3), registration tables only from the menus the capability probe found (a

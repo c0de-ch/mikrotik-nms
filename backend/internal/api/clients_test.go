@@ -9,6 +9,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/mikrotik-nms/backend/internal/database/queries"
+	"github.com/mikrotik-nms/backend/internal/devclass"
 	"github.com/mikrotik-nms/backend/internal/poller"
 	"github.com/mikrotik-nms/backend/internal/routeros"
 )
@@ -151,5 +152,60 @@ func TestClientRefreshEndpointStatuses(t *testing.T) {
 	_, body = doClients(t, h, http.MethodGet, "/clients")
 	if body.Refresh.Available {
 		t.Fatal("refresh reported available while polling is off")
+	}
+}
+
+// A client is inactive once it has gone unseen for two reads of the slowest
+// ARP reader (plus a margin): on a fleet with a weak device, read every 30
+// minutes, a client last seen 45 minutes ago is still active; the admin's
+// own setting wins; and a fleet of strong devices keeps the shorter window.
+func TestClientInactivityFollowsTheSlowestReader(t *testing.T) {
+	routeros.SetDialPolicy(nil)
+	db := newTestDB(t)
+	if err := queries.UpsertMACLookup(db, &queries.MACLookup{MACAddress: "02:00:00:00:00:0A", IPAddress: "192.0.2.10", Source: "arp"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE mac_lookup SET updated_at = datetime('now', '-45 minutes')`); err != nil {
+		t.Fatal(err)
+	}
+	h := clientsRouter(&Server{db: db})
+	active := func() bool {
+		t.Helper()
+		_, body := doClients(t, h, http.MethodGet, "/clients")
+		if len(body.Clients) != 1 {
+			t.Fatalf("clients = %+v", body.Clients)
+		}
+		return body.Clients[0].Active
+	}
+
+	if active() {
+		t.Fatal("no device is polled: a client unseen for 45 min must be inactive (30 min floor)")
+	}
+
+	if err := queries.CreateDevice(db, &queries.Device{ID: "r3", Identity: "r3", Address: "198.51.100.1", Username: "u", APIPort: 8728, Status: "online"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := queries.SetDeviceClass(db, "r3", devclass.C3, devclass.ResourceFacts{}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if active() {
+		t.Fatal("a strong device reads ARP every 15 min: 45 min unseen must be inactive (2 × 15 + 10)")
+	}
+
+	if err := queries.CreateDevice(db, &queries.Device{ID: "s1", Identity: "s1", Address: "198.51.100.2", Username: "u", APIPort: 8728, Status: "online"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := queries.SetDeviceClass(db, "s1", devclass.C1, devclass.ResourceFacts{}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if !active() {
+		t.Fatal("a weak device reads ARP every 30 min: a client unseen for 45 min is still within two reads")
+	}
+
+	if err := queries.SetSetting(db, "client_inactive_after_seconds", "1800"); err != nil {
+		t.Fatal(err)
+	}
+	if active() {
+		t.Fatal("client_inactive_after_seconds=1800 must win over the cadence rule")
 	}
 }
