@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 
@@ -128,12 +129,20 @@ func TestClientRefreshEndpointStatuses(t *testing.T) {
 
 	fake.err = poller.ErrClientRefreshTooSoon
 	fake.status = poller.ClientRefreshStatus{StartedAt: &started, NextAllowedAt: &next, MinIntervalSeconds: 300}
+	// Retry-After is the time left until next_allowed_at when the request is
+	// answered: bracket it by the time left before and after the call rather
+	// than assume how long the test took to get here (a slow runner did not
+	// get here within a second).
+	leftBefore := time.Until(next)
 	rec, body = doClients(t, h, http.MethodPost, "/clients/refresh")
+	leftAfter := time.Until(next)
 	if rec.Code != http.StatusTooManyRequests || body.Error == "" || body.Refresh.NextAllowedAt == nil {
 		t.Fatalf("too soon: %d %+v", rec.Code, body)
 	}
-	if ra := rec.Header().Get("Retry-After"); ra != "100" && ra != "101" {
-		t.Fatalf("Retry-After = %q, want the seconds until next_allowed_at", ra)
+	ra, err := strconv.Atoi(rec.Header().Get("Retry-After"))
+	if err != nil || ra < int(leftAfter.Seconds()) || ra > int(leftBefore.Seconds())+1 {
+		t.Fatalf("Retry-After = %q, want the seconds until next_allowed_at (between %d and %d)",
+			rec.Header().Get("Retry-After"), int(leftAfter.Seconds()), int(leftBefore.Seconds())+1)
 	}
 
 	fake.err = routeros.ErrPollersOff
