@@ -35,7 +35,8 @@ func liveRouter(s *Server, role string) http.Handler {
 	r.Get("/devices/{id}/live-limits", s.handleDeviceLiveLimits)
 	r.Get("/wifi/current", s.handleWifiCurrent)
 	r.Get("/vlans", s.handleListVLANs)
-	r.Get("/clients/cached", s.handleCachedClients)
+	r.Get("/clients", s.handleListClients)
+	r.Get("/clients/cached", s.handleListClients)
 	s.mountTrafficRoutes(r)
 	return r
 }
@@ -69,7 +70,7 @@ func TestMapReadPathsNeverTouchDevices(t *testing.T) {
 
 	for _, role := range []string{"admin", "viewer"} {
 		h := liveRouter(f.s, role)
-		paths := []string{"/topology", "/devices", "/wifi/current", "/vlans", "/clients/cached", "/traffic/links"}
+		paths := []string{"/topology", "/devices", "/wifi/current", "/vlans", "/clients", "/clients/cached", "/traffic/links"}
 		for _, id := range ids {
 			paths = append(paths, "/devices/"+id+"/ports", "/devices/"+id+"/live-limits")
 		}

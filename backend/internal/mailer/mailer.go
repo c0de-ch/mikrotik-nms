@@ -1,11 +1,17 @@
-// Package mailer sends transactional email (currently just self-service
-// password-reset links) via a plain SMTP relay using only the Go standard
-// library (net/smtp). It is modeled on internal/kea's small-client style.
+// Package mailer sends transactional email (self-service password-reset
+// links, alert notifications) via a plain SMTP relay using only the Go
+// standard library (net/smtp). It is modeled on internal/kea's small-client
+// style.
 //
-// SAFE-DISABLE: when the relay is not configured (no host, no port, or no
-// public base URL) the mailer is disabled — Send is a no-op that returns
-// ErrDisabled and never opens a connection. Callers treat ErrDisabled exactly
-// like a successful send so the password-reset flow stays enumeration-safe.
+// SAFE-DISABLE: when the relay is not configured (no host or no port) the
+// mailer is disabled — Send is a no-op that returns ErrDisabled and never
+// opens a connection. Callers treat ErrDisabled exactly like a successful
+// send so the password-reset flow stays enumeration-safe.
+//
+// "Can send" and "can build links" are separate questions: Enabled answers
+// the first, CanBuildLinks the second (a reset link is only ever built from
+// the configured public base URL, never from a request Host). An alert needs
+// only the first.
 package mailer
 
 import (
@@ -16,6 +22,7 @@ import (
 	"net"
 	"net/mail"
 	"net/smtp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -29,6 +36,7 @@ type Sender interface {
 	Send(to, subject, textBody, htmlBody string) error
 	SendPasswordResetEmail(to, resetURL string) error
 	Enabled() bool
+	CanBuildLinks() bool
 }
 
 // Config is the subset of app config the mailer needs. It mirrors the env-based
@@ -56,11 +64,11 @@ type Mailer struct {
 	skipVerify bool
 	timeout    time.Duration
 	enabled    bool
+	baseURL    string
 }
 
-// New builds a Mailer from cfg. It is enabled only when a host, a positive
-// port, and a public base URL are all set — the base URL gate ensures a reset
-// link is never constructed from an untrusted request Host.
+// New builds a Mailer from cfg. It is enabled — it can send — when a host
+// and a positive port are set.
 func New(cfg Config) *Mailer {
 	from := cfg.SMTPFrom
 	if from == "" {
@@ -79,12 +87,50 @@ func New(cfg Config) *Mailer {
 		tlsMode:    strings.ToLower(tlsMode),
 		skipVerify: cfg.SMTPTLSSkipVerify,
 		timeout:    15 * time.Second,
-		enabled:    cfg.SMTPHost != "" && cfg.SMTPPort > 0 && cfg.PublicBaseURL != "",
+		enabled:    cfg.SMTPHost != "" && cfg.SMTPPort > 0,
+		baseURL:    strings.TrimRight(strings.TrimSpace(cfg.PublicBaseURL), "/"),
 	}
 }
 
 // Enabled reports whether the mailer can actually send.
 func (m *Mailer) Enabled() bool { return m.enabled }
+
+// CanBuildLinks reports whether mail that carries a link back to this
+// instance (a password reset) can be sent: the relay is configured and the
+// public base URL is known.
+func (m *Mailer) CanBuildLinks() bool { return m.enabled && m.baseURL != "" }
+
+// BaseURL is the configured public base URL without a trailing slash ("" when
+// unset), for links in mail bodies.
+func (m *Mailer) BaseURL() string { return m.baseURL }
+
+// ConfigFromSettings resolves the SMTP configuration: each field from the
+// admin-editable app settings (get returns a key's value, "" when unset),
+// falling back to base — the env-based configuration — for what is not set.
+// The public base URL always comes from base, never from a setting. Shared
+// by the API (password reset, the test mail) and the alert notifier, so a
+// Settings change applies to both without a restart.
+func ConfigFromSettings(get func(key string) string, base Config) Config {
+	pick := func(key, def string) string {
+		if v := strings.TrimSpace(get(key)); v != "" {
+			return v
+		}
+		return def
+	}
+	cfg := base
+	cfg.SMTPHost = pick("smtp_host", base.SMTPHost)
+	if n, err := strconv.Atoi(pick("smtp_port", "")); err == nil && n > 0 {
+		cfg.SMTPPort = n
+	}
+	cfg.SMTPUser = pick("smtp_user", base.SMTPUser)
+	cfg.SMTPPass = pick("smtp_password", base.SMTPPass)
+	cfg.SMTPFrom = pick("smtp_from_address", base.SMTPFrom)
+	cfg.SMTPTLSMode = pick("smtp_tls_mode", base.SMTPTLSMode)
+	if v := pick("smtp_tls_skip_verify", ""); v != "" {
+		cfg.SMTPTLSSkipVerify = v == "true" || v == "1"
+	}
+	return cfg
+}
 
 // Send delivers a multipart/alternative (text + HTML) message. When disabled it
 // is a no-op returning ErrDisabled. Errors are wrapped with a "mailer:" prefix;

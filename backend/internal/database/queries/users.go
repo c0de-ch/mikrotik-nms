@@ -110,3 +110,17 @@ func UpdateUserPasswordAndBumpVersion(tx *sql.Tx, userID, newHash string) error 
 	)
 	return err
 }
+
+// GetUserSession returns what a request's token is checked against: the
+// user's current token version and role.
+func GetUserSession(db *sql.DB, id string) (tokenVersion int, role string, err error) {
+	err = db.QueryRow(`SELECT token_version, role FROM users WHERE id = ?`, id).Scan(&tokenVersion, &role)
+	return tokenVersion, role, err
+}
+
+// BumpTokenVersion ends every session of the user: tokens issued before
+// carry the old version and are refused from now on.
+func BumpTokenVersion(db *sql.DB, userID string) error {
+	_, err := db.Exec(`UPDATE users SET token_version=token_version+1 WHERE id=?`, userID)
+	return err
+}

@@ -112,7 +112,7 @@ async function apiFetch<T>(path: string, options: FetchOptions = {}): Promise<T>
   }
 
   if (!res.ok) {
-    const body: { error?: string } = await res.json().catch(() => ({}));
+    const body: { error?: string; code?: string } = await res.json().catch(() => ({}));
     let message = body.error || res.statusText;
     // A reverse-proxy 502/503/504 with no JSON body means the backend behind
     // it is down; statusText is terse on HTTP/1.1 and empty on HTTP/2, so
@@ -122,7 +122,7 @@ async function apiFetch<T>(path: string, options: FetchOptions = {}): Promise<T>
     } else if (!message) {
       message = `Request failed (HTTP ${res.status})`;
     }
-    throw new ApiError(res.status, message);
+    throw new ApiError(res.status, message, body.code);
   }
 
   // 204 No Content (e.g. DELETE /flows/points/{id}) has no body to parse.
@@ -134,6 +134,9 @@ export class ApiError extends Error {
   constructor(
     public status: number,
     message: string,
+    // The server's machine-readable reason, when it sent one (e.g.
+    // "reauth_required": the action needs the password typed again).
+    public code?: string,
   ) {
     super(message);
     this.name = "ApiError";
@@ -191,17 +194,13 @@ export const api = {
     },
   },
 
-  // Network clients
+  // Network clients. The list is the cache the scheduled pollers keep (no
+  // device is contacted); refresh pulls their reads forward once, at most
+  // every refresh.min_interval_seconds fleet-wide.
   clients: {
-    scan: (token: string, options?: { limit?: number; timeout?: number }) => {
-      const params = new URLSearchParams();
-      if (options?.limit) params.set("limit", String(options.limit));
-      if (options?.timeout) params.set("timeout", String(options.timeout));
-      const qs = params.toString() ? `?${params}` : "";
-      return apiFetch<ClientScanResult>(`/clients${qs}`, { token });
-    },
-    cached: (token: string) =>
-      apiFetch<{ clients: NetworkClient[]; total: number; cached: boolean }>("/clients/cached", { token }),
+    cached: (token: string) => apiFetch<ClientListResult>("/clients/cached", { token }),
+    refresh: (token: string) =>
+      apiFetch<{ refresh: ClientRefreshStatus }>("/clients/refresh", { method: "POST", token }),
   },
 
   // Devices
@@ -542,6 +541,24 @@ export const api = {
       apiFetch<{ ok: boolean; message: string }>("/settings/otel/test", { method: "POST", token, body: JSON.stringify(data) }),
     testMail: (token: string, data: { to: string; host: string; port: string; user: string; password: string; from: string; tls_mode: string; skip_verify: boolean }) =>
       apiFetch<{ ok: boolean; message: string }>("/settings/mail/test", { method: "POST", token, body: JSON.stringify(data) }),
+  },
+
+  // Alerts: what the rules currently see, silences, and (admin) where
+  // notifications go. A channel's target is write-only.
+  alerts: {
+    list: (token: string) => apiFetch<AlertList>("/alerts", { token }),
+    ack: (token: string, id: number) => apiFetch<Alert>(`/alerts/${id}/ack`, { method: "POST", token }),
+    silence: (token: string, data: { scope: "site" | "device" | "rule"; target?: string; hours: number; reason?: string }) =>
+      apiFetch<AlertSilence>("/alerts/silences", { method: "POST", token, body: JSON.stringify(data) }),
+    endSilence: (token: string, id: number) => apiFetch<void>(`/alerts/silences/${id}`, { method: "DELETE", token }),
+    channels: (token: string) => apiFetch<NotificationChannel[]>("/alerts/channels", { token }),
+    createChannel: (token: string, data: { name: string; kind: "smtp" | "webhook"; target: string; min_severity: AlertSeverity }) =>
+      apiFetch<NotificationChannel>("/alerts/channels", { method: "POST", token, body: JSON.stringify(data) }),
+    updateChannel: (token: string, id: number, data: { name?: string; target?: string; min_severity?: AlertSeverity; enabled?: boolean }) =>
+      apiFetch<NotificationChannel>(`/alerts/channels/${id}`, { method: "PUT", token, body: JSON.stringify(data) }),
+    deleteChannel: (token: string, id: number) => apiFetch<void>(`/alerts/channels/${id}`, { method: "DELETE", token }),
+    testChannel: (token: string, id: number) =>
+      apiFetch<{ ok: boolean; message: string }>(`/alerts/channels/${id}/test`, { method: "POST", token }),
   },
 
   // Admin actions
@@ -1468,11 +1485,33 @@ export interface DNSServer {
   created_at: string;
 }
 
-export interface ClientScanResult {
+// State of the on-demand client refresh (POST /clients/refresh).
+export interface ClientRefreshStatus {
+  // false on an instance that polls nothing: there is nothing to refresh from.
+  available: boolean;
+  running: boolean;
+  started_at?: string;
+  finished_at?: string;
+  // Set while a new refresh would be refused as too soon.
+  next_allowed_at?: string;
+  min_interval_seconds: number;
+  // What the last finished refresh did.
+  clients: number;
+  devices_read: number;
+  devices_skipped: number;
+  timed_out?: boolean;
+}
+
+export interface ClientListResult {
   clients: NetworkClient[];
   total: number;
-  limited: boolean;
-  timed_out: boolean;
+  active?: number;
+  cached: boolean;
+  // When the newest cache entry was seen (absent for an empty cache).
+  updated_at?: string;
+  age_seconds?: number;
+  // Absent from a backend older than the refresh endpoint.
+  refresh?: ClientRefreshStatus;
 }
 
 export interface NetworkClient {
@@ -1779,4 +1818,57 @@ export interface DeepDiscoveredDevice {
   source: "neighbor" | "port-scan" | "both";
   open_ports: number[];
   seen_from: string;
+}
+
+export type AlertSeverity = "info" | "warning" | "critical";
+
+export interface Alert {
+  id: number;
+  rule: string;
+  key: string;
+  device_id?: string;
+  device_name?: string;
+  severity: AlertSeverity;
+  state: "firing" | "acked" | "resolved";
+  first_at: string;
+  last_at: string;
+  last_notified_at?: string;
+  resolved_at?: string;
+  acked_by?: string;
+  acked_at?: string;
+  summary: string;
+  facts?: Record<string, unknown>;
+  runbook_url: string;
+  // A silence in force keeps this alert from being notified.
+  silenced: boolean;
+}
+
+export interface AlertSilence {
+  id: number;
+  scope: "site" | "device" | "rule";
+  target: string;
+  until: string;
+  reason: string;
+  created_by: string;
+  created_at: string;
+}
+
+export interface AlertList {
+  alerts: Alert[];
+  firing: number;
+  acked: number;
+  silences: AlertSilence[];
+  rules: string[];
+  // false on an instance that polls nothing: rules are not evaluated there.
+  evaluating: boolean;
+}
+
+export interface NotificationChannel {
+  id: number;
+  name: string;
+  kind: "smtp" | "webhook";
+  // Enough of the target to recognise it; the address or URL is never returned.
+  target_hint: string;
+  min_severity: AlertSeverity;
+  enabled: boolean;
 }

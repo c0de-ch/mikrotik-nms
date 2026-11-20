@@ -41,12 +41,31 @@ func main() {
 		log.Fatalf("failed to init encryption: %v", err)
 	}
 	queries.SetCipher(cipher)
-	if !cipher.Enabled() {
-		log.Println("warning: MIKROTIK_NMS_ENCRYPTION_KEY is not set — device passwords are stored unencrypted at rest")
-	} else if n, err := queries.EncryptPlaintextDeviceSecrets(db); err != nil {
-		log.Printf("warning: could not encrypt existing device secrets: %v", err)
+	queries.AllowPlaintextSecrets(cfg.PlaintextSecrets)
+	switch {
+	case cipher.Enabled():
+		if n, err := queries.EncryptPlaintextDeviceSecrets(db); err != nil {
+			log.Printf("warning: could not encrypt existing device secrets: %v", err)
+		} else if n > 0 {
+			log.Printf("encrypted %d plaintext device password(s) at rest", n)
+		}
+	case cfg.PlaintextSecrets:
+		log.Println("warning: MIKROTIK_NMS_DEV_PLAINTEXT_SECRETS is set — device passwords are stored unencrypted (development only)")
+	default:
+		log.Println("note: MIKROTIK_NMS_ENCRYPTION_KEY is not set — device passwords cannot be stored on this instance")
+	}
+	// A wrong key must be loud: those devices are not logged in to at all
+	// (no empty-password attempts) until the key or the passwords are fixed.
+	if n, err := queries.CountUnreadableDeviceSecrets(db); err != nil {
+		log.Printf("warning: could not check the stored device secrets: %v", err)
 	} else if n > 0 {
-		log.Printf("encrypted %d plaintext device password(s) at rest", n)
+		log.Printf("ERROR: %d device password(s) cannot be decrypted with the configured MIKROTIK_NMS_ENCRYPTION_KEY — "+
+			"those devices are not polled until the key is corrected or their passwords are entered again", n)
+	}
+	for _, gone := range []string{"MIKROTIK_NMS_DEFAULT_ROS_USER", "MIKROTIK_NMS_DEFAULT_ROS_PASS"} {
+		if os.Getenv(gone) != "" {
+			log.Printf("warning: %s is no longer used (a device is added with its own username and password) — remove it from the environment", gone)
+		}
 	}
 	if len(cfg.JWTSecret) < 32 {
 		log.Println("warning: MIKROTIK_NMS_JWT_SECRET is shorter than 32 characters — use a longer, random secret")
@@ -125,7 +144,7 @@ func main() {
 	flows := pollerMgr.Flows()
 	telemetry.SetFlowMetricsSource(func() telemetry.FlowMetrics { return flowMetrics(flows.Status(), time.Now()) })
 
-	router := api.NewRouter(db, hub, cfg, pool, nil, pollerMgr.PortStats(), flows, pollerMgr.Cadence())
+	router := api.NewRouter(db, hub, cfg, pool, nil, pollerMgr.PortStats(), flows, pollerMgr.Cadence(), pollerMgr.ClientRefresh())
 
 	srv := &http.Server{
 		Addr:         cfg.Listen,

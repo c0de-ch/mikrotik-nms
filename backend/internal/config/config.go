@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/mikrotik-nms/backend/internal/mailer"
 )
 
 // Values of MIKROTIK_NMS_POLLERS.
@@ -34,6 +36,14 @@ type Config struct {
 	// refuses to start otherwise); ignored while polling is off.
 	AllowedTargetCIDRs []netip.Prefix
 
+	// TrustedProxies is MIKROTIK_NMS_TRUSTED_PROXIES: the reverse proxies
+	// (addresses or CIDRs) whose X-Forwarded-For header names the real
+	// client. Default: loopback, where the bundled Caddy runs. Behind an
+	// ingress controller or a proxy in another container, list its address
+	// range — otherwise every user shares the proxy's address for the login
+	// rate limit. Anyone else's forwarding headers are ignored.
+	TrustedProxies []netip.Prefix
+
 	// AllowedOrigins is the CORS / WebSocket origin allow-list. When empty the
 	// server reflects any origin (backwards-compatible) but logs a warning.
 	AllowedOrigins []string
@@ -48,9 +58,14 @@ type Config struct {
 	// Data retention
 	RetentionDays int
 
-	// Default RouterOS credentials
-	DefaultROSUser string
-	DefaultROSPass string
+	// PlaintextSecrets is MIKROTIK_NMS_DEV_PLAINTEXT_SECRETS: store device
+	// passwords unencrypted when no encryption key is set. Development only:
+	// refused together with Pollers=local.
+	PlaintextSecrets bool
+
+	// Defaults for a new device's API port and TLS flag. (Default RouterOS
+	// credentials are gone: a device is added with its own username and
+	// password, and no device secret lives in the environment.)
 	DefaultROSPort int
 	DefaultROSTLS  bool
 
@@ -110,8 +125,7 @@ func Load() (*Config, error) {
 		RetentionInterval:     envDurationOr("MIKROTIK_NMS_RETENTION_INTERVAL", 1*time.Hour),
 		NetworkHealthInterval: envDurationOr("MIKROTIK_NMS_NETWORK_HEALTH_INTERVAL", 60*time.Second),
 		RetentionDays:         envIntOr("MIKROTIK_NMS_RETENTION_DAYS", 7),
-		DefaultROSUser:        envOr("MIKROTIK_NMS_DEFAULT_ROS_USER", "admin"),
-		DefaultROSPass:        os.Getenv("MIKROTIK_NMS_DEFAULT_ROS_PASS"),
+		PlaintextSecrets:      envBoolOr("MIKROTIK_NMS_DEV_PLAINTEXT_SECRETS", false),
 		DefaultROSPort:        envIntOr("MIKROTIK_NMS_DEFAULT_ROS_PORT", 8728),
 		DefaultROSTLS:         envBoolOr("MIKROTIK_NMS_DEFAULT_ROS_TLS", false),
 		AllowedOrigins:        envListOr("MIKROTIK_NMS_ALLOWED_ORIGINS", nil),
@@ -145,6 +159,12 @@ func Load() (*Config, error) {
 	default:
 		return nil, fmt.Errorf("MIKROTIK_NMS_POLLERS must be %q or %q (got %q)", PollersLocal, PollersOff, cfg.Pollers)
 	}
+	proxies, err := parseTargetCIDRs(envOr("MIKROTIK_NMS_TRUSTED_PROXIES", DefaultTrustedProxies))
+	if err != nil {
+		return nil, fmt.Errorf("MIKROTIK_NMS_TRUSTED_PROXIES: %w", err)
+	}
+	cfg.TrustedProxies = proxies
+
 	cidrs, err := parseTargetCIDRs(os.Getenv("MIKROTIK_NMS_ALLOWED_TARGET_CIDRS"))
 	if err != nil {
 		return nil, fmt.Errorf("MIKROTIK_NMS_ALLOWED_TARGET_CIDRS: %w", err)
@@ -156,6 +176,21 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("MIKROTIK_NMS_POLLERS=local requires MIKROTIK_NMS_ALLOWED_TARGET_CIDRS: " +
 			"list the subnet(s) the devices live in (comma-separated CIDRs) so this backend can only reach them, " +
 			"or set MIKROTIK_NMS_POLLERS=off for an instance that must never contact a device")
+	}
+
+	// Fail closed on device secrets: an instance that polls stores real
+	// device passwords, so it must be able to encrypt them.
+	if cfg.PollersEnabled() {
+		if cfg.EncryptionKey == "" {
+			return nil, fmt.Errorf("MIKROTIK_NMS_POLLERS=local requires MIKROTIK_NMS_ENCRYPTION_KEY: " +
+				"device passwords are never stored unencrypted. Set it to a long random value " +
+				"(for example `openssl rand -hex 32`) and keep it with your backups — " +
+				"without it the stored passwords cannot be read")
+		}
+		if cfg.PlaintextSecrets {
+			return nil, fmt.Errorf("MIKROTIK_NMS_DEV_PLAINTEXT_SECRETS is a development setting " +
+				"and cannot be combined with MIKROTIK_NMS_POLLERS=local")
+		}
 	}
 
 	// From falls back to the SMTP auth user when not explicitly set.
@@ -197,7 +232,11 @@ func (c *Config) AllowedTargetCIDRStrings() []string {
 	return out
 }
 
-// parseTargetCIDRs parses MIKROTIK_NMS_ALLOWED_TARGET_CIDRS: comma-separated
+// DefaultTrustedProxies is the MIKROTIK_NMS_TRUSTED_PROXIES default: a
+// reverse proxy on the same host.
+const DefaultTrustedProxies = "127.0.0.0/8,::1/128"
+
+// parseTargetCIDRs parses a CIDR list such as MIKROTIK_NMS_ALLOWED_TARGET_CIDRS: comma-separated
 // prefixes ("192.0.2.0/24, 2001:db8::/48"); a bare address stands for itself
 // (/32, /128). Unlike the flow listen list an invalid entry is an error, not a
 // skip — an allow-list that silently lost an entry would refuse devices with
@@ -334,4 +373,22 @@ func envDurationOr(key string, fallback time.Duration) time.Duration {
 		}
 	}
 	return fallback
+}
+
+// Mailer is the env-based SMTP configuration: the fallback for every field
+// the Settings page leaves unset. A nil Config has none.
+func (c *Config) Mailer() mailer.Config {
+	if c == nil {
+		return mailer.Config{}
+	}
+	return mailer.Config{
+		SMTPHost:          c.SMTPHost,
+		SMTPPort:          c.SMTPPort,
+		SMTPUser:          c.SMTPUser,
+		SMTPPass:          c.SMTPPass,
+		SMTPFrom:          c.SMTPFrom,
+		SMTPTLSMode:       c.SMTPTLSMode,
+		SMTPTLSSkipVerify: c.SMTPTLSSkipVerify,
+		PublicBaseURL:     c.PublicBaseURL,
+	}
 }

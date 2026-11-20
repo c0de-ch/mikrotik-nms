@@ -17,6 +17,7 @@ import {
   LayoutGrid,
   Radar,
   Waypoints,
+  Bell,
 } from "lucide-react";
 import {
   Sidebar,
@@ -31,11 +32,13 @@ import {
   SidebarMenuItem,
 } from "@/components/ui/sidebar";
 import { useAuth } from "@/context/auth";
+import { useFiringAlertCount } from "@/hooks/use-alert-count";
 
 import { Wifi as WifiIcon } from "lucide-react";
 
 const navItems = [
   { title: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
+  { title: "Alerts", href: "/alerts", icon: Bell },
   { title: "Map", href: "/map", icon: Waypoints },
   { title: "Topology", href: "/topology", icon: Network },
   { title: "Devices", href: "/devices", icon: Server },
@@ -57,6 +60,7 @@ const adminItems = [
 export function AppSidebar() {
   const pathname = usePathname();
   const { user, logout } = useAuth();
+  const firingAlerts = useFiringAlertCount();
 
   return (
     <Sidebar>
@@ -77,6 +81,14 @@ export function AppSidebar() {
                   <SidebarMenuButton render={<Link href={item.href} />} isActive={pathname === item.href || pathname.startsWith(item.href + "/")}>
                     <item.icon className="h-4 w-4" />
                     <span>{item.title}</span>
+                    {item.href === "/alerts" && firingAlerts > 0 && (
+                      <span
+                        className="ml-auto rounded-full bg-destructive px-1.5 text-[11px] font-semibold leading-5 text-white tabular-nums"
+                        aria-label={`${firingAlerts} firing`}
+                      >
+                        {firingAlerts}
+                      </span>
+                    )}
                   </SidebarMenuButton>
                 </SidebarMenuItem>
               ))}

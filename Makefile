@@ -11,9 +11,11 @@ dev-backend:
 
 # Opt in to device polling from a checkout, fenced to the subnets you name:
 #   MIKROTIK_NMS_ALLOWED_TARGET_CIDRS=192.0.2.0/24 make dev-backend-poll
+# A polling instance must encrypt device passwords: a fixed development key is
+# used unless MIKROTIK_NMS_ENCRYPTION_KEY is set (never use it outside a lab).
 dev-backend-poll:
 	@test -n "$$MIKROTIK_NMS_ALLOWED_TARGET_CIDRS" || { echo "set MIKROTIK_NMS_ALLOWED_TARGET_CIDRS to the subnet(s) of the devices this checkout may poll, e.g. MIKROTIK_NMS_ALLOWED_TARGET_CIDRS=192.0.2.0/24 make dev-backend-poll"; exit 1; }
-	cd backend && MIKROTIK_NMS_POLLERS=local MIKROTIK_NMS_JWT_SECRET=dev-secret MIKROTIK_NMS_DB_PATH=mikrotik-nms.db go run ./cmd/mikrotik-nms/
+	cd backend && MIKROTIK_NMS_POLLERS=local MIKROTIK_NMS_JWT_SECRET=dev-secret MIKROTIK_NMS_ENCRYPTION_KEY=$${MIKROTIK_NMS_ENCRYPTION_KEY:-dev-only-encryption-key} MIKROTIK_NMS_DB_PATH=mikrotik-nms.db go run ./cmd/mikrotik-nms/
 
 dev-frontend:
 	cd frontend && NEXT_PUBLIC_API_URL=http://localhost:8080 NEXT_PUBLIC_WS_URL=ws://localhost:8080 npm run dev

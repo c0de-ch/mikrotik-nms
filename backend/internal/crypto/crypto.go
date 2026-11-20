@@ -23,6 +23,12 @@ import (
 // tokenPrefix marks a value as one of our ciphertext tokens.
 const tokenPrefix = "enc:v1:"
 
+// Unreadable stands in for a stored secret that could not be decrypted
+// (wrong or missing key, damaged value). It is never a real password — it
+// contains NUL bytes — so code that is handed it can tell "no usable secret"
+// from an empty one and must not attempt a login with it.
+const Unreadable = "\x00unreadable-secret\x00"
+
 // Cipher encrypts and decrypts short secrets with AES-256-GCM.
 type Cipher struct {
 	aead cipher.AEAD
