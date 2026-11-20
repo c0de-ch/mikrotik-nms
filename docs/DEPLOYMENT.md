@@ -62,9 +62,7 @@ Open **http://localhost:3000** and create the first admin account (the setup scr
 | `.env` name | Maps to | Notes |
 |---|---|---|
 | `JWT_SECRET` | `MIKROTIK_NMS_JWT_SECRET` | Required. Defaults to `change-me-in-production` if unset — **set it.** |
-| `ENCRYPTION_KEY` | `MIKROTIK_NMS_ENCRYPTION_KEY` | Optional (see [§10](#10-security-hardening-checklist)) |
-| `DEFAULT_ROS_USER` | `MIKROTIK_NMS_DEFAULT_ROS_USER` | Defaults to `admin` |
-| `DEFAULT_ROS_PASS` | `MIKROTIK_NMS_DEFAULT_ROS_PASS` | Optional |
+| `ENCRYPTION_KEY` | `MIKROTIK_NMS_ENCRYPTION_KEY` | **Required with `POLLERS=local`** (`openssl rand -hex 32`): the backend refuses to start without it. Keep it with your backups |
 | `POLLERS` | `MIKROTIK_NMS_POLLERS` | Defaults to `local` (poll the devices). `off` = no device or UDP I/O at all — history only |
 | `ALLOWED_TARGET_CIDRS` | `MIKROTIK_NMS_ALLOWED_TARGET_CIDRS` | **Required with `local`**: the subnet(s) the devices live in, comma-separated CIDRs. The backend refuses to start while it is empty and refuses every dial outside it (see [§7](#7-configuration-reference)) |
 | `FLOW_LISTEN` | `MIKROTIK_NMS_FLOW_LISTEN` | Optional, empty = flow collector off. Set `:2055` **and** uncomment the `- "2055:2055/udp"` port mapping of the backend. Exporters are identified by their UDP source IP. Rootful Docker, default iptables: kept, nothing else to do. Rootful with `"iptables": false` (userland proxy for all traffic): use `network_mode: host` for the backend. Rootless Docker: `network_mode: host` does **not** reach the real host — keep the port mapping and set `DOCKERD_ROOTLESS_ROOTLESSKIT_PORT_DRIVER=slirp4netns` in the rootless daemon's environment (`~/.config/systemd/user/docker.service.d/override.conf`, then restart the user service), or use the pasta network driver with the implicit port driver. Check that the exporter's real IP, not the Docker gateway, appears under `unknown_senders` or `exporters` in `/api/v1/flows/status` |
@@ -108,7 +106,7 @@ deployment.yaml  service.yaml     ingress.yaml
 
 **Edit these two first:**
 
-1. **`secret.yaml`** — set `MIKROTIK_NMS_JWT_SECRET` (and `MIKROTIK_NMS_ENCRYPTION_KEY` / `MIKROTIK_NMS_DEFAULT_ROS_PASS` if you use them).
+1. **`secret.yaml`** — set `MIKROTIK_NMS_JWT_SECRET` and `MIKROTIK_NMS_ENCRYPTION_KEY` (the backend refuses to start with polling on and no encryption key).
 2. **`ingress.yaml`** — change the `host: nms.example.com` rule to your domain and wire up TLS. The ingress routes `/api` → backend `:8080` and `/` → frontend `:3000`, with the NGINX annotations needed for WebSocket upgrades and long-lived connections (`proxy-read-timeout: 3600`).
 
 Apply (namespace first, then the rest):
@@ -233,7 +231,8 @@ The backend is configured **entirely** via `MIKROTIK_NMS_*` environment variable
 | `MIKROTIK_NMS_JWT_SECRET` | Secret used to sign JWTs (32+ chars recommended) | — | **Yes** |
 | `MIKROTIK_NMS_LISTEN` | Backend bind address | `:8080` | No |
 | `MIKROTIK_NMS_DB_PATH` | SQLite database file path | `mikrotik-nms.db` | No |
-| `MIKROTIK_NMS_ENCRYPTION_KEY` | AES key for encrypting device passwords at rest (AES-256-GCM). Any non-empty value works; 32+ random bytes recommended. Existing plaintext rows are migrated on startup. Unset = plaintext + stripped from backups | — | No |
+| `MIKROTIK_NMS_ENCRYPTION_KEY` | Key for encrypting device passwords at rest (AES-256-GCM). Any non-empty value works; 32+ random bytes recommended (`openssl rand -hex 32`). **Required with `MIKROTIK_NMS_POLLERS=local`:** the process refuses to start without it, and a password that cannot be encrypted is refused, never stored in plaintext. Existing plaintext rows are encrypted on startup. **Back the key up** — a password that cannot be decrypted (wrong or lost key) is reported at startup, the device is not logged in to, and its password has to be entered again | — | With `local` |
+| `MIKROTIK_NMS_DEV_PLAINTEXT_SECRETS` | **Development only:** `1` stores device passwords unencrypted when no key is set. Refused together with `MIKROTIK_NMS_POLLERS=local` | `false` | No |
 | `MIKROTIK_NMS_POLLERS` | `local` = this backend polls the devices. `off` = **no device or UDP I/O at all**: no RouterOS dials from any poller or on-demand action, and the flow collector stays off even when `MIKROTIK_NMS_FLOW_LISTEN` is set; database-only jobs (retention, hourly rollups) still run, so a copied database keeps showing its history. The code default is `off`, so a dev checkout can never poll a production fleet by accident — every installer, Compose and K8s example sets `local` explicitly. The UI shows a banner on an instance that is off | `off` | No |
 | `MIKROTIK_NMS_ALLOWED_TARGET_CIDRS` | Comma-separated CIDRs (a bare address counts as `/32` or `/128`) the backend may dial — the management subnet(s) the devices live in, e.g. `192.0.2.0/24,2001:db8::/48`. Every device dial — pollers, the add-device connection test, MNDP/subnet discovery, run-now ping/traceroute/speed tests, firmware jobs — is refused outside it (API: `403`; `503` while polling is off); a hostname is checked on every address it resolves to. **Required with `MIKROTIK_NMS_POLLERS=local`:** the process refuses to start while it is empty, and an invalid entry is a startup error, never a silent skip | — | With `local` |
 | `MIKROTIK_NMS_ALLOWED_ORIGINS` | Comma-separated CORS / WebSocket origin allow-list (e.g. `https://nms.example.com`). Unset = reflect any origin (logs a warning) | — | No |
@@ -245,8 +244,6 @@ The backend is configured **entirely** via `MIKROTIK_NMS_*` environment variable
 | `MIKROTIK_NMS_NETWORK_HEALTH_INTERVAL` | **Floor** of each device's bridge/STP, bridge-VLAN and log reads (class cadence when slower), and the port-state scan / stale-row prune cadence | `60s` | No |
 | `MIKROTIK_NMS_RETENTION_INTERVAL` | Cleanup sweep cadence | `1h` | No |
 | `MIKROTIK_NMS_RETENTION_DAYS` | Retention window for samples / events | `7` | No |
-| `MIKROTIK_NMS_DEFAULT_ROS_USER` | Default RouterOS username for new devices | `admin` | No |
-| `MIKROTIK_NMS_DEFAULT_ROS_PASS` | Default RouterOS password for new devices | — | No |
 | `MIKROTIK_NMS_DEFAULT_ROS_PORT` | Default RouterOS API port | `8728` | No |
 | `MIKROTIK_NMS_DEFAULT_ROS_TLS` | Default new devices to API-TLS (`8729`) | `false` | No |
 | `MIKROTIK_NMS_FLOW_LISTEN` | Flow collector UDP bind address(es), comma-separated (e.g. `:2055`, `0.0.0.0:2055`, `:2055,:6343`). `:2055` is dual-stack. Invalid entries are logged and skipped. Empty = collector off | — (off) | No |
@@ -351,7 +348,7 @@ MikroTik NMS is read-only monitoring intended for a trusted network. Most of the
 
 **Now enforced by the app:**
 
-- [x] **Device passwords encrypted at rest** with AES-256-GCM when `MIKROTIK_NMS_ENCRYPTION_KEY` is set (existing rows migrated on startup). **Set the key in production** — without it, passwords are stored plaintext (and stripped from backups).
+- [x] **Device passwords encrypted at rest** with AES-256-GCM, always: a polling instance does not start without `MIKROTIK_NMS_ENCRYPTION_KEY`, and a password that cannot be encrypted is refused instead of stored in plaintext (existing plaintext rows are encrypted on startup). There are no default RouterOS credentials in the environment any more.
 - [x] **Backups/exports no longer leak cleartext passwords** — with a key, the export contains ciphertext; without one, `password_enc` is blanked.
 - [x] **Auth endpoints are rate-limited** (per-IP, 10/min) against brute force.
 - [x] **First-run setup is race-safe** (atomic insert-if-empty).
@@ -361,7 +358,7 @@ MikroTik NMS is read-only monitoring intended for a trusted network. Most of the
 **Configure for production:**
 
 - [ ] **Set `MIKROTIK_NMS_ALLOWED_ORIGINS`** to your frontend origin(s). Until you do, CORS reflects any origin and the WebSocket accepts any origin (a startup warning is logged). Setting it enforces a strict allow-list for both. *(HIGH)*
-- [ ] **Set `MIKROTIK_NMS_ENCRYPTION_KEY`** (see above). *(HIGH)*
+- [ ] **Back up `MIKROTIK_NMS_ENCRYPTION_KEY`** with (but not inside) your database backups: a lost key means every device password has to be entered again. *(HIGH)*
 - [ ] **Terminate TLS at the proxy** and consider `MIKROTIK_NMS_ROS_TLS_VERIFY=true` if your devices present trusted certs (RouterOS self-signed certs are not verified by default). *(MEDIUM)*
 - [ ] **Treat backup files as secrets.** Even with redaction/encryption they contain inventory and bcrypt user hashes; store them encrypted and restrict distribution. *(MEDIUM)*
 - [ ] **If the flow collector is on, restrict UDP 2055 to your exporters** (host firewall, LB `loadBalancerSourceRanges`, or an nftables allow-list — see [`deploy/lxc/README.md`](../deploy/lxc/README.md#flow-collector-netflow--ipfix--sflow)). Flow export is unauthenticated UDP: the collector already drops unknown senders before decoding them and rate-limits each exporter, but an on-link spoofer can still inject false statistics. Per-host flow details (who talked to whom) are visible to **every logged-in user**, like the Clients page. *(LOW)*

@@ -31,9 +31,9 @@ services:
       - MIKROTIK_NMS_ALLOWED_TARGET_CIDRS=${ALLOWED_TARGET_CIDRS:-}
       - MIKROTIK_NMS_FLOW_LISTEN=${FLOW_LISTEN:-}
       - MIKROTIK_NMS_JWT_SECRET=${JWT_SECRET:-change-me-in-production}
+      # Required with POLLERS=local: device passwords are never stored
+      # unencrypted, and the backend refuses to start without a key.
       - MIKROTIK_NMS_ENCRYPTION_KEY=${ENCRYPTION_KEY:-}
-      - MIKROTIK_NMS_DEFAULT_ROS_USER=${DEFAULT_ROS_USER:-admin}
-      - MIKROTIK_NMS_DEFAULT_ROS_PASS=${DEFAULT_ROS_PASS:-}
     healthcheck:
       test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/api/v1/health"]
       interval: 30s

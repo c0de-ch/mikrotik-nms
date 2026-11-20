@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -45,7 +46,6 @@ func TestLoad_Defaults(t *testing.T) {
 	for _, key := range []string{
 		"MIKROTIK_NMS_LISTEN",
 		"MIKROTIK_NMS_DB_PATH",
-		"MIKROTIK_NMS_DEFAULT_ROS_USER",
 		"MIKROTIK_NMS_DEFAULT_ROS_PORT",
 	} {
 		prev := os.Getenv(key)
@@ -64,9 +64,6 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.DBPath != "mikrotik-nms.db" {
 		t.Errorf("DBPath = %q, want %q", cfg.DBPath, "mikrotik-nms.db")
 	}
-	if cfg.DefaultROSUser != "admin" {
-		t.Errorf("DefaultROSUser = %q, want %q", cfg.DefaultROSUser, "admin")
-	}
 	if cfg.DefaultROSPort != 8728 {
 		t.Errorf("DefaultROSPort = %d, want %d", cfg.DefaultROSPort, 8728)
 	}
@@ -78,7 +75,6 @@ func TestLoad_CustomEnvValues(t *testing.T) {
 		"MIKROTIK_NMS_JWT_SECRET":       "custom-secret",
 		"MIKROTIK_NMS_LISTEN":           ":9090",
 		"MIKROTIK_NMS_DB_PATH":          "/tmp/custom.db",
-		"MIKROTIK_NMS_DEFAULT_ROS_USER": "customuser",
 		"MIKROTIK_NMS_DEFAULT_ROS_PORT": "8729",
 		"MIKROTIK_NMS_DEFAULT_ROS_TLS":  "true",
 		"MIKROTIK_NMS_RETENTION_DAYS":   "30",
@@ -107,9 +103,6 @@ func TestLoad_CustomEnvValues(t *testing.T) {
 	}
 	if cfg.DBPath != "/tmp/custom.db" {
 		t.Errorf("DBPath = %q, want %q", cfg.DBPath, "/tmp/custom.db")
-	}
-	if cfg.DefaultROSUser != "customuser" {
-		t.Errorf("DefaultROSUser = %q, want %q", cfg.DefaultROSUser, "customuser")
 	}
 	if cfg.DefaultROSPort != 8729 {
 		t.Errorf("DefaultROSPort = %d, want %d", cfg.DefaultROSPort, 8729)
@@ -290,6 +283,7 @@ func TestPollersAndTargetCIDRs(t *testing.T) {
 	// local with a fence: parsed, normalised, deduplicated.
 	t.Setenv("MIKROTIK_NMS_POLLERS", " Local ")
 	t.Setenv("MIKROTIK_NMS_ALLOWED_TARGET_CIDRS", " 192.0.2.5/24, 192.0.2.0/24 ,2001:db8::/48, 198.51.100.7, ::ffff:203.0.113.0/120, fe80::1%eth0 ")
+	t.Setenv("MIKROTIK_NMS_ENCRYPTION_KEY", "unit-test-key")
 	cfg, err = Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -327,5 +321,46 @@ func TestPollersAndTargetCIDRs(t *testing.T) {
 	t.Setenv("MIKROTIK_NMS_POLLERS", "off")
 	if cfg, err := Load(); err != nil || cfg.PollersEnabled() {
 		t.Errorf("Load off+cidrs: cfg=%+v err=%v", cfg, err)
+	}
+}
+
+// An instance that polls stores real device passwords: it must have a key
+// to encrypt them with, and may not opt into plaintext storage. An instance
+// that polls nothing may run without a key.
+func TestPollingRequiresAnEncryptionKey(t *testing.T) {
+	t.Setenv("MIKROTIK_NMS_JWT_SECRET", "s")
+	t.Setenv("MIKROTIK_NMS_ALLOWED_TARGET_CIDRS", "192.0.2.0/24")
+	t.Setenv("MIKROTIK_NMS_ENCRYPTION_KEY", "")
+	t.Setenv("MIKROTIK_NMS_DEV_PLAINTEXT_SECRETS", "")
+
+	t.Setenv("MIKROTIK_NMS_POLLERS", "off")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("pollers off without a key must start: %v", err)
+	}
+	if cfg.PlaintextSecrets {
+		t.Error("PlaintextSecrets must default to false")
+	}
+	t.Setenv("MIKROTIK_NMS_DEV_PLAINTEXT_SECRETS", "1")
+	if cfg, err := Load(); err != nil || !cfg.PlaintextSecrets {
+		t.Fatalf("pollers off with the dev flag: cfg=%+v err=%v", cfg, err)
+	}
+
+	t.Setenv("MIKROTIK_NMS_POLLERS", "local")
+	t.Setenv("MIKROTIK_NMS_DEV_PLAINTEXT_SECRETS", "")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "MIKROTIK_NMS_ENCRYPTION_KEY") {
+		t.Fatalf("pollers local without a key: err = %v, want one naming MIKROTIK_NMS_ENCRYPTION_KEY", err)
+	}
+	t.Setenv("MIKROTIK_NMS_DEV_PLAINTEXT_SECRETS", "1")
+	if _, err := Load(); err == nil {
+		t.Fatal("pollers local with the plaintext dev flag and no key must not start")
+	}
+	t.Setenv("MIKROTIK_NMS_ENCRYPTION_KEY", "unit-test-key")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "MIKROTIK_NMS_DEV_PLAINTEXT_SECRETS") {
+		t.Fatalf("pollers local with a key and the plaintext dev flag: err = %v, want a refusal of the flag", err)
+	}
+	t.Setenv("MIKROTIK_NMS_DEV_PLAINTEXT_SECRETS", "")
+	if _, err := Load(); err != nil {
+		t.Fatalf("pollers local with a fence and a key must start: %v", err)
 	}
 }

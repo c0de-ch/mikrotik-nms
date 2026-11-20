@@ -56,9 +56,14 @@ type Config struct {
 	// Data retention
 	RetentionDays int
 
-	// Default RouterOS credentials
-	DefaultROSUser string
-	DefaultROSPass string
+	// PlaintextSecrets is MIKROTIK_NMS_DEV_PLAINTEXT_SECRETS: store device
+	// passwords unencrypted when no encryption key is set. Development only:
+	// refused together with Pollers=local.
+	PlaintextSecrets bool
+
+	// Defaults for a new device's API port and TLS flag. (Default RouterOS
+	// credentials are gone: a device is added with its own username and
+	// password, and no device secret lives in the environment.)
 	DefaultROSPort int
 	DefaultROSTLS  bool
 
@@ -118,8 +123,7 @@ func Load() (*Config, error) {
 		RetentionInterval:     envDurationOr("MIKROTIK_NMS_RETENTION_INTERVAL", 1*time.Hour),
 		NetworkHealthInterval: envDurationOr("MIKROTIK_NMS_NETWORK_HEALTH_INTERVAL", 60*time.Second),
 		RetentionDays:         envIntOr("MIKROTIK_NMS_RETENTION_DAYS", 7),
-		DefaultROSUser:        envOr("MIKROTIK_NMS_DEFAULT_ROS_USER", "admin"),
-		DefaultROSPass:        os.Getenv("MIKROTIK_NMS_DEFAULT_ROS_PASS"),
+		PlaintextSecrets:      envBoolOr("MIKROTIK_NMS_DEV_PLAINTEXT_SECRETS", false),
 		DefaultROSPort:        envIntOr("MIKROTIK_NMS_DEFAULT_ROS_PORT", 8728),
 		DefaultROSTLS:         envBoolOr("MIKROTIK_NMS_DEFAULT_ROS_TLS", false),
 		AllowedOrigins:        envListOr("MIKROTIK_NMS_ALLOWED_ORIGINS", nil),
@@ -170,6 +174,21 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("MIKROTIK_NMS_POLLERS=local requires MIKROTIK_NMS_ALLOWED_TARGET_CIDRS: " +
 			"list the subnet(s) the devices live in (comma-separated CIDRs) so this backend can only reach them, " +
 			"or set MIKROTIK_NMS_POLLERS=off for an instance that must never contact a device")
+	}
+
+	// Fail closed on device secrets: an instance that polls stores real
+	// device passwords, so it must be able to encrypt them.
+	if cfg.PollersEnabled() {
+		if cfg.EncryptionKey == "" {
+			return nil, fmt.Errorf("MIKROTIK_NMS_POLLERS=local requires MIKROTIK_NMS_ENCRYPTION_KEY: " +
+				"device passwords are never stored unencrypted. Set it to a long random value " +
+				"(for example `openssl rand -hex 32`) and keep it with your backups — " +
+				"without it the stored passwords cannot be read")
+		}
+		if cfg.PlaintextSecrets {
+			return nil, fmt.Errorf("MIKROTIK_NMS_DEV_PLAINTEXT_SECRETS is a development setting " +
+				"and cannot be combined with MIKROTIK_NMS_POLLERS=local")
+		}
 	}
 
 	// From falls back to the SMTP auth user when not explicitly set.

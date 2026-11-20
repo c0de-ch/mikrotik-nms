@@ -3,6 +3,7 @@ package queries
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/mikrotik-nms/backend/internal/devclass"
@@ -129,11 +130,15 @@ func (d Device) MarshalJSON() ([]byte, error) {
 }
 
 func CreateDevice(db *sql.DB, d *Device) error {
-	_, err := db.Exec(
+	secret, err := encryptSecret(d.PasswordEnc)
+	if err != nil {
+		return err
+	}
+	_, err = db.Exec(
 		`INSERT INTO devices (id, address, identity, username, password_enc, use_tls, api_port,
 		    platform, board, ros_version, architecture, status, tags, notes)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		d.ID, d.Address, d.Identity, d.Username, encryptSecret(d.PasswordEnc), d.UseTLS, d.APIPort,
+		d.ID, d.Address, d.Identity, d.Username, secret, d.UseTLS, d.APIPort,
 		d.Platform, d.Board, d.ROSVersion, d.Architecture, d.Status, d.Tags, d.Notes,
 	)
 	return err
@@ -229,14 +234,32 @@ func ResumeDevicePolling(db *sql.DB, id string) error {
 	return err
 }
 
+// UpdateDevice saves a device's editable fields. It never touches the stored
+// password: an edit that does not carry a new one must not rewrite it (the
+// value in d may be a stand-in for a secret that could not be decrypted).
+// Use SetDevicePassword for a new password.
 func UpdateDevice(db *sql.DB, d *Device) error {
 	_, err := db.Exec(
-		`UPDATE devices SET address=?, identity=?, username=?, password_enc=?, use_tls=?, api_port=?,
+		`UPDATE devices SET address=?, identity=?, username=?, use_tls=?, api_port=?,
 		        tags=?, notes=?, updated_at=CURRENT_TIMESTAMP
 		 WHERE id=?`,
-		d.Address, d.Identity, d.Username, encryptSecret(d.PasswordEnc), d.UseTLS, d.APIPort,
+		d.Address, d.Identity, d.Username, d.UseTLS, d.APIPort,
 		d.Tags, d.Notes, d.ID,
 	)
+	return err
+}
+
+// SetDevicePassword stores a new password for a device, encrypted at rest.
+// An empty password is refused: clearing a credential is not an edit.
+func SetDevicePassword(db *sql.DB, id, password string) error {
+	if password == "" {
+		return fmt.Errorf("%w: the password is empty", ErrSecretStorage)
+	}
+	secret, err := encryptSecret(password)
+	if err != nil {
+		return err
+	}
+	_, err = db.Exec(`UPDATE devices SET password_enc=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`, secret, id)
 	return err
 }
 

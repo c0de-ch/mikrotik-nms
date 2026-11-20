@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/mikrotik-nms/backend/internal/crypto"
 )
 
 // DialPolicy is the process-wide fence on device I/O. main derives it from
@@ -33,6 +35,21 @@ var dialPolicy atomic.Pointer[DialPolicy]
 // SetDialPolicy installs the policy every later dial consults. A process that
 // never calls it (library tests, the flowreplay tool) is unrestricted.
 func SetDialPolicy(p *DialPolicy) { dialPolicy.Store(p) }
+
+// ErrCredentialsUnreadable is returned by a device dial whose password is the
+// stand-in for a stored secret that could not be decrypted (wrong or missing
+// MIKROTIK_NMS_ENCRYPTION_KEY). No login is attempted: trying an empty or
+// garbage password on every poll would only fill the device's log with
+// login failures.
+var ErrCredentialsUnreadable = errors.New("the stored device credentials cannot be decrypted — check MIKROTIK_NMS_ENCRYPTION_KEY or re-enter the device's password")
+
+// checkSecret refuses the stand-in for an unreadable stored secret.
+func checkSecret(password string) error {
+	if password == crypto.Unreadable {
+		return ErrCredentialsUnreadable
+	}
+	return nil
+}
 
 // ErrPollersOff is returned by every device dial while polling is off.
 var ErrPollersOff = errors.New("device polling is off on this instance (MIKROTIK_NMS_POLLERS=off)")

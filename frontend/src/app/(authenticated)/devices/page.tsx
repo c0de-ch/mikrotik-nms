@@ -667,11 +667,11 @@ function DevicesPageInner() {
                   <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-2">
                       <Label>Username</Label>
-                      <Input value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} />
+                      <Input value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} required />
                     </div>
                     <div className="space-y-2">
                       <Label>Password</Label>
-                      <Input type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
+                      <Input type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} required autoComplete="off" />
                     </div>
                   </div>
                   <div className="space-y-2">
