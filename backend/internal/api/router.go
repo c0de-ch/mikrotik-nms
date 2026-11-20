@@ -10,8 +10,10 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
+	"github.com/mikrotik-nms/backend/internal/alerts"
 	"github.com/mikrotik-nms/backend/internal/auth"
 	"github.com/mikrotik-nms/backend/internal/config"
+	"github.com/mikrotik-nms/backend/internal/database/queries"
 	"github.com/mikrotik-nms/backend/internal/flow"
 	"github.com/mikrotik-nms/backend/internal/mailer"
 	"github.com/mikrotik-nms/backend/internal/poller"
@@ -49,6 +51,10 @@ type Server struct {
 	// cache.
 	clients clientRefresher
 
+	// alertNotifier delivers the channel test notification. nil = one built
+	// from the database and config per request (tests substitute a fake).
+	alertNotifier alertTester
+
 	// flowCache holds aggregated flow rows of recent /flows/* queries;
 	// cleared by every flow admin write (see flowChanged).
 	flowCache flowAggCache
@@ -57,6 +63,11 @@ type Server struct {
 	// share, rebuilt at most every trafficTopoTTL (see trafficTopology).
 	topoMu sync.Mutex
 	topo   *trafficTopo
+}
+
+// alertTester is the part of *alerts.Notifier the channel test uses.
+type alertTester interface {
+	DeliverTo(ch queries.NotificationChannel, alert queries.Alert, event alerts.Event) error
 }
 
 // flowSource is the part of *flow.Collector the flow handlers read; tests
@@ -200,6 +211,9 @@ func NewRouter(db *sql.DB, hub *ws.Hub, cfg *config.Config, pool *routeros.Pool,
 			// Flow export (NetFlow / IPFIX / sFlow): reads for every user,
 			// configuration writes admin-only.
 			s.mountFlowRoutes(r)
+
+			// Alerts, silences and notification channels
+			s.mountAlertRoutes(r)
 
 			// Firmware
 			r.Get("/firmware", s.handleListFirmware)

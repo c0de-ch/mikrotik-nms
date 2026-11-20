@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mikrotik-nms/backend/internal/alerts"
 	"github.com/mikrotik-nms/backend/internal/flow"
 	"github.com/mikrotik-nms/backend/internal/ws"
 )
@@ -21,6 +22,7 @@ func TestPublishedTopicsAreOnTheWSAllowList(t *testing.T) {
 		"PortRatesTopic":     PortRatesTopic,
 		"flow.TopicFlushed":  flow.TopicFlushed,
 		"flow.TopicStatus":   flow.TopicStatus,
+		"alerts.Topic":       alerts.Topic,
 		"trafficTopicPrefix": trafficTopicPrefix + "d1.ether1",
 	}
 	for name, topic := range named {

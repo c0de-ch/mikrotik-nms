@@ -53,7 +53,11 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	// Synthetic read-only key: lets the admin UI show whether self-service
 	// password reset is actually able to send mail. Not persisted — computed
 	// from the resolved settings+env config at request time.
-	settings["smtp_configured"] = strconv.FormatBool(s.effectiveMailer().Enabled())
+	// smtp_configured keeps its meaning — password-reset mail can go out —
+	// which needs the public base URL too; smtp_can_send is the relay alone
+	// (what alert notifications need).
+	settings["smtp_configured"] = strconv.FormatBool(s.effectiveMailer().CanBuildLinks())
+	settings["smtp_can_send"] = strconv.FormatBool(s.effectiveMailer().Enabled())
 	writeJSON(w, http.StatusOK, settings)
 }
 
@@ -298,12 +302,6 @@ func (s *Server) handleTestMail(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "message": "SMTP host and port are required"})
 		return
 	}
-	// A test message needs no reset link, so satisfy the public-base-URL gate
-	// (mailer.New requires it to enable sending) without depending on env.
-	if cfg.PublicBaseURL == "" {
-		cfg.PublicBaseURL = "test"
-	}
-
 	subject := "MikroTik NMS — test email"
 	text := "This is a test message from MikroTik NMS.\r\n\r\n" +
 		"If you received it, your SMTP relay settings are working.\r\n\r\n" +

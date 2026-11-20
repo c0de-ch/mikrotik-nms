@@ -543,6 +543,24 @@ export const api = {
       apiFetch<{ ok: boolean; message: string }>("/settings/mail/test", { method: "POST", token, body: JSON.stringify(data) }),
   },
 
+  // Alerts: what the rules currently see, silences, and (admin) where
+  // notifications go. A channel's target is write-only.
+  alerts: {
+    list: (token: string) => apiFetch<AlertList>("/alerts", { token }),
+    ack: (token: string, id: number) => apiFetch<Alert>(`/alerts/${id}/ack`, { method: "POST", token }),
+    silence: (token: string, data: { scope: "site" | "device" | "rule"; target?: string; hours: number; reason?: string }) =>
+      apiFetch<AlertSilence>("/alerts/silences", { method: "POST", token, body: JSON.stringify(data) }),
+    endSilence: (token: string, id: number) => apiFetch<void>(`/alerts/silences/${id}`, { method: "DELETE", token }),
+    channels: (token: string) => apiFetch<NotificationChannel[]>("/alerts/channels", { token }),
+    createChannel: (token: string, data: { name: string; kind: "smtp" | "webhook"; target: string; min_severity: AlertSeverity }) =>
+      apiFetch<NotificationChannel>("/alerts/channels", { method: "POST", token, body: JSON.stringify(data) }),
+    updateChannel: (token: string, id: number, data: { name?: string; target?: string; min_severity?: AlertSeverity; enabled?: boolean }) =>
+      apiFetch<NotificationChannel>(`/alerts/channels/${id}`, { method: "PUT", token, body: JSON.stringify(data) }),
+    deleteChannel: (token: string, id: number) => apiFetch<void>(`/alerts/channels/${id}`, { method: "DELETE", token }),
+    testChannel: (token: string, id: number) =>
+      apiFetch<{ ok: boolean; message: string }>(`/alerts/channels/${id}/test`, { method: "POST", token }),
+  },
+
   // Admin actions
   admin: {
     purgeHistory: (
@@ -1800,4 +1818,57 @@ export interface DeepDiscoveredDevice {
   source: "neighbor" | "port-scan" | "both";
   open_ports: number[];
   seen_from: string;
+}
+
+export type AlertSeverity = "info" | "warning" | "critical";
+
+export interface Alert {
+  id: number;
+  rule: string;
+  key: string;
+  device_id?: string;
+  device_name?: string;
+  severity: AlertSeverity;
+  state: "firing" | "acked" | "resolved";
+  first_at: string;
+  last_at: string;
+  last_notified_at?: string;
+  resolved_at?: string;
+  acked_by?: string;
+  acked_at?: string;
+  summary: string;
+  facts?: Record<string, unknown>;
+  runbook_url: string;
+  // A silence in force keeps this alert from being notified.
+  silenced: boolean;
+}
+
+export interface AlertSilence {
+  id: number;
+  scope: "site" | "device" | "rule";
+  target: string;
+  until: string;
+  reason: string;
+  created_by: string;
+  created_at: string;
+}
+
+export interface AlertList {
+  alerts: Alert[];
+  firing: number;
+  acked: number;
+  silences: AlertSilence[];
+  rules: string[];
+  // false on an instance that polls nothing: rules are not evaluated there.
+  evaluating: boolean;
+}
+
+export interface NotificationChannel {
+  id: number;
+  name: string;
+  kind: "smtp" | "webhook";
+  // Enough of the target to recognise it; the address or URL is never returned.
+  target_hint: string;
+  min_severity: AlertSeverity;
+  enabled: boolean;
 }

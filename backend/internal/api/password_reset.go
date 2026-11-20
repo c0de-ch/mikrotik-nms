@@ -62,7 +62,7 @@ func (s *Server) handleRequestReset(w http.ResponseWriter, r *http.Request) {
 	// The mailer is resolved from current settings+env so a Settings change
 	// applies without a restart.
 	m := s.effectiveMailer()
-	if m == nil || !m.Enabled() || !s.pwresetEnabled() {
+	if m == nil || !m.CanBuildLinks() || !s.pwresetEnabled() {
 		writeJSON(w, http.StatusOK, okBody)
 		return
 	}

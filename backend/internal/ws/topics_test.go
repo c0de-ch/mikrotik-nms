@@ -13,7 +13,7 @@ func TestTopicAllowed(t *testing.T) {
 		"device.health", "topology.update", "topology.traffic", "traffic.ports",
 		"firmware.update", "wifi.event", "network.health", "network.health.event",
 		"connectivity.sample", "connectivity.speed", "connectivity.traceroute",
-		"flows.flushed", "flows.status",
+		"flows.flushed", "flows.status", "alerts.update",
 		"traffic.4c1f6a52-0d0e-4a57-9a56-2f4b1a1d6f10.ether1",
 		"traffic.d1.sfp-sfpplus1",
 		"traffic.d1.vlan 28 / guests", // interface names may hold spaces and slashes

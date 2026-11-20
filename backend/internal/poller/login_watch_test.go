@@ -72,8 +72,10 @@ func TestLoginWatchRecordsForeignAPILogins(t *testing.T) {
 	// without another /user/active read.
 	again := []routeros.LogEntry{{ID: "*5", Time: "10:00:30", Topics: "system,info,account", Message: "user other logged in from 192.0.2.50 via api"}}
 	w.Process(dev, f, again, now.Add(time.Minute))
-	if par := findingsByKind(t, db)[FindingParallelAPIPoller]; par.Count != 2 || f.countCalls("/user/active/print") != 1 {
-		t.Fatalf("repeat: count=%d active reads=%d", par.Count, f.countCalls("/user/active/print"))
+	// It keeps the severity of its confirmation: a poller confirmed as a
+	// live session does not drop back to info at its next login.
+	if par := findingsByKind(t, db)[FindingParallelAPIPoller]; par.Count != 2 || par.Severity != "warn" || f.countCalls("/user/active/print") != 1 {
+		t.Fatalf("repeat: count=%d severity=%s active reads=%d", par.Count, par.Severity, f.countCalls("/user/active/print"))
 	}
 
 	// An hour later it is confirmed again; the session is gone → info.

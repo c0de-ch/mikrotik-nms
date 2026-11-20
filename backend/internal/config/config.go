@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/mikrotik-nms/backend/internal/mailer"
 )
 
 // Values of MIKROTIK_NMS_POLLERS.
@@ -371,4 +373,22 @@ func envDurationOr(key string, fallback time.Duration) time.Duration {
 		}
 	}
 	return fallback
+}
+
+// Mailer is the env-based SMTP configuration: the fallback for every field
+// the Settings page leaves unset. A nil Config has none.
+func (c *Config) Mailer() mailer.Config {
+	if c == nil {
+		return mailer.Config{}
+	}
+	return mailer.Config{
+		SMTPHost:          c.SMTPHost,
+		SMTPPort:          c.SMTPPort,
+		SMTPUser:          c.SMTPUser,
+		SMTPPass:          c.SMTPPass,
+		SMTPFrom:          c.SMTPFrom,
+		SMTPTLSMode:       c.SMTPTLSMode,
+		SMTPTLSSkipVerify: c.SMTPTLSSkipVerify,
+		PublicBaseURL:     c.PublicBaseURL,
+	}
 }

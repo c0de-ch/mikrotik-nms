@@ -39,7 +39,8 @@ func newFakeMailer(enabled bool) *fakeMailer {
 	return &fakeMailer{enabled: enabled, signal: make(chan struct{}, 16)}
 }
 
-func (f *fakeMailer) Enabled() bool { return f.enabled }
+func (f *fakeMailer) Enabled() bool       { return f.enabled }
+func (f *fakeMailer) CanBuildLinks() bool { return f.enabled }
 
 func (f *fakeMailer) Send(to, subject, textBody, htmlBody string) error {
 	f.mu.Lock()

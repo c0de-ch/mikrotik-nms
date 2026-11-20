@@ -46,11 +46,18 @@ type LoginWatch struct {
 	mu        sync.Mutex
 	selfSet   map[netip.Addr]bool // from the setting
 	selfAt    time.Time
-	outbound  map[string]outboundAddr // device address → learned source address
-	confirmed map[string]time.Time    // device|user|address → last /user/active confirmation
+	outbound  map[string]outboundAddr      // device address → learned source address
+	confirmed map[string]loginConfirmation // device|user|address → last /user/active confirmation
 
 	// seams for tests
 	outboundFn func(host string, port int) (netip.Addr, bool)
+}
+
+// loginConfirmation is what the last /user/active read said about a foreign
+// API login: when it was read, and the severity it gave the finding.
+type loginConfirmation struct {
+	at       time.Time
+	severity string
 }
 
 type outboundAddr struct {
@@ -65,7 +72,7 @@ func NewLoginWatch(db *sql.DB) *LoginWatch {
 		db:         db,
 		selfSet:    make(map[netip.Addr]bool),
 		outbound:   make(map[string]outboundAddr),
-		confirmed:  make(map[string]time.Time),
+		confirmed:  make(map[string]loginConfirmation),
 		outboundFn: routeros.OutboundAddress,
 	}
 }
@@ -112,7 +119,10 @@ func (w *LoginWatch) Process(dev *queries.Device, run routeros.Runner, entries [
 
 	// Confirm with one /user/active read per device per cycle, and only when
 	// some candidate was not confirmed within the hour; the finding is a
-	// warning while the session is still open, info when it is not.
+	// warning while the session is still open, info when it is not. Between
+	// two confirmations a login keeps the severity the last one gave it — a
+	// poller confirmed as live must not drop back to info at its next login
+	// (the alert on the finding would resolve and fire again every hour).
 	var active []routeros.ActiveUser
 	confirmed := false
 	for _, c := range candidates {
@@ -121,19 +131,23 @@ func (w *LoginWatch) Process(dev *queries.Device, run routeros.Runner, entries [
 		last, ok := w.confirmed[key]
 		w.mu.Unlock()
 		severity := "info"
-		if !ok || now.Sub(last) >= loginConfirmEvery {
+		if ok {
+			severity = last.severity
+		}
+		if !ok || now.Sub(last.at) >= loginConfirmEvery {
 			if !confirmed {
 				confirmed = true
 				if users, err := routeros.GetActiveUsers(run); err == nil {
 					active = users
 				}
 			}
-			w.mu.Lock()
-			w.confirmed[key] = now
-			w.mu.Unlock()
+			severity = "info"
 			if hasActiveAPISession(active, c.user, c.address) {
 				severity = "warn"
 			}
+			w.mu.Lock()
+			w.confirmed[key] = loginConfirmation{at: now, severity: severity}
+			w.mu.Unlock()
 			log.Printf("login watch: %s: API login by %q from %s via %s (%s)", dev.Identity, c.user, c.address, c.via, severity)
 		}
 		w.record(dev.ID, FindingParallelAPIPoller, severity, loginDetail(c.user, c.address, c.via))

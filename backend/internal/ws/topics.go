@@ -44,6 +44,7 @@ var topics = map[string]struct{}{
 	"connectivity.traceroute": {},
 	"flows.flushed":           {},
 	"flows.status":            {},
+	"alerts.update":           {},
 }
 
 // Topic families: a fixed prefix followed by an id the subscriber names.

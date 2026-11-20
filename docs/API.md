@@ -636,6 +636,49 @@ ingest. Each shown host links to its attachment port (top 15 ports). `value` =
 window returns `nodes: []`, `links: []`. `coverage` is the chosen direction's
 coverage (above).
 
+### Alerts
+
+Rules are evaluated every 30 seconds on an instance that polls
+(`MIKROTIK_NMS_POLLERS=local`), from the database only. There is at most one
+open alert per rule and key. Runbooks: [`RUNBOOKS.md`](RUNBOOKS.md).
+
+| Method | Path | Role | Description |
+|---|---|---|---|
+| GET | `/alerts` | any | Open alerts plus the ones resolved in the last 7 days: `{alerts: [...], firing, acked, silences: [...], rules: [...], evaluating}`. An alert is `{id, rule, key, device_id?, device_name?, severity, state, first_at, last_at, last_notified_at?, resolved_at?, acked_by?, acked_at?, confirmed, summary, facts?, runbook_url, silenced}`; `severity` ∈ `info`/`warning`/`critical`, `state` ∈ `firing`/`acked`/`resolved`. `evaluating` is false on an instance that polls nothing. |
+| POST | `/alerts/{id}/ack` | admin | Acknowledge a firing alert: it stays open and resolves by itself, but is no longer re-notified. `409` when it is not open. |
+| POST | `/alerts/silences` | admin | Body `{scope: "device"\|"rule"\|"site", target, hours: 1…720, reason?}` (`target` is a device id or a rule name; none for `site`). A silence stops notifications, never the alert; when it ends, whatever still fires is announced. `201` with the silence. |
+| DELETE | `/alerts/silences/{id}` | admin | End a silence now. `204`. |
+| GET | `/alerts/channels` | admin | `[{id, name, kind, target_hint, min_severity, enabled}]`. The target (an e-mail address, or a webhook URL — a bearer secret) is stored encrypted and **never returned**; `target_hint` is enough to recognise it. |
+| POST | `/alerts/channels` | admin | Body `{name?, kind: "smtp"\|"webhook", target, min_severity?, enabled?}`. `400` for an invalid address or URL; `500` when the target cannot be stored encrypted. |
+| PUT | `/alerts/channels/{id}` | admin | Body `{name?, target?, min_severity?, enabled?}`; an omitted `target` keeps the stored one. |
+| DELETE | `/alerts/channels/{id}` | admin | `204`. |
+| POST | `/alerts/channels/{id}/test` | admin | Send a test notification to that channel, enabled or not: `{ok, message}` (a delivery failure is `ok: false`, not an HTTP error). |
+
+**Rules.** `device_unreachable` (critical): the liveness check reports the
+device `offline`, i.e. past `offline_threshold_seconds`. `parallel_api_poller`
+(warning): the login watch confirmed a live API session from an address that
+is not this NMS.
+
+**Notifications.** A firing alert goes to every enabled channel whose
+`min_severity` it reaches: when it starts, every 4 hours while nobody
+acknowledged it, and when it resolves (only if its start was delivered). An
+alert that could not be delivered anywhere is tried again at the next
+evaluation. E-mail uses the SMTP relay from Settings (no public base URL
+needed). A webhook receives a JSON `POST`:
+
+```json
+{
+  "title": "[NMS] CRITICAL: sw01 (192.0.2.1) is not reachable",
+  "message": "sw01 (192.0.2.1) is not reachable",
+  "text": "[NMS] CRITICAL: sw01 (192.0.2.1) is not reachable",
+  "priority": 8,
+  "alert": { "id": 7, "event": "firing", "rule": "device_unreachable", "key": "…", "device_id": "…", "severity": "critical", "state": "firing", "summary": "…", "first_at": "…", "runbook_url": "…", "url": "…", "facts": { } }
+}
+```
+
+`title`/`message`/`priority` are the fields Gotify reads, `text` the one
+Slack-compatible endpoints read; `event` is `firing`, `resolved` or `test`.
+
 ### Firmware
 
 | Method | Path | Role | Description |
@@ -878,6 +921,7 @@ the same topic (new period after a class change) replaces the earlier one.
 | `network.health.event` | object | A single new loop/flap/port event. |
 | `flows.flushed` | object | `{exporter_ids, bucket, flushed_through}` after each per-minute flow flush (≈ 2–3 min after the minute; refetch `/flows/*` views on it). Only published while anyone is subscribed. |
 | `flows.status` | object | The `/flows/status` object without `suggested_exporters`, every 30 s while anyone is subscribed. |
+| `alerts.update` | object | `{at}` whenever an alert opened, resolved, was acknowledged or silenced, or a notification went out: refetch `GET /alerts`. |
 
 The `<deviceID>`, `<iface>`, and `<jobId>` placeholders are substituted with the
 concrete IDs you want to follow, e.g. `traffic.<uuid>.ether1` or

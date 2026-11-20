@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mikrotik-nms/backend/internal/alerts"
 	"github.com/mikrotik-nms/backend/internal/config"
 	"github.com/mikrotik-nms/backend/internal/database/queries"
 	"github.com/mikrotik-nms/backend/internal/devclass"
@@ -209,6 +210,16 @@ func (m *Manager) Start() {
 
 	speedTests := NewSpeedTestPoller(m.db, m.hub, m.cfg.ROSTLSVerify, defaultSpeedTestInterval)
 	go speedTests.Run(ctx)
+
+	// Alerting reads what the loops above store — it never contacts a
+	// device — and only runs here, on an instance that polls: on a copy of a
+	// database nothing refreshes device status, and stale rows must not page
+	// anyone.
+	alertEngine := alerts.NewEngine(m.db, alerts.NewNotifier(m.db, m.cfg.Mailer()), alerts.DefaultRules(m.db)...)
+	alertEngine.OnChange = func() {
+		m.hub.Publish(alerts.Topic, map[string]any{"at": time.Now().UTC().Format(time.RFC3339)})
+	}
+	go alertEngine.Run(ctx.Done())
 
 	log.Println("poller: started all pollers")
 }
