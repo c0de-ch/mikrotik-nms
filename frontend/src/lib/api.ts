@@ -112,7 +112,7 @@ async function apiFetch<T>(path: string, options: FetchOptions = {}): Promise<T>
   }
 
   if (!res.ok) {
-    const body: { error?: string } = await res.json().catch(() => ({}));
+    const body: { error?: string; code?: string } = await res.json().catch(() => ({}));
     let message = body.error || res.statusText;
     // A reverse-proxy 502/503/504 with no JSON body means the backend behind
     // it is down; statusText is terse on HTTP/1.1 and empty on HTTP/2, so
@@ -122,7 +122,7 @@ async function apiFetch<T>(path: string, options: FetchOptions = {}): Promise<T>
     } else if (!message) {
       message = `Request failed (HTTP ${res.status})`;
     }
-    throw new ApiError(res.status, message);
+    throw new ApiError(res.status, message, body.code);
   }
 
   // 204 No Content (e.g. DELETE /flows/points/{id}) has no body to parse.
@@ -134,6 +134,9 @@ export class ApiError extends Error {
   constructor(
     public status: number,
     message: string,
+    // The server's machine-readable reason, when it sent one (e.g.
+    // "reauth_required": the action needs the password typed again).
+    public code?: string,
   ) {
     super(message);
     this.name = "ApiError";

@@ -34,6 +34,14 @@ type Config struct {
 	// refuses to start otherwise); ignored while polling is off.
 	AllowedTargetCIDRs []netip.Prefix
 
+	// TrustedProxies is MIKROTIK_NMS_TRUSTED_PROXIES: the reverse proxies
+	// (addresses or CIDRs) whose X-Forwarded-For header names the real
+	// client. Default: loopback, where the bundled Caddy runs. Behind an
+	// ingress controller or a proxy in another container, list its address
+	// range — otherwise every user shares the proxy's address for the login
+	// rate limit. Anyone else's forwarding headers are ignored.
+	TrustedProxies []netip.Prefix
+
 	// AllowedOrigins is the CORS / WebSocket origin allow-list. When empty the
 	// server reflects any origin (backwards-compatible) but logs a warning.
 	AllowedOrigins []string
@@ -145,6 +153,12 @@ func Load() (*Config, error) {
 	default:
 		return nil, fmt.Errorf("MIKROTIK_NMS_POLLERS must be %q or %q (got %q)", PollersLocal, PollersOff, cfg.Pollers)
 	}
+	proxies, err := parseTargetCIDRs(envOr("MIKROTIK_NMS_TRUSTED_PROXIES", DefaultTrustedProxies))
+	if err != nil {
+		return nil, fmt.Errorf("MIKROTIK_NMS_TRUSTED_PROXIES: %w", err)
+	}
+	cfg.TrustedProxies = proxies
+
 	cidrs, err := parseTargetCIDRs(os.Getenv("MIKROTIK_NMS_ALLOWED_TARGET_CIDRS"))
 	if err != nil {
 		return nil, fmt.Errorf("MIKROTIK_NMS_ALLOWED_TARGET_CIDRS: %w", err)
@@ -197,7 +211,11 @@ func (c *Config) AllowedTargetCIDRStrings() []string {
 	return out
 }
 
-// parseTargetCIDRs parses MIKROTIK_NMS_ALLOWED_TARGET_CIDRS: comma-separated
+// DefaultTrustedProxies is the MIKROTIK_NMS_TRUSTED_PROXIES default: a
+// reverse proxy on the same host.
+const DefaultTrustedProxies = "127.0.0.0/8,::1/128"
+
+// parseTargetCIDRs parses a CIDR list such as MIKROTIK_NMS_ALLOWED_TARGET_CIDRS: comma-separated
 // prefixes ("192.0.2.0/24, 2001:db8::/48"); a bare address stands for itself
 // (/32, /128). Unlike the flow listen list an invalid entry is an error, not a
 // skip — an allow-list that silently lost an entry would refuse devices with

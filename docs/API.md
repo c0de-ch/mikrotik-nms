@@ -53,14 +53,20 @@ fixed bodies, e.g. `{"error":"missing authorization token"}` (401) and
 
 ## 2. Authentication
 
-Authentication is JWT-based with an access/refresh token pair, signed with
-HS256 using `MIKROTIK_NMS_JWT_SECRET`
+Authentication is JWT-based with an access/refresh token pair, HS256-signed
+with keys derived from `MIKROTIK_NMS_JWT_SECRET` — one key per token type, so
+an access token never verifies as a refresh token or the other way round
 ([`auth/jwt.go`](../backend/internal/auth/jwt.go)).
 
 | Token | Lifetime | Claims |
 |---|---|---|
-| Access | 15 minutes | `uid`, `usr`, `role`, plus standard `exp`/`iat`/`sub` |
-| Refresh | 7 days | minimal — `exp`/`iat`/`sub` (subject = user ID) |
+| Access | 15 minutes | `typ: "access"`, `aud: ["mikrotik-nms"]`, `uid`, `usr`, `role`, `tv`, `auth_time`, plus `exp`/`iat`/`sub` |
+| Refresh | 7 days | `typ: "refresh"`, `aud: ["mikrotik-nms"]`, `uid`, `tv`, `auth_time`, plus `exp`/`iat`/`sub` (subject = user ID) |
+
+`tv` is the user's token version when the token was issued, and `auth_time`
+(Unix seconds) is when the user last typed the password. A token is only
+accepted with the right `typ` and `aud`, and while its `tv` still equals the
+user's current token version (see Revocation).
 
 On `login`/`setup`/`refresh` the server returns:
 
@@ -68,7 +74,8 @@ On `login`/`setup`/`refresh` the server returns:
 {
   "access_token": "<jwt>",
   "refresh_token": "<jwt>",
-  "expires_at": 1764300000
+  "expires_at": 1764300000,
+  "auth_time": 1764299100
 }
 ```
 
@@ -82,7 +89,31 @@ The access token expires after 15 minutes. To obtain a fresh pair, call
 `POST /auth/refresh` with the refresh token supplied **either** as the
 `refresh_token` cookie **or** in the JSON body as `{"refresh_token": "..."}`.
 The cookie is checked first. A valid refresh token returns a new pair and
-re-sets the cookie.
+re-sets the cookie. A refresh is not a login: the new pair keeps the
+session's `auth_time`.
+
+### Revocation
+
+Every authenticated request is checked against the user's current token
+version and role in the database, so a session ends at once — not when its
+access token expires — when the user **logs out** (`POST /auth/logout` bumps
+the version: every session of that user, on every device, is ended), resets
+the password, or is deleted. The role applied is the user's current one, not
+the one in the token. (An open WebSocket stays open until it reconnects.)
+
+### Fresh login for device-changing actions
+
+`POST /firmware/upgrade`, `/firmware/channel` and `/firmware/routerboard`
+need a password login at most **5 minutes** old. A session kept alive by
+refreshes gets:
+
+```json
+{ "error": "this action needs a fresh login: enter your password again", "code": "reauth_required", "max_age_seconds": 300 }
+```
+
+with status `403` (never `401`, which clients answer with a silent refresh).
+Call `POST /auth/login` again and repeat the request with the new access
+token; the web UI does this with a password prompt.
 
 ### First-run setup
 
@@ -110,7 +141,7 @@ user), **admin** (admin role required).
 | POST | `/auth/login` | public | Body `{username, password}` → token pair. `401` on bad credentials. |
 | POST | `/auth/setup` | public | First-admin bootstrap. Body `{username, password}`. `409` if users exist. |
 | POST | `/auth/refresh` | public | Refresh token (cookie or body) → new token pair. |
-| POST | `/auth/logout` | any | Clears the `refresh_token` cookie. Returns `{"status":"ok"}`. |
+| POST | `/auth/logout` | any | Ends every session of the user (bumps the token version, see Revocation) and clears the `refresh_token` cookie. Returns `{"status":"ok"}`. |
 | GET | `/auth/me` | any | Current user `{id, username, role}`. |
 
 ### Users (admin)
@@ -612,9 +643,9 @@ coverage (above).
 | GET | `/firmware` | any | Latest firmware status per device. |
 | GET | `/firmware/upgrade/{jobId}` | any | Upgrade job state plus per-device progress (`{job, devices}`). |
 | POST | `/firmware/check` | admin | Trigger an async update check across online devices. `202`. |
-| POST | `/firmware/upgrade` | admin | Start an upgrade job. Body `{device_ids: [...], reboot: bool}`. Returns `202` with `job_id`. |
-| POST | `/firmware/channel` | admin | Set release channel. Body `{device_ids, channel}`; `channel` ∈ `stable`/`long-term`/`testing`/`development`. |
-| POST | `/firmware/routerboard` | admin | Upgrade RouterBOOT firmware. Body `{device_ids, reboot}`. |
+| POST | `/firmware/upgrade` | admin, fresh login | Start an upgrade job. Body `{device_ids: [...], reboot: bool}`. Returns `202` with `job_id`. `403 reauth_required` when the password login is older than 5 minutes. |
+| POST | `/firmware/channel` | admin, fresh login | Set release channel. Body `{device_ids, channel}`; `channel` ∈ `stable`/`long-term`/`testing`/`development`. |
+| POST | `/firmware/routerboard` | admin, fresh login | Upgrade RouterBOOT firmware. Body `{device_ids, reboot}`. |
 
 Channel/routerboard responses summarize per-device outcomes, e.g.
 `{"changed": 2, "errors": ["<id>: not connected"]}`.
@@ -772,7 +803,9 @@ ws://<host>:8080/api/v1/ws?token=<access_token>
 
 The WebSocket upgrade is gated by `RequireAuth`, but browsers cannot set an
 `Authorization` header on a WebSocket. The middleware therefore falls back to a
-`token` **query parameter** ([`auth/middleware.go`](../backend/internal/auth/middleware.go)).
+`token` **query parameter** ([`auth/middleware.go`](../backend/internal/auth/middleware.go))
+— on WebSocket upgrade requests only; every other request must send the
+`Authorization` header.
 An expired/invalid token causes the upgrade to be rejected; the client should
 refresh and reconnect (see [`frontend/src/lib/ws.ts`](../frontend/src/lib/ws.ts)).
 

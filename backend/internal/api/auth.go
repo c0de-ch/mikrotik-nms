@@ -3,6 +3,7 @@ package api
 import (
 	"database/sql"
 	"net/http"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/mikrotik-nms/backend/internal/auth"
@@ -43,7 +44,8 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tokens, err := auth.GenerateTokenPair(s.cfg.JWTSecret, user.ID, user.Username, user.Role, user.TokenVersion)
+	// A password login: the session's auth_time starts now.
+	tokens, err := auth.GenerateTokenPair(s.cfg.JWTSecret, user.ID, user.Username, user.Role, user.TokenVersion, time.Now())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to generate tokens")
 		return
@@ -100,7 +102,7 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// A freshly-created user always starts at token_version 0.
-	tokens, err := auth.GenerateTokenPair(s.cfg.JWTSecret, user.ID, user.Username, user.Role, user.TokenVersion)
+	tokens, err := auth.GenerateTokenPair(s.cfg.JWTSecret, user.ID, user.Username, user.Role, user.TokenVersion, time.Now())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to generate tokens")
 		return
@@ -128,26 +130,28 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	userID, tokenVersion, err := auth.ValidateRefreshToken(s.cfg.JWTSecret, refreshToken)
+	session, err := auth.ValidateRefreshToken(s.cfg.JWTSecret, refreshToken)
 	if err != nil {
 		writeError(w, http.StatusUnauthorized, "invalid refresh token")
 		return
 	}
 
-	user, err := queries.GetUserByID(s.db, userID)
+	user, err := queries.GetUserByID(s.db, session.UserID)
 	if err != nil {
 		writeError(w, http.StatusUnauthorized, "user not found")
 		return
 	}
 
-	// Session invalidation: a password reset bumps users.token_version, so a
-	// refresh token minted before the reset no longer matches and is rejected.
-	if tokenVersion != user.TokenVersion {
+	// Session invalidation: a logout or a password reset bumps
+	// users.token_version, so a refresh token minted before it no longer
+	// matches and is rejected.
+	if session.TokenVersion != user.TokenVersion {
 		writeError(w, http.StatusUnauthorized, "invalid refresh token")
 		return
 	}
 
-	tokens, err := auth.GenerateTokenPair(s.cfg.JWTSecret, user.ID, user.Username, user.Role, user.TokenVersion)
+	// A refresh is not a login: the new pair keeps the session's auth_time.
+	tokens, err := auth.GenerateTokenPair(s.cfg.JWTSecret, user.ID, user.Username, user.Role, user.TokenVersion, session.AuthTime)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to generate tokens")
 		return
@@ -165,7 +169,16 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, tokens)
 }
 
+// handleLogout ends the user's sessions on the server, not only in this
+// browser: bumping the token version makes every access and refresh token
+// issued so far (on any device) invalid at once.
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	if user := auth.UserFromContext(r.Context()); user != nil {
+		if err := queries.BumpTokenVersion(s.db, user.ID); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to end the session")
+			return
+		}
+	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     "refresh_token",
 		Value:    "",
@@ -255,4 +268,11 @@ func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+// userSession is the auth middleware's lookup: the user's current token
+// version and role. A user that cannot be read is treated as gone.
+func (s *Server) userSession(userID string) (tokenVersion int, role string, ok bool) {
+	tokenVersion, role, err := queries.GetUserSession(s.db, userID)
+	return tokenVersion, role, err == nil
 }

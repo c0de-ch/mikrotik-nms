@@ -318,7 +318,12 @@ func TestFlowRoutesAuth(t *testing.T) {
 	const secret = "flow-test-secret-flow-test-secret"
 	h := NewRouter(f.db, nil, &config.Config{JWTSecret: secret, AllowedOrigins: []string{"http://x"}}, nil, nil, nil, nil, nil, nil)
 	token := func(role string) string {
-		pair, err := auth.GenerateTokenPair(secret, "u-"+role, role, role, 0)
+		// The token must belong to a real user: RequireAuth checks it
+		// against the user's current token version and role.
+		if err := queries.CreateUser(f.db, &queries.User{ID: "u-" + role, Username: role, PasswordHash: "x", Role: role}); err != nil {
+			t.Fatal(err)
+		}
+		pair, err := auth.GenerateTokenPair(secret, "u-"+role, role, role, 0, time.Now())
 		if err != nil {
 			t.Fatal(err)
 		}

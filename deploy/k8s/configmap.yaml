@@ -12,6 +12,10 @@ data:
   # MIKROTIK_NMS_POLLERS=local: the backend refuses to start while it is empty
   # and never dials outside it. The pods must be able to reach them.
   MIKROTIK_NMS_ALLOWED_TARGET_CIDRS: ""
+  # The ingress controller's pod network: its X-Forwarded-For then names the
+  # real client for the login rate limit. Left at the default (loopback only)
+  # every user shares the ingress pod's address and its 10 logins a minute.
+  # MIKROTIK_NMS_TRUSTED_PROXIES: "10.42.0.0/16"
   MIKROTIK_NMS_HEALTH_INTERVAL: "30s"
   MIKROTIK_NMS_TOPOLOGY_INTERVAL: "60s"
   MIKROTIK_NMS_FIRMWARE_INTERVAL: "6h"

@@ -13,6 +13,10 @@ interface AuthContextValue extends AuthState {
   login: (username: string, password: string) => Promise<void>;
   setup: (username: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
+  // Logs the current user in again with the password and returns the new
+  // access token: for actions the server only accepts shortly after a
+  // password login (see FreshAuthProvider).
+  reauthenticate: (password: string) => Promise<string>;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -114,6 +118,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setState({ token: tokens.access_token, user, loading: false });
   };
 
+  const reauthenticate = async (password: string) => {
+    if (!state.user) throw new Error("Not signed in");
+    const tokens = await api.auth.login(state.user.username, password);
+    saveTokens(tokens.access_token, tokens.refresh_token);
+    setState((prev) => ({ ...prev, token: tokens.access_token }));
+    // The WebSocket follows the token like after a silent refresh.
+    window.dispatchEvent(new CustomEvent("auth:refreshed", { detail: tokens }));
+    return tokens.access_token;
+  };
+
   const logout = async () => {
     if (state.token) {
       try {
@@ -127,7 +141,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   return (
-    <AuthContext.Provider value={{ ...state, login, setup, logout }}>
+    <AuthContext.Provider value={{ ...state, login, setup, logout, reauthenticate }}>
       {children}
     </AuthContext.Provider>
   );

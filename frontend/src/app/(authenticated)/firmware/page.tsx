@@ -22,6 +22,7 @@ import { useAuth } from "@/context/auth";
 import { api, type FirmwareStatus, type Device } from "@/lib/api";
 import { deviceStatusBadgeClass, deviceStatusLabel } from "@/lib/status";
 import { useWebSocket } from "@/hooks/use-websocket";
+import { ReauthCancelled, useFreshAuth } from "@/components/auth/fresh-auth";
 import { toast } from "sonner";
 
 interface UpgradeProgress {
@@ -32,6 +33,9 @@ interface UpgradeProgress {
 
 export default function FirmwarePage() {
   const { token, user } = useAuth();
+  // Upgrades, channel changes and RouterBOARD upgrades need a recent
+  // password login; this asks for it when the server says so.
+  const withFreshAuth = useFreshAuth();
   const [firmware, setFirmware] = useState<FirmwareStatus[]>([]);
   const [devices, setDevices] = useState<Device[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -78,12 +82,14 @@ export default function FirmwarePage() {
   const handleUpgrade = async () => {
     if (!token || selected.size === 0) return;
     try {
-      const result = await api.firmware.upgrade(token, Array.from(selected), true) as { job_id: string };
+      const ids = Array.from(selected);
+      const result = (await withFreshAuth((t) => api.firmware.upgrade(t, ids, true))) as { job_id: string };
       setActiveJobId(result.job_id);
       setUpgradeProgress(new Map());
       toast.success(`Upgrade job started for ${selected.size} device(s)`);
       setSelected(new Set());
     } catch (err) {
+      if (err instanceof ReauthCancelled) return;
       toast.error(err instanceof Error ? err.message : "Failed");
     }
   };
@@ -91,11 +97,13 @@ export default function FirmwarePage() {
   const handleSetChannel = async (channel: string) => {
     if (!token || selected.size === 0) return;
     try {
-      const result = await api.firmware.setChannel(token, Array.from(selected), channel);
+      const ids = Array.from(selected);
+      const result = await withFreshAuth((t) => api.firmware.setChannel(t, ids, channel));
       toast.success(`Channel set to "${channel}" on ${result.changed} device(s)`);
       if (result.errors?.length) toast.error(`Errors: ${result.errors.join(", ")}`, { duration: 8000 });
       setTimeout(load, 2000);
     } catch (err) {
+      if (err instanceof ReauthCancelled) return;
       toast.error(err instanceof Error ? err.message : "Failed");
     }
   };
@@ -103,11 +111,13 @@ export default function FirmwarePage() {
   const handleUpgradeRouterboard = async () => {
     if (!token || selected.size === 0) return;
     try {
-      const result = await api.firmware.upgradeRouterboard(token, Array.from(selected), true);
+      const ids = Array.from(selected);
+      const result = await withFreshAuth((t) => api.firmware.upgradeRouterboard(t, ids, true));
       toast.success(`RouterBoard firmware upgrade triggered on ${result.upgraded} device(s). Devices will reboot.`);
       if (result.errors?.length) toast.error(`Errors: ${result.errors.join(", ")}`, { duration: 8000 });
       setTimeout(load, 5000);
     } catch (err) {
+      if (err instanceof ReauthCancelled) return;
       toast.error(err instanceof Error ? err.message : "Failed");
     }
   };
