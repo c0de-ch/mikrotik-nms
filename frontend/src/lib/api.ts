@@ -191,17 +191,13 @@ export const api = {
     },
   },
 
-  // Network clients
+  // Network clients. The list is the cache the scheduled pollers keep (no
+  // device is contacted); refresh pulls their reads forward once, at most
+  // every refresh.min_interval_seconds fleet-wide.
   clients: {
-    scan: (token: string, options?: { limit?: number; timeout?: number }) => {
-      const params = new URLSearchParams();
-      if (options?.limit) params.set("limit", String(options.limit));
-      if (options?.timeout) params.set("timeout", String(options.timeout));
-      const qs = params.toString() ? `?${params}` : "";
-      return apiFetch<ClientScanResult>(`/clients${qs}`, { token });
-    },
-    cached: (token: string) =>
-      apiFetch<{ clients: NetworkClient[]; total: number; cached: boolean }>("/clients/cached", { token }),
+    cached: (token: string) => apiFetch<ClientListResult>("/clients/cached", { token }),
+    refresh: (token: string) =>
+      apiFetch<{ refresh: ClientRefreshStatus }>("/clients/refresh", { method: "POST", token }),
   },
 
   // Devices
@@ -1468,11 +1464,33 @@ export interface DNSServer {
   created_at: string;
 }
 
-export interface ClientScanResult {
+// State of the on-demand client refresh (POST /clients/refresh).
+export interface ClientRefreshStatus {
+  // false on an instance that polls nothing: there is nothing to refresh from.
+  available: boolean;
+  running: boolean;
+  started_at?: string;
+  finished_at?: string;
+  // Set while a new refresh would be refused as too soon.
+  next_allowed_at?: string;
+  min_interval_seconds: number;
+  // What the last finished refresh did.
+  clients: number;
+  devices_read: number;
+  devices_skipped: number;
+  timed_out?: boolean;
+}
+
+export interface ClientListResult {
   clients: NetworkClient[];
   total: number;
-  limited: boolean;
-  timed_out: boolean;
+  active?: number;
+  cached: boolean;
+  // When the newest cache entry was seen (absent for an empty cache).
+  updated_at?: string;
+  age_seconds?: number;
+  // Absent from a backend older than the refresh endpoint.
+  refresh?: ClientRefreshStatus;
 }
 
 export interface NetworkClient {

@@ -241,6 +241,9 @@ export function PortHistoryCard({
       (type: ControlType, status: unknown) => setAnswer({ topic: streamTopic, type, status: status as LiveStreamStatus }),
       [streamTopic],
     ),
+    // The stream samples the device for as long as anyone is subscribed:
+    // a tab nobody is looking at gives its lease back.
+    { pauseWhenHidden: true },
   );
 
   // Snapshot mode: a new reading of this port's counters adds a point (the

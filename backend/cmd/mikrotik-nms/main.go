@@ -125,7 +125,7 @@ func main() {
 	flows := pollerMgr.Flows()
 	telemetry.SetFlowMetricsSource(func() telemetry.FlowMetrics { return flowMetrics(flows.Status(), time.Now()) })
 
-	router := api.NewRouter(db, hub, cfg, pool, nil, pollerMgr.PortStats(), flows, pollerMgr.Cadence())
+	router := api.NewRouter(db, hub, cfg, pool, nil, pollerMgr.PortStats(), flows, pollerMgr.Cadence(), pollerMgr.ClientRefresh())
 
 	srv := &http.Server{
 		Addr:         cfg.Listen,

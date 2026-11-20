@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, useMemo, useEffect, useRef } from "react";
-import { Radar, Loader2, Wifi, ArrowUpDown, Monitor } from "lucide-react";
+import { useState, useMemo, useEffect, useCallback, useRef } from "react";
+import { Radar, Loader2, Wifi, ArrowUpDown, Monitor, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -22,7 +22,9 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { useAuth } from "@/context/auth";
-import { api, type NetworkClient } from "@/lib/api";
+import { api, ApiError, type ClientRefreshStatus, type NetworkClient } from "@/lib/api";
+import { useNow } from "@/hooks/use-now";
+import { usePageVisible } from "@/hooks/use-websocket";
 import { toast } from "sonner";
 
 type SortKey = "mac_address" | "ip_address" | "host_name" | "device_name" | "interface" | "source" | "ssid" | "signal" | "ap" | "vendor" | "last_seen";
@@ -37,6 +39,17 @@ function timeAgo(dateStr?: string): string {
   if (hrs < 24) return `${hrs}h ${mins % 60}m ago`;
   return `${Math.floor(hrs / 24)}d ago`;
 }
+
+// "4:05" until a refresh is allowed again.
+function countdown(ms: number): string {
+  const total = Math.max(0, Math.ceil(ms / 1000));
+  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
+}
+
+// How often the page re-reads the cache: while a refresh runs, and otherwise
+// to follow the scheduled discovery.
+const REFRESH_POLL_MS = 3_000;
+const CACHE_POLL_MS = 60_000;
 
 function formatRate(rate?: string): string | undefined {
   if (!rate) return undefined;
@@ -60,75 +73,90 @@ function DetailRow({ label, value }: { label: string; value?: string | null }) {
 
 export default function ClientsPage() {
   const { token } = useAuth();
+  const now = useNow();
+  const pageVisible = usePageVisible();
   const [clients, setClients] = useState<NetworkClient[]>([]);
-  const [scanning, setScanning] = useState(false);
-  const [scanned, setScanned] = useState(false);
+  // Whether the cache has been read at least once (it may be empty).
+  const [loaded, setLoaded] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [updatedAt, setUpdatedAt] = useState<string | null>(null);
+  const [refresh, setRefresh] = useState<ClientRefreshStatus | null>(null);
+  // The click is on its way to the server: bridges the moment before the
+  // list reports the refresh as running.
+  const [starting, setStarting] = useState(false);
   const [search, setSearch] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>("ip_address");
   const [sortAsc, setSortAsc] = useState(true);
   const [tab, setTab] = useState("all");
   const [showInactive, setShowInactive] = useState(false);
   const [selected, setSelected] = useState<NetworkClient | null>(null);
-  const [scanTime, setScanTime] = useState<string | null>(null);
-  const [scanTimeout, setScanTimeout] = useState(30);
-  const [scanLimit, setScanLimit] = useState(0);
-  const [scanTotal, setScanTotal] = useState(0);
-  const [wasLimited, setWasLimited] = useState(false);
-  const [wasTimedOut, setWasTimedOut] = useState(false);
 
-  const handleScan = async () => {
+  // The list is the cache the scheduled discovery keeps: reading it costs
+  // the devices nothing, so the page simply re-reads it.
+  const wasRunning = useRef(false);
+  const load = useCallback(async () => {
     if (!token) return;
-    setScanning(true);
-    setWasLimited(false);
-    setWasTimedOut(false);
     try {
-      const result = await api.clients.scan(token, {
-        limit: scanLimit > 0 ? scanLimit : undefined,
-        timeout: scanTimeout,
-      });
-      setClients(result.clients);
-      setScanTotal(result.total);
-      setWasLimited(result.limited);
-      setWasTimedOut(result.timed_out);
-      setScanned(true);
-      setScanTime(new Date().toLocaleTimeString());
-      let msg = `Found ${result.total} client(s)`;
-      if (result.limited) msg += ` (showing ${result.clients.length})`;
-      if (result.timed_out) msg += " (scan timed out)";
-      toast.success(msg);
+      const result = await api.clients.cached(token);
+      setClients(result.clients ?? []);
+      setUpdatedAt(result.updated_at ?? null);
+      setRefresh(result.refresh ?? null);
+      setLoaded(true);
+      setLoadError(null);
+      const running = !!result.refresh?.running;
+      if (wasRunning.current && !running && result.refresh) {
+        const r = result.refresh;
+        toast.success(
+          `Refreshed: ${r.clients} client(s) from ${r.devices_read} device(s)` +
+            (r.timed_out ? " (some devices did not answer in time)" : ""),
+        );
+      }
+      wasRunning.current = running;
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Scan failed");
+      setLoadError(err instanceof Error ? err.message : "Failed to load clients");
+    }
+  }, [token]);
+
+  const running = !!refresh?.running || starting;
+  useEffect(() => {
+    if (!token || !pageVisible) return;
+    // Deferred a tick so the effect itself never sets state.
+    const first = setTimeout(load, 0);
+    const timer = setInterval(load, running ? REFRESH_POLL_MS : CACHE_POLL_MS);
+    return () => {
+      clearTimeout(first);
+      clearInterval(timer);
+    };
+  }, [token, pageVisible, running, load]);
+
+  const handleRefresh = async () => {
+    if (!token || running) return;
+    setStarting(true);
+    try {
+      const result = await api.clients.refresh(token);
+      setRefresh(result.refresh);
+      wasRunning.current = result.refresh.running;
+    } catch (err) {
+      // 409 (one is running) and 429 (too soon) are answers, not failures:
+      // the list says which, and until when.
+      if (err instanceof ApiError && (err.status === 409 || err.status === 429)) {
+        toast.info(err.message);
+      } else {
+        toast.error(err instanceof Error ? err.message : "Refresh failed");
+      }
+      await load();
     } finally {
-      setScanning(false);
+      setStarting(false);
     }
   };
 
-  // Load cached clients on mount, then auto-scan for fresh data
-  const didInit = useRef(false);
-  useEffect(() => {
-    if (!token || didInit.current) return;
-    didInit.current = true;
-
-    // Load cached data immediately (instant, no scan delay)
-    api.clients.cached(token).then((result) => {
-      if (result.clients?.length > 0) {
-        setClients(result.clients);
-        setScanTotal(result.total);
-        setScanned(true);
-      }
-    }).catch(() => {});
-
-    // Auto-trigger a fresh scan in the background
-    setScanning(true);
-    api.clients.scan(token, { timeout: scanTimeout }).then((result) => {
-      setClients(result.clients);
-      setScanTotal(result.total);
-      setWasLimited(result.limited);
-      setWasTimedOut(result.timed_out);
-      setScanned(true);
-      setScanTime(new Date().toLocaleTimeString());
-    }).catch(() => {}).finally(() => setScanning(false));
-  }, [token, scanTimeout]);
+  // The server's limit: one refresh per min_interval_seconds, fleet-wide.
+  const nextAllowedMs = refresh?.next_allowed_at ? Date.parse(refresh.next_allowed_at) : 0;
+  const waitMs = now > 0 && nextAllowedMs > now ? nextAllowedMs - now : 0;
+  const limitMinutes = Math.round((refresh?.min_interval_seconds ?? 300) / 60);
+  // Scheduled reads and refreshes re-stamp the clients they saw, so the
+  // cache is as old as its newest entry. `now` re-renders the label.
+  const updatedLabel = updatedAt && now > 0 ? timeAgo(updatedAt) : null;
 
   const toggleSort = (key: SortKey) => {
     if (sortKey === key) setSortAsc(!sortAsc);
@@ -184,57 +212,41 @@ export default function ClientsPage() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold">Network Clients</h1>
-          {scanTime && (
-            <p className="text-xs text-muted-foreground">
-              Last scan: {scanTime} — {scanTotal} total
-              {wasLimited && ` (limited to ${clients.length})`}
-              {wasTimedOut && " (timed out)"}
-            </p>
-          )}
+          <p className="text-xs text-muted-foreground">
+            {loaded
+              ? updatedLabel
+                ? `From the discovery cache, updated ${updatedLabel}`
+                : "From the discovery cache"
+              : "Loading the discovery cache…"}
+            {loadError && <span className="ml-2 text-destructive">{loadError}</span>}
+          </p>
         </div>
-        <div className="flex items-end gap-3">
-          <div className="space-y-1">
-            <label className="text-xs text-muted-foreground">Timeout (s)</label>
-            <select
-              className="flex h-8 w-20 rounded-md border bg-transparent px-2 text-sm"
-              value={scanTimeout}
-              onChange={(e) => setScanTimeout(Number(e.target.value))}
+        {refresh?.available && (
+          <div className="flex flex-col items-end gap-1">
+            <Button
+              onClick={handleRefresh}
+              disabled={running || waitMs > 0}
+              title={`Reads the ARP, lease and registration tables of every device now. Limited to one refresh every ${limitMinutes} min.`}
             >
-              <option value={10}>10s</option>
-              <option value={30}>30s</option>
-              <option value={60}>60s</option>
-              <option value={120}>120s</option>
-            </select>
-          </div>
-          <div className="space-y-1">
-            <label className="text-xs text-muted-foreground">Max clients</label>
-            <select
-              className="flex h-8 w-24 rounded-md border bg-transparent px-2 text-sm"
-              value={scanLimit}
-              onChange={(e) => setScanLimit(Number(e.target.value))}
-            >
-              <option value={0}>All</option>
-              <option value={50}>50</option>
-              <option value={100}>100</option>
-              <option value={250}>250</option>
-              <option value={500}>500</option>
-              <option value={1000}>1000</option>
-            </select>
-          </div>
-          <Button onClick={handleScan} disabled={scanning}>
-            {scanning ? (
-              <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Scanning ({scanTimeout}s)...</>
-            ) : (
-              <><Radar className="mr-2 h-4 w-4" />Scan Network</>
+              {running ? (
+                <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Refreshing…</>
+              ) : waitMs > 0 ? (
+                <><RefreshCw className="mr-2 h-4 w-4" />Refresh in {countdown(waitMs)}</>
+              ) : (
+                <><RefreshCw className="mr-2 h-4 w-4" />Refresh</>
+              )}
+            </Button>
+            {waitMs > 0 && !running && (
+              <span className="text-xs text-muted-foreground">One refresh every {limitMinutes} min keeps the devices idle</span>
             )}
-          </Button>
-        </div>
+          </div>
+        )}
       </div>
 
-      {scanned && (
+      {loaded && clients.length > 0 && (
         <>
           <div className="grid gap-4 md:grid-cols-4">
             <Card>
@@ -358,21 +370,23 @@ export default function ClientsPage() {
         </>
       )}
 
-      {!scanned && !scanning && (
+      {loaded && clients.length === 0 && (
         <Card>
           <CardContent className="py-16 text-center text-muted-foreground">
             <Radar className="mx-auto mb-3 h-10 w-10" />
             <p className="text-lg font-medium mb-1">No clients discovered yet</p>
-            <p className="text-sm">Scanning will start automatically, or click Scan Network above</p>
+            <p className="text-sm">
+              The scheduled discovery fills this list within a few minutes of the first device coming online
+              {refresh?.available ? " — or use Refresh to read the devices now" : ""}
+            </p>
           </CardContent>
         </Card>
       )}
-      {!scanned && scanning && (
+      {!loaded && !loadError && (
         <Card>
           <CardContent className="py-16 text-center text-muted-foreground">
             <Loader2 className="mx-auto mb-3 h-10 w-10 animate-spin" />
-            <p className="text-lg font-medium mb-1">Scanning network...</p>
-            <p className="text-sm">Querying ARP tables, DHCP leases, and WiFi registrations from all managed devices</p>
+            <p className="text-lg font-medium">Loading clients…</p>
           </CardContent>
         </Card>
       )}

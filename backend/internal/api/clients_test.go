@@ -1,0 +1,155 @@
+package api
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/mikrotik-nms/backend/internal/database/queries"
+	"github.com/mikrotik-nms/backend/internal/poller"
+	"github.com/mikrotik-nms/backend/internal/routeros"
+)
+
+// fakeClientRefresher answers Start with a scripted error.
+type fakeClientRefresher struct {
+	status poller.ClientRefreshStatus
+	err    error
+	starts int
+}
+
+func (f *fakeClientRefresher) Status() poller.ClientRefreshStatus { return f.status }
+func (f *fakeClientRefresher) Start() (poller.ClientRefreshStatus, error) {
+	f.starts++
+	return f.status, f.err
+}
+
+func clientsRouter(s *Server) http.Handler {
+	r := chi.NewRouter()
+	r.Get("/clients", s.handleListClients)
+	r.Get("/clients/cached", s.handleListClients)
+	r.Post("/clients/refresh", s.handleRefreshClients)
+	return r
+}
+
+type clientListBody struct {
+	Clients    []networkClient   `json:"clients"`
+	Total      int               `json:"total"`
+	Cached     bool              `json:"cached"`
+	Limited    *bool             `json:"limited"`
+	TimedOut   *bool             `json:"timed_out"`
+	UpdatedAt  string            `json:"updated_at"`
+	AgeSeconds *int              `json:"age_seconds"`
+	Refresh    clientRefreshView `json:"refresh"`
+	Error      string            `json:"error"`
+}
+
+func doClients(t *testing.T, h http.Handler, method, path string) (*httptest.ResponseRecorder, clientListBody) {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(method, path, nil))
+	var body clientListBody
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("%s %s: decode %q: %v", method, path, rec.Body.String(), err)
+	}
+	return rec, body
+}
+
+// Both list endpoints serve the cache, with its age, the refresh state and
+// the fields a tab still running the scanning frontend reads.
+func TestClientListIsTheCacheWithItsAge(t *testing.T) {
+	routeros.SetDialPolicy(nil)
+	db := newTestDB(t)
+	if err := queries.UpsertMACLookup(db, &queries.MACLookup{
+		MACAddress: "02:00:00:00:00:0A", IPAddress: "192.0.2.10", HostName: "laptop", Source: "dhcp",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	next := time.Now().Add(3 * time.Minute).UTC()
+	s := &Server{db: db, clients: &fakeClientRefresher{status: poller.ClientRefreshStatus{
+		MinIntervalSeconds: 300, NextAllowedAt: &next, Clients: 1, DevicesRead: 2,
+	}}}
+	h := clientsRouter(s)
+
+	for _, path := range []string{"/clients", "/clients/cached", "/clients?limit=5&timeout=120"} {
+		rec, body := doClients(t, h, http.MethodGet, path)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s = %d", path, rec.Code)
+		}
+		if body.Total != 1 || len(body.Clients) != 1 || body.Clients[0].HostName != "laptop" || !body.Cached {
+			t.Errorf("GET %s: clients = %+v (total %d, cached %v)", path, body.Clients, body.Total, body.Cached)
+		}
+		if body.Limited == nil || *body.Limited || body.TimedOut == nil || *body.TimedOut {
+			t.Errorf("GET %s: the scan fields must be present and false", path)
+		}
+		if body.UpdatedAt == "" || body.AgeSeconds == nil || *body.AgeSeconds < 0 || *body.AgeSeconds > 60 {
+			t.Errorf("GET %s: updated_at=%q age_seconds=%v; want the newest entry's age", path, body.UpdatedAt, body.AgeSeconds)
+		}
+		rf := body.Refresh
+		if !rf.Available || rf.MinIntervalSeconds != 300 || rf.NextAllowedAt == nil || rf.DevicesRead != 2 {
+			t.Errorf("GET %s: refresh = %+v", path, rf)
+		}
+	}
+	if n := s.clients.(*fakeClientRefresher).starts; n != 0 {
+		t.Fatalf("listing the clients started %d refreshes", n)
+	}
+
+	// An empty cache has no age; without a refresher the list is still served.
+	empty := &Server{db: newTestDB(t)}
+	rec, body := doClients(t, clientsRouter(empty), http.MethodGet, "/clients")
+	if rec.Code != http.StatusOK || body.Total != 0 || body.AgeSeconds != nil || body.Refresh.Available ||
+		body.Refresh.MinIntervalSeconds != 300 {
+		t.Fatalf("empty cache, no refresher: %d %+v", rec.Code, body)
+	}
+}
+
+func TestClientRefreshEndpointStatuses(t *testing.T) {
+	routeros.SetDialPolicy(nil)
+	t.Cleanup(func() { routeros.SetDialPolicy(nil) })
+	started := time.Now().UTC()
+	next := time.Now().Add(100 * time.Second).UTC()
+	fake := &fakeClientRefresher{status: poller.ClientRefreshStatus{Running: true, StartedAt: &started, MinIntervalSeconds: 300}}
+	s := &Server{db: newTestDB(t), clients: fake}
+	h := clientsRouter(s)
+
+	rec, body := doClients(t, h, http.MethodPost, "/clients/refresh")
+	if rec.Code != http.StatusAccepted || !body.Refresh.Running || !body.Refresh.Available {
+		t.Fatalf("started: %d %+v", rec.Code, body)
+	}
+
+	fake.err = poller.ErrClientRefreshRunning
+	rec, body = doClients(t, h, http.MethodPost, "/clients/refresh")
+	if rec.Code != http.StatusConflict || body.Error == "" || !body.Refresh.Running {
+		t.Fatalf("running: %d %+v", rec.Code, body)
+	}
+
+	fake.err = poller.ErrClientRefreshTooSoon
+	fake.status = poller.ClientRefreshStatus{StartedAt: &started, NextAllowedAt: &next, MinIntervalSeconds: 300}
+	rec, body = doClients(t, h, http.MethodPost, "/clients/refresh")
+	if rec.Code != http.StatusTooManyRequests || body.Error == "" || body.Refresh.NextAllowedAt == nil {
+		t.Fatalf("too soon: %d %+v", rec.Code, body)
+	}
+	if ra := rec.Header().Get("Retry-After"); ra != "100" && ra != "101" {
+		t.Fatalf("Retry-After = %q, want the seconds until next_allowed_at", ra)
+	}
+
+	fake.err = routeros.ErrPollersOff
+	rec, body = doClients(t, h, http.MethodPost, "/clients/refresh")
+	if rec.Code != http.StatusServiceUnavailable || body.Error == "" {
+		t.Fatalf("pollers off: %d %+v", rec.Code, body)
+	}
+
+	rec, body = doClients(t, clientsRouter(&Server{db: s.db}), http.MethodPost, "/clients/refresh")
+	if rec.Code != http.StatusServiceUnavailable || body.Error == "" {
+		t.Fatalf("no refresher: %d %+v", rec.Code, body)
+	}
+
+	// With polling off the list says a refresh is not available.
+	routeros.SetDialPolicy(&routeros.DialPolicy{Enabled: false})
+	_, body = doClients(t, h, http.MethodGet, "/clients")
+	if body.Refresh.Available {
+		t.Fatal("refresh reported available while polling is off")
+	}
+}

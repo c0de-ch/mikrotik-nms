@@ -631,11 +631,26 @@ Channel/routerboard responses summarize per-device outcomes, e.g.
 
 | Method | Path | Role | Description |
 |---|---|---|---|
-| GET | `/clients` | any | Live ARP/DHCP/CAPsMAN scan across online devices, deduped by MAC and DNS-enriched. Query `limit` (>0, unlimited if absent), `timeout` (5–120s, default 30). |
-| GET | `/clients/cached` | any | Last persisted client snapshot from `mac_lookup` (fast, no device contact). |
+| GET | `/clients` | any | The client list from the cache (`mac_lookup`) the scheduled pollers keep: deduped by MAC, DNS-enriched. **No device is contacted.** (This endpoint used to scan the whole fleet on every call; its `limit` and `timeout` parameters are ignored now.) |
+| GET | `/clients/cached` | any | The same response as `/clients`. |
+| POST | `/clients/refresh` | any | Start an on-demand refresh of the cache: the ARP, DHCP-lease and wifi-registration reads the pollers make anyway, pulled forward once. Rate-limited **fleet-wide to one per 5 minutes**, one at a time. Answers at once: `202 {refresh}`; `409 {error, refresh}` while one is running; `429 {error, refresh}` with a `Retry-After` header inside the interval; `503` with `MIKROTIK_NMS_POLLERS=off`. Poll the list until `refresh.running` is false. |
 | GET | `/debug/wifi` | any | Raw WiFi/CAPsMAN registration-table rows for one device. **Requires** query `device_id`. |
 
-The `/clients` response is `{clients: [...], total, limited, timed_out}`.
+The list response is `{clients: [...], total, active, cached: true, updated_at,
+age_seconds, refresh, limited: false, timed_out: false}`. `updated_at` /
+`age_seconds` are the newest cache entry's (absent for an empty cache);
+`limited` and `timed_out` are kept for browser tabs still running a frontend
+from before the scan was removed. `refresh` is `{available, running,
+started_at?, finished_at?, next_allowed_at?, min_interval_seconds, clients,
+devices_read, devices_skipped, timed_out?}`: `available` is false on an
+instance that polls nothing, `next_allowed_at` is set while a new refresh
+would be refused, and the counters describe the last finished refresh.
+
+A refresh reads a device only as its polling plan allows — nothing on a
+paused or offline device, DHCP leases only where the class plan has them
+(C3), registration tables only from the menus the capability probe found (a
+switch is never asked for one) — plus the external lease sources (Kea,
+OPNsense).
 
 ### Network Health (bridge / STP / loop detection)
 
@@ -771,6 +786,14 @@ subscriptions per topic and only forwards messages for topics you subscribed to
 server pings every 30s and limits inbound frames to 4096 bytes. A client's
 subscribes and unsubscribes are applied in the order it sent them.
 
+**Limits.** Only the topics in the [topic catalog](#topic-catalog) can be subscribed
+to, and one connection holds at most **64** subscriptions at a time
+([`ws/topics.go`](../backend/internal/ws/topics.go)). A subscribe outside
+either limit is not applied and is answered with a `subscribe.error` control
+frame whose `data` is `{code, error}` — `code` `unknown_topic`, or
+`too_many_subscriptions` (with `max`). Subscribing again to a topic the
+connection already holds does not use another slot; unsubscribing frees one.
+
 ### Server message envelope
 
 Every broadcast is a `Message` ([`ws/hub.go`](../backend/internal/ws/hub.go)):
@@ -788,7 +811,8 @@ from `data`; match the incoming `msg.topic` against the topic you subscribed to.
 
 **Control frames.** A topic whose server-side owner vets subscribers (today
 only the per-port live stream) answers each subscribe with a frame that has a
-`type` — data frames never carry one:
+`type` — data frames never carry one. (The hub itself sends a
+`subscribe.error` for a subscribe it refuses, see Limits above.)
 
 ```json
 { "topic": "traffic.<uuid>.ether1", "type": "subscribe.ack",   "timestamp": "…", "data": { "period_seconds": 15, "class": "C1", … } }

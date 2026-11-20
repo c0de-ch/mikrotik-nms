@@ -46,6 +46,11 @@ type Manager struct {
 
 	// cadence is the per-class schedule every loop shares (NewCadence).
 	cadence CadenceSource
+	// caps is the one capability probe per device the pollers share, and
+	// clients the on-demand client refresh; both are built in NewManager
+	// because main hands the refresh to the API right after it.
+	caps    *CapabilityCache
+	clients *ClientRefresher
 	// inventory schedules Tier 6 (the info refresh) per device, topoClock
 	// the topology loop's neighbor and route reads; classes holds the class
 	// probe's pending changes (hysteresis).
@@ -104,7 +109,9 @@ func NewManager(db *sql.DB, pool *routeros.Pool, hub *ws.Hub, cfg *config.Config
 		topoClock:    newTierClock(Schedule()),
 		classes:      newClassGate(),
 		stagger:      time.Second,
+		caps:         NewCapabilityCache(),
 	}
+	m.clients = NewClientRefresher(db, pool, resolver.New(db), m.caps, m.cadence)
 	// One schedule for every loop: the class cadences, floored by the
 	// fleet-wide settings and env vars, and the per-device pause.
 	m.portStats.UseCadence(m.cadence)
@@ -135,6 +142,12 @@ func (m *Manager) Flows() *flow.Collector {
 // per-device cadences, floors and pause as the pollers that wrote the rows.
 func (m *Manager) Cadence() CadenceSource {
 	return m.cadence
+}
+
+// ClientRefresh returns the on-demand client refresh (non-nil right after
+// NewManager) behind POST /clients/refresh.
+func (m *Manager) ClientRefresh() *ClientRefresher {
+	return m.clients
 }
 
 // Start launches the background loops. Database-only jobs — retention and
@@ -173,7 +186,7 @@ func (m *Manager) Start() {
 	// One /log/print per device per window, shared by the wifi and
 	// network-health pollers, and one capability probe per device for all.
 	logs := NewLogReader()
-	caps := NewCapabilityCache()
+	caps := m.caps
 
 	wifiTracker := NewWifiTracker(m.db, m.pool, m.hub, 30*time.Second)
 	wifiTracker.UseLogReader(logs)

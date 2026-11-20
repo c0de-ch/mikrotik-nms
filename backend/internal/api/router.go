@@ -44,6 +44,11 @@ type Server struct {
 	// do. nil (tests) = a schedule built from the database and config.
 	cadence poller.CadenceSource
 
+	// clients is the on-demand client refresh behind POST /clients/refresh.
+	// nil = not wired (tests): the client list is still served from the
+	// cache.
+	clients clientRefresher
+
 	// flowCache holds aggregated flow rows of recent /flows/* queries;
 	// cleared by every flow admin write (see flowChanged).
 	flowCache flowAggCache
@@ -65,10 +70,14 @@ type flowSource interface {
 }
 
 func NewRouter(db *sql.DB, hub *ws.Hub, cfg *config.Config, pool *routeros.Pool, m mailer.Sender,
-	portStats *poller.PortStatsCollector, flows *flow.Collector, cadence poller.CadenceSource) http.Handler {
+	portStats *poller.PortStatsCollector, flows *flow.Collector, cadence poller.CadenceSource,
+	clients *poller.ClientRefresher) http.Handler {
 	s := &Server{db: db, hub: hub, cfg: cfg, pool: pool, mailer: m, resolver: resolver.New(db), cadence: cadence}
 	if portStats != nil {
 		s.portStats = portStats
+	}
+	if clients != nil { // avoid a typed-nil interface
+		s.clients = clients
 	}
 	if flows != nil { // avoid a typed-nil interface
 		s.flows = flows
@@ -144,8 +153,9 @@ func NewRouter(db *sql.DB, hub *ws.Hub, cfg *config.Config, pool *routeros.Pool,
 
 			// Discovery
 			r.Get("/discovery", s.handleDiscoverDevices)
-			r.Get("/clients", s.handleScanClients)
-			r.Get("/clients/cached", s.handleCachedClients)
+			r.Get("/clients", s.handleListClients)
+			r.Get("/clients/cached", s.handleListClients)
+			r.Post("/clients/refresh", s.handleRefreshClients)
 			r.Get("/debug/wifi", s.handleDebugWifiRaw)
 
 			// WiFi tracking & MAC lookup
