@@ -46,20 +46,41 @@ func NewFirmwareChecker(db *sql.DB, hub *ws.Hub) *FirmwareChecker {
 	return &FirmwareChecker{db: db, hub: hub, now: time.Now}
 }
 
-// LastFetched is the time of the newest successful feed fetch.
+// LastFetched is the time of the OLDEST channel's last successful fetch —
+// the age the UI shows must not hide a channel whose fetches keep failing.
+// ok is false until every channel has been fetched once.
 func (c *FirmwareChecker) LastFetched() (time.Time, bool) {
-	rels, err := queries.ListFirmwareReleases(c.db)
-	if err != nil || len(rels) == 0 {
+	fetched, err := c.fetchedAt()
+	if err != nil || len(fetched) < len(firmware.Channels) {
 		return time.Time{}, false
 	}
-	var last time.Time
-	for _, r := range rels {
-		if r.FetchedAt.After(last) {
-			last = r.FetchedAt
+	var oldest time.Time
+	for _, ch := range firmware.Channels {
+		if t := fetched[ch]; oldest.IsZero() || t.Before(oldest) {
+			oldest = t
 		}
 	}
-	return last, true
+	return oldest, true
 }
+
+// fetchedAt is each stored channel's last successful fetch.
+func (c *FirmwareChecker) fetchedAt() (map[string]time.Time, error) {
+	rels, err := queries.ListFirmwareReleases(c.db)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]time.Time, len(rels))
+	for _, r := range rels {
+		out[r.Channel] = r.FetchedAt
+	}
+	return out, nil
+}
+
+// firmwareLastAttempt is each channel's last fetch attempt, successful or
+// not (process memory, guarded by firmwareFetchMu): a channel whose fetch
+// fails is retried on the next Refresh, but never more often than
+// FirmwareFetchMinInterval.
+var firmwareLastAttempt = map[string]time.Time{}
 
 // Refresh fetches the feed when the last successful fetch is older than
 // minAge (never more often than FirmwareFetchMinInterval), then recomputes
@@ -71,12 +92,28 @@ func (c *FirmwareChecker) Refresh(ctx context.Context, minAge time.Duration) (bo
 	defer firmwareFetchMu.Unlock()
 
 	minAge = max(minAge, FirmwareFetchMinInterval)
-	if last, ok := c.LastFetched(); ok && c.now().Sub(last) < minAge {
+	fetched, err := c.fetchedAt()
+	if err != nil {
+		return false, err
+	}
+	now := c.now()
+	var due []string
+	for _, ch := range firmware.Channels {
+		if t, ok := fetched[ch]; ok && now.Sub(t) < minAge {
+			continue // fresh enough
+		}
+		if t, ok := firmwareLastAttempt[ch]; ok && now.Sub(t) < FirmwareFetchMinInterval {
+			continue // failed recently: wait before asking again
+		}
+		due = append(due, ch)
+	}
+	if len(due) == 0 {
 		return false, c.Recompute()
 	}
 	var ok int
 	var lastErr error
-	for _, ch := range firmware.Channels {
+	for _, ch := range due {
+		firmwareLastAttempt[ch] = now
 		rel, err := c.Feed.Fetch(ctx, ch)
 		if err != nil {
 			log.Printf("firmware: release feed: %v", err)
@@ -126,6 +163,12 @@ func (c *FirmwareChecker) releaseMap() (map[string]string, error) {
 func compareFirmware(releases map[string]string, channel, installed string) (*string, bool) {
 	v, ok := releases[channel]
 	if !ok || v == "" {
+		return nil, false
+	}
+	// The feed is RouterOS 7's (NEWESTa7.*): a v6 device on "stable" is not
+	// offered 7.x as an update — that is a major upgrade its job would not
+	// perform ("already up to date").
+	if iv, ok := firmware.ParseVersion(installed); !ok || len(iv.Nums) == 0 || iv.Nums[0] != 7 {
 		return nil, false
 	}
 	return &v, firmware.UpdateAvailable(installed, v)

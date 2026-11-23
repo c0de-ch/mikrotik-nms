@@ -107,7 +107,7 @@ export function AddressProposalsPanel({
         <CardDescription>
           Neighbor discovery saw {proposals.length === 1 ? "a device" : `${proposals.length} devices`} at a new
           address. Nothing has been contacted there yet
-          {isAdmin ? " — approve to move the device, or dismiss." : "; an admin can approve or dismiss the move."}
+          {isAdmin ? " — approve to move the device, or dismiss (the same move stays quiet for 7 days)." : "; an admin can approve or dismiss the move."}
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-2">

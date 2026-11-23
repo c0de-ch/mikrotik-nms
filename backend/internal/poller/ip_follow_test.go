@@ -650,3 +650,61 @@ func TestVerifyAndCommitAddressMove_Commits(t *testing.T) {
 		t.Fatalf("want 1 change event, got %d", n)
 	}
 }
+
+// A committed move forgets the device's pooled dial spec: Close would keep
+// it, and the next GetLive would redial the OLD address with the stored
+// credential — whoever holds that address now.
+func TestVerifyAndCommitAddressMove_ForgetsTheOldDialSpec(t *testing.T) {
+	db, fake, _ := followFixture(t, "192.0.2.56", "127.0.0.1")
+	fake.Reply("/system/resource/print", map[string]string{"board-name": "cAP ax", "version": "7.16"})
+	pool := routeros.NewPool(false)
+	fake.Dial(t, pool, "d1") // the pooled session the pollers use
+	if _, err := VerifyAndCommitAddressMove(db, pool, ws.NewHub(),
+		AddressMove{DeviceID: "d1", OldAddr: "192.0.2.56", NewAddr: "127.0.0.1"}); err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	conns := fake.Conns()
+	if c := pool.GetLive("d1"); c != nil {
+		t.Fatal("GetLive redialled the remembered spec after the move")
+	}
+	if fake.Conns() != conns {
+		t.Error("a dial was made with the forgotten spec")
+	}
+}
+
+// A dismissed move is not proposed again for DismissedProposalQuiet, a
+// failed one for FailedProposalQuiet; a different new address still is.
+func TestUpsertAddressProposal_DecisionsStayQuiet(t *testing.T) {
+	db, _, _ := followFixture(t, "192.0.2.56", "192.0.2.232")
+	now := time.Now()
+	for _, tc := range []struct {
+		status string
+		quiet  time.Duration
+		addr   string
+	}{
+		{queries.ProposalDismissed, queries.DismissedProposalQuiet, "192.0.2.232"},
+		{queries.ProposalFailed, queries.FailedProposalQuiet, "192.0.2.233"},
+	} {
+		if c, err := queries.UpsertAddressProposal(db, "d1", "192.0.2.56", tc.addr, "", now); err != nil || !c {
+			t.Fatalf("%s: first upsert created=%v err=%v", tc.status, c, err)
+		}
+		ps := pendingProposals(t, db)
+		if len(ps) != 1 {
+			t.Fatalf("%s: pending %+v", tc.status, ps)
+		}
+		if _, err := queries.DecideAddressProposal(db, ps[0].ID, tc.status, "admin", "", now); err != nil {
+			t.Fatal(err)
+		}
+		if c, err := queries.UpsertAddressProposal(db, "d1", "192.0.2.56", tc.addr, "", now.Add(time.Minute)); err != nil || c {
+			t.Errorf("%s: re-proposed a minute later (created=%v err=%v)", tc.status, c, err)
+		}
+		if c, err := queries.UpsertAddressProposal(db, "d1", "192.0.2.56", tc.addr, "", now.Add(tc.quiet+time.Minute)); err != nil || !c {
+			t.Errorf("%s: not re-proposed after the quiet period (created=%v err=%v)", tc.status, c, err)
+		}
+		// close it again for the next case
+		ps = pendingProposals(t, db)
+		for _, p := range ps {
+			_, _ = queries.DecideAddressProposal(db, p.ID, queries.ProposalExpired, "", "", now)
+		}
+	}
+}

@@ -447,8 +447,11 @@ func VerifyAndCommitAddressMove(db *sql.DB, pool *routeros.Pool, hub *ws.Hub, mv
 	if !committed {
 		return "", &MoveError{Category: MoveStale, Reason: "the device address changed while the move was being verified"}
 	}
-	// Drop the stale live connection to the OLD ip so health/info redial the new one.
-	pool.Close(mv.DeviceID)
+	// Drop the live connection to the OLD ip AND its remembered dial spec:
+	// Close keeps the spec, so the next GetLive would redial the old address
+	// with the stored credential — whoever holds that address now. The
+	// pollers redial from the device row, which carries the new address.
+	pool.Forget(mv.DeviceID)
 
 	summary := fmt.Sprintf("%s → %s (verified board=%s)", mv.OldAddr, mv.NewAddr, res.Board)
 	_, _ = queries.InsertLoopEvent(db, &queries.LoopEvent{

@@ -18,6 +18,13 @@ const (
 	ProposalFailed     = "failed"
 )
 
+// DismissedProposalQuiet and FailedProposalQuiet are how long a dismissed or
+// failed (device, old address, new address) move is not proposed again.
+const (
+	DismissedProposalQuiet = 7 * 24 * time.Hour
+	FailedProposalQuiet    = 24 * time.Hour
+)
+
 // AddressProposal is one device_address_proposals row: a managed device seen
 // by neighbor discovery at an address other than the one the NMS polls.
 type AddressProposal struct {
@@ -59,6 +66,22 @@ func UpsertAddressProposal(db *sql.DB, deviceID, oldAddr, newAddr, mac string, n
 	}
 	if n, _ := res.RowsAffected(); n > 0 {
 		return false, tx.Commit()
+	}
+	// An admin's decision on this very move stands for a while: a dismissed
+	// move is not re-proposed for DismissedProposalQuiet, a failed one for
+	// FailedProposalQuiet — otherwise the next topology cycle would reopen it
+	// within a minute, forever.
+	var quiet int
+	if err := tx.QueryRow(
+		`SELECT COUNT(*) FROM device_address_proposals
+		  WHERE device_id = ? AND old_address = ? AND new_address = ?
+		    AND ((status = 'dismissed' AND decided_at >= ?) OR (status = 'failed' AND decided_at >= ?))`,
+		deviceID, oldAddr, newAddr,
+		now.Add(-DismissedProposalQuiet).Unix(), now.Add(-FailedProposalQuiet).Unix()).Scan(&quiet); err != nil {
+		return false, err
+	}
+	if quiet > 0 {
+		return false, nil
 	}
 	if _, err := tx.Exec(
 		`UPDATE device_address_proposals
@@ -166,6 +189,20 @@ func GetAddressProposal(db *sql.DB, id int64) (*AddressProposal, error) {
 		return nil, err
 	}
 	return &p, nil
+}
+
+// RecordAddressProposalOutcome stores the outcome of an approval whose
+// verification ran (approved or failed) whatever the row's status: the
+// topology reconcile may have settled the proposal while the approval was
+// logging in — a committed move supersedes its own proposal — and the row
+// must then say what actually happened, not "superseded".
+func RecordAddressProposalOutcome(db *sql.DB, id int64, status, decidedBy, result string, now time.Time) error {
+	_, err := db.Exec(
+		`UPDATE device_address_proposals
+		    SET status = ?, decided_by = ?, decided_at = ?, result = ?
+		  WHERE id = ?`,
+		status, decidedBy, now.Unix(), result, id)
+	return err
 }
 
 // DecideAddressProposal closes a pending proposal with status, recording who

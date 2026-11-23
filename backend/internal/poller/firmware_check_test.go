@@ -37,6 +37,7 @@ func feedServer(t *testing.T, stable string) (*httptest.Server, *atomic.Int32) {
 // recompute from the database: a device, even one reachable through the
 // pool, receives no command — in particular no check-for-updates.
 func TestFirmwareRefreshSendsDevicesNothing(t *testing.T) {
+	resetFirmwareAttempts(t)
 	db := pollerTestDB(t)
 	fake := routerostest.NewDevice(t)
 	pool := routeros.NewPool(false)
@@ -230,5 +231,83 @@ func TestUpgradeWithRebootInstallsAndVerifies(t *testing.T) {
 	devs, _ := queries.ListUpgradeJobDevices(db, "job")
 	if len(devs) != 1 || devs[0].Status != "completed" || !strings.Contains(devs[0].Message, "Upgraded to 7.17") {
 		t.Errorf("job device = %+v", devs)
+	}
+}
+
+func resetFirmwareAttempts(t *testing.T) {
+	t.Helper()
+	firmwareFetchMu.Lock()
+	firmwareLastAttempt = map[string]time.Time{}
+	firmwareFetchMu.Unlock()
+	t.Cleanup(func() {
+		firmwareFetchMu.Lock()
+		firmwareLastAttempt = map[string]time.Time{}
+		firmwareFetchMu.Unlock()
+	})
+}
+
+// A channel whose fetch failed is retried on a later Refresh (after
+// FirmwareFetchMinInterval), not only when the others go stale a day later;
+// and "last fetched" stays unknown until every channel has been fetched.
+func TestFirmwareRefreshRetriesAFailedChannel(t *testing.T) {
+	resetFirmwareAttempts(t)
+	db := pollerTestDB(t)
+	var failLongTerm atomic.Bool
+	failLongTerm.Store(true)
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		if r.URL.Path == "/NEWESTa7.long-term" && failLongTerm.Load() {
+			http.Error(w, "down", http.StatusBadGateway)
+			return
+		}
+		_, _ = w.Write([]byte("7.17 1732700000\n"))
+	}))
+	defer srv.Close()
+
+	now := time.Unix(1_800_000_000, 0)
+	c := NewFirmwareChecker(db, nil)
+	c.Feed = firmware.Feed{BaseURL: srv.URL}
+	c.now = func() time.Time { return now }
+
+	if fetched, err := c.Refresh(context.Background(), 24*time.Hour); err != nil || !fetched {
+		t.Fatalf("first Refresh = %v %v", fetched, err)
+	}
+	if _, ok := c.LastFetched(); ok {
+		t.Error("LastFetched is known while long-term was never fetched")
+	}
+
+	// Within the hour: nothing is asked again, not even the failed channel.
+	now = now.Add(10 * time.Minute)
+	before := hits.Load()
+	_, _ = c.Refresh(context.Background(), 24*time.Hour)
+	if hits.Load() != before {
+		t.Errorf("fetched %d times within FirmwareFetchMinInterval", hits.Load()-before)
+	}
+
+	// An hour later only the failed channel is fetched.
+	failLongTerm.Store(false)
+	now = now.Add(time.Hour)
+	before = hits.Load()
+	if fetched, err := c.Refresh(context.Background(), 24*time.Hour); err != nil || !fetched {
+		t.Fatalf("retry Refresh = %v %v", fetched, err)
+	}
+	if got := hits.Load() - before; got != 1 {
+		t.Errorf("retry fetched %d channels, want only long-term", got)
+	}
+	last, ok := c.LastFetched()
+	if !ok || !last.Equal(now.Add(-70*time.Minute)) {
+		t.Errorf("LastFetched = %v %v, want the oldest channel's fetch", last, ok)
+	}
+}
+
+// The feed is RouterOS 7's: a v6 device is never offered 7.x.
+func TestFirmwareV6DeviceIsNotOfferedV7(t *testing.T) {
+	releases := map[string]string{"stable": "7.17", "long-term": "7.12.2"}
+	if latest, avail := compareFirmware(releases, "long-term", "6.49.17"); avail || latest != nil {
+		t.Errorf("v6 on long-term: latest=%v avail=%v", latest, avail)
+	}
+	if _, avail := compareFirmware(releases, "stable", "7.16.2"); !avail {
+		t.Error("7.16.2 on stable should be offered 7.17")
 	}
 }

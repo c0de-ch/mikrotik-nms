@@ -22,9 +22,10 @@ import (
 // sent to the MNDP-learned address, so approval needs a fresh password login
 // — or dismisses it.
 
-// approveMu serialises approvals: two clicks on one proposal must not log in
-// at the new address twice.
-var approveMu sync.Mutex
+// proposalMu serialises approvals and dismissals: two clicks on one proposal
+// must not log in at the new address twice, and a dismissal must not close a
+// proposal whose approval is still verifying.
+var proposalMu sync.Mutex
 
 func (s *Server) mountAddressProposalRoutes(r chi.Router) {
 	r.Get("/devices/address-proposals", s.handleListAddressProposals)
@@ -101,8 +102,8 @@ func decider(r *http.Request) string {
 // or its polling is paused; 503/403 from the dial policy (the proposal stays
 // pending).
 func (s *Server) handleApproveAddressProposal(w http.ResponseWriter, r *http.Request) {
-	approveMu.Lock()
-	defer approveMu.Unlock()
+	proposalMu.Lock()
+	defer proposalMu.Unlock()
 
 	p, ok := s.loadPendingProposal(w, r)
 	if !ok {
@@ -142,20 +143,23 @@ func (s *Server) handleApproveAddressProposal(w http.ResponseWriter, r *http.Req
 			writeError(w, http.StatusConflict, me.Reason)
 			return
 		}
-		_, _ = queries.DecideAddressProposal(s.db, p.ID, queries.ProposalFailed, decider(r), me.Reason, now)
+		_ = queries.RecordAddressProposalOutcome(s.db, p.ID, queries.ProposalFailed, decider(r), me.Reason, now)
 		s.audit(r, "address_move_refused", p.DeviceID,
 			fmt.Sprintf("%s → %s: %s", p.OldAddress, p.NewAddress, me.Reason))
 	} else {
-		_, _ = queries.DecideAddressProposal(s.db, p.ID, queries.ProposalApproved, decider(r), summary, now)
+		_ = queries.RecordAddressProposalOutcome(s.db, p.ID, queries.ProposalApproved, decider(r), summary, now)
 		s.audit(r, "address_move_approved", p.DeviceID, summary)
 	}
 	s.writeProposal(w, p.ID)
 }
 
 // handleDismissAddressProposal — POST /devices/address-proposals/{id}/dismiss.
-// Closes the proposal without contacting anything; a later sighting at the
-// same address opens a new one.
+// Closes the proposal without contacting anything. The same move is not
+// proposed again for queries.DismissedProposalQuiet (7 days); a failed
+// approval keeps it quiet for FailedProposalQuiet (24 h).
 func (s *Server) handleDismissAddressProposal(w http.ResponseWriter, r *http.Request) {
+	proposalMu.Lock()
+	defer proposalMu.Unlock()
 	p, ok := s.loadPendingProposal(w, r)
 	if !ok {
 		return
