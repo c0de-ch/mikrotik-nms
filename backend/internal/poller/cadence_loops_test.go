@@ -121,11 +121,10 @@ func topoTestManager(t *testing.T, db *sql.DB, devices map[string]*fakeRunner) (
 	clock := &testClock{t: at(12, 0, 0)}
 	m := &Manager{
 		db: db, hub: ws.NewHub(), cfg: cfg,
-		cadence:      NewCadence(db, cfg),
-		topoClock:    newTierClock(reg),
-		portStats:    NewPortStatsCollector(db, nil, nil),
-		ipRejectSeen: map[string]time.Time{},
-		now:          clock.now,
+		cadence:   NewCadence(db, cfg),
+		topoClock: newTierClock(reg),
+		portStats: NewPortStatsCollector(db, nil, nil),
+		now:       clock.now,
 		runner: func(id string) routeros.Runner {
 			if r, ok := devices[id]; ok {
 				return r

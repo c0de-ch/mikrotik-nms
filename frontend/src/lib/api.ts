@@ -248,6 +248,21 @@ export const api = {
     // failures, …), most recently seen first.
     findings: (token: string, id: string, limit = 50) =>
       apiFetch<DeviceFinding[]>(`/devices/${id}/findings?limit=${limit}`, { token }),
+    // IP auto-follow proposals: a managed device seen by MNDP/CDP at a new
+    // address. Pending only unless status is given ("all" or one status).
+    addressProposals: (token: string, status?: AddressProposalStatus | "all") =>
+      apiFetch<AddressProposal[]>(
+        `/devices/address-proposals${status ? `?status=${status}` : ""}`,
+        { token },
+      ),
+    // Admin + a password typed in the last 5 min (wrap in withFreshAuth):
+    // logs in at the new address with the stored credential, verifies board,
+    // version and MAC, and re-points the device. 200 with status "approved"
+    // or "failed"; 409 when no longer pending, stale or the device is paused.
+    approveAddressProposal: (token: string, id: number) =>
+      apiFetch<AddressProposal>(`/devices/address-proposals/${id}/approve`, { method: "POST", token }),
+    dismissAddressProposal: (token: string, id: number) =>
+      apiFetch<AddressProposal>(`/devices/address-proposals/${id}/dismiss`, { method: "POST", token }),
   },
 
   // Topology
@@ -734,6 +749,31 @@ export interface DeviceFinding {
   first_seen: string;
   last_seen: string;
   count: number;
+}
+
+export type AddressProposalStatus =
+  | "pending"
+  | "approved"
+  | "dismissed"
+  | "superseded"
+  | "expired"
+  | "failed";
+
+// One device_address_proposals row: neighbor discovery saw device_id's MAC
+// (mac) at new_address while the NMS polls it at old_address.
+export interface AddressProposal {
+  id: number;
+  device_id: string;
+  device_identity: string;
+  old_address: string;
+  new_address: string;
+  mac: string;
+  first_seen: string;
+  last_seen: string;
+  status: AddressProposalStatus;
+  decided_by?: string;
+  decided_at?: string;
+  result?: string;
 }
 
 export interface CreateDeviceRequest {

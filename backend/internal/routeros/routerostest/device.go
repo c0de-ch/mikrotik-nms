@@ -2,7 +2,7 @@
 //
 // A Device accepts the login a real device would and then records every
 // command it receives, answering each with an empty !done so the caller does
-// not hang. Dialled through a real routeros.Pool it is a tripwire: a test
+// not hang (or with the rows a test scripted for it with Reply). Dialled through a real routeros.Pool it is a tripwire: a test
 // hands the pool to the code under test and asserts the device saw nothing,
 // which proves a path costs the devices no I/O whatever helper it might call.
 package routerostest
@@ -28,6 +28,18 @@ type Device struct {
 	mu       sync.Mutex
 	conns    int
 	commands []string
+	replies  map[string][]map[string]string
+}
+
+// Reply scripts the rows (one !re sentence each, attribute → value) that
+// answer every later command with this word, e.g. "/system/resource/print".
+func (d *Device) Reply(command string, rows ...map[string]string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.replies == nil {
+		d.replies = make(map[string][]map[string]string)
+	}
+	d.replies[command] = rows
 }
 
 // NewDevice starts a fake device; it stops when the test ends.
@@ -96,6 +108,19 @@ func (d *Device) serve(c net.Conn) {
 		}
 		if sen.Word != "/login" {
 			d.record(sen.Word)
+		}
+		d.mu.Lock()
+		rows := d.replies[sen.Word]
+		d.mu.Unlock()
+		for _, row := range rows {
+			w.BeginSentence()
+			w.WriteWord("!re")
+			for k, v := range row {
+				w.WriteWord("=" + k + "=" + v)
+			}
+			if err := w.EndSentence(); err != nil {
+				return
+			}
 		}
 		w.BeginSentence()
 		w.WriteWord("!done")

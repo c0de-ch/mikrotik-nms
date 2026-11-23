@@ -28,6 +28,7 @@ import { useAuth } from "@/context/auth";
 import { api, type Device, type DiscoveredDevice, type DeepDiscoveredDevice } from "@/lib/api";
 import { deviceStatusBadgeClass, deviceStatusLabel } from "@/lib/status";
 import { DeviceClassBadge, PauseGlyph, PausedBadge } from "@/components/devices/device-load";
+import { AddressProposalsPanel } from "@/components/devices/address-proposals";
 import { useNow } from "@/hooks/use-now";
 import { CLASSES, budgetClass, budgetReason, isPollingPaused, type BudgetClass } from "@/lib/device-load";
 import { toast } from "sonner";
@@ -685,6 +686,8 @@ function DevicesPageInner() {
           </div>
         )}
       </div>
+
+      {token && <AddressProposalsPanel token={token} isAdmin={isAdmin} onDeviceMoved={loadDevices} />}
 
       {activeFilters.length > 0 && (
         <div className="flex flex-wrap items-center gap-2">

@@ -103,8 +103,9 @@ the one in the token. (An open WebSocket stays open until it reconnects.)
 
 ### Fresh login for device-changing actions
 
-`POST /firmware/upgrade`, `/firmware/channel` and `/firmware/routerboard`
-need a password login at most **5 minutes** old. A session kept alive by
+`POST /firmware/upgrade`, `/firmware/channel`, `/firmware/routerboard` and
+`/devices/address-proposals/{id}/approve` need a password login at most
+**5 minutes** old. A session kept alive by
 refreshes gets:
 
 ```json
@@ -166,6 +167,9 @@ user), **admin** (admin role required).
 | POST | `/devices` | admin | Add a device. `username` and `password` are **required** (there are no default credentials). Tests the RouterOS connection first; `400` if unreachable. `500` when the password cannot be stored encrypted — it is never stored in plaintext instead. |
 | PUT | `/devices/{id}` | admin | Update device fields (only non-empty fields override). The stored password changes only when the body carries a new `password`. A change of address, port, TLS flag, username or password closes the device's pooled API session, so the next poll connects with the new values. |
 | DELETE | `/devices/{id}` | admin | Remove a device (and its pooled API session). |
+| GET | `/devices/address-proposals` | any | IP auto-follow proposals (see below), newest sighting first. Pending only by default; `?status=all` or one status. `[{id, device_id, device_identity, old_address, new_address, mac, first_seen, last_seen, status, decided_by?, decided_at?, result?}]`. Database only. |
+| POST | `/devices/address-proposals/{id}/approve` | admin + fresh login | Log in at `new_address` with the device's **stored** credential (a separate one-off session), check board, RouterOS version and the matched MAC, and re-point the device when all hold. `200` with the proposal — `status` `approved`, or `failed` with the reason in `result` (the address is untouched). `409` when the proposal is no longer pending, the device's address changed since (the proposal becomes `superseded`) or its polling is paused; `503`/`403` from the polling fence (the proposal stays pending). Audited (`address_move_approved` / `address_move_refused`). |
+| POST | `/devices/address-proposals/{id}/dismiss` | admin | Close a pending proposal without contacting anything. Audited (`address_move_dismissed`). A later sighting at the same address opens a new proposal. |
 | POST | `/devices/{id}/polling/pause` | admin | Pause every poller but liveness for `{"hours": 1…168}` (the UI offers 1 h and 24 h). Returns the device. |
 | POST | `/devices/{id}/polling/resume` | admin | Clear a pause. Returns the device. |
 | PUT | `/devices/{id}/polling` | admin | `{"profile": "auto"\|"light", "class_override": "C1"\|"C2"\|"C3"\|null}`; omitted keys are kept, `null` clears the override. `400` when the override is more capable than the probed class (overrides may only make polling gentler). Returns the device. |
@@ -190,6 +194,18 @@ the speed-test, ping and traceroute run-nows of a target it probes from,
 it, and no job is created), and `GET /debug/wifi`. A firmware job already
 running when the pause starts is not interrupted. A granted live stream
 stops at its next sample.
+
+**IP auto-follow proposals.** With the `auto_follow_ip` setting on, the
+topology loop matches neighbor-discovery (MNDP/CDP) sightings to managed
+devices by MAC; a device seen at an address other than the one it is polled
+at gets a `pending` proposal (one per device and new address; repeat
+sightings bump `last_seen`, and a newer sighting at another address
+supersedes the older proposal). The NMS never logs in at a proposed address
+on its own: discovery packets are unauthenticated, so sending the stored
+credential there needs an admin's approval. Pending proposals become
+`superseded` when the device's address changes and `expired` after 24 h
+without a sighting. A new proposal is also recorded as an
+`ip_address_proposed` network-health event.
 
 Create/update body fields:
 

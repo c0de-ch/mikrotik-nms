@@ -38,13 +38,6 @@ type Manager struct {
 	// reason as portStats.
 	flows *flow.Collector
 
-	// ipRejectSeen rate-limits auto-follow rejection audit rows by proposed
-	// move + failure category (see ipRejectionTTL / recordIPRejection). Accessed
-	// only from the topology goroutine today, but guarded so it stays safe if
-	// that changes.
-	ipRejectMu   sync.Mutex
-	ipRejectSeen map[string]time.Time
-
 	// cadence is the per-class schedule every loop shares (NewCadence).
 	cadence CadenceSource
 	// caps is the one capability probe per device the pollers share, and
@@ -98,19 +91,18 @@ func NewManager(db *sql.DB, pool *routeros.Pool, hub *ws.Hub, cfg *config.Config
 		flowCfg.Listen = nil
 	}
 	m := &Manager{
-		db:           db,
-		pool:         pool,
-		hub:          hub,
-		cfg:          cfg,
-		ipRejectSeen: make(map[string]time.Time),
-		portStats:    NewPortStatsCollector(db, pool, hub),
-		flows:        flow.New(db, pool, hub, flowCfg),
-		cadence:      NewCadence(db, cfg),
-		inventory:    newTierClock(Schedule()),
-		topoClock:    newTierClock(Schedule()),
-		classes:      newClassGate(),
-		stagger:      time.Second,
-		caps:         NewCapabilityCache(),
+		db:        db,
+		pool:      pool,
+		hub:       hub,
+		cfg:       cfg,
+		portStats: NewPortStatsCollector(db, pool, hub),
+		flows:     flow.New(db, pool, hub, flowCfg),
+		cadence:   NewCadence(db, cfg),
+		inventory: newTierClock(Schedule()),
+		topoClock: newTierClock(Schedule()),
+		classes:   newClassGate(),
+		stagger:   time.Second,
+		caps:      NewCapabilityCache(),
 	}
 	m.clients = NewClientRefresher(db, pool, resolver.New(db), m.caps, m.cadence)
 	// One schedule for every loop: the class cadences, floored by the
