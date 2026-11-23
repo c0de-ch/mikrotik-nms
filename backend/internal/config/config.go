@@ -49,8 +49,11 @@ type Config struct {
 	AllowedOrigins []string
 
 	// Polling intervals
-	HealthInterval        time.Duration
-	TopologyInterval      time.Duration
+	HealthInterval   time.Duration
+	TopologyInterval time.Duration
+	// FirmwareInterval is how old MikroTik's release feed may get before it
+	// is fetched again (checked hourly, at least an hour apart; default
+	// 24 h). Devices are never asked — see poller.FirmwareChecker.
 	FirmwareInterval      time.Duration
 	RetentionInterval     time.Duration
 	NetworkHealthInterval time.Duration
@@ -121,7 +124,7 @@ func Load() (*Config, error) {
 		Pollers:               strings.ToLower(strings.TrimSpace(envOr("MIKROTIK_NMS_POLLERS", PollersOff))),
 		HealthInterval:        envDurationOr("MIKROTIK_NMS_HEALTH_INTERVAL", 30*time.Second),
 		TopologyInterval:      envDurationOr("MIKROTIK_NMS_TOPOLOGY_INTERVAL", 60*time.Second),
-		FirmwareInterval:      envDurationOr("MIKROTIK_NMS_FIRMWARE_INTERVAL", 6*time.Hour),
+		FirmwareInterval:      envDurationOr("MIKROTIK_NMS_FIRMWARE_INTERVAL", 24*time.Hour),
 		RetentionInterval:     envDurationOr("MIKROTIK_NMS_RETENTION_INTERVAL", 1*time.Hour),
 		NetworkHealthInterval: envDurationOr("MIKROTIK_NMS_NETWORK_HEALTH_INTERVAL", 60*time.Second),
 		RetentionDays:         envIntOr("MIKROTIK_NMS_RETENTION_DAYS", 7),

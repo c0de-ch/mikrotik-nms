@@ -240,7 +240,7 @@ The backend is configured **entirely** via `MIKROTIK_NMS_*` environment variable
 | `MIKROTIK_NMS_ROS_TLS_VERIFY` | Verify RouterOS API-TLS device certificates. Off by default (self-signed certs) | `false` | No |
 | `MIKROTIK_NMS_HEALTH_INTERVAL` | Liveness ping cadence | `30s` | No |
 | `MIKROTIK_NMS_TOPOLOGY_INTERVAL` | **Floor** of each device's `/ip/neighbor` and default-route reads (they run on the device's class cadence when slower), and the link-graph rebuild cadence | `60s` | No |
-| `MIKROTIK_NMS_FIRMWARE_INTERVAL` | RouterOS update-check cadence | `6h` | No |
+| `MIKROTIK_NMS_FIRMWARE_INTERVAL` | Max age of MikroTik's release feed (fetched by the NMS; devices are never asked to check) | `24h` | No |
 | `MIKROTIK_NMS_NETWORK_HEALTH_INTERVAL` | **Floor** of each device's bridge/STP, bridge-VLAN and log reads (class cadence when slower), and the port-state scan / stale-row prune cadence | `60s` | No |
 | `MIKROTIK_NMS_RETENTION_INTERVAL` | Cleanup sweep cadence | `1h` | No |
 | `MIKROTIK_NMS_RETENTION_DAYS` | Retention window for samples / events | `7` | No |

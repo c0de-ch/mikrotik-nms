@@ -101,7 +101,7 @@ The backend is configured entirely via `MIKROTIK_NMS_*` environment variables. T
 | `MIKROTIK_NMS_ROS_TLS_VERIFY` | No | `false` | Verify RouterOS API-TLS device certificates (off by default; self-signed certs) |
 | `MIKROTIK_NMS_HEALTH_INTERVAL` | No | `30s` | How often to poll `/system/resource` |
 | `MIKROTIK_NMS_TOPOLOGY_INTERVAL` | No | `60s` | How often to poll `/ip/neighbor` and rebuild the link graph |
-| `MIKROTIK_NMS_FIRMWARE_INTERVAL` | No | `6h` | How often to check for RouterOS firmware updates |
+| `MIKROTIK_NMS_FIRMWARE_INTERVAL` | No | `24h` | How often the NMS refetches MikroTik's release feed (devices are never asked to check) |
 | `MIKROTIK_NMS_NETWORK_HEALTH_INTERVAL` | No | `60s` | How often to poll bridge/STP state and parse bridge logs |
 | `MIKROTIK_NMS_RETENTION_INTERVAL` | No | `1h` | How often to sweep old samples / events |
 | `MIKROTIK_NMS_RETENTION_DAYS` | No | `7` | How long to keep traffic samples, wifi/client history, and loop events |

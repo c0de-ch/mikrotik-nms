@@ -51,6 +51,10 @@ type Server struct {
 	// cache.
 	clients clientRefresher
 
+	// firmware is the release-feed checker behind /firmware/check. nil = one
+	// over the database per request (tests inject one with a fake feed).
+	firmware *poller.FirmwareChecker
+
 	// alertNotifier delivers the channel test notification. nil = one built
 	// from the database and config per request (tests substitute a fake).
 	alertNotifier alertTester
@@ -221,6 +225,7 @@ func NewRouter(db *sql.DB, hub *ws.Hub, cfg *config.Config, pool *routeros.Pool,
 
 			// Firmware
 			r.Get("/firmware", s.handleListFirmware)
+			r.Get("/firmware/releases", s.handleFirmwareReleases)
 			r.Get("/firmware/upgrade/{jobId}", s.handleGetUpgradeJob)
 			r.Group(func(r chi.Router) {
 				r.Use(auth.RequireRole("admin"))
