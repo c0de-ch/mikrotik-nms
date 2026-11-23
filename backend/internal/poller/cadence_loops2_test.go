@@ -1,11 +1,8 @@
 package poller
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
-	"log"
-	"strings"
 	"testing"
 	"time"
 
@@ -424,24 +421,5 @@ func TestConnectivityAndSpeedTestsSkipPausedDevices(t *testing.T) {
 	}
 	if count("ping_samples", "target_id", "t-down") != 1 || count("speed_samples", "test_id", "s-down") != 1 {
 		t.Error("an offline probing device must still record its error sample")
-	}
-}
-
-// The firmware check (scheduled and "Check All") skips a paused device and
-// says so once.
-func TestFirmwareCheckSkipsPausedDevice(t *testing.T) {
-	db := pollerTestDB(t)
-	mustCreateDevice(t, db, &queries.Device{ID: "fw-held", Identity: "fw-held", Address: "192.0.2.40"})
-	if err := queries.PauseDevicePolling(db, "fw-held", time.Now().Add(time.Hour)); err != nil {
-		t.Fatal(err)
-	}
-	var buf bytes.Buffer
-	orig := log.Writer()
-	log.SetOutput(&buf)
-	defer log.SetOutput(orig)
-	RunFirmwareCheck(context.Background(), db, routeros.NewPool(false), ws.NewHub())
-	RunFirmwareCheck(context.Background(), db, routeros.NewPool(false), ws.NewHub())
-	if got := strings.Count(buf.String(), "firmware check skips fw-held"); got != 1 {
-		t.Errorf("skip logged %d times, want once per pause:\n%s", got, buf.String())
 	}
 }

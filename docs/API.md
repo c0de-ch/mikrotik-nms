@@ -683,15 +683,25 @@ Slack-compatible endpoints read; `event` is `firing`, `resolved` or `test`.
 
 | Method | Path | Role | Description |
 |---|---|---|---|
-| GET | `/firmware` | any | Latest firmware status per device. |
+| GET | `/firmware` | any | Firmware status per device: channel and installed version (from the device's hourly inventory read), the newest version of that channel and `update_available` (from MikroTik's release feed), RouterBOARD firmware. `last_checked` = the device read. |
+| GET | `/firmware/releases` | any | The release feed as last fetched: `[{channel, version, build_time, fetched_at}]`. |
 | GET | `/firmware/upgrade/{jobId}` | any | Upgrade job state plus per-device progress (`{job, devices}`). |
-| POST | `/firmware/check` | admin | Trigger an async update check across online devices. `202`. |
-| POST | `/firmware/upgrade` | admin, fresh login | Start an upgrade job. Body `{device_ids: [...], reboot: bool}`. Returns `202` with `job_id`. `403 reauth_required` when the password login is older than 5 minutes. |
-| POST | `/firmware/channel` | admin, fresh login | Set release channel. Body `{device_ids, channel}`; `channel` ∈ `stable`/`long-term`/`testing`/`development`. |
-| POST | `/firmware/routerboard` | admin, fresh login | Upgrade RouterBOOT firmware. Body `{device_ids, reboot}`. |
+| POST | `/firmware/check` | admin | "Check All": fetch MikroTik's release feed (`NEWESTa7.<channel>`) and recompute every device — **no device is contacted**. At most one fetch per hour: within the hour `200 {"status":"recent","fetched_at","next_fetch"}` (recomputed only), otherwise `202 {"status":"fetching"}`. `503` while polling is off. |
+| POST | `/firmware/upgrade` | admin, fresh login | Start an upgrade job. Body `{device_ids: [...], reboot: bool, username, password}`. Returns `202` with `job_id`. `reboot: true` installs (the device reboots); `false` only downloads — RouterOS installs it on the next reboot. |
+| POST | `/firmware/channel` | admin, fresh login | Set the update channel. Body `{device_ids, channel, username, password}`; `channel` ∈ `stable`/`long-term`/`testing`/`development`. |
+| POST | `/firmware/routerboard` | admin, fresh login | Upgrade RouterBOOT firmware. Body `{device_ids, reboot, username, password}`. |
+
+`username` + `password` are a RouterOS login typed for that one action
+(`400` without them). The server uses them only on dedicated one-shot
+sessions to the job's devices — never the pooled poll session, never the
+stored poll credential — and never stores, logs or returns them; it drops
+them when the action or job ends. The first device that refuses the login
+stops the action: the remaining devices are skipped (`"skipped: login
+refused by <device> …"`) rather than sent the same wrong password.
+`403 reauth_required` when the NMS password login is older than 5 minutes.
 
 Channel/routerboard responses summarize per-device outcomes, e.g.
-`{"changed": 2, "errors": ["<id>: not connected"]}`.
+`{"changed": 2, "errors": ["<device>: login refused by <device> — check the username and password typed for this job"]}`.
 
 ### WiFi & MAC Lookup
 
@@ -914,7 +924,7 @@ the same topic (new period after a class change) replaces the earlier one.
 | `traffic.<deviceID>.<iface>` | object | Live `/interface/monitor-traffic` samples of one interface `{device_id, interface_name, rx_bps, tx_bps, rx_pps, tx_pps, period_seconds, timestamp}`, within the device class's caps (see below). Vetted: every subscribe gets a `subscribe.ack` or `subscribe.error`. Sampling starts once granted and stops on the last unsubscribe. |
 | `traffic.ports` | object | Fleet-wide port snapshot `{ts, interval_seconds, ready, ports: [{device_id, iface, type, comment?, running, disabled, rx_bps, tx_bps, rx_pps, tx_pps}]}` while anyone is subscribed, after each counter cycle that changed the rates (a reading landed or rates expired; devices are read on their own cadences, so several times per `port_stats_interval`, but never from a cycle that read nothing). Raw: no `role`/`device_name` (join `/traffic/ports/roles`). |
 | `topology.traffic` | object | Per-link throughput for the network map — the `GET /traffic/links` payload — once per port-counter cycle while anyone is subscribed. Derived from the snapshot: no device call. |
-| `firmware.update` | object | Firmware status changed (poll cycle or triggered check). |
+| `firmware.update` | object | A device's update became available (inventory read or release-feed recompute). |
 | `upgrade.progress.<jobId>` | object | Per-device upgrade progress for one job. |
 | `wifi.event` | object | A WiFi join/leave/roam event. |
 | `network.health` | object | Network-health poll-cycle summary. |
@@ -971,7 +981,7 @@ curl -s "$BASE/devices" -H "Authorization: Bearer $TOKEN" | jq
 curl -s -X POST "$BASE/firmware/upgrade" \
   -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
-  -d '{"device_ids":["<device-uuid>"],"reboot":true}'
+  -d '{"device_ids":["<device-uuid>"],"reboot":true,"username":"<routeros-user>","password":"<routeros-password>"}'
 ```
 
 First-run bootstrap (no users yet) uses `setup` instead of `login`:

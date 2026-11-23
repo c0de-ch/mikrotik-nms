@@ -391,25 +391,33 @@ export const api = {
   // Firmware
   firmware: {
     list: (token: string) => apiFetch<FirmwareStatus[]>("/firmware", { token }),
+    // Check All: refreshes MikroTik's release feed (at most hourly) and
+    // recomputes every device's comparison — the devices are not contacted.
     check: (token: string) =>
-      apiFetch("/firmware/check", { method: "POST", token }),
-    upgrade: (token: string, deviceIds: string[], reboot: boolean) =>
-      apiFetch("/firmware/upgrade", {
+      apiFetch<{ status: "fetching" | "recent"; fetched_at?: string; next_fetch?: string }>("/firmware/check", {
         method: "POST",
         token,
-        body: JSON.stringify({ device_ids: deviceIds, reboot }),
       }),
-    setChannel: (token: string, deviceIds: string[], channel: string) =>
+    releases: (token: string) => apiFetch<FirmwareRelease[]>("/firmware/releases", { token }),
+    // The device-changing actions log in with a RouterOS user typed for this
+    // one action (never stored by the server or the browser).
+    upgrade: (token: string, deviceIds: string[], reboot: boolean, creds: DeviceCredentials) =>
+      apiFetch<{ job_id: string }>("/firmware/upgrade", {
+        method: "POST",
+        token,
+        body: JSON.stringify({ device_ids: deviceIds, reboot, ...creds }),
+      }),
+    setChannel: (token: string, deviceIds: string[], channel: string, creds: DeviceCredentials) =>
       apiFetch<{ changed: number; errors: string[] }>("/firmware/channel", {
         method: "POST",
         token,
-        body: JSON.stringify({ device_ids: deviceIds, channel }),
+        body: JSON.stringify({ device_ids: deviceIds, channel, ...creds }),
       }),
-    upgradeRouterboard: (token: string, deviceIds: string[], reboot: boolean) =>
+    upgradeRouterboard: (token: string, deviceIds: string[], reboot: boolean, creds: DeviceCredentials) =>
       apiFetch<{ upgraded: number; errors: string[] }>("/firmware/routerboard", {
         method: "POST",
         token,
-        body: JSON.stringify({ device_ids: deviceIds, reboot }),
+        body: JSON.stringify({ device_ids: deviceIds, reboot, ...creds }),
       }),
   },
 
@@ -1467,6 +1475,20 @@ export interface FirmwareStatus {
   routerboard_current: string | null;
   routerboard_upgrade: string | null;
   last_checked: string | null;
+}
+
+// The newest RouterOS version of one update channel, from MikroTik's feed.
+export interface FirmwareRelease {
+  channel: string;
+  version: string;
+  build_time: string | null;
+  fetched_at: string;
+}
+
+// A RouterOS login typed for one firmware action.
+export interface DeviceCredentials {
+  username: string;
+  password: string;
 }
 
 export interface User {
