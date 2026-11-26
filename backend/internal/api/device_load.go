@@ -76,9 +76,11 @@ type deviceLoadSummary struct {
 	CoveredPct float64  `json:"covered_pct"` // covered seconds of the window, %
 	CPUAvg     *float64 `json:"cpu_avg"`     // quiet-window average
 	CPUMax     *int64   `json:"cpu_max"`
-	// The post-poll average, and the quiet-window average of the very
-	// buckets that have a post-poll sample: their difference is what a
-	// counter read adds.
+	// A paired comparison over the buckets that have both samples: the
+	// post-poll average, and the quiet-window average of those very buckets.
+	// Their difference is what a counter read adds. (A post-poll sample in a
+	// bucket without a quiet-window sample has nothing to be compared with
+	// and is left out.)
 	CPUPostAvg     *float64 `json:"cpu_post_avg"`
 	CPUQuietAtPost *float64 `json:"cpu_quiet_at_post"`
 	// Per recorded minute.

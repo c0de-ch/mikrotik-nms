@@ -245,10 +245,10 @@ hourly rollup `device_hours`:
   `rebooted`, `cpu_post` (the hour's average), `nms_wall_ms`, `nms_rows`,
   `nms_timeouts` and `nms_reconnects` come from the minute rows and are
   `null` for hours older than their 14-day retention.
-- `summary.cpu_post_avg` against `summary.cpu_quiet_at_post` (the
-  quiet-window average of the very buckets that have a post-poll sample) is
-  the comparison in one pair of numbers; the `*_per_min` figures are per
-  recorded minute.
+- `summary.cpu_post_avg` against `summary.cpu_quiet_at_post` is the
+  comparison in one pair of numbers: both run over the buckets that have a
+  post-poll sample **and** a quiet-window sample (`null` when there is no
+  such bucket). The `*_per_min` figures are per recorded minute.
 
 The series ends at the newest final minute (hour), like the port charts: a
 device-minute is written together with the port rows of that minute, one to

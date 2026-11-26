@@ -346,7 +346,10 @@ func (r portEgressDrops) Evaluate(now time.Time) ([]Observation, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", RulePortEgressDrops, err)
 	}
-	rows, err := queries.ListPortEgressMinutes(r.db, now.Add(-loadLookback).Truncate(time.Minute), now)
+	// The port rows of every window that can still be judged: one that
+	// ends at a device's newest minute, at most loadFresh old.
+	from := now.Add(-loadFresh - egressDropMinutes*time.Minute).Truncate(time.Minute)
+	rows, err := queries.ListPortEgressMinutes(r.db, from, now)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", RulePortEgressDrops, err)
 	}
