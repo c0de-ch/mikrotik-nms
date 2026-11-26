@@ -1,7 +1,7 @@
 "use client";
 
 import { Fragment, useCallback, useEffect, useState, type ReactNode } from "react";
-import { AlertTriangle, ShieldAlert, ShieldCheck, GitBranch, Radio, Cable, ChevronDown, ChevronRight, Ban, X, Lightbulb } from "lucide-react";
+import { AlertTriangle, ShieldAlert, ShieldCheck, GitBranch, Radio, Cable, ChevronDown, ChevronRight, Ban, X, Lightbulb, CalendarClock } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -19,6 +19,7 @@ import {
   type BridgePortStatus,
   type BridgeWithPorts,
   type Device,
+  type PortRoleName,
   type InterfaceState,
   type LoopEvent,
   type NetworkHealth,
@@ -50,8 +51,26 @@ function HintPanel({ hint, extra }: { hint: HealthHint; extra?: ReactNode }) {
         </div>
         <div>
           <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">How to fix</p>
-          <ul className="list-disc space-y-0.5 pl-4 text-muted-foreground">
-            {hint.fixes.map((f, i) => <li key={i}>{f}</li>)}
+          <ul className="list-disc space-y-1 pl-4 text-muted-foreground">
+            {hint.fixes.map((f, i) => (
+              <li key={i}>
+                {f.window && (
+                  <span
+                    className="mr-1.5 inline-flex items-center gap-1 rounded-sm bg-amber-100 px-1 py-px text-[10px] font-medium text-amber-800 dark:bg-amber-500/15 dark:text-amber-300"
+                    title="This step interrupts traffic: plan it, and tell the people who depend on this device"
+                  >
+                    <CalendarClock className="h-3 w-3" />
+                    maintenance window
+                  </span>
+                )}
+                {f.text}
+                {f.command && (
+                  <code className="mt-0.5 block w-fit max-w-full break-all rounded-sm bg-muted px-1.5 py-0.5 font-mono text-[11px] text-foreground">
+                    {f.command}
+                  </code>
+                )}
+              </li>
+            ))}
           </ul>
         </div>
       </div>
@@ -261,6 +280,8 @@ function StatCard({
   );
 }
 
+const portKey = (deviceId: string, iface: string) => `${deviceId}\u0000${iface}`;
+
 export default function NetworkHealthPage() {
   const { token } = useAuth();
   const [data, setData] = useState<NetworkHealth | null>(null);
@@ -273,6 +294,10 @@ export default function NetworkHealthPage() {
   // The device list, for the class and pause marks next to each device name
   // (a paused device's rows hold their last reading).
   const [devices, setDevices] = useState<Map<string, Device>>(new Map());
+  // What each port is in the topology (access, uplink, …), keyed by device
+  // and interface: a hint only suggests a device change for a port the NMS
+  // knows to be an end-device port.
+  const [portRoles, setPortRoles] = useState<Map<string, { role: PortRoleName; macs: number }>>(new Map());
 
   const load = useCallback(() => {
     if (!token) return;
@@ -289,13 +314,39 @@ export default function NetworkHealthPage() {
           if (alive) setDevices(new Map(list.map((d) => [d.id, d])));
         })
         .catch(console.error);
+    const loadRoles = () =>
+      api.traffic
+        .portRoles(token)
+        .then((res) => {
+          if (alive) {
+            setPortRoles(new Map(res.roles.map((r) => [portKey(r.device_id, r.iface), { role: r.role, macs: r.mac_count }])));
+          }
+        })
+        .catch(console.error);
     loadDevices();
-    const t = setInterval(loadDevices, 60_000);
+    loadRoles();
+    const t = setInterval(() => {
+      loadDevices();
+      loadRoles();
+    }, 60_000);
     return () => {
       alive = false;
       clearInterval(t);
     };
   }, [token]);
+
+  // What the hints may assume about a port: its role and the device's board.
+  const portFacts = useCallback(
+    (deviceId: string, iface: string) => {
+      const known = portRoles.get(portKey(deviceId, iface));
+      return {
+        port_role: known?.role ?? ("" as const),
+        port_macs: known?.macs,
+        board: devices.get(deviceId)?.board,
+      };
+    },
+    [portRoles, devices],
+  );
 
   const toggleFilter = useCallback((key: Exclude<FilterKey, "none">) => {
     setFilter((cur) => (cur === key ? "none" : key));
@@ -460,7 +511,7 @@ export default function NetworkHealthPage() {
         {open && (
           <TableRow className="bg-muted/30 hover:bg-muted/30">
             <TableCell colSpan={8} className={nested ? "pl-8" : ""}>
-              <HintPanel hint={explainEvent(e)} extra={tcnEvidence(e)} />
+              <HintPanel hint={explainEvent({ ...e, ...portFacts(e.device_id, e.port_interface) })} extra={tcnEvidence(e)} />
             </TableCell>
           </TableRow>
         )}
@@ -682,7 +733,7 @@ export default function NetworkHealthPage() {
                       if (p.comment) reasonParts.push(p.comment);
                       const reason = reasonParts.join(" · ") || "—";
 
-                      const hint = explainPortState(p);
+                      const hint = explainPortState({ ...p, ...portFacts(p.device_id, p.interface_name) });
                       const pOpen = portHintOpen[p.id] ?? false;
 
                       return (

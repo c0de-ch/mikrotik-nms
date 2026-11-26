@@ -74,6 +74,15 @@ export function budgetClass(d: Pick<Device, "effective_class" | "poll_profile">)
   return d.poll_profile === "light" ? "C1" : budgeted(d.effective_class);
 }
 
+// canRunProbes: a ping burst or a download is CPU work on the device that
+// runs it, so only a device budgeted as C3 — in practice a router — is
+// offered as the source of a ping target or a speed test. The server refuses
+// anything else (api.checkProbeSource); what already runs on a weaker device
+// keeps running and stays editable.
+export function canRunProbes(d: Pick<Device, "effective_class" | "poll_profile">): boolean {
+  return budgetClass(d) === "C3";
+}
+
 // Why the budget is not simply the probed class, if it is not.
 export type BudgetReason = "unprobed" | "light" | "override" | null;
 

@@ -174,6 +174,11 @@ func (s *Server) handleCreatePingTarget(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, "kind must be \"internet\" or \"client\"")
 		return
 	}
+	// A watch without a device follows its client; a named device is a
+	// probe source and has to be strong enough to be one.
+	if t.DeviceID != "" && !s.checkProbeSource(w, t.DeviceID) {
+		return
+	}
 
 	if err := queries.CreatePingTarget(s.db, t); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create ping target")
@@ -219,7 +224,11 @@ func (s *Server) handleUpdatePingTarget(w http.ResponseWriter, r *http.Request) 
 	if req.Label != nil {
 		t.Label = strings.TrimSpace(*req.Label)
 	}
+	movedTo := ""
 	if req.DeviceID != nil {
+		if id := strings.TrimSpace(*req.DeviceID); id != t.DeviceID {
+			movedTo = id
+		}
 		t.DeviceID = strings.TrimSpace(*req.DeviceID)
 	}
 	if req.SrcAddress != nil {
@@ -249,6 +258,11 @@ func (s *Server) handleUpdatePingTarget(w http.ResponseWriter, r *http.Request) 
 	// device can never run and would only accumulate error samples.
 	if t.Kind == "internet" && t.DeviceID == "" {
 		writeError(w, http.StatusBadRequest, "device_id is required for internet targets")
+		return
+	}
+	// Moving the probe to another device is choosing a probe source again
+	// (clearing it on a watch lets the watch follow its client).
+	if movedTo != "" && !s.checkProbeSource(w, movedTo) {
 		return
 	}
 
