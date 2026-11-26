@@ -2,6 +2,7 @@ package routeros
 
 import (
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -489,5 +490,54 @@ func TestEnsureConnectionReplacesASessionWithOtherParameters(t *testing.T) {
 	dev.waitClosed(t, 1)
 	if _, err := RunCommand(first, "/system/identity/print"); !errors.Is(err, ErrSessionClosed) {
 		t.Fatalf("command on the replaced session = %v, want ErrSessionClosed", err)
+	}
+}
+
+// A dial that panics fails like any other dial: its waiters are released
+// with an error, the backoff starts, and the device can be dialled again —
+// nobody waits for ever on a dial that will never report back.
+func TestPanickingDialDoesNotStrandItsWaiters(t *testing.T) {
+	dev := newTestDevice(t)
+	entered, release := make(chan struct{}), make(chan struct{})
+	broken := true
+	p, clock, dials := scriptedPool(func(spec dialSpec) (*ros.Client, error) {
+		if broken {
+			close(entered)
+			<-release
+			panic("slice bounds out of range")
+		}
+		return dialSession(spec.target, spec.username, spec.password)
+	})
+	joined := make(chan struct{}, 1)
+	p.joined = func() { joined <- struct{}{} }
+
+	errs := make(chan error, 2)
+	go func() { _, err := p.EnsureConnection("d1", dev.target(), "u", "p"); errs <- err }()
+	<-entered
+	go func() { _, err := p.EnsureConnection("d1", dev.target(), "u", "p"); errs <- err }()
+	<-joined
+	close(release)
+	for range 2 {
+		select {
+		case err := <-errs:
+			if err == nil || !strings.Contains(err.Error(), "panic") {
+				t.Fatalf("err = %v, want the contained panic", err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("a caller is still waiting for a dial that panicked")
+		}
+	}
+	if got := dials.Load(); got != 1 {
+		t.Fatalf("dials = %d, want 1", got)
+	}
+
+	// It counted as a failed dial, and the next one works.
+	if p.GetLive("d1") != nil {
+		t.Fatal("redialled inside the backoff")
+	}
+	broken = false
+	clock.advance(ReconnectCooldown)
+	if p.GetLive("d1") == nil {
+		t.Fatal("the device cannot be dialled again after a panicking dial")
 	}
 }

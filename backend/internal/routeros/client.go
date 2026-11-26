@@ -187,7 +187,7 @@ func (p *Pool) connect(key string, spec dialSpec) (*ros.Client, error) {
 	// session and a pin mismatch are counted against.
 	as := spec
 	as.target.DeviceID = observedAs(key, spec.target)
-	client, err := p.dialer(as)
+	client, err := p.dialContained(as)
 	observeSession(as.target.DeviceID, err)
 	if err == nil {
 		clientOwners.Store(client, clientOwner{pool: p, key: key, deviceID: as.target.DeviceID})
@@ -220,6 +220,19 @@ func (p *Pool) connect(key string, spec dialSpec) (*ros.Client, error) {
 	flight.client, flight.err = client, err
 	close(flight.done)
 	return client, err
+}
+
+// dialContained runs the dial and turns a panic in it into an error. The
+// callers that wait for this dial wait on its flight: were a panic to unwind
+// past connect, the flight would never finish, and every later GetLive of the
+// device would wait on it for ever.
+func (p *Pool) dialContained(spec dialSpec) (client *ros.Client, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			client, err = nil, fmt.Errorf("routeros dial %s: panic: %v", spec.target.Address, r)
+		}
+	}()
+	return p.dialer(spec)
 }
 
 // ErrDialSuperseded is the result of a dial that was still running when its
