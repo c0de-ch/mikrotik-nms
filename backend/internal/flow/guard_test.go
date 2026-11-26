@@ -1,9 +1,12 @@
 package flow
 
 import (
+	"context"
 	"database/sql"
+	"net"
 	"net/netip"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -601,5 +604,77 @@ func TestAcceptHook(t *testing.T) {
 	c.reconcile(recv)
 	if !reflect.DeepEqual(accepted, []string{"edge", "firewall"}) {
 		t.Fatalf("after an admin add: %v", accepted)
+	}
+}
+
+// The whole path with its real goroutines (and the race detector): a socket
+// reader sees flow datagrams from a switch's address, the worker blocks it
+// and records the sighting, the maintenance loop is asked for the read (and
+// has no session to run it on), and the drops are persisted at shutdown.
+func TestGuardThroughRunningCollector(t *testing.T) {
+	routeros.SetDialPolicy(nil)
+	db := testDB(t)
+	probe, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Skipf("no loopback UDP: %v", err)
+	}
+	port := probe.LocalAddr().(*net.UDPAddr).Port
+	probe.Close()
+	loop := netip.MustParseAddr("127.0.0.1")
+	seedRoleDevice(t, db, "sw", loop, "CRS326-24G-2S+", devclass.C2, "gateway")
+	c := New(db, routeros.NewPool(false), nil, Config{Listen: []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(port))}})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() { defer close(done); c.Run(ctx) }()
+
+	src, err := net.DialUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)}, &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: port})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer src.Close()
+	deadline := time.Now().Add(10 * time.Second)
+	for c.Status().StartedAt == nil {
+		if time.Now().After(deadline) {
+			t.Fatal("collector never started")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	tmpl, _ := guardPackets(loop, 1)
+	// Re-sent until the worker has blocked the sender (a datagram written
+	// before the socket is bound is lost on loopback).
+	for len(c.Status().Blocked) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("the switch was never blocked: %+v", c.Status())
+		}
+		_, _ = src.Write(tmpl)
+		time.Sleep(20 * time.Millisecond)
+	}
+	sent := c.Status().Global.Datagrams
+	_, _ = src.Write(tmpl)
+	for c.Status().Global.Datagrams <= sent {
+		if time.Now().After(deadline) {
+			t.Fatal("the datagram after the block never arrived")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	st := c.Status()
+	if st.Global.Blocked != st.Global.Datagrams || len(st.Exporters) != 0 || st.Blocked[0].Address != "127.0.0.1" {
+		t.Fatalf("status = global %+v exporters %+v blocked %+v", st.Global, st.Exporters, st.Blocked)
+	}
+	cancel()
+	if !c.Wait(8 * time.Second) {
+		t.Fatal("Wait: Run did not finish after cancel")
+	}
+	<-done
+	list, _ := queries.ListFlowSenderPolicies(db)
+	if len(list) != 1 || list[0].Source != queries.FlowBlockAuto || list[0].Datagrams != st.Global.Blocked || list[0].LastSeen.IsZero() {
+		t.Fatalf("persisted block list = %+v, want %d dropped datagrams", list, st.Global.Blocked)
+	}
+	if f := exportFinding(t, db, "sw"); f == nil || f.Severity != "warn" {
+		t.Fatalf("finding = %+v", f)
+	}
+	if chk, _ := queries.GetFlowExportCheck(db, "sw"); chk == nil || chk.CollectorPort != port || !chk.CheckedAt.IsZero() {
+		t.Fatalf("check row = %+v (no session: the read must not have run)", chk)
 	}
 }
