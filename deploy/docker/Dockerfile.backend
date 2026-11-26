@@ -3,6 +3,9 @@ ENV GOTOOLCHAIN=local
 RUN apk add --no-cache git
 WORKDIR /app
 COPY go.mod go.sum ./
+# go.mod replaces github.com/go-routeros/routeros/v3 with the patched copy in
+# third_party: it has to be there before the modules are resolved.
+COPY third_party ./third_party
 RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /mikrotik-nms ./cmd/mikrotik-nms

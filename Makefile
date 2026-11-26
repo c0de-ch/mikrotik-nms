@@ -29,9 +29,11 @@ build-backend:
 build-frontend:
 	cd frontend && npm run build
 
-# Test
+# Test. The vendored, patched go-routeros (backend/third_party/go-routeros,
+# its own module behind a replace) is not part of ./... — it is tested too.
 test:
 	cd backend && go test ./...
+	cd backend/third_party/go-routeros && go test ./...
 
 test-verbose:
 	cd backend && go test -v ./...
