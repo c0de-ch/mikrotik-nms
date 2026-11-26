@@ -77,6 +77,10 @@ var clientMutexes sync.Map // map[*ros.Client]*sync.Mutex
 // having to thread the Pool through every command helper.
 var clientOwners sync.Map // map[*ros.Client]clientOwner
 
+// sessionTags maps a one-shot session to the device its commands are counted
+// against (TagSession); pooled sessions are found through clientOwners.
+var sessionTags sync.Map // map[*ros.Client]string
+
 type clientOwner struct {
 	pool     *Pool
 	deviceID string
@@ -142,6 +146,7 @@ func (p *Pool) Dial(deviceID, address string, port int, username, password strin
 	} else {
 		client, err = ros.Dial(addr, username, password)
 	}
+	observeSession(deviceID, err)
 	if err != nil {
 		return nil, fmt.Errorf("routeros dial %s: %w", addr, err)
 	}
@@ -374,7 +379,13 @@ func RunCommand(client *ros.Client, command string, args ...string) (*ros.Reply,
 // downloads, traceroutes). It acquires the per-client mutex IF the client was
 // registered via Pool.Dial — dedicated DialOnce clients aren't, which is fine
 // as long as they are used from a single goroutine.
-func RunCommandWithTimeout(client *ros.Client, timeout time.Duration, command string, args ...string) (*ros.Reply, error) {
+func RunCommandWithTimeout(client *ros.Client, timeout time.Duration, command string, args ...string) (reply *ros.Reply, err error) {
+	// Observed after the session lock is released (defers run last-in
+	// first-out), with the wait for the session counted in.
+	start, timedOut := time.Now(), false
+	device := sessionDevice(client) // before a failure evicts the session
+	defer func() { observeCommandFor(device, command, start, reply, err, timedOut) }()
+
 	if v, ok := clientMutexes.Load(client); ok {
 		mu := v.(*sync.Mutex)
 		mu.Lock()
@@ -398,6 +409,7 @@ func RunCommandWithTimeout(client *ros.Client, timeout time.Duration, command st
 		}
 		return res.reply, res.err
 	case <-time.After(timeout):
+		timedOut = true
 		client.Close() // unblocks the goroutine's read; it then exits via the buffered chan
 		evictFailedClient(client)
 		return nil, fmt.Errorf("routeros command %q timed out after %s", command, timeout)
