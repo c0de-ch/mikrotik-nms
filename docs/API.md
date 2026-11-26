@@ -732,7 +732,14 @@ coverage (above).
 
 Rules are evaluated every 30 seconds on an instance that polls
 (`MIKROTIK_NMS_POLLERS=local`), from the database only. There is at most one
-open alert per rule and key. Runbooks: [`RUNBOOKS.md`](RUNBOOKS.md).
+open alert per rule and key. Rules: `device_unreachable`,
+`parallel_api_poller`, `cpu_high`, `mem_low` (key: the device id) and
+`port_egress_drops` (key `<device id>|<interface>`). The three telemetry
+rules judge a window of the device's newest final minutes and treat a minute
+that was not measured as unknown, not as healthy: an open alert stays open
+while its device is paused, unreachable or not being recorded, and none
+opens. An alert whose severity rises is notified again at once. Runbooks:
+[`RUNBOOKS.md`](RUNBOOKS.md).
 
 | Method | Path | Role | Description |
 |---|---|---|---|
