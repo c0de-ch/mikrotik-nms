@@ -538,11 +538,12 @@ func TestTrafficManagerPauseStopsTheStreamAtOnce(t *testing.T) {
 	subscribe(t, hub, admin, topic)
 	tm.reconcile(ctx)
 	wantNotice(t, rec.take(), admin.ID(), ws.TypeSubscribeAck, topic)
+	// The granted stream takes its first sample by itself, at once; its next
+	// one is a period (15 s on this weak device) away. Wait for that first
+	// read instead of sampling by hand next to it — the two raced, and the
+	// count was 1 or 2 depending on which goroutine ran first.
+	waitUntil(t, func() bool { return rec.readCount("sw") == 1 })
 	st := &deviceStream{ifaces: []string{"ether1"}}
-	tm.sampleOnce(ctx, "sw", st)
-	if n := rec.readCount("sw"); n != 1 {
-		t.Fatalf("reads before the pause = %d, want 1", n)
-	}
 	if err := queries.PauseDevicePolling(tm.db, "sw", time.Now().Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}

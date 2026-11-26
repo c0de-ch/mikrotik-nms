@@ -28,6 +28,7 @@ import { useAuth } from "@/context/auth";
 import { api, type Device, type DiscoveredDevice, type DeepDiscoveredDevice } from "@/lib/api";
 import { deviceStatusBadgeClass, deviceStatusLabel } from "@/lib/status";
 import { DeviceClassBadge, PauseGlyph, PausedBadge } from "@/components/devices/device-load";
+import { AddressProposalsPanel } from "@/components/devices/address-proposals";
 import { useNow } from "@/hooks/use-now";
 import { CLASSES, budgetClass, budgetReason, isPollingPaused, type BudgetClass } from "@/lib/device-load";
 import { toast } from "sonner";
@@ -667,11 +668,11 @@ function DevicesPageInner() {
                   <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-2">
                       <Label>Username</Label>
-                      <Input value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} />
+                      <Input value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} required />
                     </div>
                     <div className="space-y-2">
                       <Label>Password</Label>
-                      <Input type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
+                      <Input type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} required autoComplete="off" />
                     </div>
                   </div>
                   <div className="space-y-2">
@@ -685,6 +686,8 @@ function DevicesPageInner() {
           </div>
         )}
       </div>
+
+      {token && <AddressProposalsPanel token={token} isAdmin={isAdmin} onDeviceMoved={loadDevices} />}
 
       {activeFilters.length > 0 && (
         <div className="flex flex-wrap items-center gap-2">

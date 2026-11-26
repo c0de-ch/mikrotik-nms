@@ -15,7 +15,6 @@ func TestDisabledMailer(t *testing.T) {
 		cfg  Config
 	}{
 		{"no host", Config{SMTPPort: 587, PublicBaseURL: "https://nms.example.com"}},
-		{"no base url", Config{SMTPHost: "smtp.example.com", SMTPPort: 587}},
 		{"no port", Config{SMTPHost: "smtp.example.com", PublicBaseURL: "https://nms.example.com"}},
 	}
 	for _, tc := range cases {
@@ -36,10 +35,43 @@ func TestDisabledMailer(t *testing.T) {
 	}
 }
 
-func TestEnabledRequiresAllThree(t *testing.T) {
-	m := New(Config{SMTPHost: "smtp.example.com", SMTPPort: 587, PublicBaseURL: "https://nms.example.com"})
-	if !m.Enabled() {
-		t.Fatal("mailer should be enabled when host+port+base url are all set")
+// Sending needs the relay (host + port); building a link back to this
+// instance needs the public base URL as well. An alert needs only the first,
+// a password reset both.
+func TestCanSendAndCanBuildLinksAreSeparate(t *testing.T) {
+	m := New(Config{SMTPHost: "smtp.example.com", SMTPPort: 587, PublicBaseURL: "https://nms.example.com/"})
+	if !m.Enabled() || !m.CanBuildLinks() || m.BaseURL() != "https://nms.example.com" {
+		t.Fatalf("host+port+base url: enabled=%v links=%v base=%q", m.Enabled(), m.CanBuildLinks(), m.BaseURL())
+	}
+	relayOnly := New(Config{SMTPHost: "smtp.example.com", SMTPPort: 587})
+	if !relayOnly.Enabled() {
+		t.Fatal("a relay without a public base URL can still send (alerts)")
+	}
+	if relayOnly.CanBuildLinks() {
+		t.Fatal("without a public base URL no link may be built (password reset)")
+	}
+	if New(Config{PublicBaseURL: "https://nms.example.com"}).CanBuildLinks() {
+		t.Fatal("a base URL without a relay cannot send links")
+	}
+}
+
+func TestConfigFromSettings(t *testing.T) {
+	base := Config{SMTPHost: "env.example.com", SMTPPort: 25, SMTPUser: "envuser", SMTPPass: "envpass",
+		SMTPFrom: "env@example.com", SMTPTLSMode: "none", PublicBaseURL: "https://nms.example.com"}
+	settings := map[string]string{
+		"smtp_host": " set.example.com ", "smtp_port": "587", "smtp_password": "setpass",
+		"smtp_tls_skip_verify": "true", "smtp_user": "", "public_base_url": "https://evil.example.com",
+	}
+	got := ConfigFromSettings(func(k string) string { return settings[k] }, base)
+	want := Config{SMTPHost: "set.example.com", SMTPPort: 587, SMTPUser: "envuser", SMTPPass: "setpass",
+		SMTPFrom: "env@example.com", SMTPTLSMode: "none", SMTPTLSSkipVerify: true, PublicBaseURL: "https://nms.example.com"}
+	if got != want {
+		t.Fatalf("ConfigFromSettings = %+v, want %+v", got, want)
+	}
+	// Nothing set: the env configuration, an invalid port included.
+	settings = map[string]string{"smtp_port": "not-a-number"}
+	if got := ConfigFromSettings(func(k string) string { return settings[k] }, base); got != base {
+		t.Fatalf("with no settings = %+v, want the base %+v", got, base)
 	}
 }
 

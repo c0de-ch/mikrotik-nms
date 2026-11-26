@@ -10,8 +10,10 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
+	"github.com/mikrotik-nms/backend/internal/alerts"
 	"github.com/mikrotik-nms/backend/internal/auth"
 	"github.com/mikrotik-nms/backend/internal/config"
+	"github.com/mikrotik-nms/backend/internal/database/queries"
 	"github.com/mikrotik-nms/backend/internal/flow"
 	"github.com/mikrotik-nms/backend/internal/mailer"
 	"github.com/mikrotik-nms/backend/internal/poller"
@@ -44,6 +46,19 @@ type Server struct {
 	// do. nil (tests) = a schedule built from the database and config.
 	cadence poller.CadenceSource
 
+	// clients is the on-demand client refresh behind POST /clients/refresh.
+	// nil = not wired (tests): the client list is still served from the
+	// cache.
+	clients clientRefresher
+
+	// firmware is the release-feed checker behind /firmware/check. nil = one
+	// over the database per request (tests inject one with a fake feed).
+	firmware *poller.FirmwareChecker
+
+	// alertNotifier delivers the channel test notification. nil = one built
+	// from the database and config per request (tests substitute a fake).
+	alertNotifier alertTester
+
 	// flowCache holds aggregated flow rows of recent /flows/* queries;
 	// cleared by every flow admin write (see flowChanged).
 	flowCache flowAggCache
@@ -52,6 +67,11 @@ type Server struct {
 	// share, rebuilt at most every trafficTopoTTL (see trafficTopology).
 	topoMu sync.Mutex
 	topo   *trafficTopo
+}
+
+// alertTester is the part of *alerts.Notifier the channel test uses.
+type alertTester interface {
+	DeliverTo(ch queries.NotificationChannel, alert queries.Alert, event alerts.Event) error
 }
 
 // flowSource is the part of *flow.Collector the flow handlers read; tests
@@ -65,10 +85,14 @@ type flowSource interface {
 }
 
 func NewRouter(db *sql.DB, hub *ws.Hub, cfg *config.Config, pool *routeros.Pool, m mailer.Sender,
-	portStats *poller.PortStatsCollector, flows *flow.Collector, cadence poller.CadenceSource) http.Handler {
+	portStats *poller.PortStatsCollector, flows *flow.Collector, cadence poller.CadenceSource,
+	clients *poller.ClientRefresher) http.Handler {
 	s := &Server{db: db, hub: hub, cfg: cfg, pool: pool, mailer: m, resolver: resolver.New(db), cadence: cadence}
 	if portStats != nil {
 		s.portStats = portStats
+	}
+	if clients != nil { // avoid a typed-nil interface
+		s.clients = clients
 	}
 	if flows != nil { // avoid a typed-nil interface
 		s.flows = flows
@@ -84,7 +108,10 @@ func NewRouter(db *sql.DB, hub *ws.Hub, cfg *config.Config, pool *routeros.Pool,
 		func(_ string, req *http.Request) string { return req.Method + " " + req.URL.Path },
 	)))
 	r.Use(middleware.RequestID)
-	r.Use(middleware.RealIP)
+	// No middleware.RealIP: it rewrites RemoteAddr from X-Forwarded-For /
+	// X-Real-IP whoever sent them, so any client could pick the address the
+	// login limiter keys on. clientIP (security.go) believes those headers
+	// only from a trusted proxy.
 	r.Use(requestLogger) // redacts the WS ?token= from access logs
 	r.Use(middleware.Recoverer)
 	r.Use(securityHeaders)
@@ -107,6 +134,7 @@ func NewRouter(db *sql.DB, hub *ws.Hub, cfg *config.Config, pool *routeros.Pool,
 
 	// Throttle unauthenticated auth endpoints against brute force.
 	authLimiter := newRateLimiter(10, time.Minute)
+	authLimiter.trusted = cfg.TrustedProxies
 	// Per-username throttle on password-reset requests to curb email bombing /
 	// enumeration (keyed on the submitted username, not on user existence).
 	resetLimiter := newRateLimiter(3, 15*time.Minute)
@@ -126,7 +154,7 @@ func NewRouter(db *sql.DB, hub *ws.Hub, cfg *config.Config, pool *routeros.Pool,
 
 		// Authenticated endpoints
 		r.Group(func(r chi.Router) {
-			r.Use(auth.RequireAuth(cfg.JWTSecret))
+			r.Use(auth.RequireAuth(cfg.JWTSecret, s.userSession))
 
 			r.Post("/auth/logout", s.handleLogout)
 			r.Get("/auth/me", s.handleMe)
@@ -144,8 +172,9 @@ func NewRouter(db *sql.DB, hub *ws.Hub, cfg *config.Config, pool *routeros.Pool,
 
 			// Discovery
 			r.Get("/discovery", s.handleDiscoverDevices)
-			r.Get("/clients", s.handleScanClients)
-			r.Get("/clients/cached", s.handleCachedClients)
+			r.Get("/clients", s.handleListClients)
+			r.Get("/clients/cached", s.handleListClients)
+			r.Post("/clients/refresh", s.handleRefreshClients)
 			r.Get("/debug/wifi", s.handleDebugWifiRaw)
 
 			// WiFi tracking & MAC lookup
@@ -163,6 +192,10 @@ func NewRouter(db *sql.DB, hub *ws.Hub, cfg *config.Config, pool *routeros.Pool,
 			r.Get("/devices/{id}/addresses", s.handleDeviceAddresses)
 			r.Get("/devices/{id}/audit", s.handleDeviceAudit)
 			r.Get("/devices/{id}/findings", s.handleListDeviceFindings)
+
+			// IP auto-follow proposals: list for every user; approve
+			// (admin + fresh password) and dismiss (admin).
+			s.mountAddressProposalRoutes(r)
 
 			// Device write operations + deep discovery (admin only)
 			r.Group(func(r chi.Router) {
@@ -187,15 +220,25 @@ func NewRouter(db *sql.DB, hub *ws.Hub, cfg *config.Config, pool *routeros.Pool,
 			// configuration writes admin-only.
 			s.mountFlowRoutes(r)
 
+			// Alerts, silences and notification channels
+			s.mountAlertRoutes(r)
+
 			// Firmware
 			r.Get("/firmware", s.handleListFirmware)
+			r.Get("/firmware/releases", s.handleFirmwareReleases)
 			r.Get("/firmware/upgrade/{jobId}", s.handleGetUpgradeJob)
 			r.Group(func(r chi.Router) {
 				r.Use(auth.RequireRole("admin"))
 				r.Post("/firmware/check", s.handleCheckFirmware)
-				r.Post("/firmware/upgrade", s.handleUpgradeFirmware)
-				r.Post("/firmware/channel", s.handleSetChannel)
-				r.Post("/firmware/routerboard", s.handleUpgradeRouterboard)
+				// Actions that change a device need the password typed in
+				// the last few minutes, not just a session kept alive by
+				// refreshes (403 reauth_required otherwise).
+				r.Group(func(r chi.Router) {
+					r.Use(auth.RequireFreshAuth(freshAuthMaxAge))
+					r.Post("/firmware/upgrade", s.handleUpgradeFirmware)
+					r.Post("/firmware/channel", s.handleSetChannel)
+					r.Post("/firmware/routerboard", s.handleUpgradeRouterboard)
+				})
 			})
 
 			// NetBox export

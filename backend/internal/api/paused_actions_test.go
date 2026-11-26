@@ -74,9 +74,9 @@ func TestOnDemandActionsRefusePausedDevice(t *testing.T) {
 		{http.MethodPost, "/connectivity/targets/pt/traceroute", "", want},
 		{http.MethodGet, "/devices/sw/addresses", "", want},
 		// Several devices: the paused one is named.
-		{http.MethodPost, "/firmware/upgrade", `{"device_ids":["rt","sw"],"reboot":true}`, "sw1: " + want},
-		{http.MethodPost, "/firmware/channel", `{"device_ids":["sw"],"channel":"stable"}`, want},
-		{http.MethodPost, "/firmware/routerboard", `{"device_ids":["sw"]}`, want},
+		{http.MethodPost, "/firmware/upgrade", `{"device_ids":["rt","sw"],"reboot":true,"username":"u","password":"p"}`, "sw1: " + want},
+		{http.MethodPost, "/firmware/channel", `{"device_ids":["sw"],"channel":"stable","username":"u","password":"p"}`, want},
+		{http.MethodPost, "/firmware/routerboard", `{"device_ids":["sw"],"username":"u","password":"p"}`, want},
 		{http.MethodGet, "/debug/wifi?device_id=sw", "", want},
 	} {
 		rec := httptest.NewRecorder()

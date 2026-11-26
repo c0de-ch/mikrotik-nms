@@ -99,7 +99,7 @@ env var (`MIKROTIK_NMS_*`, restart to change) or an `app_settings` row (runtime-
 | health (liveness) | `HEALTH_INTERVAL` env / 30s | `routeros.Ping` (plain TCP dial, 2 tries) | `devices` (status/last_seen/last_error) | `device.health` |
 | info (heavy refresh) | `info_interval` setting / 60m | `/system/resource`, `/system/identity`, `/interface/print` | `devices` (cpu/mem/uptime/board/version/arch), `interfaces` | `device.health` |
 | topology | `TOPOLOGY_INTERVAL` env / 60s | `/ip/neighbor/print` | `neighbors`, `links` | `topology.update` |
-| firmware | `FIRMWARE_INTERVAL` env / 6h | `/system/package/update`, `/system/routerboard/print` | `firmware_status` | `firmware.update` |
+| firmware | `FIRMWARE_INTERVAL` env / 24h | none — MikroTik's `NEWESTa7.<channel>` feed; channel + installed version come from the Tier 6 inventory read (proplisted `/system/package/update/print`, `/system/routerboard/print`) | `firmware_releases`, `firmware_status` | `firmware.update` |
 | traffic | on-demand; reconcile 2s, per-iface 1s | `/interface/monitor-traffic` | `traffic_samples` | `traffic.<id>.<iface>` |
 | wifi | `wifi_interval` setting / 30s | `/log/print` (wireless) + CAPsMAN/WiFi reg tables | `wifi_history`, `mac_lookup` | `wifi.event` |
 | client discovery | `client_discovery_interval` setting / 15m | `/ip/arp`, `/ip/dhcp-server/lease`, CAPsMAN (+ Kea, + OPNsense) | `mac_lookup`, `client_history` | — |

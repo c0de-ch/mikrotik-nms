@@ -116,6 +116,9 @@ func (p *Pool) Dial(deviceID, address string, port int, username, password strin
 	if err := CheckTarget(address); err != nil {
 		return nil, err
 	}
+	if err := checkSecret(password); err != nil {
+		return nil, err
+	}
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -166,6 +169,9 @@ func (p *Pool) Dial(deviceID, address string, port int, username, password strin
 // other poller.
 func DialOnce(address string, port int, username, password string, useTLS, verifyTLS bool) (*ros.Client, error) {
 	if err := CheckTarget(address); err != nil {
+		return nil, err
+	}
+	if err := checkSecret(password); err != nil {
 		return nil, err
 	}
 	addr := JoinHostPort(address, port)
@@ -431,6 +437,9 @@ func (p *Pool) EnsureConnection(deviceID, address string, port int, username, pa
 			return client, nil
 		}
 		lastErr = err
+		if errors.Is(err, ErrPollersOff) || errors.Is(err, ErrTargetNotAllowed) || errors.Is(err, ErrCredentialsUnreadable) {
+			break // a refusal: retrying cannot change it
+		}
 		time.Sleep(time.Duration(attempt+1) * time.Second)
 	}
 	return nil, lastErr

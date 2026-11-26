@@ -1,16 +1,16 @@
 package api
 
 import (
-	"context"
-	"log"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/mikrotik-nms/backend/internal/database/queries"
-	"github.com/mikrotik-nms/backend/internal/leasesource"
+	"github.com/mikrotik-nms/backend/internal/devclass"
 	"github.com/mikrotik-nms/backend/internal/macvendor"
+	"github.com/mikrotik-nms/backend/internal/poller"
 	"github.com/mikrotik-nms/backend/internal/routeros"
 )
 
@@ -82,310 +82,133 @@ func (s *Server) handleDebugWifiRaw(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, results)
 }
 
-func (s *Server) handleScanClients(w http.ResponseWriter, r *http.Request) {
-	// Parse query params
-	limitParam := r.URL.Query().Get("limit")
-	maxClients := 0 // 0 = unlimited
-	if limitParam != "" {
-		if v, err := strconv.Atoi(limitParam); err == nil && v > 0 {
-			maxClients = v
-		}
+// clientRefresher is the part of *poller.ClientRefresher the handlers use;
+// tests substitute a fake. nil = not wired: the cache is served, a refresh
+// is not available.
+type clientRefresher interface {
+	Status() poller.ClientRefreshStatus
+	Start() (poller.ClientRefreshStatus, error)
+}
+
+// clientRefreshView is the refresh state as the client list and the refresh
+// endpoint report it.
+type clientRefreshView struct {
+	poller.ClientRefreshStatus
+	// Available is false on an instance that cannot refresh at all (polling
+	// off): the UI then shows the cache without a Refresh control.
+	Available bool `json:"available"`
+}
+
+func (s *Server) clientRefreshView() clientRefreshView {
+	if s.clients == nil {
+		return clientRefreshView{ClientRefreshStatus: poller.ClientRefreshStatus{
+			MinIntervalSeconds: int(poller.ClientRefreshMinInterval / time.Second),
+		}}
 	}
+	return clientRefreshView{ClientRefreshStatus: s.clients.Status(), Available: routeros.PollingAllowed() == nil}
+}
 
-	timeoutParam := r.URL.Query().Get("timeout")
-	scanTimeout := 30 * time.Second // default 30s
-	if timeoutParam != "" {
-		if v, err := strconv.Atoi(timeoutParam); err == nil && v >= 5 && v <= 120 {
-			scanTimeout = time.Duration(v) * time.Second
-		}
-	}
-
-	ctx, cancel := context.WithTimeout(r.Context(), scanTimeout)
-	defer cancel()
-
-	devices, err := queries.ListDevices(s.db)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list devices")
+// handleRefreshClients starts the on-demand refresh of the client cache —
+// the one way a page view can make the fleet read its ARP, lease and
+// registration tables ahead of schedule. It answers at once: 202 with the
+// refresh state (the list endpoint reports when it is done), 409 while one
+// is running, 429 with Retry-After inside the minimum interval, 503 on an
+// instance that polls nothing.
+func (s *Server) handleRefreshClients(w http.ResponseWriter, r *http.Request) {
+	if s.clients == nil {
+		writeError(w, http.StatusServiceUnavailable, "client refresh is not available on this instance")
 		return
 	}
-
-	// Collect all clients, deduplicate by MAC
-	clientMap := make(map[string]*networkClient) // key: uppercase MAC
-
-	for _, dev := range devices {
-		// Check timeout
-		select {
-		case <-ctx.Done():
-			goto done
-		default:
+	st, err := s.clients.Start()
+	view := clientRefreshView{ClientRefreshStatus: st, Available: true}
+	switch {
+	case err == nil:
+		writeJSON(w, http.StatusAccepted, map[string]any{"refresh": view})
+	case errors.Is(err, poller.ErrClientRefreshRunning):
+		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "refresh": view})
+	case errors.Is(err, poller.ErrClientRefreshTooSoon):
+		if st.NextAllowedAt != nil {
+			if wait := int(time.Until(*st.NextAllowedAt).Seconds()) + 1; wait > 0 {
+				w.Header().Set("Retry-After", strconv.Itoa(wait))
+			}
 		}
-
-		// A paused device gets nothing but liveness pings — this fleet scan
-		// included.
-		if dev.Status != "online" || dev.PollingPaused(time.Now()) {
-			continue
-		}
-		client := s.pool.GetLive(dev.ID)
-		if client == nil {
-			continue
-		}
-		run := routeros.ClientRunner{Client: client}
-		devName := dev.Identity
-		if devName == "" {
-			devName = dev.Address
-		}
-
-		// ARP table
-		func() {
-			defer func() { recover() }()
-			arps, err := routeros.GetARPTable(run)
-			if err != nil {
-				log.Printf("scan clients: arp %s: %v", devName, err)
-				return
-			}
-			for _, a := range arps {
-				if a.MAC == "" {
-					continue
-				}
-				mac := strings.ToUpper(a.MAC)
-				if existing, ok := clientMap[mac]; ok {
-					existing.IP = queries.PreferIP(existing.IP, a.Address)
-				} else {
-					clientMap[mac] = &networkClient{
-						MAC:        a.MAC,
-						IP:         a.Address,
-						Interface:  a.Interface,
-						Source:     "arp",
-						DeviceID:   dev.ID,
-						DeviceName: devName,
-					}
-				}
-			}
-		}()
-
-		// DHCP leases
-		func() {
-			defer func() { recover() }()
-			leases, err := routeros.GetDHCPLeases(run)
-			if err != nil {
-				log.Printf("scan clients: dhcp %s: %v", devName, err)
-				return
-			}
-			for _, l := range leases {
-				mac := strings.ToUpper(l.MAC)
-				if mac == "" {
-					mac = strings.ToUpper(l.ActiveMAC)
-				}
-				if mac == "" {
-					continue
-				}
-				addr := l.ActiveAddr
-				if addr == "" {
-					addr = l.Address
-				}
-				if existing, ok := clientMap[mac]; ok {
-					if existing.HostName == "" && l.HostName != "" {
-						existing.HostName = l.HostName
-					}
-					existing.IP = queries.PreferIP(existing.IP, addr)
-					if l.HostName != "" {
-						existing.Source = "dhcp"
-					}
-				} else {
-					clientMap[mac] = &networkClient{
-						MAC:        mac,
-						IP:         addr,
-						HostName:   l.HostName,
-						Interface:  l.Server,
-						Source:     "dhcp",
-						DeviceID:   dev.ID,
-						DeviceName: devName,
-					}
-				}
-			}
-		}()
-
-		// WiFi / CAPsMAN registrations
-		func() {
-			defer func() { recover() }()
-			regs, err := routeros.GetCAPsMANRegistrations(client)
-			if err != nil {
-				return // not all devices have wifi
-			}
-			for _, reg := range regs {
-				mac := strings.ToUpper(reg.MAC)
-				if mac == "" {
-					continue
-				}
-				// Skip non-wireless entries
-				if reg.SSID == "" && reg.Band == "" && reg.Signal == "" {
-					iface := strings.ToLower(reg.Interface)
-					if strings.Contains(iface, "ether") || strings.Contains(iface, "bridge") ||
-						strings.Contains(iface, "vlan") || strings.Contains(iface, "pppoe") {
-						continue
-					}
-				}
-				// Resolve AP name: use AP field, or extract from interface name
-				apName := reg.AP
-				if apName == "" && reg.Interface != "" {
-					// Interface is often "capName/radioName" or just the radio identity
-					apName = reg.Interface
-					if idx := strings.Index(apName, "/"); idx > 0 {
-						apName = apName[:idx]
-					}
-				}
-				if existing, ok := clientMap[mac]; ok {
-					// Enrich with wifi data
-					existing.AP = apName
-					existing.SSID = reg.SSID
-					existing.Band = reg.Band
-					existing.Channel = reg.Channel
-					existing.Frequency = reg.Frequency
-					existing.Signal = reg.Signal
-					existing.TxRate = reg.TxRate
-					existing.RxRate = reg.RxRate
-					existing.Uptime = reg.Uptime
-					existing.Source = "wifi"
-					existing.IP = queries.PreferIP(existing.IP, reg.LastIP)
-				} else {
-					clientMap[mac] = &networkClient{
-						MAC:        mac,
-						IP:         reg.LastIP,
-						Interface:  reg.Interface,
-						Source:     "wifi",
-						DeviceID:   dev.ID,
-						DeviceName: devName,
-						AP:         apName,
-						SSID:       reg.SSID,
-						Band:       reg.Band,
-						Channel:    reg.Channel,
-						Frequency:  reg.Frequency,
-						Signal:     reg.Signal,
-						TxRate:     reg.TxRate,
-						RxRate:     reg.RxRate,
-						Uptime:     reg.Uptime,
-					}
-				}
-			}
-		}()
+		writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": err.Error(), "refresh": view})
+	case writeDialPolicyError(w, err):
+	default:
+		writeError(w, http.StatusInternalServerError, "failed to start the client refresh")
 	}
-
-done:
-	// External DHCP (Kea / OPNsense, per app_settings) — the same sources the
-	// background discovery poller uses. Without this a live scan only sees
-	// MikroTik-visible clients and drops OPNsense/Kea-only clients (and their
-	// DHCP hostnames), so the auto-scan would wipe them from the cached view.
-	for _, l := range leasesource.FromSettings(s.db) {
-		if existing, ok := clientMap[l.MAC]; ok {
-			existing.IP = queries.PreferIP(existing.IP, l.IP)
-			if existing.HostName == "" && l.Hostname != "" {
-				existing.HostName = l.Hostname
-			}
-		} else {
-			clientMap[l.MAC] = &networkClient{MAC: l.MAC, IP: l.IP, HostName: l.Hostname, Source: "dhcp", DeviceName: l.Origin}
-		}
-	}
-
-	// Resolve DNS names for all IPs
-	ips := make([]string, 0, len(clientMap))
-	for _, c := range clientMap {
-		if c.IP != "" {
-			ips = append(ips, c.IP)
-		}
-	}
-	dnsNames := s.resolver.ResolveMany(ips)
-
-	// Everything returned by a live scan was just seen, so it's active by
-	// definition (and will refresh the cache's updated_at via UpsertMACLookup).
-	nowStr := time.Now().UTC().Format(time.RFC3339)
-	results := make([]networkClient, 0, len(clientMap))
-	for _, c := range clientMap {
-		if name, ok := dnsNames[c.IP]; ok && name != "" {
-			c.DNSName = name
-			// If no hostname from DHCP, use DNS name
-			if c.HostName == "" {
-				c.HostName = name
-			}
-		}
-		c.Active = true
-		c.LastSeen = nowStr
-		c.Vendor, c.Randomized = macvendor.Describe(c.MAC)
-		results = append(results, *c)
-	}
-
-	// Apply limit
-	if maxClients > 0 && len(results) > maxClients {
-		results = results[:maxClients]
-	}
-
-	// Persist all results to mac_lookup cache (async, don't block response)
-	go func() {
-		for _, c := range results {
-			_ = queries.UpsertMACLookup(s.db, &queries.MACLookup{
-				MACAddress:    c.MAC,
-				IPAddress:     c.IP,
-				HostName:      c.HostName,
-				DNSName:       c.DNSName,
-				Source:        c.Source,
-				DeviceName:    c.DeviceName,
-				InterfaceName: c.Interface,
-				DeviceID:      c.DeviceID,
-				AP:            c.AP,
-				SSID:          c.SSID,
-				Band:          c.Band,
-				Channel:       c.Channel,
-				Frequency:     c.Frequency,
-				Signal:        c.Signal,
-				TxRate:        c.TxRate,
-				RxRate:        c.RxRate,
-				Uptime:        c.Uptime,
-			})
-		}
-	}()
-
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"clients":   results,
-		"total":     len(clientMap),
-		"limited":   maxClients > 0 && len(clientMap) > maxClients,
-		"timed_out": ctx.Err() != nil,
-	})
 }
 
-// defaultClientInactiveAfter is how long a cached client may go without being
-// re-seen before it's reported inactive, when the admin hasn't configured
-// client_inactive_after_seconds. Picked well above the client-discovery interval
-// so a live client never flickers, but far below the ~30-day cache retention so
-// a device that left (or a reservation on a disabled DHCP server) drops off the
-// active list promptly instead of lingering for weeks.
+// defaultClientInactiveAfter is the least time a cached client may go
+// without being re-seen before it is reported inactive, when the admin
+// hasn't configured client_inactive_after_seconds: far below the ~30-day
+// cache retention, so a device that left (or a reservation on a disabled
+// DHCP server) drops off the active list promptly instead of lingering for
+// weeks.
 const defaultClientInactiveAfter = 30 * time.Minute
 
-func (s *Server) clientInactiveAfter() time.Duration {
-	v, err := queries.GetSetting(s.db, "client_inactive_after_seconds")
-	if err != nil {
-		return defaultClientInactiveAfter
+// clientReadMargin is added to two reads of the slowest ARP reader: a read
+// that runs a little late (jitter, a busy device) must not flip its clients
+// to inactive.
+const clientReadMargin = 10 * time.Minute
+
+// clientInactiveAfter is how long a cached client may go unseen before the
+// list reports it inactive: the client_inactive_after_seconds setting, else
+// two reads of the fleet's slowest ARP reader plus a margin (weak devices
+// are read every 30 minutes, so a fixed half hour would make their clients
+// flicker), never under defaultClientInactiveAfter.
+func (s *Server) clientInactiveAfter(now time.Time) time.Duration {
+	if v, err := queries.GetSetting(s.db, "client_inactive_after_seconds"); err == nil {
+		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && n > 0 {
+			return time.Duration(n) * time.Second
+		}
 	}
-	n, err := strconv.Atoi(strings.TrimSpace(v))
-	if err != nil || n <= 0 {
-		return defaultClientInactiveAfter
-	}
-	return time.Duration(n) * time.Second
+	return max(defaultClientInactiveAfter, 2*s.slowestClientRead(now)+clientReadMargin)
 }
 
-func (s *Server) handleCachedClients(w http.ResponseWriter, r *http.Request) {
+// slowestClientRead is the longest ARP cadence among the devices being
+// polled right now (0 when there is none).
+func (s *Server) slowestClientRead(now time.Time) time.Duration {
+	devices, err := queries.ListDevices(s.db)
+	if err != nil {
+		return 0
+	}
+	cs := s.cadenceSource()
+	var slowest time.Duration
+	for _, d := range devices {
+		if d.Status != "online" || cs.Paused(d, now) {
+			continue
+		}
+		slowest = max(slowest, cs.Interval(d, devclass.TierARP, now))
+	}
+	return slowest
+}
+
+// handleListClients serves the client list from the cache (mac_lookup) the
+// scheduled pollers keep — no device is contacted — with the age of its
+// newest entry and the state of the on-demand refresh. It answers both
+// GET /clients and GET /clients/cached: /clients used to scan the whole
+// fleet on every call, so its scan fields (limited, timed_out) are still
+// present for a browser tab running the previous frontend.
+func (s *Server) handleListClients(w http.ResponseWriter, r *http.Request) {
 	entries, err := queries.GetAllMACLookupsSlice(s.db)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to load cached clients")
 		return
 	}
 
-	threshold := s.clientInactiveAfter()
 	now := time.Now()
+	threshold := s.clientInactiveAfter(now)
 	active := 0
+	var newest time.Time
 	clients := make([]networkClient, 0, len(entries))
 	for _, e := range entries {
 		isActive := now.Sub(e.UpdatedAt) < threshold
 		if isActive {
 			active++
+		}
+		if e.UpdatedAt.After(newest) {
+			newest = e.UpdatedAt
 		}
 		nc := networkClient{
 			MAC:        e.MACAddress,
@@ -412,10 +235,20 @@ func (s *Server) handleCachedClients(w http.ResponseWriter, r *http.Request) {
 		clients = append(clients, nc)
 	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"clients": clients,
-		"total":   len(clients),
-		"active":  active,
-		"cached":  true,
-	})
+	resp := map[string]interface{}{
+		"clients":   clients,
+		"total":     len(clients),
+		"active":    active,
+		"cached":    true,
+		"limited":   false,
+		"timed_out": false,
+		"refresh":   s.clientRefreshView(),
+	}
+	// The cache is as old as its newest entry: every scheduled read and
+	// every refresh re-stamps the clients it saw.
+	if !newest.IsZero() {
+		resp["updated_at"] = newest.UTC().Format(time.RFC3339)
+		resp["age_seconds"] = max(0, int(now.Sub(newest).Seconds()))
+	}
+	writeJSON(w, http.StatusOK, resp)
 }

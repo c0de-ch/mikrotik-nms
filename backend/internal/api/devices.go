@@ -2,7 +2,9 @@ package api
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"time"
 
@@ -81,13 +83,13 @@ func (s *Server) handleCreateDevice(w http.ResponseWriter, r *http.Request) {
 	if req.APIPort == 0 {
 		req.APIPort = s.cfg.DefaultROSPort
 	}
-	if req.Username == "" {
-		req.Username = s.cfg.DefaultROSUser
+	// No default credentials: a device is added with its own username and
+	// password, typed by the admin.
+	if req.Username == "" || req.Password == "" {
+		writeError(w, http.StatusBadRequest, "username and password are required")
+		return
 	}
 	password := req.Password
-	if password == "" {
-		password = s.cfg.DefaultROSPass
-	}
 
 	// Test connection before adding, on a one-shot connection that goes
 	// through the dial policy like every other device dial (polling off, or
@@ -137,6 +139,12 @@ func (s *Server) handleCreateDevice(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := queries.CreateDevice(s.db, device); err != nil {
+		if errors.Is(err, queries.ErrSecretStorage) {
+			// Never stored in plaintext instead: the device is not added.
+			log.Printf("devices: add %s: %v", req.Address, err)
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
 		writeError(w, http.StatusConflict, fmt.Sprintf("device with address %s already exists", req.Address))
 		return
 	}
@@ -164,6 +172,10 @@ func (s *Server) handleUpdateDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// What the pooled session was dialled with: when any of it changes, the
+	// session and the remembered dial parameters must go.
+	before := [4]any{existing.Address, existing.APIPort, existing.UseTLS, existing.Username}
+
 	if req.Address != "" {
 		existing.Address = req.Address
 	}
@@ -172,9 +184,6 @@ func (s *Server) handleUpdateDevice(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Username != "" {
 		existing.Username = req.Username
-	}
-	if req.Password != "" {
-		existing.PasswordEnc = req.Password // encrypted at rest by queries.UpdateDevice
 	}
 	existing.UseTLS = req.UseTLS
 	if req.APIPort > 0 {
@@ -187,9 +196,25 @@ func (s *Server) handleUpdateDevice(w http.ResponseWriter, r *http.Request) {
 		existing.Notes = req.Notes
 	}
 
+	// The password is stored only when the edit carries a new one; an edit
+	// without it leaves the stored (encrypted) value untouched.
+	if req.Password != "" {
+		if err := queries.SetDevicePassword(s.db, id, req.Password); err != nil {
+			log.Printf("devices: store credentials of %s: %v", id, err)
+			writeError(w, http.StatusInternalServerError, "failed to store the device credentials: "+err.Error())
+			return
+		}
+		existing.PasswordEnc = req.Password
+	}
 	if err := queries.UpdateDevice(s.db, existing); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to update device")
 		return
+	}
+	// A pooled session keeps using — and redialling with — the address and
+	// credentials it was opened with. Drop it so the next poll connects with
+	// the new ones.
+	if s.pool != nil && (req.Password != "" || before != [4]any{existing.Address, existing.APIPort, existing.UseTLS, existing.Username}) {
+		s.pool.Forget(id)
 	}
 	s.invalidateTrafficTopo()
 
@@ -205,6 +230,11 @@ func (s *Server) handleDeleteDevice(w http.ResponseWriter, r *http.Request) {
 		}
 		writeError(w, http.StatusInternalServerError, "failed to delete device")
 		return
+	}
+	// The pool must not keep a session (and credentials) for a device that
+	// is gone.
+	if s.pool != nil {
+		s.pool.Forget(id)
 	}
 	s.invalidateTrafficTopo()
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})

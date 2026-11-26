@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mikrotik-nms/backend/internal/alerts"
 	"github.com/mikrotik-nms/backend/internal/config"
 	"github.com/mikrotik-nms/backend/internal/database/queries"
 	"github.com/mikrotik-nms/backend/internal/devclass"
@@ -37,15 +38,16 @@ type Manager struct {
 	// reason as portStats.
 	flows *flow.Collector
 
-	// ipRejectSeen rate-limits auto-follow rejection audit rows by proposed
-	// move + failure category (see ipRejectionTTL / recordIPRejection). Accessed
-	// only from the topology goroutine today, but guarded so it stays safe if
-	// that changes.
-	ipRejectMu   sync.Mutex
-	ipRejectSeen map[string]time.Time
-
 	// cadence is the per-class schedule every loop shares (NewCadence).
 	cadence CadenceSource
+	// caps is the one capability probe per device the pollers share, and
+	// clients the on-demand client refresh; both are built in NewManager
+	// because main hands the refresh to the API right after it.
+	caps    *CapabilityCache
+	clients *ClientRefresher
+	// firmware fetches MikroTik's release feed and keeps the firmware
+	// comparison current; the info refresh records each device's read in it.
+	firmware *FirmwareChecker
 	// inventory schedules Tier 6 (the info refresh) per device, topoClock
 	// the topology loop's neighbor and route reads; classes holds the class
 	// probe's pending changes (hysteresis).
@@ -92,19 +94,21 @@ func NewManager(db *sql.DB, pool *routeros.Pool, hub *ws.Hub, cfg *config.Config
 		flowCfg.Listen = nil
 	}
 	m := &Manager{
-		db:           db,
-		pool:         pool,
-		hub:          hub,
-		cfg:          cfg,
-		ipRejectSeen: make(map[string]time.Time),
-		portStats:    NewPortStatsCollector(db, pool, hub),
-		flows:        flow.New(db, pool, hub, flowCfg),
-		cadence:      NewCadence(db, cfg),
-		inventory:    newTierClock(Schedule()),
-		topoClock:    newTierClock(Schedule()),
-		classes:      newClassGate(),
-		stagger:      time.Second,
+		db:        db,
+		pool:      pool,
+		hub:       hub,
+		cfg:       cfg,
+		portStats: NewPortStatsCollector(db, pool, hub),
+		flows:     flow.New(db, pool, hub, flowCfg),
+		cadence:   NewCadence(db, cfg),
+		inventory: newTierClock(Schedule()),
+		topoClock: newTierClock(Schedule()),
+		classes:   newClassGate(),
+		stagger:   time.Second,
+		caps:      NewCapabilityCache(),
 	}
+	m.clients = NewClientRefresher(db, pool, resolver.New(db), m.caps, m.cadence)
+	m.firmware = NewFirmwareChecker(db, hub)
 	// One schedule for every loop: the class cadences, floored by the
 	// fleet-wide settings and env vars, and the per-device pause.
 	m.portStats.UseCadence(m.cadence)
@@ -135,6 +139,12 @@ func (m *Manager) Flows() *flow.Collector {
 // per-device cadences, floors and pause as the pollers that wrote the rows.
 func (m *Manager) Cadence() CadenceSource {
 	return m.cadence
+}
+
+// ClientRefresh returns the on-demand client refresh (non-nil right after
+// NewManager) behind POST /clients/refresh.
+func (m *Manager) ClientRefresh() *ClientRefresher {
+	return m.clients
 }
 
 // Start launches the background loops. Database-only jobs — retention and
@@ -173,7 +183,7 @@ func (m *Manager) Start() {
 	// One /log/print per device per window, shared by the wifi and
 	// network-health pollers, and one capability probe per device for all.
 	logs := NewLogReader()
-	caps := NewCapabilityCache()
+	caps := m.caps
 
 	wifiTracker := NewWifiTracker(m.db, m.pool, m.hub, 30*time.Second)
 	wifiTracker.UseLogReader(logs)
@@ -196,6 +206,16 @@ func (m *Manager) Start() {
 
 	speedTests := NewSpeedTestPoller(m.db, m.hub, m.cfg.ROSTLSVerify, defaultSpeedTestInterval)
 	go speedTests.Run(ctx)
+
+	// Alerting reads what the loops above store — it never contacts a
+	// device — and only runs here, on an instance that polls: on a copy of a
+	// database nothing refreshes device status, and stale rows must not page
+	// anyone.
+	alertEngine := alerts.NewEngine(m.db, alerts.NewNotifier(m.db, m.cfg.Mailer()), alerts.DefaultRules(m.db)...)
+	alertEngine.OnChange = func() {
+		m.hub.Publish(alerts.Topic, map[string]any{"at": time.Now().UTC().Format(time.RFC3339)})
+	}
+	go alertEngine.Run(ctx.Done())
 
 	log.Println("poller: started all pollers")
 }
@@ -455,6 +475,15 @@ func (m *Manager) refreshDeviceInfo(dev queries.Device) {
 		&res.CPULoad, &memUsed, &res.MemoryTotal, &res.Uptime, nil)
 	_ = queries.UpdateDeviceInfo(m.db, dev.ID,
 		res.Platform, res.Board, res.Version, "", res.Architecture)
+
+	// The firmware facts ride on the same pass: channel + installed version
+	// and the RouterBOARD firmware, read-only. Availability is compared with
+	// the release feed here, never asked of the device.
+	if pkg, rb, err := ReadFirmware(routeros.ClientRunner{Client: client}); err != nil {
+		log.Printf("poller: firmware read %s: %v", dev.Identity, err)
+	} else if m.firmware != nil {
+		m.firmware.RecordDevice(dev.ID, pkg, rb)
+	}
 
 	memPct := 0
 	if res.MemoryTotal > 0 {
@@ -844,20 +873,19 @@ func (m *Manager) collectUplinks(dev queries.Device, run routeros.Runner) {
 	}
 }
 
+// firmwareLoop keeps the release feed fresh: every hour it fetches the feed
+// if the last successful fetch is older than MIKROTIK_NMS_FIRMWARE_INTERVAL
+// (default 24 h), then recomputes every device's comparison. It sends the
+// devices nothing — their channel and installed version come from the
+// inventory read.
 func (m *Manager) firmwareLoop(ctx context.Context) {
-	ticker := time.NewTicker(m.cfg.FirmwareInterval)
-	defer ticker.Stop()
-
-	// Initial check after 30s delay
-	time.Sleep(30 * time.Second)
-	m.safeCheckFirmware(ctx)
-
+	if !sleepCtx(ctx, 30*time.Second) {
+		return
+	}
 	for {
-		select {
-		case <-ctx.Done():
+		m.safeCheckFirmware(ctx)
+		if !sleepCtx(ctx, FirmwareFetchMinInterval) {
 			return
-		case <-ticker.C:
-			m.safeCheckFirmware(ctx)
 		}
 	}
 }
@@ -868,96 +896,8 @@ func (m *Manager) safeCheckFirmware(ctx context.Context) {
 			log.Printf("poller: panic in firmware check: %v", r)
 		}
 	}()
-	m.checkFirmware(ctx)
-}
-
-func (m *Manager) checkFirmware(ctx context.Context) {
-	RunFirmwareCheck(ctx, m.db, m.pool, m.hub)
-}
-
-// RunFirmwareCheck polls every online device for RouterOS update availability
-// and upserts firmware_status. Shared by the periodic firmware poller and the
-// on-demand "Check All" API endpoint — both use the same connection pool.
-// A device whose polling is paused is skipped (logged once per pause): the
-// check is a fleet sweep, not an action on that device.
-//
-// A device whose check doesn't return a latest-version (async fetch still
-// pending, or it can't reach MikroTik's update servers) is left as-is:
-// UpsertFirmwareStatus preserves the last-known version rather than blanking it.
-func RunFirmwareCheck(ctx context.Context, db *sql.DB, pool *routeros.Pool, hub *ws.Hub) {
-	devices, err := queries.ListDevices(db)
-	if err != nil {
-		return
-	}
-
-	for _, dev := range devices {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-
-		if dev.Status != "online" {
-			continue
-		}
-		if dev.PollingPaused(time.Now()) {
-			pauseLog.skip("firmware check", dev)
-			continue
-		}
-
-		client := pool.GetLive(dev.ID)
-		if client == nil {
-			continue
-		}
-
-		var fw *routeros.FirmwareInfo
-		var rb *routeros.RouterboardInfo
-		func() {
-			defer func() {
-				if r := recover(); r != nil {
-					log.Printf("poller firmware: panic checking %s: %v", dev.Identity, r)
-					pool.Close(dev.ID)
-				}
-			}()
-			var err error
-			fw, err = routeros.CheckFirmwareUpdate(client)
-			if err != nil {
-				log.Printf("poller firmware: check %s: %v", dev.Identity, err)
-				return
-			}
-			rb, _ = routeros.GetRouterboardInfo(client)
-		}()
-		if fw == nil {
-			continue
-		}
-
-		fws := &queries.FirmwareStatus{
-			ID:               dev.ID + ":fw",
-			DeviceID:         dev.ID,
-			Channel:          fw.Channel,
-			InstalledVersion: fw.InstalledVersion,
-			UpdateAvailable:  fw.UpdateAvailable,
-		}
-		if fw.LatestVersion != "" {
-			fws.LatestVersion = &fw.LatestVersion
-		}
-		if rb != nil {
-			fws.RouterboardCurrent = &rb.CurrentFirmware
-			fws.RouterboardUpgrade = &rb.UpgradeFirmware
-		}
-
-		_ = queries.UpsertFirmwareStatus(db, fws)
-
-		if fw.UpdateAvailable {
-			hub.Publish("firmware.update", map[string]interface{}{
-				"device_id":        dev.ID,
-				"installed":        fw.InstalledVersion,
-				"latest":           fw.LatestVersion,
-				"update_available": true,
-			})
-		}
-
-		time.Sleep(2 * time.Second) // Stagger between devices
+	if _, err := m.firmware.Refresh(ctx, m.cfg.FirmwareInterval); err != nil {
+		log.Printf("poller: firmware release feed: %v", err)
 	}
 }
 

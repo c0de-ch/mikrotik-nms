@@ -116,7 +116,14 @@ export class NmsWebSocket {
         const msg = JSON.parse(event.data);
         if (msg.type) {
           // A control frame is about the subscription, never a sample.
-          for (const handler of this.statusHandlers.get(msg.topic) ?? []) {
+          const statusHandlers = this.statusHandlers.get(msg.topic);
+          if (!statusHandlers?.size && msg.type === "subscribe.error") {
+            // Nobody on the page listens for this topic's answer: a refusal
+            // (unknown topic, too many subscriptions) would otherwise look
+            // like a topic that is merely quiet.
+            console.warn(`ws: subscription to ${msg.topic} refused`, msg.data);
+          }
+          for (const handler of statusHandlers ?? []) {
             handler(msg.type as ControlType, msg.data);
           }
           return;

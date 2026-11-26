@@ -2,7 +2,7 @@
 //
 // A Device accepts the login a real device would and then records every
 // command it receives, answering each with an empty !done so the caller does
-// not hang. Dialled through a real routeros.Pool it is a tripwire: a test
+// not hang (or with the rows a test scripted for it with Reply). Dialled through a real routeros.Pool it is a tripwire: a test
 // hands the pool to the code under test and asserts the device saw nothing,
 // which proves a path costs the devices no I/O whatever helper it might call.
 package routerostest
@@ -25,9 +25,20 @@ type Device struct {
 	Host string
 	Port int
 
-	mu       sync.Mutex
-	conns    int
-	commands []string
+	mu           sync.Mutex
+	conns        int
+	commands     []string
+	args         [][]string
+	replies      map[string][]map[string]string
+	traps        map[string]string
+	hooks        map[string]func()
+	refuseLogins bool
+}
+
+// Reply scripts the rows (one !re sentence each, attribute → value) that
+// answer every later command with this word, e.g. "/system/resource/print".
+func (d *Device) Reply(command string, rows ...map[string]string) {
+	d.SetReply(command, rows...)
 }
 
 // NewDevice starts a fake device; it stops when the test ends.
@@ -90,12 +101,48 @@ func (d *Device) serve(c net.Conn) {
 		if err != nil {
 			if !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
 				// Bytes that do not even parse are traffic too.
-				d.record("<unparsed: " + err.Error() + ">")
+				d.record("<unparsed: "+err.Error()+">", nil)
 			}
 			return
 		}
-		if sen.Word != "/login" {
-			d.record(sen.Word)
+		d.mu.Lock()
+		hook := d.hooks[sen.Word]
+		d.mu.Unlock()
+		if hook != nil {
+			hook()
+		}
+		d.mu.Lock()
+		refuse := d.refuseLogins
+		rows := d.replies[sen.Word]
+		trap, trapped := d.traps[sen.Word]
+		d.mu.Unlock()
+		if sen.Word == "/login" {
+			if refuse {
+				trap, trapped = "invalid user name or password (6)", true
+			} else {
+				trapped, rows = false, nil
+			}
+		} else {
+			d.record(sen.Word, sen.List)
+		}
+		if trapped {
+			w.BeginSentence()
+			w.WriteWord("!trap")
+			w.WriteWord("=message=" + trap)
+			if err := w.EndSentence(); err != nil {
+				return
+			}
+		} else {
+			for _, row := range rows {
+				w.BeginSentence()
+				w.WriteWord("!re")
+				for k, v := range row {
+					w.WriteWord("=" + k + "=" + v)
+				}
+				if err := w.EndSentence(); err != nil {
+					return
+				}
+			}
 		}
 		w.BeginSentence()
 		w.WriteWord("!done")
@@ -105,8 +152,65 @@ func (d *Device) serve(c net.Conn) {
 	}
 }
 
-func (d *Device) record(cmd string) {
+// SetReply makes the device answer command with these !re rows.
+func (d *Device) SetReply(command string, rows ...map[string]string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.replies == nil {
+		d.replies = make(map[string][]map[string]string)
+	}
+	d.replies[command] = rows
+}
+
+// SetTrap makes the device answer command with a !trap carrying message.
+func (d *Device) SetTrap(command, message string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.traps == nil {
+		d.traps = make(map[string]string)
+	}
+	d.traps[command] = message
+}
+
+// OnCommand runs fn each time the device receives command, before it answers
+// — for a device whose state changes with what it is told, e.g. one that
+// reports a new version once it was told to install it. fn may call SetReply
+// and SetTrap.
+func (d *Device) OnCommand(command string, fn func()) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.hooks == nil {
+		d.hooks = make(map[string]func())
+	}
+	d.hooks[command] = fn
+}
+
+// RefuseLogins makes every later login fail as a wrong password does.
+func (d *Device) RefuseLogins(refuse bool) {
+	d.mu.Lock()
+	d.refuseLogins = refuse
+	d.mu.Unlock()
+}
+
+// Args returns the argument words of every command received after login,
+// in the order of Commands.
+func (d *Device) Args() [][]string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	out := make([][]string, len(d.args))
+	for i, a := range d.args {
+		out[i] = append([]string(nil), a...)
+	}
+	return out
+}
+
+func (d *Device) record(cmd string, pairs []proto.Pair) {
+	words := make([]string, 0, len(pairs))
+	for _, p := range pairs {
+		words = append(words, "="+p.Key+"="+p.Value)
+	}
 	d.mu.Lock()
 	d.commands = append(d.commands, cmd)
+	d.args = append(d.args, words)
 	d.mu.Unlock()
 }

@@ -659,19 +659,22 @@ export default function SettingsPage() {
       {/* Auto-follow IP changes */}
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Auto-follow IP changes</CardTitle>
+          <CardTitle className="text-base">Detect IP changes</CardTitle>
           <p className="text-xs text-muted-foreground">
-            Automatically re-point a managed device to a new IP discovered via neighbor discovery (MNDP/CDP),
-            keyed by the device&apos;s MAC. A move is only committed after an authenticated session to the new IP
-            confirms the same board and version, so a forged discovery packet cannot hijack a device. Off by default.
+            Notice when neighbor discovery (MNDP/CDP) sees a managed device&apos;s MAC at a new IP, and propose
+            moving the device there. Nothing is contacted at the new address until an admin approves the move on the
+            Devices page: discovery packets are unauthenticated, so the NMS never sends a device&apos;s stored
+            password to an address learned from them on its own. On approval it logs in at the new IP and commits the
+            move only when the same board, version and MAC answer. Off by default.
           </p>
         </CardHeader>
         <CardContent>
           <div className="flex items-center justify-between gap-4">
             <div className="flex-1">
-              <p className="font-medium text-sm">Enable auto-follow</p>
+              <p className="font-medium text-sm">Detect and propose moves</p>
               <p className="text-xs text-muted-foreground">
-                Applies on the next topology poll. Moves are recorded as &quot;IP address changed&quot; events on the Network Health page.
+                Applies on the next topology poll. Proposals show on the Devices page and as &quot;IP change proposed&quot;
+                events on the Network Health page; a proposal not sighted again for a day expires.
               </p>
             </div>
             <Button

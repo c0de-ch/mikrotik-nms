@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strings"
 	"sync"
@@ -66,6 +67,9 @@ type rateLimiter struct {
 	hits   map[string][]time.Time
 	limit  int
 	window time.Duration
+	// trusted are the reverse proxies whose X-Forwarded-For the middleware
+	// believes when it keys on the client address (see clientIP).
+	trusted []netip.Prefix
 }
 
 func newRateLimiter(limit int, window time.Duration) *rateLimiter {
@@ -121,13 +125,65 @@ func (rl *rateLimiter) janitor() {
 
 func (rl *rateLimiter) middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !rl.allow(r.RemoteAddr, time.Now()) {
+		if !rl.allow(clientIP(r, rl.trusted), time.Now()) {
 			w.Header().Set("Retry-After", "60")
 			http.Error(w, `{"error":"too many requests"}`, http.StatusTooManyRequests)
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// freshAuthMaxAge is how old a password login may be for an action that
+// changes a device (firmware upgrade, channel, RouterBOOT).
+const freshAuthMaxAge = 5 * time.Minute
+
+// clientIP is the address a request really came from, for rate limiting.
+// It is the TCP peer, unless the peer is one of the trusted reverse proxies:
+// then it is the right-most X-Forwarded-For entry that is not itself a
+// trusted proxy — the address the outermost trusted proxy saw. Entries to
+// the left of it are whatever the client sent and are never believed, so a
+// client cannot choose its own address (X-Real-IP is ignored for the same
+// reason). A peer that is not a trusted proxy gets its own address whatever
+// headers it sends.
+func clientIP(r *http.Request, trusted []netip.Prefix) string {
+	peer := peerAddr(r.RemoteAddr)
+	if !peer.IsValid() {
+		return r.RemoteAddr
+	}
+	if !inPrefixes(peer, trusted) {
+		return peer.String()
+	}
+	hops := strings.Split(strings.Join(r.Header.Values("X-Forwarded-For"), ","), ",")
+	for i := len(hops) - 1; i >= 0; i-- {
+		hop, err := netip.ParseAddr(strings.TrimSpace(hops[i]))
+		if err != nil {
+			break // a malformed entry: believe nothing to its left
+		}
+		hop = hop.Unmap()
+		if !inPrefixes(hop, trusted) {
+			return hop.String()
+		}
+	}
+	return peer.String()
+}
+
+// peerAddr parses the host of a "host:port" RemoteAddr.
+func peerAddr(remoteAddr string) netip.Addr {
+	if ap, err := netip.ParseAddrPort(remoteAddr); err == nil {
+		return ap.Addr().Unmap()
+	}
+	addr, _ := netip.ParseAddr(remoteAddr)
+	return addr.Unmap()
+}
+
+func inPrefixes(addr netip.Addr, prefixes []netip.Prefix) bool {
+	for _, p := range prefixes {
+		if p.Contains(addr) {
+			return true
+		}
+	}
+	return false
 }
 
 // limitResetPerUser throttles password-reset requests per submitted username so

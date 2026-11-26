@@ -85,7 +85,7 @@ The dev server starts on **http://localhost:3000**.
 
 ## Environment Variables
 
-The backend is configured entirely via `MIKROTIK_NMS_*` environment variables. The Docker Compose file maps a few unprefixed convenience names (`JWT_SECRET`, `ENCRYPTION_KEY`, `DEFAULT_ROS_USER`, `DEFAULT_ROS_PASS`) onto their prefixed equivalents so the `.env` file stays compact — see [`.env.example`](.env.example) and [`docker-compose.yml`](docker-compose.yml).
+The backend is configured entirely via `MIKROTIK_NMS_*` environment variables. The Docker Compose file maps a few unprefixed convenience names (`JWT_SECRET`, `ENCRYPTION_KEY`, …) onto their prefixed equivalents so the `.env` file stays compact — see [`.env.example`](.env.example) and [`docker-compose.yml`](docker-compose.yml).
 
 ### Backend
 
@@ -101,12 +101,10 @@ The backend is configured entirely via `MIKROTIK_NMS_*` environment variables. T
 | `MIKROTIK_NMS_ROS_TLS_VERIFY` | No | `false` | Verify RouterOS API-TLS device certificates (off by default; self-signed certs) |
 | `MIKROTIK_NMS_HEALTH_INTERVAL` | No | `30s` | How often to poll `/system/resource` |
 | `MIKROTIK_NMS_TOPOLOGY_INTERVAL` | No | `60s` | How often to poll `/ip/neighbor` and rebuild the link graph |
-| `MIKROTIK_NMS_FIRMWARE_INTERVAL` | No | `6h` | How often to check for RouterOS firmware updates |
+| `MIKROTIK_NMS_FIRMWARE_INTERVAL` | No | `24h` | How often the NMS refetches MikroTik's release feed (devices are never asked to check) |
 | `MIKROTIK_NMS_NETWORK_HEALTH_INTERVAL` | No | `60s` | How often to poll bridge/STP state and parse bridge logs |
 | `MIKROTIK_NMS_RETENTION_INTERVAL` | No | `1h` | How often to sweep old samples / events |
 | `MIKROTIK_NMS_RETENTION_DAYS` | No | `7` | How long to keep traffic samples, wifi/client history, and loop events |
-| `MIKROTIK_NMS_DEFAULT_ROS_USER` | No | `admin` | Default RouterOS username for discovered devices |
-| `MIKROTIK_NMS_DEFAULT_ROS_PASS` | No | — | Default RouterOS password for discovered devices |
 | `MIKROTIK_NMS_DEFAULT_ROS_PORT` | No | `8728` | Default RouterOS API port |
 | `MIKROTIK_NMS_DEFAULT_ROS_TLS` | No | `false` | Default to TLS (`8729`) for new devices |
 | `MIKROTIK_NMS_FLOW_LISTEN` | No | *(empty = off)* | UDP address(es) for the flow collector, e.g. `:2055` (comma-separated for several). Exporters must reach this port; see [docs/FLOW-EXPORT.md](docs/FLOW-EXPORT.md). Restart to change |
@@ -167,7 +165,7 @@ kubectl apply -f deploy/k8s/
 
 Before applying:
 
-- Edit `secret.yaml` to supply your `MIKROTIK_NMS_JWT_SECRET` (and `MIKROTIK_NMS_ENCRYPTION_KEY`, `MIKROTIK_NMS_DEFAULT_ROS_PASS` if used).
+- Edit `secret.yaml` to supply your `MIKROTIK_NMS_JWT_SECRET` and `MIKROTIK_NMS_ENCRYPTION_KEY`.
 - Adjust `ingress.yaml` to match your domain and TLS setup.
 - The deployment pulls images from `ghcr.io/c0de-ch/mikrotik-nms/{backend,frontend}:latest` (published by the `Build & Push Docker Images` workflow). If you fork, change those references to your fork's GHCR path.
 

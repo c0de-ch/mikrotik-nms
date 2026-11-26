@@ -39,7 +39,8 @@ func newFakeMailer(enabled bool) *fakeMailer {
 	return &fakeMailer{enabled: enabled, signal: make(chan struct{}, 16)}
 }
 
-func (f *fakeMailer) Enabled() bool { return f.enabled }
+func (f *fakeMailer) Enabled() bool       { return f.enabled }
+func (f *fakeMailer) CanBuildLinks() bool { return f.enabled }
 
 func (f *fakeMailer) Send(to, subject, textBody, htmlBody string) error {
 	f.mu.Lock()
@@ -358,7 +359,7 @@ func TestPerformResetInvalidatesRefreshSession(t *testing.T) {
 	u := seedUser(t, db, "real@example.com", "originalpw")
 
 	// Mint a refresh token as login would (token_version 0).
-	pair, err := auth.GenerateTokenPair(prtSecret, u.ID, u.Username, u.Role, u.TokenVersion)
+	pair, err := auth.GenerateTokenPair(prtSecret, u.ID, u.Username, u.Role, u.TokenVersion, time.Now())
 	if err != nil {
 		t.Fatalf("token pair: %v", err)
 	}
@@ -387,7 +388,7 @@ func TestPerformResetInvalidatesRefreshSession(t *testing.T) {
 
 	// A fresh login (new token_version) refreshes fine.
 	u2, _ := queries.GetUserByUsername(db, "real@example.com")
-	fresh, _ := auth.GenerateTokenPair(prtSecret, u2.ID, u2.Username, u2.Role, u2.TokenVersion)
+	fresh, _ := auth.GenerateTokenPair(prtSecret, u2.ID, u2.Username, u2.Role, u2.TokenVersion, time.Now())
 	ok := postJSON(t, h, "/api/v1/auth/refresh", map[string]string{"refresh_token": fresh.RefreshToken})
 	if ok.Code != http.StatusOK {
 		t.Fatalf("fresh refresh status = %d, want 200", ok.Code)

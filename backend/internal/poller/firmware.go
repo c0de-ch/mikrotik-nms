@@ -2,28 +2,70 @@ package poller
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"time"
 
+	ros "github.com/go-routeros/routeros/v3"
 	"github.com/mikrotik-nms/backend/internal/database/queries"
+	"github.com/mikrotik-nms/backend/internal/firmware"
 	"github.com/mikrotik-nms/backend/internal/routeros"
 	"github.com/mikrotik-nms/backend/internal/ws"
 )
 
-// UpgradeExecutor runs firmware upgrades asynchronously.
+// Timings of an upgrade job (variables for tests).
+var (
+	// upgradeConnectWindow is how long a job keeps retrying its first dial
+	// of a device (it may still be rebooting from a RouterBOARD upgrade).
+	upgradeConnectWindow = 3 * time.Minute
+	// upgradeRetryEvery is the gap between dial attempts.
+	upgradeRetryEvery = 10 * time.Second
+	// rebootGrace is how long the job waits before looking for a rebooting
+	// device, rebootTimeout how long it may take to come back.
+	rebootGrace   = 15 * time.Second
+	rebootTimeout = 5 * time.Minute
+	// packageCommandTimeout bounds download and install: both fetch the
+	// packages from MikroTik's servers before they answer.
+	packageCommandTimeout = 10 * time.Minute
+)
+
+// UpgradeExecutor runs a firmware upgrade job asynchronously. Every device
+// session of the job is a one-shot connection (routeros.DialOnceWith) logged
+// in with the credentials the admin typed for the job — never the pooled
+// poll session and never the stored poll credential — and the credentials
+// are zeroed when the job ends.
 type UpgradeExecutor struct {
-	db   *sql.DB
-	pool *routeros.Pool
-	hub  *ws.Hub
+	db        *sql.DB
+	pool      *routeros.Pool
+	hub       *ws.Hub
+	creds     *routeros.Credentials
+	verifyTLS bool
+	// refusedOn is the first device that refused the job's login: the
+	// remaining devices are skipped rather than sent the same wrong
+	// password (each failure is a line in their log, and may lock out).
+	refusedOn string
+	// firmware, when set, stores the firmware facts the job reads from a
+	// device it upgraded (RecordFirmwareWith).
+	firmware *FirmwareChecker
 }
 
-func NewUpgradeExecutor(db *sql.DB, pool *routeros.Pool, hub *ws.Hub) *UpgradeExecutor {
-	return &UpgradeExecutor{db: db, pool: pool, hub: hub}
+// NewUpgradeExecutor takes ownership of creds: Execute zeroes them.
+func NewUpgradeExecutor(db *sql.DB, pool *routeros.Pool, hub *ws.Hub, creds *routeros.Credentials, verifyTLS bool) *UpgradeExecutor {
+	return &UpgradeExecutor{db: db, pool: pool, hub: hub, creds: creds, verifyTLS: verifyTLS}
+}
+
+// RecordFirmwareWith makes the job store the firmware facts of every device
+// it upgraded, read on the session that verified the new version — so the
+// firmware page shows the result at once instead of "update available" until
+// the device's next info pass.
+func (ue *UpgradeExecutor) RecordFirmwareWith(c *FirmwareChecker) {
+	ue.firmware = c
 }
 
 // Execute runs an upgrade job: upgrades each device sequentially, broadcasting progress.
 func (ue *UpgradeExecutor) Execute(jobID string) {
+	defer ue.creds.Zero()
 	log.Printf("firmware: starting upgrade job %s", jobID)
 
 	_ = queries.UpdateUpgradeJobStatus(ue.db, jobID, "running")
@@ -38,19 +80,15 @@ func (ue *UpgradeExecutor) Execute(jobID string) {
 	job, _ := queries.GetUpgradeJob(ue.db, jobID)
 	reboot := job != nil && job.Reboot
 
-	allSuccess := true
 	for _, jd := range devices {
-		success := ue.upgradeDevice(jobID, jd, reboot)
-		if !success {
-			allSuccess = false
+		if ue.refusedOn != "" {
+			ue.skipDevice(jobID, jd)
+			continue
 		}
+		ue.upgradeDevice(jobID, jd, reboot)
 	}
-
-	if allSuccess {
-		_ = queries.UpdateUpgradeJobStatus(ue.db, jobID, "completed")
-	} else {
-		_ = queries.UpdateUpgradeJobStatus(ue.db, jobID, "completed") // partial success still "completed"
-	}
+	// Partial success is still "completed"; each device row has its outcome.
+	_ = queries.UpdateUpgradeJobStatus(ue.db, jobID, "completed")
 
 	ue.hub.Publish(fmt.Sprintf("upgrade.progress.%s", jobID), map[string]interface{}{
 		"job_id": jobID,
@@ -58,6 +96,25 @@ func (ue *UpgradeExecutor) Execute(jobID string) {
 	})
 
 	log.Printf("firmware: upgrade job %s finished", jobID)
+}
+
+// LoginRefusedMessage is the per-device outcome of a job whose credentials
+// the device turned down.
+func LoginRefusedMessage(identity string) string {
+	return fmt.Sprintf("login refused by %s — check the username and password typed for this job", identity)
+}
+
+func (ue *UpgradeExecutor) skipDevice(jobID string, jd queries.UpgradeJobDevice) {
+	msg := "skipped: " + LoginRefusedMessage(ue.refusedOn)
+	_ = queries.UpdateUpgradeJobDeviceStatus(ue.db, jd.ID, "failed", msg)
+	ue.hub.Publish(fmt.Sprintf("upgrade.progress.%s", jobID), map[string]interface{}{
+		"job_id": jobID, "device_id": jd.DeviceID, "status": "failed", "message": msg,
+	})
+}
+
+// dial opens a one-shot session to dev with the job's credentials.
+func (ue *UpgradeExecutor) dial(dev *queries.Device) (*ros.Client, error) {
+	return routeros.DialOnceWith(dev.Address, dev.APIPort, ue.creds, dev.UseTLS, ue.verifyTLS)
 }
 
 func (ue *UpgradeExecutor) upgradeDevice(jobID string, jd queries.UpgradeJobDevice, reboot bool) bool {
@@ -72,7 +129,6 @@ func (ue *UpgradeExecutor) upgradeDevice(jobID string, jd queries.UpgradeJobDevi
 		})
 	}
 
-	// Get device info
 	dev, err := queries.GetDevice(ue.db, jd.DeviceID)
 	if err != nil {
 		publish("failed", "device not found")
@@ -83,89 +139,133 @@ func (ue *UpgradeExecutor) upgradeDevice(jobID string, jd queries.UpgradeJobDevi
 
 	// The device can be briefly unreachable when the job starts — e.g. still
 	// rebooting from a RouterBOARD firmware upgrade applied moments earlier.
-	// Retry the initial connection for a bounded window rather than failing the
-	// whole job on the first refused dial.
-	client, err := ue.pool.EnsureConnection(dev.ID, dev.Address, dev.APIPort, dev.Username, dev.PasswordEnc, dev.UseTLS)
-	for connectDeadline := time.Now().Add(3 * time.Minute); err != nil && time.Now().Before(connectDeadline); {
+	// Retry the first connection for a bounded window; a refused login is
+	// final (retrying a wrong password only fills the device's log).
+	client, err := ue.dial(dev)
+	for deadline := time.Now().Add(upgradeConnectWindow); err != nil && !routeros.IsLoginRefused(err) &&
+		!errors.Is(err, routeros.ErrTargetNotAllowed) && !errors.Is(err, routeros.ErrPollersOff) &&
+		time.Now().Before(deadline); {
 		publish("downloading", fmt.Sprintf("Waiting for %s to respond...", dev.Identity))
-		time.Sleep(10 * time.Second)
-		client, err = ue.pool.EnsureConnection(dev.ID, dev.Address, dev.APIPort, dev.Username, dev.PasswordEnc, dev.UseTLS)
+		time.Sleep(upgradeRetryEvery)
+		client, err = ue.dial(dev)
 	}
 	if err != nil {
-		publish("failed", fmt.Sprintf("connection failed after retries: %v", err))
+		if routeros.IsLoginRefused(err) {
+			ue.refusedOn = dev.Identity
+			publish("failed", LoginRefusedMessage(dev.Identity))
+		} else {
+			publish("failed", fmt.Sprintf("connection failed: %v", err))
+		}
 		return false
 	}
+	closed := false
+	closeClient := func() {
+		if !closed {
+			closed = true
+			_ = client.Close()
+		}
+	}
+	defer closeClient()
 
-	// Check if update is actually available
-	fw, err := routeros.CheckFirmwareUpdate(client)
+	// check-for-updates is not read-only; it runs here, inside the admin's
+	// job and on its session, never with the poll credential.
+	fw, err := routeros.CheckForUpdates(routeros.OnceRunner{Client: client})
 	if err != nil {
-		publish("failed", fmt.Sprintf("firmware check failed: %v", err))
+		publish("failed", fmt.Sprintf("update check failed: %v", err))
 		return false
 	}
-
+	if fw.LatestVersion == "" {
+		msg := "the device could not check for updates"
+		if fw.Status != "" {
+			msg += ": " + fw.Status
+		}
+		publish("failed", msg)
+		return false
+	}
 	if !fw.UpdateAvailable {
-		publish("completed", "already up to date")
+		publish("completed", fmt.Sprintf("already up to date (%s)", fw.InstalledVersion))
+		return true
+	}
+
+	pkgRun := routeros.OnceRunner{Client: client, Timeout: packageCommandTimeout}
+	if !reboot {
+		// download fetches the packages and stops there: RouterOS installs
+		// them on the next reboot. install would reboot the device now.
+		publish("downloading", fmt.Sprintf("Downloading %s → %s", fw.InstalledVersion, fw.LatestVersion))
+		if err := routeros.DownloadUpdate(pkgRun); err != nil {
+			publish("failed", fmt.Sprintf("download failed: %v", err))
+			return false
+		}
+		publish("completed", fmt.Sprintf("%s downloaded — %s installs it on its next reboot", fw.LatestVersion, dev.Identity))
 		return true
 	}
 
 	publish("installing", fmt.Sprintf("Installing %s → %s", fw.InstalledVersion, fw.LatestVersion))
-
-	// Trigger download + install
-	if err := routeros.TriggerUpgrade(client); err != nil {
-		// TriggerUpgrade may return error because the device starts rebooting
-		log.Printf("firmware: trigger upgrade on %s: %v (may be expected during reboot)", dev.Identity, err)
+	if err := routeros.InstallUpdate(pkgRun); err != nil {
+		// The device reboots to install, which usually ends the session.
+		log.Printf("firmware: install on %s: %v (expected when the device reboots)", dev.Identity, err)
 	}
+	closeClient()
 
-	if reboot {
-		publish("rebooting", "Device is rebooting...")
-		ue.pool.Close(dev.ID)
+	publish("rebooting", "Device is rebooting...")
+	ue.pool.Close(dev.ID) // the pooled poll session died with the reboot
 
-		// Wait for device to come back online
-		if err := ue.waitForReboot(dev, 5*time.Minute); err != nil {
+	if err := ue.waitForReboot(dev); err != nil {
+		if routeros.IsLoginRefused(err) {
+			publish("failed", LoginRefusedMessage(dev.Identity))
+		} else {
 			publish("failed", fmt.Sprintf("reboot timeout: %v", err))
-			return false
 		}
-
-		publish("verifying", "Verifying new version...")
-
-		// Verify version changed
-		newClient, err := ue.pool.EnsureConnection(dev.ID, dev.Address, dev.APIPort, dev.Username, dev.PasswordEnc, dev.UseTLS)
-		if err != nil {
-			publish("failed", fmt.Sprintf("post-reboot connection failed: %v", err))
-			return false
-		}
-
-		res, err := routeros.GetSystemResource(newClient)
-		if err != nil {
-			publish("failed", fmt.Sprintf("post-reboot check failed: %v", err))
-			return false
-		}
-
-		_ = queries.UpdateDeviceInfo(ue.db, dev.ID, res.Platform, res.Board, res.Version, "", res.Architecture)
-		publish("completed", fmt.Sprintf("Upgraded to %s", res.Version))
-	} else {
-		publish("completed", fmt.Sprintf("Update downloaded — %s needs manual reboot", dev.Identity))
+		return false
 	}
 
+	publish("verifying", "Verifying new version...")
+	verify, err := ue.dial(dev)
+	if err != nil {
+		publish("failed", fmt.Sprintf("post-reboot connection failed: %v", err))
+		return false
+	}
+	defer verify.Close()
+	res, err := routeros.GetSystemResource(verify)
+	if err != nil {
+		publish("failed", fmt.Sprintf("post-reboot check failed: %v", err))
+		return false
+	}
+	_ = queries.UpdateDeviceInfo(ue.db, dev.ID, res.Platform, res.Board, res.Version, "", res.Architecture)
+	if ue.firmware != nil {
+		// Two read-only prints on the job's own session, as the channel and
+		// RouterBOARD actions do; whatever the device reports is recorded,
+		// also when it is not the version the job expected.
+		if pkg, rb, err := ReadFirmware(routeros.OnceRunner{Client: verify}); err != nil {
+			log.Printf("firmware: read firmware facts of %s after the upgrade: %v", dev.Identity, err)
+		} else {
+			ue.firmware.RecordDevice(dev.ID, pkg, rb)
+		}
+	}
+	if firmware.UpdateAvailable(res.Version, fw.LatestVersion) {
+		publish("failed", fmt.Sprintf("%s came back on %s, expected %s", dev.Identity, res.Version, fw.LatestVersion))
+		return false
+	}
+	publish("completed", fmt.Sprintf("Upgraded to %s", res.Version))
 	return true
 }
 
-func (ue *UpgradeExecutor) waitForReboot(dev *queries.Device, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-
-	// Wait a bit for device to go down
-	time.Sleep(15 * time.Second)
-
-	for time.Now().Before(deadline) {
-		client, err := ue.pool.Dial(dev.ID, dev.Address, dev.APIPort, dev.Username, dev.PasswordEnc, dev.UseTLS)
+// waitForReboot waits for dev to answer a login again after a reboot.
+func (ue *UpgradeExecutor) waitForReboot(dev *queries.Device) error {
+	time.Sleep(rebootGrace)
+	deadline := time.Now().Add(rebootTimeout)
+	for {
+		client, err := ue.dial(dev)
 		if err == nil {
-			// Test that it's actually responding
-			if err := routeros.KeepAlive(client); err == nil {
-				return nil
-			}
+			_ = client.Close()
+			return nil
 		}
-		time.Sleep(10 * time.Second)
+		if routeros.IsLoginRefused(err) {
+			return err
+		}
+		if !time.Now().Before(deadline) {
+			return fmt.Errorf("%s did not come back within %v", dev.Identity, rebootTimeout)
+		}
+		time.Sleep(upgradeRetryEvery)
 	}
-
-	return fmt.Errorf("device %s did not come back within %v", dev.Identity, timeout)
 }

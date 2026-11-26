@@ -112,7 +112,7 @@ async function apiFetch<T>(path: string, options: FetchOptions = {}): Promise<T>
   }
 
   if (!res.ok) {
-    const body: { error?: string } = await res.json().catch(() => ({}));
+    const body: { error?: string; code?: string } = await res.json().catch(() => ({}));
     let message = body.error || res.statusText;
     // A reverse-proxy 502/503/504 with no JSON body means the backend behind
     // it is down; statusText is terse on HTTP/1.1 and empty on HTTP/2, so
@@ -122,7 +122,7 @@ async function apiFetch<T>(path: string, options: FetchOptions = {}): Promise<T>
     } else if (!message) {
       message = `Request failed (HTTP ${res.status})`;
     }
-    throw new ApiError(res.status, message);
+    throw new ApiError(res.status, message, body.code);
   }
 
   // 204 No Content (e.g. DELETE /flows/points/{id}) has no body to parse.
@@ -134,6 +134,9 @@ export class ApiError extends Error {
   constructor(
     public status: number,
     message: string,
+    // The server's machine-readable reason, when it sent one (e.g.
+    // "reauth_required": the action needs the password typed again).
+    public code?: string,
   ) {
     super(message);
     this.name = "ApiError";
@@ -191,17 +194,13 @@ export const api = {
     },
   },
 
-  // Network clients
+  // Network clients. The list is the cache the scheduled pollers keep (no
+  // device is contacted); refresh pulls their reads forward once, at most
+  // every refresh.min_interval_seconds fleet-wide.
   clients: {
-    scan: (token: string, options?: { limit?: number; timeout?: number }) => {
-      const params = new URLSearchParams();
-      if (options?.limit) params.set("limit", String(options.limit));
-      if (options?.timeout) params.set("timeout", String(options.timeout));
-      const qs = params.toString() ? `?${params}` : "";
-      return apiFetch<ClientScanResult>(`/clients${qs}`, { token });
-    },
-    cached: (token: string) =>
-      apiFetch<{ clients: NetworkClient[]; total: number; cached: boolean }>("/clients/cached", { token }),
+    cached: (token: string) => apiFetch<ClientListResult>("/clients/cached", { token }),
+    refresh: (token: string) =>
+      apiFetch<{ refresh: ClientRefreshStatus }>("/clients/refresh", { method: "POST", token }),
   },
 
   // Devices
@@ -249,6 +248,21 @@ export const api = {
     // failures, …), most recently seen first.
     findings: (token: string, id: string, limit = 50) =>
       apiFetch<DeviceFinding[]>(`/devices/${id}/findings?limit=${limit}`, { token }),
+    // IP auto-follow proposals: a managed device seen by MNDP/CDP at a new
+    // address. Pending only unless status is given ("all" or one status).
+    addressProposals: (token: string, status?: AddressProposalStatus | "all") =>
+      apiFetch<AddressProposal[]>(
+        `/devices/address-proposals${status ? `?status=${status}` : ""}`,
+        { token },
+      ),
+    // Admin + a password typed in the last 5 min (wrap in withFreshAuth):
+    // logs in at the new address with the stored credential, verifies board,
+    // version and MAC, and re-points the device. 200 with status "approved"
+    // or "failed"; 409 when no longer pending, stale or the device is paused.
+    approveAddressProposal: (token: string, id: number) =>
+      apiFetch<AddressProposal>(`/devices/address-proposals/${id}/approve`, { method: "POST", token }),
+    dismissAddressProposal: (token: string, id: number) =>
+      apiFetch<AddressProposal>(`/devices/address-proposals/${id}/dismiss`, { method: "POST", token }),
   },
 
   // Topology
@@ -392,25 +406,37 @@ export const api = {
   // Firmware
   firmware: {
     list: (token: string) => apiFetch<FirmwareStatus[]>("/firmware", { token }),
+    // Check All: refreshes MikroTik's release feed (at most hourly) and
+    // recomputes every device's comparison — the devices are not contacted.
     check: (token: string) =>
-      apiFetch("/firmware/check", { method: "POST", token }),
-    upgrade: (token: string, deviceIds: string[], reboot: boolean) =>
-      apiFetch("/firmware/upgrade", {
+      apiFetch<{ status: "fetching" | "recent"; fetched_at?: string; next_fetch?: string }>("/firmware/check", {
         method: "POST",
         token,
-        body: JSON.stringify({ device_ids: deviceIds, reboot }),
       }),
-    setChannel: (token: string, deviceIds: string[], channel: string) =>
+    releases: (token: string) => apiFetch<FirmwareRelease[]>("/firmware/releases", { token }),
+    // The device-changing actions log in with a RouterOS user typed for this
+    // one action (never stored by the server or the browser).
+    upgrade: (token: string, deviceIds: string[], reboot: boolean, creds: DeviceCredentials) =>
+      apiFetch<{ job_id: string }>("/firmware/upgrade", {
+        method: "POST",
+        token,
+        body: JSON.stringify({ device_ids: deviceIds, reboot, ...creds }),
+      }),
+    // An upgrade job's stored state: what the WS progress frames said so far,
+    // for a page that missed some of them.
+    job: (token: string, jobId: string) =>
+      apiFetch<UpgradeJobState>(`/firmware/upgrade/${encodeURIComponent(jobId)}`, { token }),
+    setChannel: (token: string, deviceIds: string[], channel: string, creds: DeviceCredentials) =>
       apiFetch<{ changed: number; errors: string[] }>("/firmware/channel", {
         method: "POST",
         token,
-        body: JSON.stringify({ device_ids: deviceIds, channel }),
+        body: JSON.stringify({ device_ids: deviceIds, channel, ...creds }),
       }),
-    upgradeRouterboard: (token: string, deviceIds: string[], reboot: boolean) =>
+    upgradeRouterboard: (token: string, deviceIds: string[], reboot: boolean, creds: DeviceCredentials) =>
       apiFetch<{ upgraded: number; errors: string[] }>("/firmware/routerboard", {
         method: "POST",
         token,
-        body: JSON.stringify({ device_ids: deviceIds, reboot }),
+        body: JSON.stringify({ device_ids: deviceIds, reboot, ...creds }),
       }),
   },
 
@@ -542,6 +568,24 @@ export const api = {
       apiFetch<{ ok: boolean; message: string }>("/settings/otel/test", { method: "POST", token, body: JSON.stringify(data) }),
     testMail: (token: string, data: { to: string; host: string; port: string; user: string; password: string; from: string; tls_mode: string; skip_verify: boolean }) =>
       apiFetch<{ ok: boolean; message: string }>("/settings/mail/test", { method: "POST", token, body: JSON.stringify(data) }),
+  },
+
+  // Alerts: what the rules currently see, silences, and (admin) where
+  // notifications go. A channel's target is write-only.
+  alerts: {
+    list: (token: string) => apiFetch<AlertList>("/alerts", { token }),
+    ack: (token: string, id: number) => apiFetch<Alert>(`/alerts/${id}/ack`, { method: "POST", token }),
+    silence: (token: string, data: { scope: "site" | "device" | "rule"; target?: string; hours: number; reason?: string }) =>
+      apiFetch<AlertSilence>("/alerts/silences", { method: "POST", token, body: JSON.stringify(data) }),
+    endSilence: (token: string, id: number) => apiFetch<void>(`/alerts/silences/${id}`, { method: "DELETE", token }),
+    channels: (token: string) => apiFetch<NotificationChannel[]>("/alerts/channels", { token }),
+    createChannel: (token: string, data: { name: string; kind: "smtp" | "webhook"; target: string; min_severity: AlertSeverity }) =>
+      apiFetch<NotificationChannel>("/alerts/channels", { method: "POST", token, body: JSON.stringify(data) }),
+    updateChannel: (token: string, id: number, data: { name?: string; target?: string; min_severity?: AlertSeverity; enabled?: boolean }) =>
+      apiFetch<NotificationChannel>(`/alerts/channels/${id}`, { method: "PUT", token, body: JSON.stringify(data) }),
+    deleteChannel: (token: string, id: number) => apiFetch<void>(`/alerts/channels/${id}`, { method: "DELETE", token }),
+    testChannel: (token: string, id: number) =>
+      apiFetch<{ ok: boolean; message: string }>(`/alerts/channels/${id}/test`, { method: "POST", token }),
   },
 
   // Admin actions
@@ -717,6 +761,31 @@ export interface DeviceFinding {
   first_seen: string;
   last_seen: string;
   count: number;
+}
+
+export type AddressProposalStatus =
+  | "pending"
+  | "approved"
+  | "dismissed"
+  | "superseded"
+  | "expired"
+  | "failed";
+
+// One device_address_proposals row: neighbor discovery saw device_id's MAC
+// (mac) at new_address while the NMS polls it at old_address.
+export interface AddressProposal {
+  id: number;
+  device_id: string;
+  device_identity: string;
+  old_address: string;
+  new_address: string;
+  mac: string;
+  first_seen: string;
+  last_seen: string;
+  status: AddressProposalStatus;
+  decided_by?: string;
+  decided_at?: string;
+  result?: string;
 }
 
 export interface CreateDeviceRequest {
@@ -1452,6 +1521,28 @@ export interface FirmwareStatus {
   last_checked: string | null;
 }
 
+// The newest RouterOS version of one update channel, from MikroTik's feed.
+export interface FirmwareRelease {
+  channel: string;
+  version: string;
+  build_time: string | null;
+  fetched_at: string;
+}
+
+// An upgrade job and the outcome of each of its devices so far. A job ends as
+// "completed" whatever its devices did (each row has its own status), or as
+// "failed" when it could not run at all.
+export interface UpgradeJobState {
+  job: { id: string; status: "pending" | "running" | "completed" | "failed" | string };
+  devices: { device_id: string; status: string; message: string }[];
+}
+
+// A RouterOS login typed for one firmware action.
+export interface DeviceCredentials {
+  username: string;
+  password: string;
+}
+
 export interface User {
   id: string;
   username: string;
@@ -1468,11 +1559,33 @@ export interface DNSServer {
   created_at: string;
 }
 
-export interface ClientScanResult {
+// State of the on-demand client refresh (POST /clients/refresh).
+export interface ClientRefreshStatus {
+  // false on an instance that polls nothing: there is nothing to refresh from.
+  available: boolean;
+  running: boolean;
+  started_at?: string;
+  finished_at?: string;
+  // Set while a new refresh would be refused as too soon.
+  next_allowed_at?: string;
+  min_interval_seconds: number;
+  // What the last finished refresh did.
+  clients: number;
+  devices_read: number;
+  devices_skipped: number;
+  timed_out?: boolean;
+}
+
+export interface ClientListResult {
   clients: NetworkClient[];
   total: number;
-  limited: boolean;
-  timed_out: boolean;
+  active?: number;
+  cached: boolean;
+  // When the newest cache entry was seen (absent for an empty cache).
+  updated_at?: string;
+  age_seconds?: number;
+  // Absent from a backend older than the refresh endpoint.
+  refresh?: ClientRefreshStatus;
 }
 
 export interface NetworkClient {
@@ -1779,4 +1892,57 @@ export interface DeepDiscoveredDevice {
   source: "neighbor" | "port-scan" | "both";
   open_ports: number[];
   seen_from: string;
+}
+
+export type AlertSeverity = "info" | "warning" | "critical";
+
+export interface Alert {
+  id: number;
+  rule: string;
+  key: string;
+  device_id?: string;
+  device_name?: string;
+  severity: AlertSeverity;
+  state: "firing" | "acked" | "resolved";
+  first_at: string;
+  last_at: string;
+  last_notified_at?: string;
+  resolved_at?: string;
+  acked_by?: string;
+  acked_at?: string;
+  summary: string;
+  facts?: Record<string, unknown>;
+  runbook_url: string;
+  // A silence in force keeps this alert from being notified.
+  silenced: boolean;
+}
+
+export interface AlertSilence {
+  id: number;
+  scope: "site" | "device" | "rule";
+  target: string;
+  until: string;
+  reason: string;
+  created_by: string;
+  created_at: string;
+}
+
+export interface AlertList {
+  alerts: Alert[];
+  firing: number;
+  acked: number;
+  silences: AlertSilence[];
+  rules: string[];
+  // false on an instance that polls nothing: rules are not evaluated there.
+  evaluating: boolean;
+}
+
+export interface NotificationChannel {
+  id: number;
+  name: string;
+  kind: "smtp" | "webhook";
+  // Enough of the target to recognise it; the address or URL is never returned.
+  target_hint: string;
+  min_severity: AlertSeverity;
+  enabled: boolean;
 }

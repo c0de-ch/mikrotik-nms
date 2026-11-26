@@ -19,8 +19,16 @@ func waitFor(t *testing.T, cond func() bool) {
 	t.Fatal("condition not met within deadline")
 }
 
-func TestHubDeliversToSubscribersOnly(t *testing.T) {
+// newOpenHub is a hub that accepts any topic name, for the tests of the
+// hub's own mechanics (which use made-up topics).
+func newOpenHub() *Hub {
 	h := NewHub()
+	h.allow = nil
+	return h
+}
+
+func TestHubDeliversToSubscribersOnly(t *testing.T) {
+	h := newOpenHub()
 	go h.Run()
 
 	sub := NewClient(h, nil)   // subscribes to "alpha"
@@ -56,7 +64,7 @@ func TestHubDeliversToSubscribersOnly(t *testing.T) {
 }
 
 func TestHubUnsubscribeStopsDelivery(t *testing.T) {
-	h := NewHub()
+	h := newOpenHub()
 	go h.Run()
 
 	c := NewClient(h, nil)
@@ -77,7 +85,7 @@ func TestHubUnsubscribeStopsDelivery(t *testing.T) {
 // with one channel per kind, select could apply the unsubscribe first and
 // leave the client on a topic it had already left.
 func TestHubAppliesClientOpsInOrder(t *testing.T) {
-	h := NewHub()
+	h := newOpenHub()
 	go h.Run()
 
 	c := NewClient(h, nil)
@@ -95,7 +103,7 @@ func TestHubAppliesClientOpsInOrder(t *testing.T) {
 }
 
 func TestHubNotifyReachesOnlyThatLiveClient(t *testing.T) {
-	h := NewHub()
+	h := newOpenHub()
 	go h.Run()
 
 	a := NewClientFor(h, nil, ClientInfo{Username: "alice", Role: "admin"})
@@ -154,7 +162,7 @@ func TestHubNotifyReachesOnlyThatLiveClient(t *testing.T) {
 
 // Data frames carry no type, so a client can tell them from control frames.
 func TestHubDataFrameHasNoType(t *testing.T) {
-	h := NewHub()
+	h := newOpenHub()
 	go h.Run()
 	c := NewClient(h, nil)
 	h.Subscribe(c, "d")
@@ -171,7 +179,7 @@ func TestHubDataFrameHasNoType(t *testing.T) {
 }
 
 func TestHubListenersSeeValuesAndCountAsSubscribers(t *testing.T) {
-	h := NewHub()
+	h := newOpenHub()
 	go h.Run()
 
 	type snap struct{ N int }
@@ -198,7 +206,7 @@ func TestHubListenersSeeValuesAndCountAsSubscribers(t *testing.T) {
 
 // A listener may publish in turn (a derived topic) without deadlocking.
 func TestHubListenerMayPublish(t *testing.T) {
-	h := NewHub()
+	h := newOpenHub()
 	go h.Run()
 	c := NewClient(h, nil)
 	h.Subscribe(c, "derived")
@@ -223,7 +231,7 @@ func TestHubListenerMayPublish(t *testing.T) {
 }
 
 func TestHubSubscribersWithPrefix(t *testing.T) {
-	h := NewHub()
+	h := newOpenHub()
 	go h.Run()
 	a, b := NewClient(h, nil), NewClient(h, nil)
 	h.Subscribe(a, "traffic.d1.ether1")
@@ -244,7 +252,7 @@ func TestHubSubscribersWithPrefix(t *testing.T) {
 // A repeated subscribe is a new request (new Seq), and a refusal dropping
 // the old one must not take the new one with it.
 func TestHubSubscriptionSeq(t *testing.T) {
-	h := NewHub()
+	h := newOpenHub()
 	go h.Run()
 	c := NewClient(h, nil)
 	seqOf := func() uint64 {

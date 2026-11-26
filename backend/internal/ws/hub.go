@@ -62,6 +62,13 @@ type Hub struct {
 	subscribers map[string]map[*Client]uint64 // topic → client → Seq of its subscribe
 	nextSeq     uint64
 
+	// subCount is the number of topics each client is subscribed to, for the
+	// per-connection cap (MaxSubscriptions).
+	subCount map[*Client]int
+	// allow vets the topic of every client subscribe (nil = any topic).
+	// NewHub installs TopicAllowed.
+	allow func(topic string) bool
+
 	// listeners are in-process subscribers (see Listen), keyed by topic and
 	// listener id.
 	listeners    map[string]map[uint64]func(any)
@@ -74,10 +81,14 @@ type Hub struct {
 	ops chan hubOp
 }
 
+// NewHub returns a hub that accepts client subscriptions to the server's
+// own topics only (TopicAllowed), at most MaxSubscriptions per connection.
 func NewHub() *Hub {
 	return &Hub{
 		clients:     make(map[*Client]struct{}),
 		subscribers: make(map[string]map[*Client]uint64),
+		subCount:    make(map[*Client]int),
+		allow:       TopicAllowed,
 		listeners:   make(map[string]map[uint64]func(any)),
 		ops:         make(chan hubOp, 256),
 	}
@@ -97,6 +108,7 @@ func (h *Hub) Run() {
 					delete(h.subscribers, topic)
 				}
 			}
+			delete(h.subCount, op.client)
 			delete(h.clients, op.client)
 			if !op.client.closed {
 				op.client.closed = true
@@ -108,8 +120,27 @@ func (h *Hub) Run() {
 				break // already disconnected; nothing would ever drain it
 			}
 			h.clients[op.client] = struct{}{}
+			if h.allow != nil && !h.allow(op.topic) {
+				h.refuseLocked(op.client, op.topic, Refusal{
+					Code:  CodeUnknownTopic,
+					Error: "unknown topic",
+				})
+				break
+			}
+			_, again := h.subscribers[op.topic][op.client]
+			if !again && h.subCount[op.client] >= MaxSubscriptions {
+				h.refuseLocked(op.client, op.topic, Refusal{
+					Code:  CodeTooManySubscriptions,
+					Error: "too many subscriptions on this connection",
+					Max:   MaxSubscriptions,
+				})
+				break
+			}
 			if h.subscribers[op.topic] == nil {
 				h.subscribers[op.topic] = make(map[*Client]uint64)
+			}
+			if !again {
+				h.subCount[op.client]++
 			}
 			// Every subscribe gets a new number, a repeated one included:
 			// it is a new request for the topic's owner to answer.
@@ -120,6 +151,9 @@ func (h *Hub) Run() {
 			if clients, ok := h.subscribers[op.topic]; ok {
 				if seq, ok := clients[op.client]; ok && (op.seq == 0 || op.seq == seq) {
 					delete(clients, op.client)
+					if h.subCount[op.client]--; h.subCount[op.client] <= 0 {
+						delete(h.subCount, op.client)
+					}
 				}
 				if len(clients) == 0 {
 					delete(h.subscribers, op.topic)
@@ -127,6 +161,27 @@ func (h *Hub) Run() {
 			}
 		}
 		h.mu.Unlock()
+	}
+}
+
+// refuseLocked answers a subscribe the hub will not apply with a
+// subscribe.error frame. Run calls it holding the write lock, which is what
+// keeps the client's send channel open here; like every frame to a slow
+// client, the refusal is dropped when the buffer is full.
+func (h *Hub) refuseLocked(client *Client, topic string, why Refusal) {
+	payload, err := json.Marshal(Message{
+		Topic:     topic,
+		Type:      TypeSubscribeError,
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+		Data:      why,
+	})
+	if err != nil {
+		log.Printf("ws hub: marshal error: %v", err)
+		return
+	}
+	select {
+	case client.send <- payload:
+	default:
 	}
 }
 

@@ -53,14 +53,20 @@ fixed bodies, e.g. `{"error":"missing authorization token"}` (401) and
 
 ## 2. Authentication
 
-Authentication is JWT-based with an access/refresh token pair, signed with
-HS256 using `MIKROTIK_NMS_JWT_SECRET`
+Authentication is JWT-based with an access/refresh token pair, HS256-signed
+with keys derived from `MIKROTIK_NMS_JWT_SECRET` — one key per token type, so
+an access token never verifies as a refresh token or the other way round
 ([`auth/jwt.go`](../backend/internal/auth/jwt.go)).
 
 | Token | Lifetime | Claims |
 |---|---|---|
-| Access | 15 minutes | `uid`, `usr`, `role`, plus standard `exp`/`iat`/`sub` |
-| Refresh | 7 days | minimal — `exp`/`iat`/`sub` (subject = user ID) |
+| Access | 15 minutes | `typ: "access"`, `aud: ["mikrotik-nms"]`, `uid`, `usr`, `role`, `tv`, `auth_time`, plus `exp`/`iat`/`sub` |
+| Refresh | 7 days | `typ: "refresh"`, `aud: ["mikrotik-nms"]`, `uid`, `tv`, `auth_time`, plus `exp`/`iat`/`sub` (subject = user ID) |
+
+`tv` is the user's token version when the token was issued, and `auth_time`
+(Unix seconds) is when the user last typed the password. A token is only
+accepted with the right `typ` and `aud`, and while its `tv` still equals the
+user's current token version (see Revocation).
 
 On `login`/`setup`/`refresh` the server returns:
 
@@ -68,7 +74,8 @@ On `login`/`setup`/`refresh` the server returns:
 {
   "access_token": "<jwt>",
   "refresh_token": "<jwt>",
-  "expires_at": 1764300000
+  "expires_at": 1764300000,
+  "auth_time": 1764299100
 }
 ```
 
@@ -82,7 +89,32 @@ The access token expires after 15 minutes. To obtain a fresh pair, call
 `POST /auth/refresh` with the refresh token supplied **either** as the
 `refresh_token` cookie **or** in the JSON body as `{"refresh_token": "..."}`.
 The cookie is checked first. A valid refresh token returns a new pair and
-re-sets the cookie.
+re-sets the cookie. A refresh is not a login: the new pair keeps the
+session's `auth_time`.
+
+### Revocation
+
+Every authenticated request is checked against the user's current token
+version and role in the database, so a session ends at once — not when its
+access token expires — when the user **logs out** (`POST /auth/logout` bumps
+the version: every session of that user, on every device, is ended), resets
+the password, or is deleted. The role applied is the user's current one, not
+the one in the token. (An open WebSocket stays open until it reconnects.)
+
+### Fresh login for device-changing actions
+
+`POST /firmware/upgrade`, `/firmware/channel`, `/firmware/routerboard` and
+`/devices/address-proposals/{id}/approve` need a password login at most
+**5 minutes** old. A session kept alive by
+refreshes gets:
+
+```json
+{ "error": "this action needs a fresh login: enter your password again", "code": "reauth_required", "max_age_seconds": 300 }
+```
+
+with status `403` (never `401`, which clients answer with a silent refresh).
+Call `POST /auth/login` again and repeat the request with the new access
+token; the web UI does this with a password prompt.
 
 ### First-run setup
 
@@ -110,7 +142,7 @@ user), **admin** (admin role required).
 | POST | `/auth/login` | public | Body `{username, password}` → token pair. `401` on bad credentials. |
 | POST | `/auth/setup` | public | First-admin bootstrap. Body `{username, password}`. `409` if users exist. |
 | POST | `/auth/refresh` | public | Refresh token (cookie or body) → new token pair. |
-| POST | `/auth/logout` | any | Clears the `refresh_token` cookie. Returns `{"status":"ok"}`. |
+| POST | `/auth/logout` | any | Ends every session of the user (bumps the token version, see Revocation) and clears the `refresh_token` cookie. Returns `{"status":"ok"}`. |
 | GET | `/auth/me` | any | Current user `{id, username, role}`. |
 
 ### Users (admin)
@@ -131,10 +163,13 @@ user), **admin** (admin role required).
 | GET | `/devices/{id}/neighbors` | any | Cached `/ip/neighbor` neighbors for the device. |
 | GET | `/devices/{id}/ports` | any | The device's faceplate ports (ethernet, SFP, QSFP, combo) with their rates from the port-stats snapshot — **no device call** (the map's port grid). `{device_id, source: "snapshot", sampled_at, age_seconds, interval_seconds, ready, ports: [{name, type, running, disabled, comment, rx_bps, tx_bps}]}`. Inventory order, then any port the snapshot has but the hourly inventory does not yet; running/disabled come from the snapshot when it has the port. `sampled_at` is when **this device's** counters were last read (a device whose reads fail keeps its last rates for up to three intervals, and shows their real age); it and `age_seconds` are `null` (and rates 0) while the snapshot has none of the device's interfaces. `404` for an unknown device. |
 | GET | `/devices/{id}/live-limits` | any | What a per-port live stream (WS `traffic.<id>.<iface>`) of the device may do for the caller: `{device_id, class, profile, min_period_seconds, max_ifaces, leases, admin_only, snapshot_interval_seconds, allowed, reason?, message?}`. `class` is the one the caps follow (`C1` on the `light` profile). `allowed` covers role, an admin pause and the polling mode (`reason`: `admin_only`, `polling_paused`, `pollers_off`); the interface and viewer ceilings depend on other viewers and are decided on subscribe. Database only. See [Live streams](#live-streams). |
-| GET | `/devices/{id}/audit` | any | Operator actions on the device (pauses, profile and class changes), newest first. Query `limit` (default 50, max 500). `[{id, at, user_id, username, action, device_id, detail}]`. |
-| POST | `/devices` | admin | Add a device. Tests the RouterOS connection first; `400` if unreachable. |
-| PUT | `/devices/{id}` | admin | Update device fields (only non-empty fields override). |
-| DELETE | `/devices/{id}` | admin | Remove a device. |
+| GET | `/devices/{id}/audit` | any | Operator actions on the device (pauses, profile and class changes, address-move decisions, firmware requests — `firmware_upgrade_requested` / `firmware_channel_requested` / `firmware_routerboard_requested`, never with the RouterOS login typed for them), newest first. Query `limit` (default 50, max 500). `[{id, at, user_id, username, action, device_id, detail}]`. |
+| POST | `/devices` | admin | Add a device. `username` and `password` are **required** (there are no default credentials). Tests the RouterOS connection first; `400` if unreachable. `500` when the password cannot be stored encrypted — it is never stored in plaintext instead. |
+| PUT | `/devices/{id}` | admin | Update device fields (only non-empty fields override). The stored password changes only when the body carries a new `password`. A change of address, port, TLS flag, username or password closes the device's pooled API session, so the next poll connects with the new values. |
+| DELETE | `/devices/{id}` | admin | Remove a device (and its pooled API session). |
+| GET | `/devices/address-proposals` | any | IP auto-follow proposals (see below), newest sighting first. Pending only by default; `?status=all` or one status. `[{id, device_id, device_identity, old_address, new_address, mac, first_seen, last_seen, status, decided_by?, decided_at?, result?}]`. Database only. |
+| POST | `/devices/address-proposals/{id}/approve` | admin + fresh login | Log in at `new_address` with the device's **stored** credential (a separate one-off session), check board, RouterOS version and the matched MAC, and re-point the device when all hold. `200` with the proposal — `status` `approved`, or `failed` with the reason in `result` (the address is untouched). `409` when the proposal is no longer pending, the device's address changed since (the proposal becomes `superseded`) or its polling is paused; `503`/`403` from the polling fence (the proposal stays pending). Audited (`address_move_approved` / `address_move_refused`). |
+| POST | `/devices/address-proposals/{id}/dismiss` | admin | Close a pending proposal without contacting anything. Audited (`address_move_dismissed`). The same move (device, old → new address) is not proposed again for 7 days; after a failed approval, for 24 h. A sighting at another address opens a new proposal. |
 | POST | `/devices/{id}/polling/pause` | admin | Pause every poller but liveness for `{"hours": 1…168}` (the UI offers 1 h and 24 h). Returns the device. |
 | POST | `/devices/{id}/polling/resume` | admin | Clear a pause. Returns the device. |
 | PUT | `/devices/{id}/polling` | admin | `{"profile": "auto"\|"light", "class_override": "C1"\|"C2"\|"C3"\|null}`; omitted keys are kept, `null` clears the override. `400` when the override is more capable than the probed class (overrides may only make polling gentler). Returns the device. |
@@ -159,6 +194,18 @@ the speed-test, ping and traceroute run-nows of a target it probes from,
 it, and no job is created), and `GET /debug/wifi`. A firmware job already
 running when the pause starts is not interrupted. A granted live stream
 stops at its next sample.
+
+**IP auto-follow proposals.** With the `auto_follow_ip` setting on, the
+topology loop matches neighbor-discovery (MNDP/CDP) sightings to managed
+devices by MAC; a device seen at an address other than the one it is polled
+at gets a `pending` proposal (one per device and new address; repeat
+sightings bump `last_seen`, and a newer sighting at another address
+supersedes the older proposal). The NMS never logs in at a proposed address
+on its own: discovery packets are unauthenticated, so sending the stored
+credential there needs an admin's approval. Pending proposals become
+`superseded` when the device's address changes and `expired` after 24 h
+without a sighting. A new proposal is also recorded as an
+`ip_address_proposed` network-health event.
 
 Create/update body fields:
 
@@ -605,19 +652,72 @@ ingest. Each shown host links to its attachment port (top 15 ports). `value` =
 window returns `nodes: []`, `links: []`. `coverage` is the chosen direction's
 coverage (above).
 
+### Alerts
+
+Rules are evaluated every 30 seconds on an instance that polls
+(`MIKROTIK_NMS_POLLERS=local`), from the database only. There is at most one
+open alert per rule and key. Runbooks: [`RUNBOOKS.md`](RUNBOOKS.md).
+
+| Method | Path | Role | Description |
+|---|---|---|---|
+| GET | `/alerts` | any | Open alerts plus the ones resolved in the last 7 days: `{alerts: [...], firing, acked, silences: [...], rules: [...], evaluating}`. An alert is `{id, rule, key, device_id?, device_name?, severity, state, first_at, last_at, last_notified_at?, resolved_at?, acked_by?, acked_at?, confirmed, summary, facts?, runbook_url, silenced}`; `severity` ∈ `info`/`warning`/`critical`, `state` ∈ `firing`/`acked`/`resolved`. `evaluating` is false on an instance that polls nothing. |
+| POST | `/alerts/{id}/ack` | admin | Acknowledge a firing alert: it stays open and resolves by itself, but is no longer re-notified. `409` when it is not open. |
+| POST | `/alerts/silences` | admin | Body `{scope: "device"\|"rule"\|"site", target, hours: 1…720, reason?}` (`target` is a device id or a rule name; none for `site`). A silence stops notifications, never the alert; when it ends, whatever still fires is announced. `201` with the silence. |
+| DELETE | `/alerts/silences/{id}` | admin | End a silence now. `204`. |
+| GET | `/alerts/channels` | admin | `[{id, name, kind, target_hint, min_severity, enabled}]`. The target (an e-mail address, or a webhook URL — a bearer secret) is stored encrypted and **never returned**; `target_hint` is enough to recognise it. |
+| POST | `/alerts/channels` | admin | Body `{name?, kind: "smtp"\|"webhook", target, min_severity?, enabled?}`. `400` for an invalid address or URL; `500` when the target cannot be stored encrypted. |
+| PUT | `/alerts/channels/{id}` | admin | Body `{name?, target?, min_severity?, enabled?}`; an omitted `target` keeps the stored one. |
+| DELETE | `/alerts/channels/{id}` | admin | `204`. |
+| POST | `/alerts/channels/{id}/test` | admin | Send a test notification to that channel, enabled or not: `{ok, message}` (a delivery failure is `ok: false`, not an HTTP error). |
+
+**Rules.** `device_unreachable` (critical): the liveness check reports the
+device `offline`, i.e. past `offline_threshold_seconds`. `parallel_api_poller`
+(warning): the login watch confirmed a live API session from an address that
+is not this NMS.
+
+**Notifications.** A firing alert goes to every enabled channel whose
+`min_severity` it reaches: when it starts, every 4 hours while nobody
+acknowledged it, and when it resolves (only if its start was delivered). An
+alert that could not be delivered anywhere is tried again at the next
+evaluation. E-mail uses the SMTP relay from Settings (no public base URL
+needed). A webhook receives a JSON `POST`:
+
+```json
+{
+  "title": "[NMS] CRITICAL: sw01 (192.0.2.1) is not reachable",
+  "message": "sw01 (192.0.2.1) is not reachable",
+  "text": "[NMS] CRITICAL: sw01 (192.0.2.1) is not reachable",
+  "priority": 8,
+  "alert": { "id": 7, "event": "firing", "rule": "device_unreachable", "key": "…", "device_id": "…", "severity": "critical", "state": "firing", "summary": "…", "first_at": "…", "runbook_url": "…", "url": "…", "facts": { } }
+}
+```
+
+`title`/`message`/`priority` are the fields Gotify reads, `text` the one
+Slack-compatible endpoints read; `event` is `firing`, `resolved` or `test`.
+
 ### Firmware
 
 | Method | Path | Role | Description |
 |---|---|---|---|
-| GET | `/firmware` | any | Latest firmware status per device. |
-| GET | `/firmware/upgrade/{jobId}` | any | Upgrade job state plus per-device progress (`{job, devices}`). |
-| POST | `/firmware/check` | admin | Trigger an async update check across online devices. `202`. |
-| POST | `/firmware/upgrade` | admin | Start an upgrade job. Body `{device_ids: [...], reboot: bool}`. Returns `202` with `job_id`. |
-| POST | `/firmware/channel` | admin | Set release channel. Body `{device_ids, channel}`; `channel` ∈ `stable`/`long-term`/`testing`/`development`. |
-| POST | `/firmware/routerboard` | admin | Upgrade RouterBOOT firmware. Body `{device_ids, reboot}`. |
+| GET | `/firmware` | any | Firmware status per device: channel and installed version (from the device's hourly inventory read), the newest version of that channel and `update_available` (from MikroTik's release feed), RouterBOARD firmware. `last_checked` = the device read. |
+| GET | `/firmware/releases` | any | The release feed as last fetched: `[{channel, version, build_time, fetched_at}]`. |
+| GET | `/firmware/upgrade/{jobId}` | any | Upgrade job state plus per-device progress (`{job, devices}`): what the WS `upgrade.progress.<jobId>` frames said so far. `job.status` ends as `completed` (each device row has its own `status`/`message`) or `failed`. The firmware page reads it while a job runs, because a job can end before a client has subscribed. |
+| POST | `/firmware/check` | admin | "Check All": fetch MikroTik's release feed (`NEWESTa7.<channel>`) and recompute every device — **no device is contacted**. At most one fetch per hour: within the hour `200 {"status":"recent","fetched_at","next_fetch"}` (recomputed only), otherwise `202 {"status":"fetching"}`. `503` while polling is off. |
+| POST | `/firmware/upgrade` | admin, fresh login | Start an upgrade job. Body `{device_ids: [...], reboot: bool, username, password}`. Returns `202` with `job_id`. `reboot: true` installs (the device reboots) and, once the device is back on the new version, stores its firmware facts read on the job's own session; `false` only downloads — RouterOS installs it on the next reboot. |
+| POST | `/firmware/channel` | admin, fresh login | Set the update channel. Body `{device_ids, channel, username, password}`; `channel` ∈ `stable`/`long-term`/`testing`/`development`. |
+| POST | `/firmware/routerboard` | admin, fresh login | Upgrade RouterBOOT firmware. Body `{device_ids, reboot, username, password}`. |
+
+`username` + `password` are a RouterOS login typed for that one action
+(`400` without them). The server uses them only on dedicated one-shot
+sessions to the job's devices — never the pooled poll session, never the
+stored poll credential — and never stores, logs or returns them; it drops
+them when the action or job ends. The first device that refuses the login
+stops the action: the remaining devices are skipped (`"skipped: login
+refused by <device> …"`) rather than sent the same wrong password.
+`403 reauth_required` when the NMS password login is older than 5 minutes.
 
 Channel/routerboard responses summarize per-device outcomes, e.g.
-`{"changed": 2, "errors": ["<id>: not connected"]}`.
+`{"changed": 2, "errors": ["<device>: login refused by <device> — check the username and password typed for this job"]}`.
 
 ### WiFi & MAC Lookup
 
@@ -631,11 +731,31 @@ Channel/routerboard responses summarize per-device outcomes, e.g.
 
 | Method | Path | Role | Description |
 |---|---|---|---|
-| GET | `/clients` | any | Live ARP/DHCP/CAPsMAN scan across online devices, deduped by MAC and DNS-enriched. Query `limit` (>0, unlimited if absent), `timeout` (5–120s, default 30). |
-| GET | `/clients/cached` | any | Last persisted client snapshot from `mac_lookup` (fast, no device contact). |
+| GET | `/clients` | any | The client list from the cache (`mac_lookup`) the scheduled pollers keep: deduped by MAC, DNS-enriched. **No device is contacted.** (This endpoint used to scan the whole fleet on every call; its `limit` and `timeout` parameters are ignored now.) |
+| GET | `/clients/cached` | any | The same response as `/clients`. |
+| POST | `/clients/refresh` | any | Start an on-demand refresh of the cache: the ARP, DHCP-lease and wifi-registration reads the pollers make anyway, pulled forward once. Rate-limited **fleet-wide to one per 5 minutes**, one at a time. Answers at once: `202 {refresh}`; `409 {error, refresh}` while one is running; `429 {error, refresh}` with a `Retry-After` header inside the interval; `503` with `MIKROTIK_NMS_POLLERS=off`. Poll the list until `refresh.running` is false. |
 | GET | `/debug/wifi` | any | Raw WiFi/CAPsMAN registration-table rows for one device. **Requires** query `device_id`. |
 
-The `/clients` response is `{clients: [...], total, limited, timed_out}`.
+The list response is `{clients: [...], total, active, cached: true, updated_at,
+age_seconds, refresh, limited: false, timed_out: false}`. `updated_at` /
+`age_seconds` are the newest cache entry's (absent for an empty cache);
+`limited` and `timed_out` are kept for browser tabs still running a frontend
+from before the scan was removed. `refresh` is `{available, running,
+started_at?, finished_at?, next_allowed_at?, min_interval_seconds, clients,
+devices_read, devices_skipped, timed_out?}`: `available` is false on an
+instance that polls nothing, `next_allowed_at` is set while a new refresh
+would be refused, and the counters describe the last finished refresh.
+
+A client is `active` until it has gone unseen for `client_inactive_after_seconds`
+(app setting); without the setting, for two reads of the fleet's slowest ARP
+reader plus 10 minutes, never under 30 minutes — weak devices are read every
+30 minutes, so their clients stay active for 70.
+
+A refresh reads a device only as its polling plan allows — nothing on a
+paused or offline device, DHCP leases only where the class plan has them
+(C3), registration tables only from the menus the capability probe found (a
+switch is never asked for one) — plus the external lease sources (Kea,
+OPNsense).
 
 ### Network Health (bridge / STP / loop detection)
 
@@ -752,7 +872,9 @@ ws://<host>:8080/api/v1/ws?token=<access_token>
 
 The WebSocket upgrade is gated by `RequireAuth`, but browsers cannot set an
 `Authorization` header on a WebSocket. The middleware therefore falls back to a
-`token` **query parameter** ([`auth/middleware.go`](../backend/internal/auth/middleware.go)).
+`token` **query parameter** ([`auth/middleware.go`](../backend/internal/auth/middleware.go))
+— on WebSocket upgrade requests only; every other request must send the
+`Authorization` header.
 An expired/invalid token causes the upgrade to be rejected; the client should
 refresh and reconnect (see [`frontend/src/lib/ws.ts`](../frontend/src/lib/ws.ts)).
 
@@ -771,6 +893,14 @@ subscriptions per topic and only forwards messages for topics you subscribed to
 server pings every 30s and limits inbound frames to 4096 bytes. A client's
 subscribes and unsubscribes are applied in the order it sent them.
 
+**Limits.** Only the topics in the [topic catalog](#topic-catalog) can be subscribed
+to, and one connection holds at most **64** subscriptions at a time
+([`ws/topics.go`](../backend/internal/ws/topics.go)). A subscribe outside
+either limit is not applied and is answered with a `subscribe.error` control
+frame whose `data` is `{code, error}` — `code` `unknown_topic`, or
+`too_many_subscriptions` (with `max`). Subscribing again to a topic the
+connection already holds does not use another slot; unsubscribing frees one.
+
 ### Server message envelope
 
 Every broadcast is a `Message` ([`ws/hub.go`](../backend/internal/ws/hub.go)):
@@ -788,7 +918,8 @@ from `data`; match the incoming `msg.topic` against the topic you subscribed to.
 
 **Control frames.** A topic whose server-side owner vets subscribers (today
 only the per-port live stream) answers each subscribe with a frame that has a
-`type` — data frames never carry one:
+`type` — data frames never carry one. (The hub itself sends a
+`subscribe.error` for a subscribe it refuses, see Limits above.)
 
 ```json
 { "topic": "traffic.<uuid>.ether1", "type": "subscribe.ack",   "timestamp": "…", "data": { "period_seconds": 15, "class": "C1", … } }
@@ -809,13 +940,14 @@ the same topic (new period after a class change) replaces the earlier one.
 | `traffic.<deviceID>.<iface>` | object | Live `/interface/monitor-traffic` samples of one interface `{device_id, interface_name, rx_bps, tx_bps, rx_pps, tx_pps, period_seconds, timestamp}`, within the device class's caps (see below). Vetted: every subscribe gets a `subscribe.ack` or `subscribe.error`. Sampling starts once granted and stops on the last unsubscribe. |
 | `traffic.ports` | object | Fleet-wide port snapshot `{ts, interval_seconds, ready, ports: [{device_id, iface, type, comment?, running, disabled, rx_bps, tx_bps, rx_pps, tx_pps}]}` while anyone is subscribed, after each counter cycle that changed the rates (a reading landed or rates expired; devices are read on their own cadences, so several times per `port_stats_interval`, but never from a cycle that read nothing). Raw: no `role`/`device_name` (join `/traffic/ports/roles`). |
 | `topology.traffic` | object | Per-link throughput for the network map — the `GET /traffic/links` payload — once per port-counter cycle while anyone is subscribed. Derived from the snapshot: no device call. |
-| `firmware.update` | object | Firmware status changed (poll cycle or triggered check). |
+| `firmware.update` | object | A device's update became available (inventory read or release-feed recompute). |
 | `upgrade.progress.<jobId>` | object | Per-device upgrade progress for one job. |
 | `wifi.event` | object | A WiFi join/leave/roam event. |
 | `network.health` | object | Network-health poll-cycle summary. |
 | `network.health.event` | object | A single new loop/flap/port event. |
 | `flows.flushed` | object | `{exporter_ids, bucket, flushed_through}` after each per-minute flow flush (≈ 2–3 min after the minute; refetch `/flows/*` views on it). Only published while anyone is subscribed. |
 | `flows.status` | object | The `/flows/status` object without `suggested_exporters`, every 30 s while anyone is subscribed. |
+| `alerts.update` | object | `{at}` whenever an alert opened, resolved, was acknowledged or silenced, or a notification went out: refetch `GET /alerts`. |
 
 The `<deviceID>`, `<iface>`, and `<jobId>` placeholders are substituted with the
 concrete IDs you want to follow, e.g. `traffic.<uuid>.ether1` or
@@ -865,7 +997,7 @@ curl -s "$BASE/devices" -H "Authorization: Bearer $TOKEN" | jq
 curl -s -X POST "$BASE/firmware/upgrade" \
   -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
-  -d '{"device_ids":["<device-uuid>"],"reboot":true}'
+  -d '{"device_ids":["<device-uuid>"],"reboot":true,"username":"<routeros-user>","password":"<routeros-password>"}'
 ```
 
 First-run bootstrap (no users yet) uses `setup` instead of `login`:

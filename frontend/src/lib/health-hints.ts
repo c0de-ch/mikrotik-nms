@@ -141,9 +141,22 @@ export function explainEvent(e: EventCtx): HealthHint {
           "The port auto-recovers after the loop-protect-disable-time (default 5min) once the loop is gone; or re-enable manually.",
         ],
       };
+    case "ip_address_proposed":
+      return {
+        meaning: `Neighbor discovery saw ${dev}'s MAC at a different IP address. The NMS has not contacted it there — an admin approves or dismisses the move on the Devices page.`,
+        causes: [
+          "The device's management IP comes from DHCP and the lease changed.",
+          "Multi-homed device (several SVIs) answering discovery from another address.",
+          "A discovery packet forged by another host (MNDP is unauthenticated) — why the move waits for approval.",
+        ],
+        fixes: [
+          "If the new address is expected, approve the move: the NMS logs in there with the stored credential and checks board, version and MAC first.",
+          "Give the device a DHCP reservation (or static address) for its management IP so it stops moving.",
+        ],
+      };
     case "ip_address_changed":
       return {
-        meaning: `${dev} was rediscovered under a different IP address and the NMS followed it.`,
+        meaning: `${dev} was rediscovered under a different IP address and, after an admin approved it, the NMS verified the device there and followed it (or refused the move — see the message).`,
         causes: [
           "The device's management IP comes from DHCP and the lease changed.",
           "Multi-homed device (several SVIs) answering discovery from another address.",

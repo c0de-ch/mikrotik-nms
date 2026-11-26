@@ -298,8 +298,6 @@ MIKROTIK_NMS_LISTEN=127.0.0.1:8080
 MIKROTIK_NMS_DB_PATH=${DATA_DIR}/mikrotik-nms.db
 
 # --- backend (optional defaults for new devices) ---
-MIKROTIK_NMS_DEFAULT_ROS_USER=admin
-MIKROTIK_NMS_DEFAULT_ROS_PASS=
 MIKROTIK_NMS_DEFAULT_ROS_PORT=8728
 MIKROTIK_NMS_DEFAULT_ROS_TLS=false
 
@@ -361,6 +359,26 @@ if ! grep -Eq '^[#[:space:]]*MIKROTIK_NMS_POLLERS=' "$ENV_FILE"; then
     if [[ -z "$TARGET_CIDRS" ]]; then
         warn "MIKROTIK_NMS_ALLOWED_TARGET_CIDRS is empty: the backend will refuse to start until it is set"
     fi
+fi
+
+# A polling backend refuses to start without an encryption key (device
+# passwords are never stored unencrypted). An install from before the key was
+# generated gets one now, once; the backend encrypts the stored plaintext
+# passwords with it on its next start.
+if ! grep -Eq '^MIKROTIK_NMS_ENCRYPTION_KEY=.+' "$ENV_FILE"; then
+    NEW_ENC_KEY="$(openssl rand -hex 32 2>/dev/null || head -c32 /dev/urandom | xxd -p -c64)"
+    if grep -Eq '^MIKROTIK_NMS_ENCRYPTION_KEY=' "$ENV_FILE"; then
+        sed -i "s|^MIKROTIK_NMS_ENCRYPTION_KEY=.*|MIKROTIK_NMS_ENCRYPTION_KEY=${NEW_ENC_KEY}|" "$ENV_FILE"
+    else
+        printf '\n# --- device password encryption (required while polling) ---\nMIKROTIK_NMS_ENCRYPTION_KEY=%s\n' "$NEW_ENC_KEY" >> "$ENV_FILE"
+    fi
+    log "generated MIKROTIK_NMS_ENCRYPTION_KEY in $ENV_FILE"
+    warn "back up $ENV_FILE: without this key the stored device passwords cannot be read"
+fi
+# Default RouterOS credentials are no longer read: a device is added with its
+# own username and password. Say so once if the file still carries a password.
+if grep -Eq '^MIKROTIK_NMS_DEFAULT_ROS_PASS=.+' "$ENV_FILE"; then
+    warn "MIKROTIK_NMS_DEFAULT_ROS_USER / MIKROTIK_NMS_DEFAULT_ROS_PASS in $ENV_FILE are no longer used — remove them (a device password does not belong in the environment)"
 fi
 
 # Source the file so we can use its values during build.
