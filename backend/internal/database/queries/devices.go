@@ -46,6 +46,11 @@ type Device struct {
 	CPUCount           *int       `json:"cpu_count"`
 	CPUMHzMax          *int       `json:"cpu_mhz_max"`
 
+	// PinCertSHA256 is the fingerprint the device's TLS certificate must
+	// have: the SHA-256 of its DER encoding, lower-case hex ("" = none — a
+	// TLS device is then not logged in to at all). Not a secret.
+	PinCertSHA256 string `json:"pin_cert_sha256"`
+
 	// Polling is the live schedule the API attaches to a single device
 	// (GET /devices/{id}); never stored, nil elsewhere.
 	Polling *DevicePolling `json:"polling,omitempty"`
@@ -78,7 +83,8 @@ const deviceColumns = `id, address, identity, platform, board, ros_version, firm
 		        status, cpu_load, memory_used, memory_total, uptime, last_seen, last_error,
 		        tags, notes, created_at, updated_at,
 		        COALESCE(device_class, ''), COALESCE(class_override, ''), class_probed_at,
-		        poll_profile, polling_paused_until, cpu_count, cpu_mhz_max`
+		        poll_profile, polling_paused_until, cpu_count, cpu_mhz_max,
+		        COALESCE(pin_cert_sha256, '')`
 
 func scanDevice(row rowScanner, d *Device) error {
 	if err := row.Scan(
@@ -88,6 +94,7 @@ func scanDevice(row rowScanner, d *Device) error {
 		&d.Tags, &d.Notes, &d.CreatedAt, &d.UpdatedAt,
 		&d.DeviceClass, &d.ClassOverride, &d.ClassProbedAt,
 		&d.PollProfile, &d.PollingPausedUntil, &d.CPUCount, &d.CPUMHzMax,
+		&d.PinCertSHA256,
 	); err != nil {
 		return err
 	}
@@ -145,10 +152,10 @@ func CreateDevice(db *sql.DB, d *Device) error {
 	}
 	_, err = db.Exec(
 		`INSERT INTO devices (id, address, identity, username, password_enc, use_tls, api_port,
-		    platform, board, ros_version, architecture, status, tags, notes)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		    platform, board, ros_version, architecture, status, tags, notes, pin_cert_sha256)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		d.ID, d.Address, d.Identity, d.Username, secret, d.UseTLS, d.APIPort,
-		d.Platform, d.Board, d.ROSVersion, d.Architecture, d.Status, d.Tags, d.Notes,
+		d.Platform, d.Board, d.ROSVersion, d.Architecture, d.Status, d.Tags, d.Notes, pinColumn(d.PinCertSHA256),
 	)
 	return err
 }
@@ -250,10 +257,10 @@ func ResumeDevicePolling(db *sql.DB, id string) error {
 func UpdateDevice(db *sql.DB, d *Device) error {
 	_, err := db.Exec(
 		`UPDATE devices SET address=?, identity=?, username=?, use_tls=?, api_port=?,
-		        tags=?, notes=?, updated_at=CURRENT_TIMESTAMP
+		        tags=?, notes=?, pin_cert_sha256=?, updated_at=CURRENT_TIMESTAMP
 		 WHERE id=?`,
 		d.Address, d.Identity, d.Username, d.UseTLS, d.APIPort,
-		d.Tags, d.Notes, d.ID,
+		d.Tags, d.Notes, pinColumn(d.PinCertSHA256), d.ID,
 	)
 	return err
 }

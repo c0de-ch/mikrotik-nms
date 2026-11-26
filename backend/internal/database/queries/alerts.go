@@ -29,12 +29,16 @@ type Alert struct {
 	AckedBy        string     `json:"acked_by,omitempty"`
 	AckedAt        *time.Time `json:"acked_at,omitempty"`
 	Confirmed      bool       `json:"confirmed"`
+	// NotifiedSeverity is the highest severity a notification of this alert
+	// was delivered for ("" = none yet).
+	NotifiedSeverity string `json:"-"`
 	// Payload is the rule's JSON object ({"summary": …, …}).
 	Payload string `json:"-"`
 }
 
 const alertColumns = `id, rule, key, COALESCE(device_id, ''), severity, state, first_at, last_at,
-	last_notified_at, resolved_at, COALESCE(acked_by, ''), acked_at, confirmed, payload`
+	last_notified_at, resolved_at, COALESCE(acked_by, ''), acked_at, confirmed, payload,
+	COALESCE(notified_severity, '')`
 
 func unixPtr(v sql.NullInt64) *time.Time {
 	if !v.Valid {
@@ -49,7 +53,7 @@ func scanAlert(row rowScanner) (Alert, error) {
 	var first, last int64
 	var notified, resolved, acked sql.NullInt64
 	if err := row.Scan(&a.ID, &a.Rule, &a.Key, &a.DeviceID, &a.Severity, &a.State, &first, &last,
-		&notified, &resolved, &a.AckedBy, &acked, &a.Confirmed, &a.Payload); err != nil {
+		&notified, &resolved, &a.AckedBy, &acked, &a.Confirmed, &a.Payload, &a.NotifiedSeverity); err != nil {
 		return a, err
 	}
 	a.FirstAt, a.LastAt = time.Unix(first, 0).UTC(), time.Unix(last, 0).UTC()
@@ -136,9 +140,10 @@ func ResolveAlert(db *sql.DB, id int64, at time.Time) error {
 	return err
 }
 
-// MarkAlertNotified records a delivered notification.
-func MarkAlertNotified(db *sql.DB, id int64, at time.Time) error {
-	_, err := db.Exec(`UPDATE alerts SET last_notified_at = ? WHERE id = ?`, at.Unix(), id)
+// MarkAlertNotified records a delivered notification; notifiedSeverity is
+// the highest severity the alert has now been announced at.
+func MarkAlertNotified(db *sql.DB, id int64, at time.Time, notifiedSeverity string) error {
+	_, err := db.Exec(`UPDATE alerts SET last_notified_at = ?, notified_severity = ? WHERE id = ?`, at.Unix(), notifiedSeverity, id)
 	return err
 }
 

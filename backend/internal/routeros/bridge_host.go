@@ -24,7 +24,8 @@ const bridgeHostProplist = "=.proplist=mac-address,on-interface,interface,bridge
 
 // GetBridgeHosts dumps the device's bridge FDB (local=false) in one print on
 // the pooled client. The first print after boot can take a few seconds (4 s
-// cold on an RB5009, ~40 ms after); CommandTimeout covers it. The dump lands
+// cold on an RB5009, ~40 ms after), longer the bigger the L2 domain: it is
+// one of the slow reads (SlowCommandTimeout). The dump lands
 // in port_hosts, which is also where gateway attachment looks MACs up: the
 // NMS never queries a device's FDB per MAC.
 func GetBridgeHosts(run Runner) ([]BridgeHost, error) {

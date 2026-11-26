@@ -296,7 +296,8 @@ export function PortHistoryCard({
   }, [data, live, mode, stream, snapSeries, key]);
 
   const chart = useMemo(() => points.map((p) => ({ t: Date.parse(p.ts), ...splitPoint(role, p) })), [points, role]);
-  // Points with data (null = a step the collector did not cover: a gap).
+  // Points with data (null = a step the device's counters did not cover —
+  // it was paused, unreachable or not read: a gap, not 0 bps).
   const plotted = useMemo(() => chart.filter((c) => c.down !== null).length, [chart]);
   const yScale = useMemo(() => {
     let max = 0;
@@ -396,7 +397,7 @@ export function PortHistoryCard({
                 />
                 <Tooltip
                   labelFormatter={(v) => fmtTooltipTime(Number(v), range)}
-                  formatter={(v, name) => [v === null || v === undefined ? "no data (collector down)" : fmtBps(Number(v)), name]}
+                  formatter={(v, name) => [v === null || v === undefined ? "no data (device not read)" : fmtBps(Number(v)), name]}
                   contentStyle={{ background: "var(--popover)", border: "1px solid var(--border)", borderRadius: 8, fontSize: 12 }}
                   labelStyle={{ color: "var(--muted-foreground)" }}
                   itemStyle={{ color: "var(--popover-foreground)" }}

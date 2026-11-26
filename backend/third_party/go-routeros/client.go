@@ -1,0 +1,174 @@
+/*
+Package routeros is a pure Go client library for accessing Mikrotik devices using the RouterOS API.
+*/
+package routeros
+
+import (
+	"context"
+	"crypto/md5" //nolint:gosec
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"os"
+	"sync"
+	"sync/atomic"
+
+	"github.com/go-routeros/routeros/v3/proto"
+)
+
+// Client is a RouterOS API client.
+type Client struct {
+	Queue int
+
+	log      *slog.Logger
+	logMutex sync.Mutex
+
+	rwc     io.ReadWriteCloser
+	closing bool
+	// fatal is the error that ended the session (local patch, see fail).
+	fatal   *SessionFatalError
+	async   bool
+	nextTag int64
+	tags    map[string]sentenceProcessor
+	mu      sync.Mutex
+
+	r proto.Reader
+	w proto.Writer
+}
+
+var (
+	ErrNoChallengeReceived      = errors.New("no ret (challenge) received")
+	ErrInvalidChallengeReceived = errors.New("invalid ret (challenge) hex string received")
+)
+
+var defaultHandler = slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+	AddSource: true,
+	Level:     slog.LevelInfo,
+})
+
+// NewClient returns a new Client over rwc. Login must be called.
+func NewClient(rwc io.ReadWriteCloser) (*Client, error) {
+	return &Client{
+		rwc: rwc,
+		log: slog.New(defaultHandler),
+
+		r: proto.NewReader(rwc),
+		w: proto.NewWriter(rwc),
+	}, nil
+}
+
+// incrementTag atomically increments tag number and returns result
+func (c *Client) incrementTag() int64 {
+	return atomic.AddInt64(&c.nextTag, 1)
+}
+
+// IsAsync return true if client run in async mode.
+func (c *Client) IsAsync() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return c.async
+}
+
+// The dialers of upstream (Dial, DialTimeout, DialContext, DialTLS,
+// DialTLSTimeout, DialTLSContext) are removed in this copy (local patch):
+// the NMS opens every connection itself, behind its dial policy and with the
+// device's certificate pinned, and hands it to NewClient.
+
+// fail records err as the end of the session, closes the connection and
+// returns the typed error every later command is answered with (local patch).
+func (c *Client) fail(err error) error {
+	var fatal *SessionFatalError
+	if !errors.As(err, &fatal) {
+		fatal = &SessionFatalError{Err: err}
+	}
+	c.mu.Lock()
+	if c.fatal == nil {
+		c.fatal = fatal
+	}
+	c.mu.Unlock()
+	_ = c.Close()
+	return fatal
+}
+
+// fatalErr is the error that ended the session, or nil.
+func (c *Client) fatalErr() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.fatal != nil {
+		return c.fatal
+	}
+	return nil
+}
+
+func (c *Client) SetLogHandler(handler LogHandler) {
+	c.logMutex.Lock()
+	c.log = slog.New(handler)
+	c.logMutex.Unlock()
+}
+
+func (c *Client) logger() *slog.Logger {
+	c.logMutex.Lock()
+	defer c.logMutex.Unlock()
+
+	return c.log
+}
+
+// Close closes the connection to the RouterOS device.
+func (c *Client) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.r.Close()
+	c.w.Close()
+
+	if c.closing {
+		return nil
+	}
+
+	c.closing = true
+
+	return c.rwc.Close()
+}
+
+// Login runs the /login command. Dial and DialTLS call this automatically.
+func (c *Client) Login(username, password string) error {
+	return c.LoginContext(context.Background(), username, password)
+}
+
+// LoginContext runs the /login command. DialContext and DialTLSContext call this automatically.
+func (c *Client) LoginContext(ctx context.Context, username, password string) error {
+	r, err := c.RunContext(ctx, "/login", "=name="+username, "=password="+password)
+	if err != nil {
+		return err
+	}
+	ret, ok := r.Done.Map["ret"]
+	if !ok {
+		// Login method post-6.43 one stage, cleartext and no challenge
+		if r.Done != nil {
+			return nil
+		}
+		return fmt.Errorf("RouterOS: /login: %w", ErrNoChallengeReceived)
+	}
+
+	// Login method pre-6.43 two stages, challenge
+	var dec []byte
+	if dec, err = hex.DecodeString(ret); err != nil {
+		return fmt.Errorf("RouterOS: /login: %w: %w", ErrInvalidChallengeReceived, err)
+	}
+
+	_, err = c.RunContext(ctx, "/login", "=name="+username, "=response="+c.challengeResponse(dec, password))
+
+	return err
+}
+
+// challengeResponse - prepare MD5 hash for auth challenge response
+func (c *Client) challengeResponse(cha []byte, password string) string {
+	h := md5.New() //nolint:gosec
+	h.Write([]byte{0})
+	h.Write([]byte(password))
+	h.Write(cha)
+	return fmt.Sprintf("00%x", h.Sum(nil))
+}

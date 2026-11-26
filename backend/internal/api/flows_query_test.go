@@ -304,6 +304,57 @@ func TestFlowPortCoverageIntersection(t *testing.T) {
 	}
 }
 
+// The counter side of the comparison follows the port's own device: minutes
+// it was paused in are no counter data (not zero counters) even while other
+// devices were read, and a covered minute without a row is a real zero.
+func TestFlowCoverageFollowsTheDevicesCounterCoverage(t *testing.T) {
+	f := newFlowFixture(t)
+	f.seedCounters(t, labRB, "eth1-wan", 64000, 9500, 6, 5, 4) // paused 6 and 5 min ago, idle 4 min ago
+	f.seedCounters(t, labSW, "ether1", 70000, 2000)            // another device, read throughout
+	var mins []queries.DeviceMinute
+	for i := 1; i <= flowFixtureMinutes; i++ {
+		m := queries.DeviceMinute{DeviceID: labRB, Bucket: f.end.Add(-time.Duration(i) * time.Minute), PolledS: 60}
+		if i == 6 || i == 5 {
+			m.PolledS, m.GapReason = 0, queries.GapPaused
+		}
+		mins = append(mins, m)
+	}
+	if err := queries.UpsertDeviceMinutes(f.db, mins); err != nil {
+		t.Fatal(err)
+	}
+
+	var r flowCoverageResponse
+	if code, body := f.get(t, "/flows/coverage", map[string]string{"point": itoa(f.pWAN)}, &r); code != 200 {
+		t.Fatalf("%d %s", code, body)
+	}
+	if len(r.Points) != 10 {
+		t.Fatalf("points = %d", len(r.Points))
+	}
+	for _, pt := range r.Points {
+		switch ago := int(f.end.Sub(pt.TS) / time.Minute); ago {
+		case 6, 5:
+			if pt.CounterDownBps != nil || pt.CounterUpBps != nil {
+				t.Errorf("%d min ago: counters %v/%v, want none — the device was paused", ago, *pt.CounterDownBps, *pt.CounterUpBps)
+			}
+		case 4:
+			if pt.CounterDownBps == nil || *pt.CounterDownBps != 0 {
+				t.Errorf("4 min ago: counters %v, want a measured 0", pt.CounterDownBps)
+			}
+		default:
+			if pt.CounterDownBps == nil || *pt.CounterDownBps != 8533 {
+				t.Errorf("%d min ago: counters %v, want 8533", ago, pt.CounterDownBps)
+			}
+		}
+	}
+
+	// The ratio compares only the 8 minutes the device was read in.
+	var port flowPortResponse
+	f.get(t, "/flows/port", map[string]string{"device": labRB, "iface": "eth1-wan"}, &port)
+	if c := port.Coverage; c.FlowDownBytes != 8*60600 || c.CounterDownBytes != 7*64000 {
+		t.Errorf("coverage = %+v, want flow bytes of 8 minutes against the counters of the same 8 (one of them idle)", c)
+	}
+}
+
 func TestFlowCoverageSeries(t *testing.T) {
 	f := newFlowFixture(t)
 	f.seedCounters(t, labRB, "eth1-wan", 64000, 9500, 6)

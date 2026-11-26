@@ -553,7 +553,7 @@ func TestDerivedViewOutranksNativePointOfNonRouter(t *testing.T) {
 func TestFlowGuardReadPathsNeverTouchDevices(t *testing.T) {
 	routeros.SetDialPolicy(nil)
 	g := newGuardFixture(t)
-	pool := routeros.NewPool(false)
+	pool := routeros.NewPool()
 	fake := routerostest.NewDevice(t)
 	for _, id := range g.ids {
 		fake.Dial(t, pool, id)

@@ -7,10 +7,11 @@ import { fmtIn, isPollingPaused } from "@/lib/device-load";
 import { cn } from "@/lib/utils";
 
 // LoadCard: the device's own load (CPU, memory, uptime) beside the NMS
-// polling card, with the hardware facts underneath. CPU and memory come from
-// the inventory read (Tier 6: hourly for every class, slower when the
-// info_interval floor says so), so the card says when they are read next
-// instead of passing an hour-old number off as live.
+// polling card, with the hardware facts underneath. CPU, memory and uptime
+// come from the minute sample (Tier 1: one cheap read per device and minute,
+// taken once the NMS has left the device alone for 3 s), so the card says
+// when the next one is due — and that the values stand still while polling
+// is paused. Their history is the "CPU & NMS load" tab below.
 
 function Gauge({ label, pct, detail }: { label: string; pct: number | null; detail?: string }) {
   return (
@@ -46,7 +47,7 @@ export function LoadCard({ device }: { device: Device }) {
   const paused = isPollingPaused(device, now);
   const memPct =
     device.memory_used != null && device.memory_total ? Math.round((device.memory_used / device.memory_total) * 100) : null;
-  const nextInventory = device.polling?.next_runs.inventory ? Date.parse(device.polling.next_runs.inventory) : null;
+  const nextSample = device.polling?.next_runs.cpu ? Date.parse(device.polling.next_runs.cpu) : null;
   const cpu = [
     device.cpu_count ? `${device.cpu_count} core${device.cpu_count === 1 ? "" : "s"}` : "",
     device.cpu_mhz_max ? `${device.cpu_mhz_max} MHz` : "",
@@ -81,10 +82,12 @@ export function LoadCard({ device }: { device: Device }) {
           </div>
           <p className={cn("text-xs", paused ? "text-load-hold" : "text-muted-foreground")}>
             {paused
-              ? "Polling is paused: these are the values of the last inventory read."
-              : nextInventory !== null && now
-                ? `Read with the device inventory, at most hourly — next read ${fmtIn(nextInventory, now)}.`
-                : "Read with the device inventory, at most hourly."}
+              ? "Polling is paused: these are the values of the last sample."
+              : nextSample !== null && now
+                ? `Sampled once a minute, with the device left alone for 3 s first — next sample ${fmtIn(nextSample, now)}.`
+                : device.status === "online"
+                  ? "Sampled once a minute, with the device left alone for 3 s first."
+                  : "Sampled once a minute while the device is online: these are the values of the last sample."}
           </p>
         </div>
         <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 border-t pt-3 text-sm">

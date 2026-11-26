@@ -154,6 +154,52 @@ func TestNextRunJitterBounds(t *testing.T) {
 	}
 }
 
+// The post-poll CPU sample (1c) runs every 10 min on every class.
+func TestCPUPostTier(t *testing.T) {
+	for _, c := range []Class{C1, C2, C3, C0Unknown} {
+		if got := Cadence(c, TierCPUPost); got != 10*time.Minute {
+			t.Errorf("Cadence(%s, cpu_post) = %v, want 10 min", c, got)
+		}
+	}
+	if TierCPUPost.String() != "cpu_post" || TierCPU.String() != "cpu" {
+		t.Errorf("tier names = %q / %q", TierCPU, TierCPUPost)
+	}
+}
+
+// A slot grid gives every device one fixed second of every interval: the
+// CPU sample of a device lands in each minute exactly once, never twice and
+// never in none, and a fleet is spread over the minute instead of the
+// interval drifting by its jitter.
+func TestSlotAt(t *testing.T) {
+	const iv = 60 * time.Second
+	now := time.Date(2026, 10, 16, 12, 0, 30, 0, time.UTC)
+	offsets := map[time.Duration]bool{}
+	for i := 0; i < 500; i++ {
+		phase := Phase("device-" + string(rune('a'+i%26)) + string(rune('a'+(i/26)%26)))
+		slot := SlotAt(now, iv, phase)
+		if slot.After(now) || now.Sub(slot) >= iv {
+			t.Fatalf("SlotAt = %v, want the slot holding %v", slot, now)
+		}
+		off := slot.Sub(slot.Truncate(iv))
+		if off < 0 || off >= 45*time.Second {
+			t.Fatalf("slot offset %v outside the first three quarters of the interval", off)
+		}
+		if next := SlotAt(slot.Add(iv), iv, phase); !next.Equal(slot.Add(iv)) {
+			t.Fatalf("the next slot = %v, want exactly one interval after %v", next, slot)
+		}
+		if again := SlotAt(slot.Add(iv-time.Millisecond), iv, phase); !again.Equal(slot) {
+			t.Fatalf("a slot lasts until the next one starts: %v", again)
+		}
+		offsets[off] = true
+	}
+	if len(offsets) < 100 {
+		t.Fatalf("slots should spread devices over the interval, only %d distinct offsets", len(offsets))
+	}
+	if got := SlotAt(now, 0, 7); !got.Equal(now) {
+		t.Fatalf("zero interval returns t, got %v", got)
+	}
+}
+
 func TestBudgets(t *testing.T) {
 	if b := BudgetOf(C1); b.CommandsPerMin != 12 || b.BurstCommands != 6 || b.CostSecPerMin != 2.0 || b.RowsPerMin != 1500 {
 		t.Fatalf("C1 budget %+v", b)

@@ -24,7 +24,7 @@ func firmwareTestServer(t *testing.T) (*Server, http.Handler) {
 	t.Helper()
 	db := newTestDB(t)
 	hub := ws.NewHub()
-	s := &Server{db: db, pool: routeros.NewPool(false), hub: hub, cfg: &config.Config{Pollers: config.PollersLocal}}
+	s := &Server{db: db, pool: routeros.NewPool(), hub: hub, cfg: &config.Config{Pollers: config.PollersLocal}}
 	r := chi.NewRouter()
 	r.Post("/firmware/check", s.handleCheckFirmware)
 	r.Get("/firmware/releases", s.handleFirmwareReleases)

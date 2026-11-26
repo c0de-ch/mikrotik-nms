@@ -48,7 +48,7 @@ func newProposalFixture(t *testing.T) *proposalFixture {
 	}
 	hub := ws.NewHub()
 	go hub.Run()
-	s := &Server{db: db, pool: routeros.NewPool(false), hub: hub, cfg: &config.Config{Pollers: config.PollersLocal}}
+	s := &Server{db: db, pool: routeros.NewPool(), hub: hub, cfg: &config.Config{Pollers: config.PollersLocal}}
 	r := chi.NewRouter()
 	r.Use(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {

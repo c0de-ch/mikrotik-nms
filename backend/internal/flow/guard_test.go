@@ -405,7 +405,7 @@ func newExportCheckFixture(t *testing.T, enabled string, targets ...map[string]s
 	t.Cleanup(func() { routeros.SetDialPolicy(nil) })
 	db := testDB(t)
 	seedRoleDevice(t, db, "sw", switchAddr, "CRS326-24G-2S+", devclass.C2, "gateway")
-	pool := routeros.NewPool(false)
+	pool := routeros.NewPool()
 	fake := routerostest.NewDevice(t)
 	fake.Dial(t, pool, "sw")
 	fake.Reply("/ip/traffic-flow/print", map[string]string{"enabled": enabled, "interfaces": "all"})
@@ -555,7 +555,7 @@ func TestExportCheckGuards(t *testing.T) {
 	})
 	t.Run("no pooled session", func(t *testing.T) {
 		f := newExportCheckFixture(t, "true", exportTarget)
-		f.c.pool = routeros.NewPool(false)
+		f.c.pool = routeros.NewPool()
 		if f.c.checkExport("sw", f.recv) {
 			t.Fatal("read without a session")
 		}
@@ -636,7 +636,7 @@ func TestGuardThroughRunningCollector(t *testing.T) {
 	probe.Close()
 	loop := netip.MustParseAddr("127.0.0.1")
 	seedRoleDevice(t, db, "sw", loop, "CRS326-24G-2S+", devclass.C2, "gateway")
-	c := New(db, routeros.NewPool(false), nil, Config{Listen: []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(port))}})
+	c := New(db, routeros.NewPool(), nil, Config{Listen: []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(port))}})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan struct{})

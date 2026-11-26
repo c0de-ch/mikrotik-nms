@@ -20,9 +20,13 @@ type createDeviceRequest struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
 	UseTLS   bool   `json:"use_tls"`
-	APIPort  int    `json:"api_port"`
-	Tags     string `json:"tags"`
-	Notes    string `json:"notes"`
+	// PinCertSHA256 is the fingerprint of the device's api-ssl certificate
+	// (SHA-256; upper case and colon-separated bytes are accepted). Required
+	// with use_tls: nothing is sent to a TLS device before it is known.
+	PinCertSHA256 string `json:"pin_cert_sha256"`
+	APIPort       int    `json:"api_port"`
+	Tags          string `json:"tags"`
+	Notes         string `json:"notes"`
 }
 
 type updateDeviceRequest struct {
@@ -30,11 +34,21 @@ type updateDeviceRequest struct {
 	Identity string `json:"identity"`
 	Username string `json:"username"`
 	Password string `json:"password"`
-	UseTLS   bool   `json:"use_tls"`
-	APIPort  int    `json:"api_port"`
-	Tags     string `json:"tags"`
-	Notes    string `json:"notes"`
+	// UseTLS and PinCertSHA256 are pointers: an edit that does not mention
+	// them leaves them as they are (an omitted use_tls must not turn a TLS
+	// device into one that is logged in to in the clear). An empty pin
+	// clears it.
+	UseTLS        *bool   `json:"use_tls"`
+	PinCertSHA256 *string `json:"pin_cert_sha256"`
+	APIPort       int     `json:"api_port"`
+	Tags          string  `json:"tags"`
+	Notes         string  `json:"notes"`
 }
+
+// pinRequired is the refusal of a TLS device without a fingerprint.
+const pinRequired = "the certificate fingerprint (SHA-256) is required for API-TLS: read it on the device " +
+	"(/certificate print detail, the certificate set on /ip service api-ssl) and paste it here — " +
+	"the NMS does not log in to a TLS device it cannot identify"
 
 func (s *Server) handleListDevices(w http.ResponseWriter, r *http.Request) {
 	// Every device carries its role (router, weak-router, switch, ap-cpe,
@@ -102,11 +116,23 @@ func (s *Server) handleCreateDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	password := req.Password
+	pin, err := rosutil.NormalizePin(req.PinCertSHA256)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "pin_cert_sha256: "+err.Error())
+		return
+	}
+	if req.UseTLS && pin == "" {
+		writeError(w, http.StatusBadRequest, pinRequired)
+		return
+	}
 
 	// Test connection before adding, on a one-shot connection that goes
-	// through the dial policy like every other device dial (polling off, or
-	// an address outside the allowed subnets, is refused before any login).
-	testClient, testErr := rosutil.DialOnce(req.Address, req.APIPort, req.Username, password, req.UseTLS, s.cfg.ROSTLSVerify)
+	// through the same dial as every other device session: polling off, or
+	// an address outside the allowed subnets, is refused before anything is
+	// sent, and a TLS device must present the pinned certificate before the
+	// login is.
+	target := rosutil.Target{Address: req.Address, Port: req.APIPort, UseTLS: req.UseTLS, Pin: pin}
+	testClient, testErr := rosutil.DialOnce(target, req.Username, password)
 	if testErr != nil {
 		if writeDialPolicyError(w, testErr) {
 			return
@@ -128,16 +154,17 @@ func (s *Server) handleCreateDevice(w http.ResponseWriter, r *http.Request) {
 	testClient.Close()
 
 	device := &queries.Device{
-		ID:          uuid.NewString(),
-		Address:     req.Address,
-		Identity:    req.Identity,
-		Username:    req.Username,
-		PasswordEnc: password,
-		UseTLS:      req.UseTLS,
-		APIPort:     req.APIPort,
-		Tags:        req.Tags,
-		Notes:       req.Notes,
-		Status:      "online",
+		ID:            uuid.NewString(),
+		Address:       req.Address,
+		Identity:      req.Identity,
+		Username:      req.Username,
+		PasswordEnc:   password,
+		UseTLS:        req.UseTLS,
+		PinCertSHA256: pin,
+		APIPort:       req.APIPort,
+		Tags:          req.Tags,
+		Notes:         req.Notes,
+		Status:        "online",
 	}
 	if device.Tags == "" {
 		device.Tags = "[]"
@@ -186,8 +213,19 @@ func (s *Server) handleUpdateDevice(w http.ResponseWriter, r *http.Request) {
 
 	// What the pooled session was dialled with: when any of it changes, the
 	// session and the remembered dial parameters must go.
-	before := [4]any{existing.Address, existing.APIPort, existing.UseTLS, existing.Username}
+	dialled := func() [5]any {
+		return [5]any{existing.Address, existing.APIPort, existing.UseTLS, existing.Username, existing.PinCertSHA256}
+	}
+	before := dialled()
 
+	if req.PinCertSHA256 != nil {
+		pin, err := rosutil.NormalizePin(*req.PinCertSHA256)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "pin_cert_sha256: "+err.Error())
+			return
+		}
+		existing.PinCertSHA256 = pin
+	}
 	if req.Address != "" {
 		existing.Address = req.Address
 	}
@@ -197,7 +235,9 @@ func (s *Server) handleUpdateDevice(w http.ResponseWriter, r *http.Request) {
 	if req.Username != "" {
 		existing.Username = req.Username
 	}
-	existing.UseTLS = req.UseTLS
+	if req.UseTLS != nil {
+		existing.UseTLS = *req.UseTLS
+	}
 	if req.APIPort > 0 {
 		existing.APIPort = req.APIPort
 	}
@@ -222,10 +262,10 @@ func (s *Server) handleUpdateDevice(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to update device")
 		return
 	}
-	// A pooled session keeps using — and redialling with — the address and
-	// credentials it was opened with. Drop it so the next poll connects with
-	// the new ones.
-	if s.pool != nil && (req.Password != "" || before != [4]any{existing.Address, existing.APIPort, existing.UseTLS, existing.Username}) {
+	// A pooled session keeps using — and redialling with — the address,
+	// credentials and pin it was opened with. Drop it (and the backoff of
+	// its failed dials) so the next poll connects with the new ones.
+	if s.pool != nil && (req.Password != "" || before != dialled()) {
 		s.pool.Forget(id)
 	}
 	s.invalidateTrafficTopo()
@@ -294,6 +334,9 @@ func (s *Server) handleDeviceAddresses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.writePollingPaused(w, dev.ID) {
+		return
+	}
+	if writeTLSPinMissing(w, dev) {
 		return
 	}
 	if dev.Status != "online" {

@@ -20,7 +20,7 @@ const defaultConnectivityInterval = 30 * time.Second
 
 // defaultConnectivityPingCount is the pings-per-probe burst size when the admin
 // hasn't configured connectivity_ping_count. Clamped to 1..10 so a burst
-// (count × 1s interval) stays well under the RouterOS CommandTimeout.
+// (count × 1s interval) stays well under the /ping command's deadline.
 const defaultConnectivityPingCount = 5
 
 // ConnectivityPoller runs periodic ICMP probes FROM RouterOS devices (/ping
@@ -42,11 +42,10 @@ const defaultConnectivityPingCount = 5
 // device's polling is paused is skipped without a sample: paused minutes are
 // gaps with no rows, and the device gets nothing but liveness pings.
 type ConnectivityPoller struct {
-	db        *sql.DB
-	pool      *routeros.Pool
-	hub       *ws.Hub
-	interval  time.Duration
-	verifyTLS bool
+	db       *sql.DB
+	pool     *routeros.Pool
+	hub      *ws.Hub
+	interval time.Duration
 
 	// Auto-traceroute state: per-target cooldown so a sustained dropoff doesn't
 	// re-trace every cycle, plus a small global semaphore so a flood of lossy
@@ -64,13 +63,12 @@ const autoTracerouteCooldown = 10 * time.Minute
 // an unresponsive path stays under this).
 const tracerouteTimeout = 45 * time.Second
 
-func NewConnectivityPoller(db *sql.DB, pool *routeros.Pool, hub *ws.Hub, interval time.Duration, verifyTLS bool) *ConnectivityPoller {
+func NewConnectivityPoller(db *sql.DB, pool *routeros.Pool, hub *ws.Hub, interval time.Duration) *ConnectivityPoller {
 	return &ConnectivityPoller{
 		db:           db,
 		pool:         pool,
 		hub:          hub,
 		interval:     interval,
-		verifyTLS:    verifyTLS,
 		traceLastRun: make(map[string]time.Time),
 		traceSem:     make(chan struct{}, 2),
 	}
@@ -349,8 +347,8 @@ func (cp *ConnectivityPoller) persistAndPublish(s *queries.PingSample) {
 // run-now traceroute for the same target.
 //
 // The trace runs on a dedicated DialOnce connection: a 20-hop run against an
-// unresponsive path takes up to ~45s, which would hold the pooled client's
-// mutex past CommandTimeout and force-close it under every other poller. dev
+// unresponsive path takes up to ~45s, and on the pooled session every other
+// poller's command would wait behind it — past its own deadline. dev
 // comes from the cycle's ListDevices snapshot, credentials already decrypted.
 func (cp *ConnectivityPoller) maybeAutoTraceroute(t queries.PingTarget, dev queries.Device) {
 	cp.traceMu.Lock()
@@ -385,7 +383,7 @@ func (cp *ConnectivityPoller) maybeAutoTraceroute(t queries.PingTarget, dev quer
 		}()
 
 		run := &queries.TracerouteRun{TargetID: t.ID, Address: t.Address}
-		client, err := routeros.DialOnce(dev.Address, dev.APIPort, dev.Username, dev.PasswordEnc, dev.UseTLS, cp.verifyTLS)
+		client, err := routeros.DialOnce(DialTarget(dev), dev.Username, dev.PasswordEnc)
 		if err != nil {
 			run.Error = err.Error()
 		} else {

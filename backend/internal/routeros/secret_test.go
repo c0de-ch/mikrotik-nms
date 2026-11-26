@@ -15,15 +15,15 @@ func TestDialRefusesUnreadableCredentials(t *testing.T) {
 
 	// 192.0.2.1 (TEST-NET-1) is unroutable: reaching the network here would
 	// hang or fail with a different error.
-	pool := NewPool(false)
-	if _, err := pool.Dial("d1", "192.0.2.1", 8728, "admin", crypto.Unreadable, false); !errors.Is(err, ErrCredentialsUnreadable) {
+	pool := NewPool()
+	if _, err := pool.Dial("d1", Target{Address: "192.0.2.1", Port: 8728}, "admin", crypto.Unreadable); !errors.Is(err, ErrCredentialsUnreadable) {
 		t.Fatalf("Pool.Dial = %v, want ErrCredentialsUnreadable", err)
 	}
-	if _, err := DialOnce("192.0.2.1", 8728, "admin", crypto.Unreadable, false, false); !errors.Is(err, ErrCredentialsUnreadable) {
+	if _, err := DialOnce(Target{Address: "192.0.2.1", Port: 8728}, "admin", crypto.Unreadable); !errors.Is(err, ErrCredentialsUnreadable) {
 		t.Fatalf("DialOnce = %v, want ErrCredentialsUnreadable", err)
 	}
 	// EnsureConnection gives up at once instead of retrying a refusal.
-	if _, err := pool.EnsureConnection("d1", "192.0.2.1", 8728, "admin", crypto.Unreadable, false); !errors.Is(err, ErrCredentialsUnreadable) {
+	if _, err := pool.EnsureConnection("d1", Target{Address: "192.0.2.1", Port: 8728}, "admin", crypto.Unreadable); !errors.Is(err, ErrCredentialsUnreadable) {
 		t.Fatalf("EnsureConnection = %v, want ErrCredentialsUnreadable", err)
 	}
 	if pool.Get("d1") != nil {

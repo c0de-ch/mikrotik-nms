@@ -120,7 +120,8 @@ const (
 )
 
 // settingFloors reads the runtime-tunable intervals that floor the tiers.
-// Tier 1 (cpu) has no floor.
+// Tier 1 and 1c (the CPU samples) have no floor: they run at their class
+// cadence — 60 s and 10 min on every class.
 func settingFloors(db *sql.DB, cfg *config.Config) map[devclass.Tier]time.Duration {
 	counters, hosts := PortStatsInterval(db), PortHostsInterval(db)
 	clients := clampDuration(settingSeconds(db, "client_discovery_interval", defaultClientDiscovery), minClientsFloor, maxClientsFloor)
@@ -251,8 +252,13 @@ func newFleetCadence(db *sql.DB) CadenceSource {
 }
 
 func (c fleetCadence) Interval(_ queries.Device, tier devclass.Tier, now time.Time) time.Duration {
-	if tier == devclass.TierEthernet {
+	switch tier {
+	case devclass.TierEthernet:
 		return ethernetInterval
+	case devclass.TierCPU:
+		return defaultCPUInterval
+	case devclass.TierCPUPost:
+		return defaultCPUPostInterval
 	}
 	return c.floors.of(tier, now)
 }

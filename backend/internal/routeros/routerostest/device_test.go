@@ -10,7 +10,7 @@ import (
 // pooled client must show up, and the login must not.
 func TestDeviceRecordsCommandsAfterLogin(t *testing.T) {
 	dev := NewDevice(t)
-	pool := routeros.NewPool(false)
+	pool := routeros.NewPool()
 	dev.Dial(t, pool, "d1")
 
 	client := pool.GetLive("d1")

@@ -1092,13 +1092,31 @@ func TestPurgeHistoryTrafficClearsPortStats(t *testing.T) {
 		}
 		return resp
 	}
-	h1 := count("port_stats_1h")
+	// The device coverage of those buckets goes with them: left behind, it
+	// would turn every purged minute into "covered, 0 bps".
+	if err := queries.UpsertDeviceMinutes(f.db, []queries.DeviceMinute{
+		{DeviceID: "r", Bucket: f.end.Add(-time.Minute), PolledS: 60},
+		{DeviceID: "r", Bucket: f.end.Add(-2 * time.Minute), PolledS: 60},
+		{DeviceID: "r", Bucket: old, PolledS: 60},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := queries.RollupDeviceHours(f.db, old.Add(-time.Hour), f.end.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	h1, dh := count("port_stats_1h"), count("device_hours")
 	resp := purge(`{"traffic": true, "older_than_days": 1}`)
 	if resp.Deleted["port_stats_1m"] != 1 || count("port_stats_1m") != 2 || count("port_stats_1h") != h1-1 {
 		t.Errorf("older_than_days=1: deleted %v, 1m left %d, 1h left %d", resp.Deleted, count("port_stats_1m"), count("port_stats_1h"))
 	}
+	if resp.Deleted["device_minutes"] != 1 || count("device_minutes") != 2 || count("device_hours") != dh-1 {
+		t.Errorf("older_than_days=1: deleted %v, device_minutes left %d, device_hours left %d", resp.Deleted, count("device_minutes"), count("device_hours"))
+	}
 	resp = purge(`{"traffic": true}`)
 	if _, ok := resp.Deleted["port_stats_1h"]; !ok || count("port_stats_1m") != 0 || count("port_stats_1h") != 0 {
 		t.Errorf("full purge: deleted %v, 1m %d, 1h %d", resp.Deleted, count("port_stats_1m"), count("port_stats_1h"))
+	}
+	if _, ok := resp.Deleted["device_hours"]; !ok || count("device_minutes") != 0 || count("device_hours") != 0 {
+		t.Errorf("full purge: deleted %v, device_minutes %d, device_hours %d", resp.Deleted, count("device_minutes"), count("device_hours"))
 	}
 }

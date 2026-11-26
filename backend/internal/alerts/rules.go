@@ -13,18 +13,19 @@ import (
 const (
 	RuleDeviceUnreachable = "device_unreachable"
 	RuleParallelAPIPoller = "parallel_api_poller"
+	RuleTLSPinMismatch    = "tls_pin_mismatch"
 	// RuleFlowExportOnSwitch: see flow_export.go.
 	RuleFlowExportOnSwitch = flowguard.FindingExportOnSwitch
 )
 
 // RuleNames lists the rules this build evaluates.
 func RuleNames() []string {
-	return []string{RuleDeviceUnreachable, RuleParallelAPIPoller, RuleFlowExportOnSwitch}
+	return []string{RuleDeviceUnreachable, RuleParallelAPIPoller, RuleTLSPinMismatch, RuleCPUHigh, RuleMemLow, RulePortEgressDrops, RuleFlowExportOnSwitch}
 }
 
 // DefaultRules are the rules evaluated on a polling instance.
 func DefaultRules(db *sql.DB) []Rule {
-	return []Rule{deviceUnreachable{db}, parallelAPIPoller{db}, flowExportOnSwitch{db}}
+	return []Rule{deviceUnreachable{db}, parallelAPIPoller{db}, tlsPinMismatch{db}, cpuHigh{db}, memLow{db}, portEgressDrops{db}, flowExportOnSwitch{db}}
 }
 
 func deviceLabel(d queries.Device) string {
@@ -108,6 +109,57 @@ func (r parallelAPIPoller) Evaluate(now time.Time) ([]Observation, error) {
 			Key: f.DeviceID + "|" + f.Detail, DeviceID: f.DeviceID, Severity: severity,
 			Summary: fmt.Sprintf("%s: API login by something other than this NMS (%s)", name, f.Detail),
 			Facts:   map[string]any{"device": name, "detail": f.Detail, "count": f.Count},
+		})
+	}
+	return out, nil
+}
+
+// pinMismatchCurrent is how recent a tls_pin_mismatch finding must be to
+// count. While the mismatch lasts the pool retries the device every ten
+// minutes or so and each refusal touches the finding; a device nothing else
+// polls is still dialled by its hourly info pass. Two of those and a margin.
+const pinMismatchCurrent = 2*time.Hour + 15*time.Minute
+
+// tlsPinMismatch fires while a TLS device answers with another certificate
+// than the one pinned for it: the session was refused before any login
+// (device_findings, written by the RouterOS client's pin check). It stops
+// as soon as the device is pinned to the certificate that was presented or
+// no longer uses TLS — the admin's decision either way — and otherwise once
+// no mismatch has been seen for pinMismatchCurrent.
+type tlsPinMismatch struct{ db *sql.DB }
+
+func (tlsPinMismatch) Name() string { return RuleTLSPinMismatch }
+
+func (r tlsPinMismatch) Evaluate(now time.Time) ([]Observation, error) {
+	findings, err := queries.ListCurrentDeviceFindings(r.db, queries.FindingTLSPinMismatch, now.Add(-pinMismatchCurrent))
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", RuleTLSPinMismatch, err)
+	}
+	if len(findings) == 0 {
+		return nil, nil
+	}
+	devices, err := queries.ListDevices(r.db)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", RuleTLSPinMismatch, err)
+	}
+	byID := make(map[string]queries.Device, len(devices))
+	for _, d := range devices {
+		byID[d.ID] = d
+	}
+	var out []Observation
+	for _, f := range findings {
+		d, ok := byID[f.DeviceID]
+		if !ok || !d.UseTLS || d.PinCertSHA256 == f.Detail {
+			continue // gone, no longer on TLS, or pinned to that certificate since
+		}
+		name := deviceLabel(d)
+		out = append(out, Observation{
+			Key: f.DeviceID + "|" + f.Detail, DeviceID: f.DeviceID, Severity: SeverityCritical,
+			Summary: fmt.Sprintf("%s (%s) presented a TLS certificate that is not the pinned one — the NMS did not log in", name, d.Address),
+			Facts: map[string]any{
+				"device": name, "address": d.Address,
+				"presented": f.Detail, "pinned": d.PinCertSHA256, "count": f.Count,
+			},
 		})
 	}
 	return out, nil

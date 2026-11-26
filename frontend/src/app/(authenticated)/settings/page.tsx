@@ -1766,7 +1766,7 @@ export default function SettingsPage() {
               { key: "wifi", label: "WiFi events", desc: "wifi_history — join / leave / roam" },
               { key: "clients", label: "Client history", desc: "client_history — DHCP / ARP snapshots" },
               { key: "network_health", label: "Network health events", desc: "loop_events — STP / loop / port-flap" },
-              { key: "traffic", label: "Traffic history", desc: "traffic_samples, port_stats_1m, port_stats_1h — interface bps and per-port 1-minute / hourly buckets" },
+              { key: "traffic", label: "Traffic history", desc: "traffic_samples, port_stats_1m, port_stats_1h, device_minutes, device_hours — interface bps, per-port 1-minute / hourly buckets and the device CPU / coverage history that goes with them" },
               { key: "flows", label: "Flow history", desc: "flow_1m, flow_1h — measured flow-export buckets (exporters and views are kept)" },
             ].map((t) => {
               const k = t.key as keyof typeof purgeTargets;
@@ -1927,6 +1927,8 @@ export default function SettingsPage() {
                   <li>traffic_samples</li>
                   <li>port_stats_1m</li>
                   <li>port_stats_1h</li>
+                  <li>device_minutes</li>
+                  <li>device_hours</li>
                 </>
               )}
               {purgeTargets.flows && (

@@ -223,7 +223,7 @@ func (s *Server) handleRunSpeedTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Refuse a fenced device synchronously rather than recording a failed sample.
-	if writeDialPolicyError(w, routeros.CheckTarget(dev.Address)) {
+	if writeDialPolicyError(w, routeros.CheckTarget(dev.Address)) || writeTLSPinMissing(w, dev) {
 		return
 	}
 
@@ -238,7 +238,6 @@ func (s *Server) handleRunSpeedTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	verifyTLS := s.cfg.ROSTLSVerify
 	go func() {
 		defer poller.EndRun(key)
 		defer poller.ReleaseAPIRunSlot()
@@ -248,7 +247,7 @@ func (s *Server) handleRunSpeedTest(w http.ResponseWriter, r *http.Request) {
 			}
 		}()
 
-		sample := poller.RunSpeedTest(s.db, *t, verifyTLS)
+		sample := poller.RunSpeedTest(s.db, *t)
 		// Persist FIRST (the WS publish drops for slow clients), then broadcast.
 		if err := queries.InsertSpeedSample(s.db, sample); err != nil {
 			log.Printf("api: insert speed sample for test %s: %v", t.ID, err)

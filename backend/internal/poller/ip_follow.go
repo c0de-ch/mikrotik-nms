@@ -250,14 +250,18 @@ const proposalTTL = 24 * time.Hour
 // Why no automatic move: verifying a move means logging in at an address
 // learned from an unauthenticated, forgeable MNDP/CDP packet, i.e. sending
 // the device's stored credential to whoever claims that address. Over plain
-// API (the whole fleet today) the password crosses the wire to that host
-// before any identity check can run, so only a human may decide to try it.
+// API (most of a fleet) the password crosses the wire to that host before
+// any identity check can run, so only a human may decide to try it.
 //
-// TODO(P0-13): for a TLS device with a pinned certificate, a handshake-only
-// probe of the pin at mv.NewAddr — before any login — proves the address
-// belongs to the device; such a move may then be verified and committed here
-// without approval (VerifyAndCommitAddressMove). Until pins exist every move
-// is a proposal.
+// TODO(P0-13 follow-up): pins exist now (devices.pin_cert_sha256) and the
+// verification dial is pinned like every other: for a TLS device the
+// certificate at mv.NewAddr is checked before any login, so approving such a
+// move can no longer leak its credential. Moving a pinned TLS device here
+// without approval is still not done — what is missing is bookkeeping, not
+// proof: one attempt per new proposal rather than per topology tick, a
+// handshake-only probe that does not raise tls_pin_mismatch for an address
+// that merely is not the device, and an audit trail for a decision nobody
+// made. Until then every move is a proposal.
 func (m *Manager) reconcileAddresses(ctx context.Context) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -404,14 +408,21 @@ func VerifyAndCommitAddressMove(db *sql.DB, pool *routeros.Pool, hub *ws.Hub, mv
 	}
 
 	// Authenticated dial to the NEW ip under a separate pool key so it never
-	// clobbers the live connection to the old ip. A forged MNDP packet cannot
-	// answer the real device's authenticated API.
+	// clobbers the live connection to the old ip — and is not held back by
+	// the polling key's reconnect backoff. A forged MNDP packet cannot
+	// answer the real device's authenticated API; for a TLS device the
+	// pinned certificate is checked before the login is sent at all, and
+	// the session is counted against the device (DialTarget).
 	verifyKey := mv.DeviceID + ":verify"
-	client, err := pool.Dial(verifyKey, mv.NewAddr, dev.APIPort, dev.Username, dev.PasswordEnc, dev.UseTLS)
+	target := DialTarget(*dev)
+	target.Address = mv.NewAddr
+	client, err := pool.Dial(verifyKey, target, dev.Username, dev.PasswordEnc)
+	// Whatever the outcome, nothing of this one-off dial stays in the pool:
+	// not the session, and not the address and credential it was made with.
+	defer pool.Forget(verifyKey)
 	if err != nil {
 		return "", reject(MoveDialFailed, fmt.Sprintf("verify dial failed: %v", err), err)
 	}
-	defer pool.Forget(verifyKey)
 
 	res, err := routeros.GetSystemResource(client)
 	if err != nil {

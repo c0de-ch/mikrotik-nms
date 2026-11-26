@@ -25,6 +25,10 @@ import { toast } from "sonner";
 const RULE_LABELS: Record<string, string> = {
   device_unreachable: "Device unreachable",
   parallel_api_poller: "Another API poller",
+  tls_pin_mismatch: "TLS pin mismatch",
+  cpu_high: "High CPU",
+  mem_low: "Low memory",
+  port_egress_drops: "Port dropping packets",
   flow_export_on_switch: "Flow export on a device that must not export",
 };
 

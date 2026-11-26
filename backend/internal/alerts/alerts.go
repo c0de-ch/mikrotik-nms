@@ -70,6 +70,13 @@ type Observation struct {
 	// alert (confirmed = false) and such an observation must never be
 	// critical — the rule raises the severity once it has confirmed it.
 	Unconfirmed bool
+	// Hold says the rule cannot tell whether the condition holds — the
+	// device was not measured, or the measurements disagree — which is
+	// neither "firing" nor "healthy": an open alert stays exactly as it is
+	// and no alert is opened. With a Key it holds that one alert; with only
+	// a DeviceID, every alert of the rule for that device. Severity and
+	// Summary are not needed.
+	Hold bool
 }
 
 // Rule looks at the stored state and reports every condition that holds
@@ -189,6 +196,9 @@ func (e *Engine) Tick() error {
 	now := e.now()
 
 	seen := make(map[ruleKey]Observation)
+	// What a rule could not tell: by (rule, key), and by (rule, device).
+	heldKeys := make(map[ruleKey]bool)
+	heldDevices := make(map[ruleKey]bool)
 	failed := make(map[string]bool)
 	var errs []error
 	for _, r := range e.rules {
@@ -199,6 +209,15 @@ func (e *Engine) Tick() error {
 			continue
 		}
 		for _, o := range obs {
+			if o.Hold {
+				switch {
+				case o.Key != "":
+					heldKeys[ruleKey{r.Name(), o.Key}] = true
+				case o.DeviceID != "":
+					heldDevices[ruleKey{r.Name(), o.DeviceID}] = true
+				}
+				continue
+			}
 			if o.Key == "" || !ValidSeverity(o.Severity) {
 				continue
 			}
@@ -225,6 +244,11 @@ func (e *Engine) Tick() error {
 		k := ruleKey{a.Rule, a.Key}
 		o, still := seen[k]
 		if !still {
+			// The rule could not tell for this alert: unknown is not
+			// healthy, so it neither resolves nor counts as seen.
+			if heldKeys[k] || (a.DeviceID != "" && heldDevices[ruleKey{a.Rule, a.DeviceID}]) {
+				continue
+			}
 			if err := queries.ResolveAlert(e.db, a.ID, now); err != nil {
 				errs = append(errs, err)
 				continue
@@ -243,11 +267,14 @@ func (e *Engine) Tick() error {
 				errs = append(errs, err)
 			}
 		}
-		// A rising severity is news: the alert fires again and is notified
-		// in this tick, even when the lower severity had been delivered or
-		// acknowledged (a warning someone acknowledged as "maybe" that is
-		// now a confirmed critical must reach them).
-		if SeverityRank(o.Severity) > SeverityRank(a.Severity) {
+		// A severity the alert reaches for the first time is news: it fires
+		// again and is notified in this tick, even when the lower severity
+		// had been delivered or acknowledged (a warning someone acknowledged
+		// as "maybe" that is now a confirmed critical must reach them). One
+		// it was already announced at is not — an alert swinging between
+		// warning and critical does not notify at every swing, and an
+		// acknowledgement given since stays.
+		if SeverityRank(o.Severity) > SeverityRank(a.Severity) && SeverityRank(o.Severity) > SeverityRank(a.NotifiedSeverity) {
 			if err := queries.EscalateAlert(e.db, a.ID); err != nil {
 				errs = append(errs, err)
 			} else {
@@ -319,7 +346,11 @@ func (e *Engine) notify(now time.Time, resolved []queries.Alert) bool {
 		if n == 0 {
 			continue // nothing delivered: try again next tick
 		}
-		if err := queries.MarkAlertNotified(e.db, a.ID, now); err != nil {
+		told := a.Severity
+		if SeverityRank(a.NotifiedSeverity) > SeverityRank(told) {
+			told = a.NotifiedSeverity
+		}
+		if err := queries.MarkAlertNotified(e.db, a.ID, now, told); err != nil {
 			log.Printf("alerts: mark notified: %v", err)
 		}
 		sent = true

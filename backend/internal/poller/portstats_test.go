@@ -139,6 +139,9 @@ func TestPortStatsMinuteBucketMath(t *testing.T) {
 		RxPpsAvg: 3, // 140/55
 		TxPpsAvg: 0, // 6/55
 		Samples:  3, // the interval ending at 12:01:05 counts in 12:01
+		// The port was observed for the same 55 s; it carries no drop,
+		// error or link-down counters, so those stay NULL.
+		CoveredS: nullInt(55),
 	}
 	if r != want {
 		t.Fatalf("minute row =\n %+v\nwant\n %+v", r, want)

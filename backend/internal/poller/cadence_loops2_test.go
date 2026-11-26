@@ -406,8 +406,8 @@ func TestConnectivityAndSpeedTestsSkipPausedDevices(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	NewConnectivityPoller(db, routeros.NewPool(false), ws.NewHub(), time.Minute, false).poll(context.Background())
-	NewSpeedTestPoller(db, ws.NewHub(), false, time.Hour).poll(context.Background())
+	NewConnectivityPoller(db, routeros.NewPool(), ws.NewHub(), time.Minute).poll(context.Background())
+	NewSpeedTestPoller(db, ws.NewHub(), time.Hour).poll(context.Background())
 
 	count := func(table, col, id string) int {
 		var n int

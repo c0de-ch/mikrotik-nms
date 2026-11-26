@@ -121,8 +121,11 @@ With `local`, the backend refuses to start while `MIKROTIK_NMS_ALLOWED_TARGET_CI
 is empty and refuses any dial outside it (`403` from the API, `routeros.ErrTargetNotAllowed`
 in Go). The fence is `routeros.SetDialPolicy` / `CheckTarget`, consulted by
 `Pool.Dial`, `DialOnce`, `Ping`, `ScanSubnet` and `ScanMNDP` — new code that
-reaches a device must go through one of those, never `net.Dial` or the
-go-routeros dialers directly.
+reaches a device must go through one of those, never `net.Dial`. (The
+go-routeros library is vendored in `backend/third_party/go-routeros` with its
+own dialers removed: `internal/routeros` opens every API connection itself —
+dial policy, timeouts, pinned TLS — and hands it to the library. See that
+directory's README for the local changes; `make test` runs its tests too.)
 
 ## 4. Build / test / lint
 
@@ -131,7 +134,8 @@ go-routeros dialers directly.
 | `make build` | backend binary + frontend `.next` |
 | `make build-backend` | `CGO_ENABLED=0 go build -ldflags="-s -w" -o bin/mikrotik-nms ./cmd/mikrotik-nms/` |
 | `make build-frontend` | `npm run build` (Next.js production build) |
-| `make test` | `cd backend && go test ./...` |
+| `make test` | `cd backend && go test ./...`, then the same in `backend/third_party/go-routeros` (the vendored RouterOS library, its own module) |
+| `make fuzz-flow` / `make fuzz-ros` | 60 s of fuzzing the flow decoder (`FuzzDecode`) / the RouterOS API reply reader (`FuzzSentence`); `go test` only replays their seeds |
 | `make test-verbose` | `go test -v ./...` |
 | `make lint` | `go vet ./...` **and** `npm run lint` (eslint) |
 | `make docker-build` / `docker-up` / `docker-down` | Docker Compose lifecycle |

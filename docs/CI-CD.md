@@ -35,8 +35,13 @@ Two independent jobs; both must pass before a PR can be merged.
 2. `go vet ./...`
 3. `go build ./...`
 4. `go test -race ./...` — the whole backend suite under the race detector. Fuzz
-   targets (e.g. `FuzzDecode` in `internal/flow/decode`) run their seed corpus
-   here; the 60 s fuzzing session is a separate local target (`make fuzz-flow`).
+   targets (`FuzzDecode` in `internal/flow/decode`, `FuzzSentence` in
+   `internal/routeros`) run their seed corpus here; the 60 s fuzzing sessions
+   are separate local targets (`make fuzz-flow`, `make fuzz-ros`).
+5. `go test -race ./...` again in `backend/third_party/go-routeros` — the
+   vendored, patched RouterOS API library is its own Go module (a `replace` in
+   `backend/go.mod` points at it), so the backend's `./...` does not reach its
+   tests. The module cache key includes its `go.sum`.
 
 **Frontend (build · lint)** — working directory `frontend/`
 

@@ -300,7 +300,7 @@ func TestReconcileAddresses_DisabledByDefault(t *testing.T) {
 		t.Fatalf("upsert neighbor: %v", err)
 	}
 
-	m := NewManager(db, routeros.NewPool(false), ws.NewHub(), &config.Config{TopologyInterval: time.Minute})
+	m := NewManager(db, routeros.NewPool(), ws.NewHub(), &config.Config{TopologyInterval: time.Minute})
 	m.reconcileAddresses(context.Background())
 
 	got, err := queries.GetDevice(db, "d1")
@@ -461,7 +461,7 @@ func followFixture(t *testing.T, oldAddr, newAddr string) (*sql.DB, *routerostes
 	if err := queries.SetSetting(db, "auto_follow_ip", "true"); err != nil {
 		t.Fatal(err)
 	}
-	m := NewManager(db, routeros.NewPool(false), ws.NewHub(), &config.Config{TopologyInterval: time.Minute})
+	m := NewManager(db, routeros.NewPool(), ws.NewHub(), &config.Config{TopologyInterval: time.Minute})
 	return db, fake, m
 }
 
@@ -569,7 +569,7 @@ func TestUpsertAddressProposal_NewerSightingSupersedes(t *testing.T) {
 
 func TestVerifyAndCommitAddressMove_Stale(t *testing.T) {
 	db, fake, _ := followFixture(t, "192.0.2.56", "127.0.0.1")
-	_, err := VerifyAndCommitAddressMove(db, routeros.NewPool(false), ws.NewHub(),
+	_, err := VerifyAndCommitAddressMove(db, routeros.NewPool(), ws.NewHub(),
 		AddressMove{DeviceID: "d1", OldAddr: "192.0.2.1", NewAddr: "127.0.0.1"})
 	var me *MoveError
 	if !errors.As(err, &me) || me.Category != MoveStale {
@@ -583,7 +583,7 @@ func TestVerifyAndCommitAddressMove_Stale(t *testing.T) {
 func TestVerifyAndCommitAddressMove_NoCredentials(t *testing.T) {
 	db := pollerTestDB(t)
 	mustCreateDevice(t, db, &queries.Device{ID: "d1", Identity: "ap", Address: "192.0.2.56", Board: "cAP ax", Username: "admin"})
-	_, err := VerifyAndCommitAddressMove(db, routeros.NewPool(false), ws.NewHub(),
+	_, err := VerifyAndCommitAddressMove(db, routeros.NewPool(), ws.NewHub(),
 		AddressMove{DeviceID: "d1", OldAddr: "192.0.2.56", NewAddr: "192.0.2.232"})
 	var me *MoveError
 	if !errors.As(err, &me) || me.Category != MoveNoCredentials {
@@ -599,7 +599,7 @@ func TestVerifyAndCommitAddressMove_DialFailure(t *testing.T) {
 	db := pollerTestDB(t)
 	mustCreateDevice(t, db, &queries.Device{ID: "d1", Identity: "ap", Address: "192.0.2.56", Board: "cAP ax",
 		Username: "admin", PasswordEnc: "secret", APIPort: 1})
-	_, err := VerifyAndCommitAddressMove(db, routeros.NewPool(false), ws.NewHub(),
+	_, err := VerifyAndCommitAddressMove(db, routeros.NewPool(), ws.NewHub(),
 		AddressMove{DeviceID: "d1", OldAddr: "192.0.2.56", NewAddr: "127.0.0.1"})
 	var me *MoveError
 	if !errors.As(err, &me) || me.Category != MoveDialFailed {
@@ -611,7 +611,7 @@ func TestVerifyAndCommitAddressMove_DialFailure(t *testing.T) {
 func TestVerifyAndCommitAddressMove_IdentityMismatch(t *testing.T) {
 	db, fake, _ := followFixture(t, "192.0.2.56", "127.0.0.1")
 	fake.Reply("/system/resource/print", map[string]string{"board-name": "CRS326", "version": "7.16"})
-	_, err := VerifyAndCommitAddressMove(db, routeros.NewPool(false), ws.NewHub(),
+	_, err := VerifyAndCommitAddressMove(db, routeros.NewPool(), ws.NewHub(),
 		AddressMove{DeviceID: "d1", OldAddr: "192.0.2.56", NewAddr: "127.0.0.1", MAC: "04:F4:1C:85:97:B2"})
 	var me *MoveError
 	if !errors.As(err, &me) || me.Category != MoveIdentityMismatch {
@@ -624,7 +624,7 @@ func TestVerifyAndCommitAddressMove_MACMismatch(t *testing.T) {
 	db, fake, _ := followFixture(t, "192.0.2.56", "127.0.0.1")
 	fake.Reply("/system/resource/print", map[string]string{"board-name": "cAP ax", "version": "7.16"})
 	fake.Reply("/interface/print", map[string]string{"name": "ether1", "type": "ether", "mac-address": "AA:AA:AA:AA:AA:AA"})
-	_, err := VerifyAndCommitAddressMove(db, routeros.NewPool(false), ws.NewHub(),
+	_, err := VerifyAndCommitAddressMove(db, routeros.NewPool(), ws.NewHub(),
 		AddressMove{DeviceID: "d1", OldAddr: "192.0.2.56", NewAddr: "127.0.0.1", MAC: "04:F4:1C:85:97:B2"})
 	var me *MoveError
 	if !errors.As(err, &me) || me.Category != MoveMACMismatch {
@@ -637,7 +637,7 @@ func TestVerifyAndCommitAddressMove_Commits(t *testing.T) {
 	db, fake, _ := followFixture(t, "192.0.2.56", "127.0.0.1")
 	fake.Reply("/system/resource/print", map[string]string{"board-name": "cAP ax", "version": "7.16"})
 	fake.Reply("/interface/print", map[string]string{"name": "ether1", "type": "ether", "mac-address": "04:f4:1c:85:97:b2"})
-	summary, err := VerifyAndCommitAddressMove(db, routeros.NewPool(false), ws.NewHub(),
+	summary, err := VerifyAndCommitAddressMove(db, routeros.NewPool(), ws.NewHub(),
 		AddressMove{DeviceID: "d1", OldAddr: "192.0.2.56", NewAddr: "127.0.0.1", MAC: "04:F4:1C:85:97:B2"})
 	if err != nil {
 		t.Fatalf("verify: %v", err)
@@ -657,7 +657,7 @@ func TestVerifyAndCommitAddressMove_Commits(t *testing.T) {
 func TestVerifyAndCommitAddressMove_ForgetsTheOldDialSpec(t *testing.T) {
 	db, fake, _ := followFixture(t, "192.0.2.56", "127.0.0.1")
 	fake.Reply("/system/resource/print", map[string]string{"board-name": "cAP ax", "version": "7.16"})
-	pool := routeros.NewPool(false)
+	pool := routeros.NewPool()
 	fake.Dial(t, pool, "d1") // the pooled session the pollers use
 	if _, err := VerifyAndCommitAddressMove(db, pool, ws.NewHub(),
 		AddressMove{DeviceID: "d1", OldAddr: "192.0.2.56", NewAddr: "127.0.0.1"}); err != nil {

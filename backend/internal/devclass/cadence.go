@@ -14,8 +14,12 @@ const (
 	// TierCounters is Tier 0: the proplisted /interface/print that feeds
 	// port minutes, link state, inventory and flow ifIndex names.
 	TierCounters Tier = iota
-	// TierCPU is Tier 1: /system/resource/print cpu-load,free-memory,uptime.
+	// TierCPU is Tier 1: /system/resource/print cpu-load,free-memory,uptime,
+	// taken in a quiet window.
 	TierCPU
+	// TierCPUPost is 1c: the post-poll sample, /system/resource/print
+	// cpu-load 3 s after a Tier 0 read — the NMS's own effect on the CPU.
+	TierCPUPost
 	// TierLogs is the shared /log/print reader (wifi and bridge parsers).
 	TierLogs
 	// TierBridgePorts is 2a: the proplisted /interface/bridge/port/print
@@ -48,6 +52,7 @@ const (
 var tierNames = [...]string{
 	TierCounters:          "counters",
 	TierCPU:               "cpu",
+	TierCPUPost:           "cpu_post",
 	TierLogs:              "logs",
 	TierBridgePorts:       "bridge_ports",
 	TierBridgeVLAN:        "bridge_vlan",
@@ -87,6 +92,7 @@ var cadences = map[Class][tierCount]time.Duration{
 	C1: {
 		TierCounters:          60 * time.Second,
 		TierCPU:               60 * time.Second,
+		TierCPUPost:           10 * time.Minute,
 		TierLogs:              5 * time.Minute,
 		TierBridgePorts:       5 * time.Minute,
 		TierBridgeVLAN:        15 * time.Minute,
@@ -103,6 +109,7 @@ var cadences = map[Class][tierCount]time.Duration{
 	C2: {
 		TierCounters:          30 * time.Second,
 		TierCPU:               60 * time.Second,
+		TierCPUPost:           10 * time.Minute,
 		TierLogs:              2 * time.Minute,
 		TierBridgePorts:       2 * time.Minute,
 		TierBridgeVLAN:        5 * time.Minute,
@@ -119,6 +126,7 @@ var cadences = map[Class][tierCount]time.Duration{
 	C3: {
 		TierCounters:          15 * time.Second,
 		TierCPU:               60 * time.Second,
+		TierCPUPost:           10 * time.Minute,
 		TierLogs:              2 * time.Minute,
 		TierBridgePorts:       2 * time.Minute,
 		TierBridgeVLAN:        5 * time.Minute,
@@ -208,6 +216,27 @@ func NextRun(end time.Time, interval time.Duration, phase uint64) time.Time {
 	step := int64(phase%jitterSteps) - (jitterSteps-1)/2 // -1000 … +1000
 	jitter := time.Duration(int64(interval) / 10000 * step)
 	return end.Add(interval + jitter)
+}
+
+// SlotAt returns the start of the slot holding t on a device's grid: slots
+// are exactly interval apart and begin at a fixed offset inside the interval,
+// a pure function of phase within its first three quarters (the last quarter
+// stays free for a read that waits before it runs). It schedules the reads
+// that must land once in every interval — the CPU sample fills one
+// device-minute each — where NextRun's "end of the last run ± 10 %" would
+// drift across the boundaries and leave some minutes with two samples and
+// others with none. A slot that was missed is not caught up: the caller runs
+// at most once per slot. For a non-positive interval it returns t.
+func SlotAt(t time.Time, interval time.Duration, phase uint64) time.Time {
+	if interval <= 0 {
+		return t
+	}
+	span := uint64(interval * 3 / 4 / time.Millisecond)
+	if span == 0 {
+		return t.Truncate(interval)
+	}
+	offset := time.Duration(phase%span) * time.Millisecond
+	return t.Add(-offset).Truncate(interval).Add(offset)
 }
 
 // Budget is a class's device-load ceiling per minute (design §4.4): the

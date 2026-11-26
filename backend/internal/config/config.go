@@ -79,11 +79,6 @@ type Config struct {
 	DefaultROSPort int
 	DefaultROSTLS  bool
 
-	// ROSTLSVerify enables RouterOS API-TLS certificate verification. Defaults
-	// to false because RouterOS ships self-signed certs; set true once devices
-	// present a trusted cert.
-	ROSTLSVerify bool
-
 	// SMTP / self-service password reset. SMTPHost is the master switch: when
 	// empty the feature is safe-disabled. SMTPPass is a secret and is NEVER
 	// logged. PublicBaseURL is REQUIRED to actually send (links are built only
@@ -144,7 +139,6 @@ func Load() (*Config, error) {
 		DefaultROSPort:    envIntOr("MIKROTIK_NMS_DEFAULT_ROS_PORT", 8728),
 		DefaultROSTLS:     envBoolOr("MIKROTIK_NMS_DEFAULT_ROS_TLS", false),
 		AllowedOrigins:    envListOr("MIKROTIK_NMS_ALLOWED_ORIGINS", nil),
-		ROSTLSVerify:      envBoolOr("MIKROTIK_NMS_ROS_TLS_VERIFY", false),
 		SMTPHost:          os.Getenv("MIKROTIK_NMS_SMTP_HOST"),
 		SMTPPort:          envIntOr("MIKROTIK_NMS_SMTP_PORT", 587),
 		SMTPUser:          os.Getenv("MIKROTIK_NMS_SMTP_USER"),
