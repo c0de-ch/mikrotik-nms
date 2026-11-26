@@ -7,10 +7,15 @@ export to a collector built into the backend.
 
 - **Protocols:** NetFlow v5, NetFlow v9, IPFIX and sFlow v5, all on one UDP port (2055 by
   default). The version is read from each datagram.
-- **Off by default.** Nothing listens until `MIKROTIK_NMS_FLOW_LISTEN` is set.
+- **Routers and firewalls only.** Flow export costs the exporting device CPU for every
+  packet it accounts. A switch or an access point has nothing to show for it — its traffic
+  is forwarded in hardware — so the NMS neither suggests export for such a device nor
+  accepts it; see [Which devices may export](#3-which-devices-may-export).
+- **Off by default.** Nothing listens until `MIKROTIK_NMS_FLOW_LISTEN` is set, and nothing
+  is accepted automatically until an admin says so.
 - **Aggregated, not raw.** Records are folded into per-minute top-N conversations per
   exporter (plus an exact "other" remainder), then rolled up hourly. No payload is ever
-  stored; see [Privacy and security](#9-privacy-and-security).
+  stored; see [Privacy and security](#10-privacy-and-security).
 
 Placeholders used below: `<NMS-IP>` is the address exporters send to (the host running the
 backend), `<router-IP>` is the address the NMS manages a RouterOS device by.
@@ -27,16 +32,18 @@ router / firewall ──UDP 2055──► backend flow collector ──► SQLit
 ```
 
 - **Exporters are identified by their UDP source IP.** Only allow-listed exporters are
-  decoded. A RouterOS device the NMS already manages is accepted automatically when its
-  exports come from the address the NMS manages it by (setting `flow_auto_accept_devices`,
-  on by default). Everything else, such as a firewall, is listed as an *unknown sender*
-  until an admin adds it.
+  decoded. By default nothing gets on the list by itself: a sender is listed as an
+  *unknown sender* until an admin adds it. With **Settings → Flow collector → Accept
+  routers automatically** (`flow_auto_accept_classes = router`) a managed router — a
+  capable device with an internet or VPN egress of its own — is accepted on its first
+  datagram. Switches, access points and weak devices are never accepted: their address is
+  **blocked** and an alert is raised ([section 3](#3-which-devices-may-export)).
 - **Observation points.** A point is one exporter plus a set of its interfaces, facing
   either up (towards the Internet) or down (towards hosts). That decides which records are
   downloads and which are uploads. The collector creates a **native** point for every
   exporter interface that carries traffic. **Derived** points show a port on a switch that
   cannot export flows, computed from a neighbouring exporter's records
-  ([section 5](#5-switches-that-cannot-export-derived-views)).
+  ([section 6](#6-switches-that-cannot-export-derived-views)).
 - **Exporters are never added together.** The same packet is often seen by several
   exporters (firewall and router, both ends of a trunk). Every view shows exactly one
   exporter's records, so nothing is counted twice.
@@ -62,45 +69,98 @@ Then check:
 - **The address is stable.** Exporters take a literal IP, so give the NMS host a DHCP
   reservation or a static address.
 - **Exports can reach it.** Nothing between exporter and NMS may drop udp/2055 or SNAT it.
-- **Setup hints show the right address** (optional). Without a setting, the hints use the
-  listen address when `MIKROTIK_NMS_FLOW_LISTEN` names one specific IP (e.g. `10.0.0.5:2055`),
-  else the address the NMS routes toward the device. If the NMS has several addresses,
-  set **Settings → Flow collector → Advertise address** (`flow_advertise_address`). The
-  RouterOS commands and OPNsense steps under Traffic → Flows then use it.
+- **Tell the NMS its own address.** Set **Settings → Flow collector → Advertise address**
+  (`flow_advertise_address`) to the address exporters send to. The setup and rollback
+  commands under Traffic → Flows use that setting and nothing else: the address is never
+  guessed from the listen entry or from a route, and while it is empty the commands carry
+  the placeholder `<NMS-IP>`. An address that belongs to a managed device is refused.
 
 ---
 
-## 3. RouterOS (traffic-flow, IPFIX)
+## 3. Which devices may export
 
-Works on any RouterOS 7 router. Traffic Flow only sees packets that pass through the
-**CPU**: routed, NATed and firewalled traffic. Hardware-offloaded bridging and switching
-are invisible, and FastTrack can hide packets too. That is why switches get derived views
-([section 5](#5-switches-that-cannot-export-derived-views)) and why the coverage figure
-exists.
+Traffic Flow only sees packets that pass through the device's **CPU**: routed, NATed and
+firewalled traffic. Hardware-offloaded bridging and switching are invisible, and FastTrack
+can hide packets too. So a device that does not route has nothing to export — and pays
+for trying: every accounted packet is CPU work, on the management CPU of a switch or the
+small CPU of an access point.
+
+The NMS therefore gives every managed device a **role**, from facts it already stores
+(board, CPU class, the device's own default route and tunnels — no extra device read), and
+shows it with its reason on the device page and in `GET /api/v1/devices`:
+
+| Role | What it is | Flow export |
+|---|---|---|
+| `router` | Routes an internet or VPN egress of its own, CPU class C3 | Setup commands are shown; may be accepted automatically |
+| `weak-router` | The same on a small device (class C2) | Setup commands are shown **with a warning**; added by hand |
+| `weak-router` on class C1 | A router on the weakest hardware | No setup commands; blocked |
+| `switch` | Switch hardware (CRS / CSS) | No setup commands; blocked; alert |
+| `ap-cpe` | Access point or CPE behind another router | No setup commands; blocked; alert |
+| `unknown` | The facts do not settle it (router hardware without an egress of its own, a board the NMS does not know, a device not read yet) | No setup commands; neither accepted nor blocked — an admin decides |
+
+A device is only called a router when the facts clearly show an L3 boundary. Router
+hardware that has no egress of its own — it may be working as a switch — is `unknown`,
+not `router`.
+
+What follows from the role:
+
+- **Setup hints.** The commands that enable export are shown only for an eligible router.
+  For every other device the hints show the read-only check and the rollback.
+- **Blocked senders.** The first flow datagram from a switch, an access point / CPE or a
+  C1 device blocks its address: nothing is decoded, and the sender is listed under
+  *Flow exporters → Blocked senders* as "blocked: *reason*". Deleting an exporter blocks
+  its address the same way. A block is lifted only by an admin (*Unblock*, or *Add
+  anyway…*, which asks for an explicit tick).
+- **Alert `flow_export_on_switch`.** A datagram from such a device raises a warning marked
+  *unconfirmed* — a UDP source address can be forged. The NMS then reads the device's
+  `/ip traffic-flow` settings once (two read-only prints, at most once per hour, never on a
+  device whose polling is paused). Only when the device itself confirms the export does
+  the alert become critical, with the rollback steps attached. See
+  [RUNBOOKS.md](RUNBOOKS.md#flow_export_on_switch).
+- **Exporters that already exist keep working**, whatever their device's role. One on a
+  device that must not export is flagged in the exporter list.
+- **"Ignore datagrams" and "Delete" do not stop a device.** They only decide what the NMS
+  does with the datagrams; the device keeps exporting, and keeps paying for it, until you
+  run the [rollback](#rollback) on it.
+
+Do not enable Tools → Graphing on switches either; the NMS keeps per-port history (1 min
+for 2 d, 1 h for 365 d by default) from the interface counters it already reads.
+
+---
+
+## 4. RouterOS (traffic-flow, IPFIX)
+
+For a **router** — see [section 3](#3-which-devices-may-export). The Traffic → Flows setup
+hints (`GET /api/v1/flows/setup?device=<id>`) show the commands below with your real
+addresses and interface names, and only for a device the NMS classifies as eligible.
 
 **Pre-check (read-only).** A router that has never exported shows `enabled=no`, the
-default `active-flow-timeout=30m`, and no targets.
+default `active-flow-timeout=30m`, and no targets. Run the profiler too: it is the
+baseline you compare against afterwards.
 
 ```routeros
 /ip traffic-flow print
 /ip traffic-flow target print
-/system resource print
+/tool profile duration=30
 ```
 
-**Apply (2 commands).** The Traffic → Flows setup hints show these with your real
-addresses (`GET /api/v1/flows/setup?device=<id>`).
+**Apply (2 commands).**
 
 ```routeros
 /ip traffic-flow target add dst-address=<NMS-IP> port=2055 src-address=<router-IP> version=ipfix v9-template-timeout=1m
-/ip traffic-flow set enabled=yes interfaces=all active-flow-timeout=1m inactive-flow-timeout=15s
+/ip traffic-flow set enabled=yes interfaces=<routed-interfaces> active-flow-timeout=1m inactive-flow-timeout=15s
 ```
 
 - **`src-address=<router-IP>`** pins the export source to the address the NMS manages
-  the router by, so it is accepted automatically and attributed to the right device. Without
-  it, RouterOS picks the address of the egress interface, and you may have to add the
-  exporter by hand.
-- **`interfaces=all`** is safe: each packet is accounted once, and the collector drops the
-  router's own export packets (`self_export_dropped`).
+  the router by, so it is attributed to the right device. Without it, RouterOS picks the
+  address of the egress interface, and the datagrams arrive from an address the NMS does
+  not know.
+- **`interfaces=<routed-interfaces>`** — name the interfaces that route: the WAN, and the
+  VLAN and bridge interfaces that carry an address (`interfaces=ether1,bridge,vlan20`).
+  **Do not use `interfaces=all`**, although it is the RouterOS default: it accounts
+  every interface the CPU sees, including ones nobody asked about, and that is CPU work
+  per packet. Never list bridge member ports. The setup hints fill the list in from what
+  the NMS knows about the device; compare it with `/ip address print`.
 - **`active-flow-timeout=1m`** makes long downloads show up within a minute instead of 30.
 - **`v9-template-timeout=1m`** resends templates every minute. A restarted collector can
   decode again quickly, although the NMS also keeps the last templates in its database.
@@ -110,28 +170,79 @@ addresses (`GET /api/v1/flows/setup?device=<id>`).
 - **Interface names.** The flow ifIndex is the RouterOS interface `.id` read as hex (`*D` = 13).
   The NMS syncs the names every 5 minutes over the API it already uses.
 
-**Verify.**
+**Verify — and measure what it costs.**
 
 ```routeros
 /ip traffic-flow print
 /ip traffic-flow target print detail
-/system resource print
+/tool profile duration=30
 ```
 
-`cpu-load` should barely move. At home-lab rates the cost is a hash update per packet on the
-CPU path. Within about two minutes the router appears in `GET /api/v1/flows/status` with
-`state: "ok"` and `protocol: "ipfix"`.
+Within about two minutes the router appears in `GET /api/v1/flows/status` with
+`state: "ok"` and `protocol: "ipfix"`. Do not assume the CPU load "barely moves": the
+cost is per accounted packet, so it grows with the traffic and weighs most on a small
+CPU. Compare the `traffic-flow` row of the profile, and the device's CPU on its page in
+the NMS, with the baseline from the pre-check — at a busy hour, not only right after
+enabling. If the CPU rises noticeably, roll back.
 
-**Rollback** (restores the defaults):
+### Rollback
 
-```routeros
-/ip traffic-flow set enabled=no active-flow-timeout=30m
-/ip traffic-flow target remove [find dst-address=<NMS-IP> port=2055]
-```
+Stopping the export is a sequence, not one paste. The Traffic → Flows setup hints and the
+`flow_export_on_switch` alert show these steps for the device's RouterOS version, with
+the real target address.
+
+0. **Decide first.** Run the profiler over SSH. If the `traffic-flow` and
+   `traffic-accounting` rows are near 0 %, the export costs nothing worth the risk of
+   step 2: do steps 1 and 3 only, and leave `enabled=yes` with no target until the next
+   planned upgrade to RouterOS 7.25.
+
+   ```routeros
+   /tool profile duration=30
+   ```
+
+1. **Disable the target** that points at this collector — only that one.
+
+   ```routeros
+   /ip traffic-flow target disable [find dst-address=<NMS-IP> port=2055]
+   ```
+
+2. **Only if `enabled=no` is still needed.**
+
+   > **Before RouterOS 7.25, disabling traffic-flow on a busy system can crash the kernel
+   > and reboot the device.** Safe Mode does not protect against a kernel crash. Download
+   > the update first, so that a reboot caused by the crash installs the new version and
+   > the planned reboot is the only one; then do it in a maintenance window with a console
+   > ready.
+
+   ```routeros
+   /system package update download
+   /ip traffic-flow set enabled=no
+   ```
+
+   From RouterOS 7.25 the same step applies without the warning and without the download
+   (7.25 changelog: *"traffic-flow - fix a kernel failure when disabling traffic flow on a
+   busy system"*). A 7.25 beta or release candidate, and a device whose version the NMS
+   does not know, are treated as older than 7.25.
+
+3. **Remove the target.**
+
+   ```routeros
+   /ip traffic-flow target remove [find dst-address=<NMS-IP> port=2055]
+   ```
+
+4. **Verify.** The target list no longer names the collector, and the `traffic-flow` rows
+   are gone from the profile.
+
+   ```routeros
+   /ip traffic-flow target print
+   /tool profile duration=30
+   ```
+
+Every `[find …]` above matches the one target and nothing else. Do not widen it.
 
 ---
 
-## 4. OPNsense (NetFlow v9)
+## 5. OPNsense (NetFlow v9)
 
 OPNsense exports with FreeBSD's in-kernel `ng_netflow`. It offers NetFlow v5 or v9 (no
 IPFIX), accounts every packet (no sampling), and captures per interface.
@@ -208,17 +319,22 @@ the NetFlow page.
 
 ---
 
-## 5. Switches that cannot export: derived views
+## 6. Switches that cannot export: derived views
 
 Many managed switches forward in hardware. MikroTik CRS switches (Marvell switch chips) are
 an example. The CPU sees almost none of the forwarded traffic, so RouterOS Traffic Flow on
-such a switch exports next to nothing, and many models have no sFlow either. Forcing the
-traffic through the CPU (disabling hardware offload, or `use-ip-firewall=yes`) collapses
-throughput on a small switch CPU. **Don't.**
+such a switch exports next to nothing — while still costing its management CPU — and many
+models have no sFlow either. Forcing the traffic through the CPU (disabling hardware
+offload, or `use-ip-firewall=yes`) collapses throughput on a small switch CPU. **Don't**,
+and do not enable traffic-flow on a switch at all: the NMS blocks such a sender and raises
+`flow_export_on_switch` ([section 3](#3-which-devices-may-export)).
 
 Instead, the NMS derives a view of the switch port from the exporter next to it. It offers
 two rules. An admin adds the views with **Traffic → Flows → Add suggested views**, or with
-`GET /api/v1/flows/points/suggestions` and then `POST /api/v1/flows/points`.
+`GET /api/v1/flows/points/suggestions` and then `POST /api/v1/flows/points`. The
+router-trunk rule is only offered for exporters whose device has a router role, and on a
+port that has both, an admin's derived view is preferred over the native point of an
+exporter that is not a router.
 
 | Rule | When | What the view shows |
 |---|---|---|
@@ -265,17 +381,19 @@ example for CRS3xx; check your model's manual before applying.
 
 ---
 
-## 6. NMS-side checklist
+## 7. NMS-side checklist
 
-1. Enable the collector and confirm it listens ([section 2](#2-enable-the-collector-nms-side)).
-2. Configure the exporters ([section 3](#3-routeros-traffic-flow-ipfix) and
-   [section 4](#4-opnsense-netflow-v9)).
-3. Managed RouterOS devices are accepted automatically. Add the others from the
-   unknown-sender list.
+1. Enable the collector and confirm it listens ([section 2](#2-enable-the-collector-nms-side)),
+   and set the advertise address.
+2. Configure the exporters — routers and firewalls only
+   ([section 4](#4-routeros-traffic-flow-ipfix) and [section 5](#5-opnsense-netflow-v9)).
+3. Add each exporter from the unknown-sender list. (Or switch on *Accept routers
+   automatically*; switches and access points are never accepted either way.)
 4. For exporters without a device sync (firewalls, probes), name the interfaces and set
    their roles.
 5. Add the suggested derived views.
-6. Optional settings:
+6. Watch the exporter's CPU for a day ([Verify](#4-routeros-traffic-flow-ipfix)).
+7. Optional settings:
    - `flow_internal_prefixes`: extra internal networks, such as a LAN that no managed
      device routes.
    - `flow_external_prefixes`: private networks that are really "outside", such as WAN
@@ -285,7 +403,7 @@ example for CRS3xx; check your model's manual before applying.
 
 ---
 
-## 7. Verify
+## 8. Verify
 
 Log in once, then query the status endpoint (any logged-in user can read it):
 
@@ -310,7 +428,9 @@ curl -s -H "Authorization: Bearer $TOKEN" "$NMS/api/v1/flows/status" | jq '{enab
 | Symptom | Likely cause |
 |---|---|
 | Exporter `state: "never"` | Exports don't arrive: wrong target IP or port, a firewall on the path, or the collector is not listening. Check `listen_errors` |
-| Exporter shows under `unknown_senders` only | Add it. For a RouterOS device, its export source differs from its NMS address: set `src-address=` |
+| Exporter shows under `unknown_senders` only | Nothing is accepted by itself unless *Accept routers automatically* is on (and then only routers): add it. A managed RouterOS device listed without its name exports from another address than the NMS manages it by: set `src-address=` |
+| Sender shows under `blocked_senders` | It was deleted as an exporter, or it is a switch, an access point / CPE or a C1 device. The reason is shown. Stop the export on the device ([rollback](#rollback)); to accept it anyway an admin uses *Add anyway…* |
+| Alert `flow_export_on_switch` | A device that must not export sends flow datagrams. See [RUNBOOKS.md](RUNBOOKS.md#flow_export_on_switch) |
 | `template_state: "waiting"` | Normal for a first start. RouterOS resends within about 1 minute (with `v9-template-timeout=1m`), OPNsense within 10 minutes |
 | Coverage well below 0.85 | Hardware offload or FastTrack on the exporter, L2-only traffic on a trunk view, drops (`global.kernel_dropped`, `global.queue_dropped`), or a template gap |
 | `counters.rate_limited` growing | The exporter sends more than `flow_rate_limit_pps` datagrams per second. Raise the setting |
@@ -318,7 +438,7 @@ curl -s -H "Authorization: Bearer $TOKEN" "$NMS/api/v1/flows/status" | jq '{enab
 
 ---
 
-## 8. Settings
+## 9. Settings
 
 All settings are runtime-tunable on **Settings → Flow collector** (admin) and are picked up
 within 30 seconds. `MIKROTIK_NMS_FLOW_LISTEN` is the only environment variable (restart
@@ -332,18 +452,22 @@ required).
 | `flow_1m_days` | 3 | 1–14 | Retention of 1-minute detail |
 | `flow_1h_days` | 90 | 7–730 | Retention of hourly rollups |
 | `flow_rate_limit_pps` | 2000 | 100–50000 | Datagrams per second accepted per exporter |
-| `flow_auto_accept_devices` | true | bool | Accept exports from managed devices' addresses automatically |
+| `flow_auto_accept_classes` | — (off) | empty or `router` | `router`: a managed router (role `router`, class C3, with an internet or VPN egress of its own) is accepted on its first datagram. Empty: nothing is accepted automatically. Switches, access points and C1 devices are never accepted |
 | `flow_internal_prefixes` | — | CIDR/IP list | Extra networks treated as internal |
 | `flow_external_prefixes` | — | CIDR/IP list | Networks treated as external even if private (e.g. WAN transit) |
 | `flow_resolve_ptr` | false | bool | Allow reverse-DNS names for external IPs (sends PTR queries) |
-| `flow_advertise_address` | — | IP | Collector address shown in the setup hints |
+| `flow_advertise_address` | — | IP | The collector address in the setup and rollback commands — their only source of it. An address of a managed device is refused |
+
+`flow_auto_accept_devices` — the switch of earlier releases that accepted every managed
+device's address — is gone: the upgrade sets it to `false` and nothing reads it. Exporters
+that were accepted before the upgrade stay accepted.
 
 **Storage.** At the defaults, a few exporters take roughly 150 MB of database space, about
 500 MB in the worst case (the row cap hit every minute).
 
 ---
 
-## 9. Privacy and security
+## 10. Privacy and security
 
 - **Who can see what.** Per-host flow detail (which internal host talked to which address,
   on which port, how much) is visible to **every logged-in user**, like the Clients page.
@@ -356,7 +480,12 @@ required).
 - **Unauthenticated input.** Flow export is plain UDP:
   - The collector checks the source address against the allow-list before decoding
     anything.
-  - Unknown senders are listed but never decoded.
+  - Unknown and blocked senders are listed but never decoded.
   - Each exporter is rate-limited, and all internal structures are bounded.
-  - A spoofer on your network can still inject false statistics, so restrict udp/2055 to
-    your exporters with a host or network firewall where that matters.
+  - A source address proves nothing. A datagram that carries a switch's address only
+    raises an *unconfirmed* warning; the alert turns critical only after the NMS has read
+    that device's own settings and found the export there. A forged address can therefore
+    cost a device at most one small read per hour, and can never page anyone as critical.
+  - A spoofer on your network can still inject false statistics for an accepted exporter,
+    so restrict udp/2055 to your exporters with a host or network firewall where that
+    matters.

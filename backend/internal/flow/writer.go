@@ -49,6 +49,7 @@ type writeOp struct {
 	deleteTemplates int64
 	withdraw        *templateWithdraw
 	status          []statusDelta
+	drops           []senderDrop // datagrams dropped from blocked senders
 	startupRollup   time.Time
 }
 
@@ -136,6 +137,12 @@ func (c *Collector) applyWrite(op writeOp) {
 		for _, s := range op.status {
 			if err := queries.AddFlowExporterStatus(c.db, s.id, s.delta); err != nil {
 				log.Printf("flow collector: persist status: %v", err)
+			}
+		}
+	case len(op.drops) > 0:
+		for _, d := range op.drops {
+			if err := queries.AddFlowSenderDrops(c.db, d.address, d.datagrams, d.lastSeen); err != nil {
+				log.Printf("flow collector: persist blocked sender %s: %v", d.address, err)
 			}
 		}
 	case !op.startupRollup.IsZero():

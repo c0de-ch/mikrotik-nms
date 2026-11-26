@@ -18,6 +18,7 @@ import {
 import { useAuth } from "@/context/auth";
 import { api, type Device, type DeviceInterface, type Neighbor } from "@/lib/api";
 import { deviceStatusBadgeClass, deviceStatusLabel } from "@/lib/status";
+import { roleLabel } from "@/lib/device-role";
 import { useWebSocket } from "@/hooks/use-websocket";
 import { DeviceLoadBadges } from "@/components/devices/device-load";
 import { FindingsCard } from "@/components/devices/findings-card";
@@ -115,6 +116,15 @@ export default function DeviceDetailPage() {
             {device.address}
             {device.board ? ` · ${device.board}` : ""}
           </p>
+          {device.role && (
+            <p
+              className="mt-0.5 text-xs text-muted-foreground"
+              title="What the stored facts say this device does in the network. Flow export is only set up on, and accepted from, routers."
+            >
+              <span className="mr-1.5 rounded-full border px-1.5 text-[10px] font-medium text-foreground">{roleLabel(device.role)}</span>
+              {device.role_reason}
+            </p>
+          )}
         </div>
         <Button
           variant="outline"

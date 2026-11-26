@@ -217,7 +217,17 @@ func (n *Notifier) compose(a queries.Alert, event Event) message {
 	if link != "" {
 		lines = append(lines, "Alerts:   "+link)
 	}
-	text := strings.Join(lines, "\r\n") + "\r\n\r\n-- MikroTik NMS (automated message, please do not reply)\r\n"
+	// A firing alert whose rule attached rollback steps carries them in
+	// the mail: whoever is paged has them without opening the NMS.
+	var rollback []string
+	if event == EventFiring {
+		rollback = factLines(p.Facts["rollback"])
+	}
+	text := strings.Join(lines, "\r\n")
+	if len(rollback) > 0 {
+		text += "\r\n\r\nRollback:\r\n" + strings.Join(rollback, "\r\n")
+	}
+	text += "\r\n\r\n-- MikroTik NMS (automated message, please do not reply)\r\n"
 
 	var hb strings.Builder
 	hb.WriteString("<p><strong>" + html.EscapeString(summary) + "</strong></p><table cellpadding=\"3\">")
@@ -231,6 +241,9 @@ func (n *Notifier) compose(a queries.Alert, event Event) message {
 		hb.WriteString("<tr><td>" + html.EscapeString(k) + "</td><td>" + cell + "</td></tr>")
 	}
 	hb.WriteString("</table>")
+	if len(rollback) > 0 {
+		hb.WriteString("<p><strong>Rollback</strong></p><pre>" + html.EscapeString(strings.Join(rollback, "\n")) + "</pre>")
+	}
 
 	body := webhookBody{
 		Title: title, Message: summary, Text: title, Priority: priority,
@@ -246,6 +259,23 @@ func (n *Notifier) compose(a queries.Alert, event Event) message {
 		body.Alert.ResolvedAt = a.ResolvedAt.UTC().Format(time.RFC3339)
 	}
 	return message{Title: title, Text: text, HTML: hb.String(), Body: body}
+}
+
+// factLines reads a fact that is a list of text lines (stored as a JSON
+// array of strings); anything else is no lines.
+func factLines(v any) []string {
+	var out []string
+	switch list := v.(type) {
+	case []string:
+		out = list
+	case []any:
+		for _, item := range list {
+			if s, ok := item.(string); ok {
+				out = append(out, s)
+			}
+		}
+	}
+	return out
 }
 
 // postWebhook POSTs the notification as JSON. Errors never contain the URL:

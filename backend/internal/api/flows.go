@@ -20,8 +20,10 @@ import (
 	"github.com/mikrotik-nms/backend/internal/auth"
 	"github.com/mikrotik-nms/backend/internal/database/queries"
 	"github.com/mikrotik-nms/backend/internal/flow"
+	"github.com/mikrotik-nms/backend/internal/flowguard"
 	"github.com/mikrotik-nms/backend/internal/flowview"
 	"github.com/mikrotik-nms/backend/internal/poller"
+	"github.com/mikrotik-nms/backend/internal/topology"
 )
 
 // Flow export (NetFlow / IPFIX / sFlow) endpoints: collector status and setup
@@ -46,6 +48,7 @@ func (s *Server) mountFlowRoutes(r chi.Router) {
 		r.Post("/flows/exporters", s.handleCreateFlowExporter)
 		r.Put("/flows/exporters/{id}", s.handleUpdateFlowExporter)
 		r.Delete("/flows/exporters/{id}", s.handleDeleteFlowExporter)
+		r.Delete("/flows/blocked", s.handleUnblockFlowSender)
 		r.Put("/flows/exporters/{id}/interfaces/{ifIndex}", s.handleUpdateFlowIface)
 		r.Post("/flows/points", s.handleCreateFlowPoint)
 		r.Put("/flows/points/{id}", s.handleUpdateFlowPoint)
@@ -99,9 +102,12 @@ var flowProtocolLabels = map[string]string{
 var opnsenseURLKey = regexp.MustCompile(`^opnsense\d*_url$`)
 
 // handleFlowStatus returns the collector status (every DB exporter present,
-// see mergedFlowStatus) plus exporters worth adding: unknown senders and the
-// hosts of the OPNsense source settings that are IP literals, minus
-// addresses that already are exporters.
+// see mergedFlowStatus) with the guardrails applied — each sender's device
+// role, the warning on an exporter whose device must not export, the block
+// list — plus exporters worth adding: unknown senders and the hosts of the
+// OPNsense source settings that are IP literals, minus addresses that
+// already are exporters, are blocked, or belong to a device that must not
+// export.
 func (s *Server) handleFlowStatus(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
 	st, rows, err := s.mergedFlowStatus(now)
@@ -109,7 +115,13 @@ func (s *Server) handleFlowStatus(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to list exporters")
 		return
 	}
-	sugg, err := s.suggestedExporters(st, rows)
+	guard, err := s.loadFlowGuard(now)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to read device roles")
+		return
+	}
+	guard.apply(&st)
+	sugg, err := s.suggestedExporters(st, rows, guard)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to build suggestions")
 		return
@@ -118,8 +130,10 @@ func (s *Server) handleFlowStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 // suggestedExporters implements the suggested_exporters list of
-// /flows/status (contract §9.2).
-func (s *Server) suggestedExporters(st flow.Status, rows []queries.FlowExporter) ([]flowSuggestedExporter, error) {
+// /flows/status (contract §9.2). Nothing is suggested for a blocked address
+// or for a managed device that must not export: those are not one click
+// away from being accepted.
+func (s *Server) suggestedExporters(st flow.Status, rows []queries.FlowExporter, guard *flowGuard) ([]flowSuggestedExporter, error) {
 	out := []flowSuggestedExporter{}
 	taken := map[netip.Addr]bool{}
 	for _, e := range rows {
@@ -127,15 +141,15 @@ func (s *Server) suggestedExporters(st flow.Status, rows []queries.FlowExporter)
 			taken[a] = true
 		}
 	}
-	devices, err := queries.ListDevices(s.db)
-	if err != nil {
-		return nil, err
+	for a := range guard.blockedAddr {
+		taken[a] = true
+	}
+	for a := range guard.never {
+		taken[a] = true
 	}
 	devByIP := map[netip.Addr]queries.Device{}
-	for _, d := range devices {
-		if a, ok := parseIP(d.Address); ok {
-			devByIP[a] = d
-		}
+	for a, d := range guard.byAddr {
+		devByIP[a] = *d
 	}
 	settings, err := queries.GetAllSettings(s.db)
 	if err != nil {
@@ -220,9 +234,19 @@ func (s *Server) suggestedExporters(st flow.Status, rows []queries.FlowExporter)
 // ---------- /flows/setup ----------
 
 type flowSetupRouterOS struct {
-	DeviceID *string  `json:"device_id"`
-	Apply    []string `json:"apply"`
-	Rollback []string `json:"rollback"`
+	DeviceID *string `json:"device_id"`
+	// Check are the read-only commands that show whether the device
+	// exports; always present.
+	Check []string `json:"check"`
+	// Apply are the commands that enable export. Never nil, and empty
+	// unless the device is eligible (a router, or a weak router with a
+	// warning): a switch, an access point, a device of unknown role and a
+	// C1 device get the check and the rollback only.
+	Apply []string `json:"apply"`
+	// InterfacesNote explains the interfaces= list of Apply ("" without one).
+	InterfacesNote string `json:"interfaces_note"`
+	// Rollback is how to stop the export, for the device's RouterOS version.
+	Rollback flowguard.RollbackPlan `json:"rollback"`
 }
 
 type flowSetupOPNsense struct {
@@ -234,143 +258,150 @@ type flowSetupOPNsense struct {
 }
 
 type flowSetupResponse struct {
-	Enabled          bool              `json:"enabled"`
-	Port             int               `json:"port"`
-	AdvertiseAddress string            `json:"advertise_address"`
-	AdvertiseSource  string            `json:"advertise_source"` // setting | auto | unknown
-	RouterOS         flowSetupRouterOS `json:"routeros"`
-	OPNsense         flowSetupOPNsense `json:"opnsense"`
+	Enabled bool `json:"enabled"`
+	Port    int  `json:"port"`
+	// AdvertiseAddress is the admin-approved collector address (the
+	// flow_advertise_address setting), "" while it is not set or not
+	// usable; AdvertiseSource says which: "setting" or "unknown". The
+	// address is never detected from the process.
+	AdvertiseAddress string `json:"advertise_address"`
+	AdvertiseSource  string `json:"advertise_source"`
+	// The device the hints are for (?device=); all empty without one.
+	// Class is the CPU class the NMS budgets it as.
+	Class      string `json:"class"`
+	Role       string `json:"role"`
+	RoleReason string `json:"role_reason"`
+	// Eligible: the commands that enable export are shown (routeros.apply).
+	Eligible bool `json:"eligible"`
+	// Warnings: why not, or what to watch. Never nil.
+	Warnings []string `json:"warnings"`
+	// Advice is shown with every hint. Never nil.
+	Advice   []string          `json:"advice"`
+	RouterOS flowSetupRouterOS `json:"routeros"`
+	OPNsense flowSetupOPNsense `json:"opnsense"`
 }
 
-// defaultFlowPort is the port the setup hints use while the collector is off.
-const defaultFlowPort = 2055
-
-// specificListenAddr returns the host of the first listen entry bound to a
-// specific unicast address (not a wildcard, not loopback).
-func specificListenAddr(listen []string) (netip.Addr, bool) {
-	for _, l := range listen {
-		host, _, err := net.SplitHostPort(strings.TrimSpace(l))
-		if err != nil || host == "" {
-			continue
-		}
-		a, ok := parseIP(host)
-		if !ok || a.IsUnspecified() || a.IsLoopback() || a.IsMulticast() {
-			continue
-		}
-		return a, true
-	}
-	return netip.Addr{}, false
-}
-
-// localAddrToward returns the local address the kernel would use to reach
-// target:port (a connected UDP socket; nothing is sent).
-func localAddrToward(target netip.Addr, port int) (netip.Addr, bool) {
-	conn, err := net.DialUDP("udp", nil, net.UDPAddrFromAddrPort(netip.AddrPortFrom(target, uint16(port))))
+// settingDays reads a retention setting in days (def when unset or junk).
+func (s *Server) settingDays(key string, def int) int {
+	v, err := queries.GetSetting(s.db, key)
 	if err != nil {
-		return netip.Addr{}, false
+		return def
 	}
-	defer conn.Close()
-	la, ok := conn.LocalAddr().(*net.UDPAddr)
-	if !ok {
-		return netip.Addr{}, false
+	n, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil || n <= 0 {
+		return def
 	}
-	a, ok := netip.AddrFromSlice(la.IP)
-	if !ok || a.IsUnspecified() {
-		return netip.Addr{}, false
-	}
-	return a.Unmap(), true
+	return n
 }
 
-// handleFlowSetup returns copy-pasteable exporter configuration: RouterOS
-// traffic-flow commands (+ rollback) and OPNsense NetFlow steps, targeting
-// the collector's advertised address. Query device (optional) adds the
-// device's address as src-address and is the preferred route probe.
+// routedInterfaces names the interfaces of a device that route traffic, as
+// far as the stored facts know them: the interfaces of its own egress first,
+// then every interface the address plan found an address on (flow_prefixes).
+// Empty when nothing is known — the hint then asks the operator to name them.
+func (s *Server) routedInterfaces(dev *queries.Device, role topology.DeviceRole) []string {
+	out := slices.Clone(role.EgressIfaces)
+	rest := map[string]bool{}
+	if plan, err := queries.ListFlowPrefixes(s.db); err == nil {
+		for _, p := range plan {
+			if p.DeviceID == dev.ID && p.Iface != "" && !slices.Contains(out, p.Iface) {
+				rest[p.Iface] = true
+			}
+		}
+	}
+	return append(out, sortedKeys(rest)...)
+}
+
+// handleFlowSetup returns the exporter setup hints: for RouterOS the
+// read-only check, the commands that enable export — only for a device that
+// is eligible — and the rollback for the device's RouterOS version; for
+// OPNsense the NetFlow steps. Query device (optional) names the managed
+// device; without it no enabling command is shown.
+//
+// The response carries the device's class, role, eligibility and warnings.
+// The collector address is the admin-approved flow_advertise_address
+// setting, never one detected from the process. It reads the database only.
 func (s *Server) handleFlowSetup(w http.ResponseWriter, r *http.Request) {
+	now := time.Now()
 	deviceID := r.URL.Query().Get("device")
+	guard, err := s.loadFlowGuard(now)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to read device roles")
+		return
+	}
 	var dev *queries.Device
 	if deviceID != "" {
-		exists, err := s.deviceExists(deviceID)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to get device")
-			return
+		for i := range guard.devices {
+			if guard.devices[i].ID == deviceID {
+				dev = &guard.devices[i]
+			}
 		}
-		if !exists {
+		if dev == nil {
 			writeError(w, http.StatusNotFound, "device not found")
 			return
 		}
-		if dev, err = queries.GetDevice(s.db, deviceID); err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to get device")
-			return
-		}
 	}
-	resp := flowSetupResponse{Port: defaultFlowPort, AdvertiseSource: "unknown"}
+	resp := flowSetupResponse{Port: flowguard.DefaultPort, AdvertiseSource: "unknown", Warnings: []string{}}
 	if s.flows != nil && s.flows.Enabled() {
 		resp.Enabled = true
 		if p := flow.ListenPort(s.flows.Status().Listen); p > 0 {
 			resp.Port = p
 		}
 	}
+	resp.Advice = []string{flowguard.GraphingAdvice(s.settingDays("port_stats_1m_days", 2), s.settingDays("port_stats_1h_days", 365))}
 
-	var adv netip.Addr
-	if v, _ := queries.GetSetting(s.db, "flow_advertise_address"); strings.TrimSpace(v) != "" {
-		if a, ok := parseIP(v); ok {
-			adv, resp.AdvertiseSource = a, "setting"
-		}
-	}
-	if !adv.IsValid() && resp.Enabled {
-		// A collector bound to one specific address only listens there: a
-		// routed source address toward a device could be another NIC's.
-		if a, ok := specificListenAddr(s.flows.Status().Listen); ok {
-			adv, resp.AdvertiseSource = a, "auto"
-		}
-	}
-	if !adv.IsValid() {
-		var targets []netip.Addr
-		if dev != nil {
-			if a, ok := parseIP(dev.Address); ok {
-				targets = append(targets, a)
-			}
-		}
-		if exps, err := queries.ListFlowExporters(s.db); err == nil {
-			for _, e := range exps {
-				if a, ok := parseIP(e.Address); ok {
-					targets = append(targets, a)
-				}
-			}
-		}
-		if devs, err := queries.ListDevices(s.db); err == nil {
-			for _, d := range devs {
-				if a, ok := parseIP(d.Address); ok {
-					targets = append(targets, a)
-				}
-			}
-		}
-		for _, t := range targets {
-			if a, ok := localAddrToward(t, resp.Port); ok {
-				adv, resp.AdvertiseSource = a, "auto"
-				break
-			}
-		}
-	}
-	host := "<NMS-IP>"
-	if adv.IsValid() {
+	// The collector address: the admin-approved setting or nothing.
+	stored, _ := queries.GetSetting(s.db, "flow_advertise_address")
+	adv, advWarning := advertiseAddress(stored, guard.devices)
+	host := flowguard.Placeholder
+	switch {
+	case adv.IsValid():
 		host = adv.String()
-		resp.AdvertiseAddress = host
+		resp.AdvertiseAddress, resp.AdvertiseSource = host, "setting"
+	case advWarning != "":
+		resp.Warnings = append(resp.Warnings, advWarning)
+	default:
+		resp.Warnings = append(resp.Warnings, "No collector address is set: replace "+flowguard.Placeholder+
+			" with this NMS's address, or set Settings → Flow collector → Advertise address. The hints never guess it.")
 	}
 	port := strconv.Itoa(resp.Port)
 
-	target := "/ip traffic-flow target add dst-address=" + host + " port=" + port
-	if dev != nil {
+	resp.RouterOS = flowSetupRouterOS{Check: flowguard.CheckCommands(), Apply: []string{}}
+	version, confirmed := "", []netip.AddrPort(nil)
+	if dev == nil {
+		resp.Warnings = append(resp.Warnings, "Choose a router: the commands that enable flow export are shown only "+
+			"for a device the NMS classifies as an eligible router.")
+	} else {
+		role := guard.roles[dev.ID]
+		name := deviceDisplayName(*dev)
+		verdict := flowguard.Judge(name, role)
 		resp.RouterOS.DeviceID = &dev.ID
-		if a, ok := parseIP(dev.Address); ok {
-			target += " src-address=" + a.String()
+		resp.Class, resp.Role, resp.RoleReason = string(role.Budget), string(role.Role), role.Reason
+		resp.Eligible = verdict.Eligible
+		resp.Warnings = append(verdict.Warnings, resp.Warnings...)
+		version = dev.ROSVersion
+		if verdict.Eligible {
+			src := ""
+			if a, ok := parseIP(dev.Address); ok {
+				src = a.String()
+			}
+			resp.RouterOS.Apply = flowguard.ApplyCommands(resp.AdvertiseAddress, resp.Port, src, s.routedInterfaces(dev, role))
+			resp.RouterOS.InterfacesNote = "interfaces= lists the routed interfaces the NMS knows on " + name +
+				" (its egress and the interfaces that carry an address). Compare it with /ip address print before " +
+				"you paste; never use all, and never list bridge member ports."
+			if strings.Contains(resp.RouterOS.Apply[1], flowguard.InterfacesPlaceholder) {
+				resp.RouterOS.InterfacesNote = "Replace " + flowguard.InterfacesPlaceholder + " with the interfaces that " +
+					"route traffic on " + name + " (WAN, VLAN and bridge interfaces that carry an address) — never all, " +
+					"and never bridge member ports."
+			}
+		}
+		// A device that was seen exporting has told the NMS its targets:
+		// the rollback names the one that is really configured.
+		if chk, err := queries.GetFlowExportCheck(s.db, dev.ID); err == nil && chk != nil {
+			confirmed = chk.Targets
 		}
 	}
-	target += " version=ipfix v9-template-timeout=1m"
-	resp.RouterOS.Apply = []string{target,
-		"/ip traffic-flow set enabled=yes interfaces=all active-flow-timeout=1m inactive-flow-timeout=15s"}
-	resp.RouterOS.Rollback = []string{"/ip traffic-flow set enabled=no active-flow-timeout=30m",
-		"/ip traffic-flow target remove [find dst-address=" + host + " port=" + port + "]"}
+	target, targetPort := flowguard.RollbackTarget(resp.AdvertiseAddress, resp.Port, confirmed)
+	resp.RouterOS.Rollback = flowguard.Rollback(version, target, targetPort)
 
 	dest := host + ":" + port
 	if adv.Is6() {
@@ -380,6 +411,9 @@ func (s *Server) handleFlowSetup(w http.ResponseWriter, r *http.Request) {
 		Steps: []string{"Reporting → NetFlow → Capture (enable advanced mode)", "Listening interfaces: LAN",
 			"WAN interfaces: leave empty", "Version: v9", "Destinations: add " + dest,
 			"Active Timeout 60, Inactive Timeout 15", "Apply"}}
+	if resp.Warnings == nil {
+		resp.Warnings = []string{}
+	}
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -395,6 +429,16 @@ type flowExporterBody struct {
 	Enabled          optional[bool]     `json:"enabled"`
 	SamplingOverride optional[int]      `json:"sampling_override"`
 	NATAddresses     optional[[]string] `json:"nat_addresses"`
+	// Unblock (POST only): add the exporter although its address is
+	// blocked — a deleted exporter's tombstone, or a managed device that
+	// must not export. The explicit admin action a re-add needs.
+	Unblock optional[bool] `json:"unblock"`
+}
+
+// writeSenderBlocked answers 409 with code sender_blocked and the reason.
+func writeSenderBlocked(w http.ResponseWriter, address, reason string) {
+	writeJSON(w, http.StatusConflict, map[string]string{
+		"error": "sender " + address + " is blocked: " + reason, "code": "sender_blocked"})
 }
 
 // maxFlowNameLen bounds exporter / interface / point names.
@@ -507,14 +551,38 @@ func (s *Server) handleCreateFlowExporter(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, msg)
 		return
 	}
-	id, err := queries.CreateFlowExporter(s.db, &e)
-	if errors.Is(err, queries.ErrFlowExporterExists) {
-		writeError(w, http.StatusConflict, "exporter address already exists")
+	// A blocked address — the tombstone of a deleted exporter, or a managed
+	// device that must not export — is added only when the admin says so.
+	unblock := b.Unblock.Set && b.Unblock.Value
+	guard, err := s.loadFlowGuard(time.Now())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to read device roles")
 		return
 	}
-	if err != nil {
+	addr, _ := parseIP(e.Address)
+	reason := guard.blockReason(addr)
+	if reason != "" && !unblock {
+		writeSenderBlocked(w, e.Address, reason)
+		return
+	}
+	id, err := queries.CreateFlowExporterChecked(s.db, &e, unblock)
+	switch {
+	case errors.Is(err, queries.ErrFlowExporterExists):
+		writeError(w, http.StatusConflict, "exporter address already exists")
+		return
+	case errors.Is(err, queries.ErrFlowSenderBlocked): // blocked since the check above
+		writeSenderBlocked(w, e.Address, "the sender was blocked")
+		return
+	case err != nil:
 		writeError(w, http.StatusInternalServerError, "failed to create exporter")
 		return
+	}
+	if reason != "" {
+		deviceID := e.DeviceID
+		if d := guard.byAddr[addr]; d != nil {
+			deviceID = d.ID
+		}
+		s.audit(r, "flow_exporter_added_blocked", deviceID, e.Address+" added although blocked: "+reason)
 	}
 	s.flowChanged()
 	s.writeExporter(w, http.StatusCreated, id)
@@ -541,6 +609,7 @@ func (s *Server) handleUpdateFlowExporter(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusNotFound, "exporter not found")
 		return
 	}
+	oldAddress := cur.Address
 	msg, err := s.applyExporterBody(b, cur, false)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to validate exporter")
@@ -549,6 +618,21 @@ func (s *Server) handleUpdateFlowExporter(w http.ResponseWriter, r *http.Request
 	if msg != "" {
 		writeError(w, http.StatusBadRequest, msg)
 		return
+	}
+	// Moving an exporter onto a blocked address would be a re-add through
+	// the back door: delete the block (or add the sender with unblock) first.
+	if cur.Address != oldAddress {
+		guard, err := s.loadFlowGuard(time.Now())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to read device roles")
+			return
+		}
+		if a, ok := parseIP(cur.Address); ok {
+			if reason := guard.blockReason(a); reason != "" {
+				writeSenderBlocked(w, cur.Address, reason)
+				return
+			}
+		}
 	}
 	switch err := queries.UpdateFlowExporterConfig(s.db, cur); {
 	case errors.Is(err, queries.ErrFlowExporterExists):
@@ -567,14 +651,29 @@ func (s *Server) handleUpdateFlowExporter(w http.ResponseWriter, r *http.Request
 
 // handleDeleteFlowExporter deletes an exporter's configuration (its
 // interfaces, points and templates cascade; its flow history is purged by
-// the next retention sweep). 204.
+// the next retention sweep) and leaves a tombstone for its address: the
+// sender is blocked — its datagrams are dropped before decode, it is not
+// offered for one-click adding and nothing accepts it automatically — until
+// an admin unblocks it or adds it again with unblock. Deleting does not stop
+// the device from exporting. 204.
 func (s *Server) handleDeleteFlowExporter(w http.ResponseWriter, r *http.Request) {
 	id, ok := idParam(r, "id")
 	if !ok {
 		writeError(w, http.StatusBadRequest, "invalid exporter id")
 		return
 	}
-	switch err := queries.DeleteFlowExporter(s.db, id); {
+	now := time.Now()
+	by := ""
+	if u := auth.UserFromContext(r.Context()); u != nil {
+		by = u.Username
+	}
+	reason := "exporter deleted"
+	if by != "" {
+		reason += " by " + by
+	}
+	reason += " on " + now.UTC().Format("2006-01-02")
+	p, err := queries.DeleteFlowExporterBlocking(s.db, id, reason, by, now)
+	switch {
 	case errors.Is(err, queries.ErrFlowNotFound):
 		writeError(w, http.StatusNotFound, "exporter not found")
 		return
@@ -582,6 +681,7 @@ func (s *Server) handleDeleteFlowExporter(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusInternalServerError, "failed to delete exporter")
 		return
 	}
+	s.audit(r, "flow_exporter_deleted", p.DeviceID, p.Name+" ("+p.Address+"): the sender is blocked now")
 	s.flowChanged()
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -1001,7 +1101,8 @@ type flowSuggestionJSON struct {
 }
 
 // handleFlowPointSuggestions returns the derived views worth adding (rule G
-// gateway-host peers, rule T router trunks; contract §6.5).
+// gateway-host peers, rule T router trunks — the latter only from exporters
+// whose device has a router role; contract §6.5).
 func (s *Server) handleFlowPointSuggestions(w http.ResponseWriter, r *http.Request) {
 	fail := func() { writeError(w, http.StatusInternalServerError, "failed to build suggestions") }
 	t, err := s.trafficTopology()
@@ -1031,10 +1132,13 @@ func (s *Server) handleFlowPointSuggestions(w http.ResponseWriter, r *http.Reque
 		fail()
 		return
 	}
-	if in.Devices, err = queries.ListDevices(s.db); err != nil {
+	// Rule T only applies to exporters whose device has a router role.
+	guard, err := s.loadFlowGuard(time.Now())
+	if err != nil {
 		fail()
 		return
 	}
+	in.Devices, in.Roles = guard.devices, guard.routerRoles()
 	for _, hs := range t.hosts {
 		in.Hosts = append(in.Hosts, hs...)
 	}

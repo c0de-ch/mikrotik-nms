@@ -228,6 +228,10 @@ func (c *Collector) maintLoop(ctx context.Context) {
 			}
 		case <-pointsT.C:
 			safeMaint("points", func() { reconcileNativePoints(c.db, c.uplinkAge, c.now()) })
+		case id := <-c.exportCheckReq:
+			// The confirmation read of the flow_export_on_switch alert:
+			// the one device read the guardrails add (see checkExport).
+			safeMaint("export check", func() { c.checkExport(id, c.now()) })
 		}
 	}
 }

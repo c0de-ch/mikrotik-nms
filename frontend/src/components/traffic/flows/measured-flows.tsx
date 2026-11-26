@@ -159,7 +159,9 @@ export function MeasuredFlows({
           </Notice>
         )}
         {point.exporter_state === "disabled" && (
-          <Notice kind="warn">Exporter {point.exporter_name} is disabled — its datagrams are dropped; only older data is shown.</Notice>
+          <Notice kind="warn">
+            Datagrams from {point.exporter_name} are ignored by the NMS (the device keeps exporting); only older data is shown.
+          </Notice>
         )}
         {noData && <Notice>No flow data for this range yet.</Notice>}
         {lateStart && <Notice>Flow data since {fmtDateTime(meta!.coverage_from!)}</Notice>}

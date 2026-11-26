@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"net/netip"
 	"reflect"
 	"slices"
 	"strings"
@@ -448,33 +447,32 @@ func TestFlowStatusMerge(t *testing.T) {
 	}
 }
 
+// The parts of /flows/setup that do not depend on the device: the collector
+// address (the admin-approved setting or nothing), the port, the OPNsense
+// steps. What is shown per device is in flows_guard_test.go.
 func TestFlowSetup(t *testing.T) {
 	f := newFlowFixture(t)
-	if err := queries.SetSetting(f.db, "flow_advertise_address", "192.168.79.216"); err != nil {
+	if err := queries.SetSetting(f.db, "flow_advertise_address", "198.51.100.5"); err != nil {
 		t.Fatal(err)
 	}
 	var s flowSetupResponse
 	if code, body := f.get(t, "/flows/setup", nil, &s); code != 200 {
 		t.Fatalf("%d %s", code, body)
 	}
-	want := flowSetupResponse{Enabled: true, Port: 2055, AdvertiseAddress: "192.168.79.216", AdvertiseSource: "setting",
-		RouterOS: flowSetupRouterOS{
-			Apply: []string{"/ip traffic-flow target add dst-address=192.168.79.216 port=2055 version=ipfix v9-template-timeout=1m",
-				"/ip traffic-flow set enabled=yes interfaces=all active-flow-timeout=1m inactive-flow-timeout=15s"},
-			Rollback: []string{"/ip traffic-flow set enabled=no active-flow-timeout=30m",
-				"/ip traffic-flow target remove [find dst-address=192.168.79.216 port=2055]"}},
-		OPNsense: flowSetupOPNsense{Destination: "192.168.79.216:2055", Version: "v9", ActiveTimeout: 60, InactiveTimeout: 15,
-			Steps: []string{"Reporting → NetFlow → Capture (enable advanced mode)", "Listening interfaces: LAN",
-				"WAN interfaces: leave empty", "Version: v9", "Destinations: add 192.168.79.216:2055",
-				"Active Timeout 60, Inactive Timeout 15", "Apply"}}}
-	if !reflect.DeepEqual(s, want) {
-		t.Fatalf("setup =\n%+v\nwant\n%+v", s, want)
+	wantOPN := flowSetupOPNsense{Destination: "198.51.100.5:2055", Version: "v9", ActiveTimeout: 60, InactiveTimeout: 15,
+		Steps: []string{"Reporting → NetFlow → Capture (enable advanced mode)", "Listening interfaces: LAN",
+			"WAN interfaces: leave empty", "Version: v9", "Destinations: add 198.51.100.5:2055",
+			"Active Timeout 60, Inactive Timeout 15", "Apply"}}
+	if !s.Enabled || s.Port != 2055 || s.AdvertiseAddress != "198.51.100.5" || s.AdvertiseSource != "setting" ||
+		!reflect.DeepEqual(s.OPNsense, wantOPN) {
+		t.Fatalf("setup = %+v", s)
 	}
-	s = flowSetupResponse{}
-	f.get(t, "/flows/setup", map[string]string{"device": labRB}, &s)
-	if s.RouterOS.DeviceID == nil || *s.RouterOS.DeviceID != labRB ||
-		s.RouterOS.Apply[0] != "/ip traffic-flow target add dst-address=192.168.79.216 port=2055 src-address=192.168.78.202 version=ipfix v9-template-timeout=1m" {
-		t.Fatalf("with device: %+v", s.RouterOS)
+	// Without a device: the read-only check and the rollback, no command
+	// that enables anything, and the reason.
+	if s.RouterOS.DeviceID != nil || s.Eligible || len(s.RouterOS.Apply) != 0 || s.Role != "" || s.Class != "" ||
+		!reflect.DeepEqual(s.RouterOS.Check, []string{"/ip traffic-flow print", "/ip traffic-flow target print"}) ||
+		len(s.RouterOS.Rollback.Steps) != 5 || len(s.Warnings) != 1 || !strings.Contains(s.Warnings[0], "Choose a router") {
+		t.Fatalf("without a device: %+v", s)
 	}
 	if code, body := f.get(t, "/flows/setup", map[string]string{"device": "nope"}, nil); code != 404 || body != errBody("device not found") {
 		t.Fatalf("unknown device: %d %s", code, body)
@@ -483,29 +481,27 @@ func TestFlowSetup(t *testing.T) {
 	f.fake.status.Listen = []string{"bogus", "0.0.0.0:9995"}
 	s = flowSetupResponse{}
 	f.get(t, "/flows/setup", nil, &s)
-	if s.Port != 9995 || s.OPNsense.Destination != "192.168.79.216:9995" {
+	if s.Port != 9995 || s.OPNsense.Destination != "198.51.100.5:9995" {
 		t.Fatalf("port = %d dest %s", s.Port, s.OPNsense.Destination)
 	}
 
-	// auto: the local address toward the first exporter; unknown without
-	// any target.
+	// No advertise address set: the hints carry the placeholder and say so.
+	// Nothing is detected from the process — not from an exporter or device
+	// the NMS could route to, not from a listen address.
 	db := newTestDB(t)
 	if _, err := queries.CreateFlowExporter(db, &queries.FlowExporter{Name: "loop", Address: "127.0.0.2", Kind: "other", Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
-	g := &flowFixture{db: db, s: &Server{db: db}}
+	g := &flowFixture{db: db, s: &Server{db: db, flows: &fakeFlows{enabled: true,
+		status: flow.Status{Enabled: true, Listen: []string{"127.0.0.1:12055", "192.0.2.77:2055"}}}}}
 	s = flowSetupResponse{}
 	g.get(t, "/flows/setup", nil, &s)
-	if a, err := netip.ParseAddr(s.AdvertiseAddress); s.Enabled || s.Port != 2055 || s.AdvertiseSource != "auto" || err != nil || !a.IsLoopback() {
-		t.Fatalf("auto: %+v", s)
+	if s.AdvertiseSource != "unknown" || s.AdvertiseAddress != "" || s.OPNsense.Destination != "<NMS-IP>:12055" ||
+		!strings.Contains(strings.Join(s.RouterOS.Rollback.Lines(), "\n"), "[find dst-address=<NMS-IP> port=12055]") {
+		t.Fatalf("no address set: %+v", s)
 	}
-	h := &flowFixture{db: newTestDB(t)}
-	h.s = &Server{db: h.db}
-	s = flowSetupResponse{}
-	h.get(t, "/flows/setup", nil, &s)
-	if s.AdvertiseSource != "unknown" || s.AdvertiseAddress != "" || s.OPNsense.Destination != "<NMS-IP>:2055" ||
-		!strings.Contains(s.RouterOS.Apply[0], "dst-address=<NMS-IP> port=2055") {
-		t.Fatalf("unknown: %+v", s)
+	if !strings.Contains(strings.Join(s.Warnings, "\n"), "No collector address is set") {
+		t.Fatalf("no warning about the missing address: %v", s.Warnings)
 	}
 }
 
@@ -591,8 +587,8 @@ func TestPurgeHistoryFlows(t *testing.T) {
 // parents, and restore into an empty database.
 func TestFlowBackupRoundTrip(t *testing.T) {
 	n := len(exportableTables)
-	if n < 3 || !slices.Equal(exportableTables[n-3:], []string{"flow_exporters", "flow_exporter_ifaces", "flow_points"}) {
-		t.Fatalf("exportable tables end with %v", exportableTables[max(n-3, 0):])
+	if n < 4 || !slices.Equal(exportableTables[n-4:], []string{"flow_exporters", "flow_exporter_ifaces", "flow_points", "flow_sender_policy"}) {
+		t.Fatalf("exportable tables end with %v", exportableTables[max(n-4, 0):])
 	}
 	for _, fact := range []string{"flow_1m", "flow_1h", "flow_1m_meta", "flow_1h_meta", "flow_templates", "flow_prefixes"} {
 		if tableAllowed(fact) {

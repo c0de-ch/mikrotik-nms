@@ -25,10 +25,31 @@ import { toast } from "sonner";
 const RULE_LABELS: Record<string, string> = {
   device_unreachable: "Device unreachable",
   parallel_api_poller: "Another API poller",
+  flow_export_on_switch: "Flow export on a device that must not export",
 };
 
 function ruleLabel(rule: string): string {
   return RULE_LABELS[rule] ?? rule;
+}
+
+// A fact that is a list of text lines (the rollback steps, the check
+// commands a rule attaches to its alert).
+function factLines(a: Alert, key: string): string[] {
+  const v = a.facts?.[key];
+  return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+}
+
+// The steps a rule attached to its alert, folded away under the summary.
+function AlertSteps({ title, lines }: { title: string; lines: string[] }) {
+  if (lines.length === 0) return null;
+  return (
+    <details className="mt-1.5 text-xs">
+      <summary className="cursor-pointer text-muted-foreground hover:text-foreground">{title}</summary>
+      <pre className="mt-1 overflow-x-auto rounded-md border bg-muted/40 px-3 py-2 font-mono text-[11px] leading-relaxed whitespace-pre-wrap">
+        {lines.join("\n")}
+      </pre>
+    </details>
+  );
 }
 
 // "12 min", "3 h 05 min", "2 d 4 h" between two instants.
@@ -204,6 +225,17 @@ export default function AlertsPage() {
                           </>
                         )}
                       </div>
+                      {a.confirmed === false && (
+                        <Badge
+                          variant="outline"
+                          className="mt-1 text-muted-foreground"
+                          title="Raised on evidence that can be forged or mistaken; it turns critical only once it is confirmed"
+                        >
+                          unconfirmed
+                        </Badge>
+                      )}
+                      <AlertSteps title="Rollback steps (run them on the device)" lines={factLines(a, "rollback")} />
+                      {a.confirmed === false && <AlertSteps title="Check by hand (read-only)" lines={factLines(a, "check")} />}
                     </TableCell>
                     <TableCell
                       className="whitespace-nowrap text-sm text-muted-foreground"

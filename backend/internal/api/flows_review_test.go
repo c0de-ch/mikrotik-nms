@@ -147,21 +147,22 @@ func TestFlowPointTooManyIfIndexes(t *testing.T) {
 	}
 }
 
-// A collector bound to one specific address advertises that address.
-func TestFlowSetupSpecificListenAddress(t *testing.T) {
+// A collector bound to one specific address does not make that address the
+// one the hints hand out: the collector address is the admin-approved
+// setting or nothing (it used to be taken from the listen entry).
+func TestFlowSetupNeverAdvertisesTheListenAddress(t *testing.T) {
 	f := newFlowFixture(t)
-	f.fake.status.Listen = []string{"127.0.0.1:12055", "10.0.0.5:2055"}
+	f.fake.status.Listen = []string{"127.0.0.1:12055", "192.0.2.77:2055"}
 	var s flowSetupResponse
-	if code, body := f.get(t, "/flows/setup", nil, &s); code != 200 {
+	if code, body := f.get(t, "/flows/setup", map[string]string{"device": labRB}, &s); code != 200 {
 		t.Fatalf("%d %s", code, body)
 	}
-	if s.AdvertiseAddress != "10.0.0.5" || s.AdvertiseSource != "auto" || s.Port != 12055 && s.Port != 2055 {
-		t.Fatalf("setup: %s (%s) port %d", s.AdvertiseAddress, s.AdvertiseSource, s.Port)
+	if s.AdvertiseAddress != "" || s.AdvertiseSource != "unknown" || s.Port != 12055 {
+		t.Fatalf("setup: %q (%s) port %d", s.AdvertiseAddress, s.AdvertiseSource, s.Port)
 	}
-	for _, l := range [][]string{{":2055"}, {"0.0.0.0:2055"}, {"[::]:2055"}, {"127.0.0.1:2055"}} {
-		if a, ok := specificListenAddr(l); ok {
-			t.Errorf("%v: advertised %s", l, a)
-		}
+	raw, _ := json.Marshal(s)
+	if strings.Contains(string(raw), "192.0.2.77") {
+		t.Fatalf("the listen address leaked into the hints: %s", raw)
 	}
 }
 

@@ -6,20 +6,25 @@ import (
 	"time"
 
 	"github.com/mikrotik-nms/backend/internal/database/queries"
+	"github.com/mikrotik-nms/backend/internal/flowguard"
 )
 
 // Rule names.
 const (
 	RuleDeviceUnreachable = "device_unreachable"
 	RuleParallelAPIPoller = "parallel_api_poller"
+	// RuleFlowExportOnSwitch: see flow_export.go.
+	RuleFlowExportOnSwitch = flowguard.FindingExportOnSwitch
 )
 
 // RuleNames lists the rules this build evaluates.
-func RuleNames() []string { return []string{RuleDeviceUnreachable, RuleParallelAPIPoller} }
+func RuleNames() []string {
+	return []string{RuleDeviceUnreachable, RuleParallelAPIPoller, RuleFlowExportOnSwitch}
+}
 
 // DefaultRules are the rules evaluated on a polling instance.
 func DefaultRules(db *sql.DB) []Rule {
-	return []Rule{deviceUnreachable{db}, parallelAPIPoller{db}}
+	return []Rule{deviceUnreachable{db}, parallelAPIPoller{db}, flowExportOnSwitch{db}}
 }
 
 func deviceLabel(d queries.Device) string {

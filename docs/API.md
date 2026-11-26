@@ -157,8 +157,8 @@ user), **admin** (admin role required).
 
 | Method | Path | Role | Description |
 |---|---|---|---|
-| GET | `/devices` | any | List all managed devices. |
-| GET | `/devices/{id}` | any | Get one device. `404` if absent. |
+| GET | `/devices` | any | List all managed devices. Each carries `role` (`router`, `weak-router`, `switch`, `ap-cpe`, `unknown`), `role_reason` (one sentence an operator can read) and `flow_export_eligible` — see [Device role](#device-role). Database only. |
+| GET | `/devices/{id}` | any | Get one device (with `role` / `role_reason` / `flow_export_eligible`, and `polling`). `404` if absent. |
 | GET | `/devices/{id}/interfaces` | any | Cached interface list for the device. |
 | GET | `/devices/{id}/neighbors` | any | Cached `/ip/neighbor` neighbors for the device. |
 | GET | `/devices/{id}/ports` | any | The device's faceplate ports (ethernet, SFP, QSFP, combo) with their rates from the port-stats snapshot — **no device call** (the map's port grid). `{device_id, source: "snapshot", sampled_at, age_seconds, interval_seconds, ready, ports: [{name, type, running, disabled, comment, rx_bps, tx_bps}]}`. Inventory order, then any port the snapshot has but the hourly inventory does not yet; running/disabled come from the snapshot when it has the port. `sampled_at` is when **this device's** counters were last read (a device whose reads fail keeps its last rates for up to three intervals, and shows their real age); it and `age_seconds` are `null` (and rates 0) while the snapshot has none of the device's interfaces. `404` for an unknown device. |
@@ -184,6 +184,32 @@ whatever the class); `polling_paused_until` / `polling_paused` show an
 active pause. Pauses and profile/override changes are written to the audit
 log with the acting user. `PUT /devices/{id}/polling` validates the whole
 body before writing anything: a `400` leaves every field as it was.
+
+#### Device role
+
+`role` says what the stored facts show the device doing in the network, and
+`role_reason` which facts those are. It is derived per request from rows the
+pollers already keep — board name and architecture, the probed CPU class, the
+device's own fresh egress (`device_uplinks`), the interface list and the
+bridge port table — and never costs a device a command. The first matching
+rule wins:
+
+| Role | When |
+|---|---|
+| `switch` | Switch hardware (a `CRS…`, `CSS…`, netPower / netFiber / FiberBox board), whatever its routes. |
+| `ap-cpe` | An access-point or CPE board — or a board of unknown family with wireless interfaces — without an internet egress of its own, whose default route points at another router (a private or managed next hop). |
+| `router` | A device with an internet or VPN egress of its own (a default route to a public next hop or out an interface, or a running tunnel) and a probed class of `C3`. |
+| `weak-router` | The same egress on a `C2` or `C1` device, or on one that has not been probed yet. |
+| `unknown` | Everything else: router hardware without an egress of its own (it may be working as a switch), an access-point board the NMS knows no default route on, a board it does not know, a device not read yet. |
+
+The role is deliberately conservative: a default route via a private gateway
+or a managed device is not an egress of its own (every switch has one for its
+management address), so a device is called a router only when the facts
+clearly show an L3 boundary. `flow_export_eligible` is `true` for a `router`,
+and for a `weak-router` budgeted as `C2`; a device budgeted as `C1` (C1
+hardware, the `light` profile, an admin's `C1` override, not probed yet) is
+never eligible. The role gates the flow-export setup hints, auto-accept and
+the `flow_export_on_switch` alert (see [Flows](#flows)).
 
 While a pause is in force only the liveness ping reaches the device, and
 the on-demand actions that would contact it answer `409` with
@@ -353,15 +379,16 @@ MAC is learned (fresh FDB) on one of the listed ports.
 
 | Method | Path | Role | Description |
 |---|---|---|---|
-| GET | `/flows/status` | any | Collector status (below) plus `suggested_exporters`. |
-| GET | `/flows/setup` | any | Copy-paste exporter setup. Query `device` (optional; adds its address as `src-address`). `404 device not found`. |
+| GET | `/flows/status` | any | Collector status (below) with each sender's device role, the block list and `suggested_exporters`. Database + collector memory only. |
+| GET | `/flows/setup` | any | Exporter setup hints, gated by the device's role and class (below). Query `device` (optional; without it no command that enables export is shown). `404 device not found`. Database only — never a device call. |
 | GET | `/flows/exporters/{id}/interfaces` | any | `{exporter_id, interfaces: [{if_index, name, type, vlan_id, parent, role, source, hint, first_seen, last_seen}]}`. `source` = `device` (RouterOS `.id` sync), `learned` (seen in flows; `hint` = top ingress source prefixes, e.g. `192.168.78.0/24,192.168.79.0/24`) or `manual`. `404 exporter not found`. |
-| POST | `/flows/exporters` | admin | Add an exporter. `201` ExporterStatus. |
-| PUT | `/flows/exporters/{id}` | admin | Replace an exporter's configuration. `200` ExporterStatus; `404 exporter not found`. |
-| DELETE | `/flows/exporters/{id}` | admin | Delete an exporter (its interfaces, points and templates cascade; its flow history is purged by the next retention sweep). `204`; `404`. |
+| POST | `/flows/exporters` | admin | Add an exporter. `201` ExporterStatus. `409` with `code: "sender_blocked"` and the reason when the address is blocked — a deleted exporter's tombstone, or the address of a managed device that must not export — unless the body carries `"unblock": true` (audited as `flow_exporter_added_blocked`). |
+| PUT | `/flows/exporters/{id}` | admin | Replace an exporter's configuration. `200` ExporterStatus; `404 exporter not found`; `409 sender_blocked` when the new address is blocked. `enabled: false` only makes the NMS ignore the datagrams — the device keeps exporting. |
+| DELETE | `/flows/exporters/{id}` | admin | Delete an exporter (its interfaces, points and templates cascade; its flow history is purged by the next retention sweep) and **block its address**: the datagrams are dropped before decode, the sender is listed under `blocked_senders` with the reason and is never accepted automatically again. Deleting does not stop the device from exporting. `204`; `404`. Audited (`flow_exporter_deleted`). |
+| DELETE | `/flows/blocked?address=` | admin | Remove a block: the sender is an unknown sender again. (A managed device that must not export is blocked again by its next datagram; to accept it anyway, POST it with `unblock`.) `204`; `400 invalid address`; `404 sender is not blocked`. Audited (`flow_sender_unblocked`). |
 | PUT | `/flows/exporters/{id}/interfaces/{ifIndex}` | admin | Name an interface and set its role. Body `{name, role}`, `role` ∈ `""`, `lan`, `wan`, `vpn`, `other` (`400 invalid role`); `ifIndex` 1–4294967295 (`400 invalid ifIndex`). Empty name and role hand the row back to the device sync. `200` = the interface object. |
 | GET | `/flows/points` | any | `{points: [FlowPointView]}` — every point, disabled ones included, ordered by exporter name, derived before native, name. |
-| GET | `/flows/points/suggestions` | any | Derived views worth adding: `{suggestions: [{rule, reason, exists, point}]}` (below). |
+| GET | `/flows/points/suggestions` | any | Derived views worth adding: `{suggestions: [{rule, reason, exists, point}]}` (below). The router-trunk rule is only offered for exporters whose device has a router role. |
 | POST | `/flows/points` | admin | Add a point. `201` FlowPointView. |
 | PUT | `/flows/points/{id}` | admin | Replace a point (it stops being auto-maintained: `auto` becomes `false`). `200` FlowPointView; `404 point not found`. |
 | DELETE | `/flows/points/{id}` | admin | `204`; `404 point not found`. |
@@ -390,23 +417,33 @@ highest 1-in-N in the window (1 = unsampled).
 { "enabled": true, "listen": [":2055"], "listen_errors": [],   // "<addr>: <bind error>"
   "started_at": "…Z" | null, "flushed_through": "…Z" | null, "rolled_through": "…Z" | null,
   "rcvbuf_bytes": 4194304,
-  "global": { "datagrams": 0, "unknown_datagrams": 0, "rejected": 0, "rate_limited": 0, "queue_dropped": 0,
-              "kernel_dropped": 0, "writer_dropped": 0, "late_records": 0, "overflow_records": 0,
+  "global": { "datagrams": 0, "unknown_datagrams": 0, "rejected": 0, "blocked": 0, "rate_limited": 0,
+              "queue_dropped": 0, "kernel_dropped": 0, "writer_dropped": 0, "late_records": 0, "overflow_records": 0,
               "self_export_dropped": 0, "dup_dropped": 0, "panics": 0 },   // since process start
   "exporters": [ ExporterStatus ],                                        // every exporter, by name
-  "unknown_senders": [ { "address": "192.168.78.81", "first_seen": "…Z", "last_seen": "…Z", "datagrams": 12,
-                         "protocol": "netflow9", "device_id": null, "device_name": "" } ],   // newest first, ≤ 16
-  "suggested_exporters": [ { "address": "192.168.78.81", "name": "firewall003", "kind": "opnsense",
+  "unknown_senders": [ { "address": "198.51.100.9", "first_seen": "…Z", "last_seen": "…Z", "datagrams": 12,
+                         "protocol": "netflow9", "device_id": null, "device_name": "",
+                         "device_role": "", "device_role_reason": "" } ],   // newest first, ≤ 16
+  "blocked_senders": [ { "address": "192.0.2.10", "name": "access-switch", "kind": "routeros",
+                         "reason": "CRS326-24G-2S+ is a switch (CRS/CSS hardware): …",
+                         "source": "auto",                                  // auto | deleted (a deleted exporter)
+                         "device_id": "0bf4…", "device_name": "access-switch", "device_role": "switch",
+                         "device_role_reason": "…", "created_by": "",       // "" = the collector
+                         "created_at": "…Z", "last_seen": "…Z" | null, "datagrams": 42 } ],   // dropped since blocked
+  "auto_accept_classes": "",                                              // "" (off) | "router"
+  "suggested_exporters": [ { "address": "198.51.100.9", "name": "firewall", "kind": "opnsense",
                              "reason": "sending NetFlow v9 (unknown sender)" } ] }
 ```
 
 `ExporterStatus`:
 
 ```jsonc
-{ "id": 2, "name": "firewall003", "address": "192.168.78.81", "kind": "opnsense",   // routeros | opnsense | other
-  "device_id": null, "enabled": true, "auto": false,          // auto = auto-accepted managed device
-  "sampling_override": 0, "nat_addresses": ["192.168.28.81"],
-  "state": "ok",                                              // ok (datagram < 3 min ago) | stale | never | disabled
+{ "id": 2, "name": "firewall", "address": "198.51.100.9", "kind": "opnsense",   // routeros | opnsense | other
+  "device_id": null, "enabled": true, "auto": false,          // auto = accepted automatically
+  "device_role": "", "device_role_reason": "",                // the managed device at the address, "" = none
+  "export_warning": "",                                       // set when that device must not export (it keeps working)
+  "sampling_override": 0, "nat_addresses": ["198.51.100.10"],
+  "state": "ok",                                              // ok (datagram < 3 min ago) | stale | never | disabled (= ignored)
   "last_seen": "…Z" | null, "protocol": "netflow9",           // netflow5 | netflow9 | ipfix | sflow5 | ""
   "sampling_rate": 1, "templates": 2,
   "template_state": "ok",                                     // ok | waiting (data, no template yet) | persisted | n/a
@@ -426,37 +463,95 @@ exporter is still listed, from its persisted counters. `suggested_exporters`
 lists unknown senders (kind `routeros` for a managed device's address, `opnsense`
 for NetFlow v9 from the host of an `opnsense*_url` setting, else `other`) and the
 IP-literal hosts of `opnsense*_url` settings (`reason: "configured as OPNsense
-(opnsense_url)"`), minus addresses that already are exporters.
+(opnsense_url)"`), minus addresses that already are exporters, are blocked, or
+belong to a managed device that must not export.
 
-**Setup** (`GET /flows/setup`):
+**Guardrails.** Flow export costs the exporting device CPU for every packet it
+accounts, and only a device that routes has anything to show for it. The
+collector and the API therefore judge every managed device by its
+[role](#device-role):
+
+- **Accepting.** Nothing is accepted automatically unless the setting
+  `flow_auto_accept_classes` is `router`; then the first datagram of a managed
+  `router` budgeted as `C3` with a fresh internet or VPN egress creates its
+  exporter (`auto: true`). Everything else is an unknown sender until an admin
+  adds it.
+- **Blocking.** The first flow datagram from the address of a managed
+  `switch`, `ap-cpe` or C1 device blocks that address (`source: "auto"`), and
+  deleting an exporter blocks its address too (`source: "deleted"`). A blocked
+  sender's datagrams are dropped before decode and counted
+  (`global.blocked`, `blocked_senders[].datagrams`).
+- **Exporters accepted earlier keep working**, whatever their device's role;
+  one on a device that must not export carries `export_warning`.
+- **Alert.** Flow datagrams from a device that must not export raise
+  `flow_export_on_switch` — a warning marked unconfirmed (`confirmed: false`),
+  because a UDP source address can be forged. The collector then reads the
+  device's `/ip/traffic-flow` settings and targets once (two read-only prints,
+  at most once per hour per device, never on a paused device or with polling
+  off); only when that read says the device exports does the alert become
+  critical, with the rollback steps in `facts.rollback`.
+
+**Setup** (`GET /flows/setup?device=<id>`):
 
 ```jsonc
 { "enabled": true, "port": 2055,                               // the collector's port; 2055 while it is off
-  "advertise_address": "192.168.79.216", "advertise_source": "setting",   // setting | auto | unknown
+  "advertise_address": "198.51.100.5", "advertise_source": "setting",   // setting | unknown
+  "class": "C3", "role": "router",                             // the device; all "" without ?device=
+  "role_reason": "RB5009UG+S+ routes its own internet egress (ether1) and has a capable CPU (class C3)",
+  "eligible": true,                                            // routeros.apply is shown
+  "warnings": [],                                              // why not, or what to watch
+  "advice": ["Do not enable Tools → Graphing on switches; the NMS keeps per-port history (1 min for 2 d, 1 h for 365 d)."],
   "routeros": { "device_id": "c7a3…" | null,
-    "apply": ["/ip traffic-flow target add dst-address=192.168.79.216 port=2055 src-address=192.168.78.202 version=ipfix v9-template-timeout=1m",
-              "/ip traffic-flow set enabled=yes interfaces=all active-flow-timeout=1m inactive-flow-timeout=15s"],
-    "rollback": ["/ip traffic-flow set enabled=no active-flow-timeout=30m",
-                 "/ip traffic-flow target remove [find dst-address=192.168.79.216 port=2055]"] },
-  "opnsense": { "destination": "192.168.79.216:2055", "version": "v9", "active_timeout": 60, "inactive_timeout": 15,
+    "check": ["/ip traffic-flow print", "/ip traffic-flow target print"],          // read-only, always present
+    "apply": ["/ip traffic-flow target add dst-address=198.51.100.5 port=2055 src-address=192.0.2.1 version=ipfix v9-template-timeout=1m",
+              "/ip traffic-flow set enabled=yes interfaces=ether1,bridge,vlan20 active-flow-timeout=1m inactive-flow-timeout=15s"],
+    "interfaces_note": "interfaces= lists the routed interfaces the NMS knows on …",
+    "rollback": { "fixed": false,                              // true: the device's RouterOS has the 7.25 fix
+      "note": "RouterOS 7.23.1 (stable) is older than 7.25: …",
+      "steps": [ { "text": "Decide first. Run the profiler over SSH. …", "commands": ["/tool profile duration=30"] },
+                 { "text": "Disable the target that points at this collector — only that one.",
+                   "commands": ["/ip traffic-flow target disable [find dst-address=198.51.100.5 port=2055]"] },
+                 { "text": "Only if enabled=no is still needed: download the update first, …", "optional": true,
+                   "warning": "Before RouterOS 7.25, disabling traffic-flow on a busy system can crash the kernel …",
+                   "commands": ["/system package update download", "/ip traffic-flow set enabled=no"] },
+                 { "text": "Remove the target.",
+                   "commands": ["/ip traffic-flow target remove [find dst-address=198.51.100.5 port=2055]"] },
+                 { "text": "Verify: …", "commands": ["/ip traffic-flow target print", "/tool profile duration=30"] } ] } },
+  "opnsense": { "destination": "198.51.100.5:2055", "version": "v9", "active_timeout": 60, "inactive_timeout": 15,
     "steps": ["Reporting → NetFlow → Capture (enable advanced mode)", "Listening interfaces: LAN",
-              "WAN interfaces: leave empty", "Version: v9", "Destinations: add 192.168.79.216:2055",
+              "WAN interfaces: leave empty", "Version: v9", "Destinations: add 198.51.100.5:2055",
               "Active Timeout 60, Inactive Timeout 15", "Apply"] } }
 ```
 
-`advertise_address` is the `flow_advertise_address` setting (`setting`), else
-the first `MIKROTIK_NMS_FLOW_LISTEN` entry bound to a specific, non-loopback
-address (`auto`: the collector only listens there), else the local address the
-backend would use toward the device (or the first exporter / device address)
-(`auto`; a connected UDP socket, nothing is sent),
-else empty (`unknown`, and the strings contain `<NMS-IP>`). `src-address=` is
-included only with `device`.
+- **Who gets which commands.** `routeros.apply` is non-empty only for an
+  eligible device: a `router` (no warning), or a `weak-router` budgeted as `C2`
+  (with a warning). A `switch`, an `ap-cpe`, a device of `unknown` role, any
+  device budgeted as `C1` and a request without `device` get `apply: []` — the
+  read-only `check` and the `rollback` only — and `warnings` says why.
+- **`interfaces=`** is never `all`: it lists the device's routed interfaces as
+  far as the NMS knows them (its egress interfaces, then every interface the
+  address plan found an address on), or the placeholder
+  `<routed-interfaces>` for the operator to fill in.
+- **The collector address** is the `flow_advertise_address` setting
+  (`advertise_source: "setting"`) and nothing else. It is never detected from
+  the process — not from the listen address, not from a route. While it is
+  unset, or set to the address of a managed device, `advertise_address` is
+  `""` (`"unknown"`), the commands carry `<NMS-IP>` and `warnings` says so.
+  `PUT /settings` refuses an address that belongs to a managed device.
+- **The rollback** always has the same five steps in the same order: profile
+  first (the decision point), disable the one target, switch traffic-flow off
+  *only if still needed*, remove the target, verify. Before RouterOS 7.25 —
+  read from the device's stored version; an unknown version and a 7.25 beta or
+  release candidate count as older — the third step carries a warning (disabling traffic-flow on a busy system
+  can crash the kernel) and downloads the update first; from 7.25 it has
+  neither. Every `[find …]` names the one target. When the device was seen
+  exporting, the target is the one the device itself reported.
 
 **Exporter body** (POST / PUT):
 
 ```json
-{ "name": "firewall003", "address": "192.168.78.81", "kind": "opnsense", "device_id": null,
-  "enabled": true, "sampling_override": 0, "nat_addresses": ["192.168.28.81", "192.168.111.81"] }
+{ "name": "firewall", "address": "198.51.100.9", "kind": "opnsense", "device_id": null,
+  "enabled": true, "sampling_override": 0, "nat_addresses": ["198.51.100.10", "203.0.113.9"] }
 ```
 
 `name` 1–64 characters (`400 name is required`); `address` an IP literal, the
@@ -470,8 +565,11 @@ address is `409 exporter address already exists`. POST defaults `enabled` to
 `true` and `sampling_override` to 0; PUT requires both (`400 enabled is
 required` / `400 sampling_override is required`) and keeps the stored
 `device_id` / `nat_addresses` when they are omitted (`null` clears them).
-A managed RouterOS device sending from its `devices.address` is accepted
-automatically (`auto: true`) while `flow_auto_accept_devices` is on.
+POST also takes `unblock` (default `false`): without it, an address on the
+block list or belonging to a managed device that must not export answers
+`409 {"error": "sender <address> is blocked: <reason>", "code":
+"sender_blocked"}`; with it the block is removed and the exporter is created
+in one transaction.
 
 **FlowPointView** (the `point` of every read below):
 
@@ -594,7 +692,10 @@ found`), `range`, `limit` (1–50, default 10), `point` (optional).
 ```
 
 The point is the enabled point whose managed port is `(device, iface)`: native
-first, then derived, then the lowest id; the others are `alternatives`, and
+first, then derived, then a native point whose exporter sits on a managed
+device that is not a router (such a device sees only what its CPU handles, so
+an admin's derived view of the port outranks it), then the lowest id; the
+others are `alternatives`, and
 `point=<id>` picks one of them (`400 point does not cover this port`). Without a
 matching point the reply is `200` with `reason` `collector_disabled` (collector
 off) or `no_point`, `point: null` and empty lists; a matching point always
@@ -673,11 +774,23 @@ open alert per rule and key. Runbooks: [`RUNBOOKS.md`](RUNBOOKS.md).
 **Rules.** `device_unreachable` (critical): the liveness check reports the
 device `offline`, i.e. past `offline_threshold_seconds`. `parallel_api_poller`
 (warning): the login watch confirmed a live API session from an address that
-is not this NMS.
+is not this NMS. `flow_export_on_switch`: flow datagrams arrive from the
+address of a managed device that must not export (a switch, an access point or
+CPE, a C1 device) — a **warning** with `confirmed: false` while only the UDP
+source address says so, **critical** with `confirmed: true` once the
+collector's read of the device's own traffic-flow settings confirmed the
+export; `facts.rollback` then carries the rollback steps as text lines (and
+`facts.check` the read-only commands while unconfirmed).
+
+`confirmed: false` marks an alert raised on evidence that can be forged or
+mistaken; such an alert is never critical.
 
 **Notifications.** A firing alert goes to every enabled channel whose
 `min_severity` it reaches: when it starts, every 4 hours while nobody
 acknowledged it, and when it resolves (only if its start was delivered). An
+alert whose severity rises fires again — an acknowledgement of the lower
+severity is dropped — and is notified at once. A firing alert's mail carries
+its `facts.rollback` lines. An
 alert that could not be delivered anywhere is tried again at the next
 evaluation. E-mail uses the SMTP relay from Settings (no public base URL
 needed). A webhook receives a JSON `POST`:
@@ -802,7 +915,7 @@ Valid `{type}` values: `manufacturers`, `device_types`, `device_roles`,
 | Method | Path | Role | Description |
 |---|---|---|---|
 | GET | `/settings` | any | All `app_settings` key/value pairs. |
-| PUT | `/settings` | admin | Update settings. Body is a flat `{key: value}` map; unknown keys are silently ignored. |
+| PUT | `/settings` | admin | Update settings. Body is a flat `{key: value}` map; unknown keys are silently ignored. `400` — and nothing is written — when `flow_advertise_address` is not an IP address or is the address of a managed device, or `flow_auto_accept_classes` is neither empty nor `router`. |
 | POST | `/admin/purge-history` | admin | Wipe history tables. Body `{wifi, clients, network_health, traffic, flows, older_than_days}`. Returns `{deleted: {<table>: rows}}`. |
 | GET | `/admin/export/{table}` | admin | Download one table as a JSON file (allowlisted tables only). |
 | POST | `/admin/import/{table}` | admin | Import rows into one table (`INSERT OR IGNORE`). Body is a JSON array of row objects. |
@@ -818,7 +931,7 @@ Settings keys accepted by `PUT /settings`: `health_interval`,
 `port_stats_interval`, `port_hosts_interval`, `port_stats_1m_days`,
 `port_stats_1h_days`, `port_hosts_stale_days`,
 `flow_top_n`, `flow_top_n_hourly`, `flow_max_rows_per_minute`, `flow_1m_days`,
-`flow_1h_days`, `flow_rate_limit_pps`, `flow_auto_accept_devices`,
+`flow_1h_days`, `flow_rate_limit_pps`, `flow_auto_accept_classes`,
 `flow_internal_prefixes`, `flow_external_prefixes`, `flow_resolve_ptr`,
 `flow_advertise_address`,
 `opnsense_url`, `opnsense_api_key`, `opnsense_api_secret`,
@@ -833,7 +946,8 @@ bounded chunks, so a large purge never locks out other writers) and — for
 covered-bucket meta rows; exporter and point configuration is kept). Current-state
 tables (including `port_hosts`) are never touched. The backup / export tables
 include the flow configuration (`flow_exporters`, `flow_exporter_ifaces`,
-`flow_points`) but never the flow history.
+`flow_points`) and the block list (`flow_sender_policy`) but never the flow
+history.
 
 Traffic-analytics settings: `port_stats_interval` (s, default 15, 5..300),
 `port_hosts_interval` (s, default 300, 60..3600), `port_stats_1m_days` (default
@@ -846,12 +960,17 @@ Flow-collector settings (re-read within 30 s, no restart): `flow_top_n`
 `flow_top_n_hourly` (default 100, 20..2000), `flow_max_rows_per_minute` (per
 exporter, default 1500, 200..10000), `flow_1m_days` (default 3, 1..14),
 `flow_1h_days` (default 90, 7..730), `flow_rate_limit_pps` (datagrams/s per
-exporter, default 2000, 100..50000), `flow_auto_accept_devices` (default
-`true`), `flow_internal_prefixes` / `flow_external_prefixes` (CIDR or IP lists
+exporter, default 2000, 100..50000), `flow_auto_accept_classes` (default `""`
+= nothing is accepted automatically; `router` = a managed router-role C3
+device with a fresh internet or VPN egress is accepted on its first datagram),
+`flow_internal_prefixes` / `flow_external_prefixes` (CIDR or IP lists
 overriding the endpoint classification), `flow_resolve_ptr` (default `false`;
 allows reverse-DNS lookups of external IPs with `resolve=1`),
-`flow_advertise_address` (the collector address shown in `/flows/setup`). The
+`flow_advertise_address` (the collector address in `/flows/setup` — the only
+source of it; empty, or an IP address that is not a managed device's). The
 listen address itself is the env var `MIKROTIK_NMS_FLOW_LISTEN` (restart).
+`flow_auto_accept_devices`, the accept-every-managed-device switch of earlier
+releases, is no longer read or accepted; migration 031 sets it to `false`.
 
 ### Health
 

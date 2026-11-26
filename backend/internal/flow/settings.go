@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/mikrotik-nms/backend/internal/database/queries"
+	"github.com/mikrotik-nms/backend/internal/flowguard"
 )
 
 // settingInt reads an integer app_setting clamped to lo..hi; a missing or
@@ -24,23 +25,6 @@ func settingInt(db *sql.DB, key string, def, lo, hi int) int {
 		return def
 	}
 	return min(max(n, lo), hi)
-}
-
-// settingBool reads a boolean app_setting ("true"/"false", strconv forms);
-// a missing or garbage value yields def.
-func settingBool(db *sql.DB, key string, def bool) bool {
-	if db == nil {
-		return def
-	}
-	v, err := queries.GetSetting(db, key)
-	if err != nil {
-		return def
-	}
-	b, err := strconv.ParseBool(strings.TrimSpace(v))
-	if err != nil {
-		return def
-	}
-	return b
 }
 
 // TopN is flow_top_n (default 50, clamp 10..500): conversations kept per
@@ -67,9 +51,22 @@ func Retention1hDays(db *sql.DB) int { return settingInt(db, "flow_1h_days", 90,
 // datagrams per second accepted per exporter.
 func RateLimitPPS(db *sql.DB) int { return settingInt(db, "flow_rate_limit_pps", 2000, 100, 50000) }
 
-// AutoAcceptDevices is flow_auto_accept_devices (default true): datagrams
-// from a managed device's address create an exporter automatically.
-func AutoAcceptDevices(db *sql.DB) bool { return settingBool(db, "flow_auto_accept_devices", true) }
+// AutoAcceptClasses is flow_auto_accept_classes: "" (off, the default) or
+// "router" — the first datagram of a router-role C3 device with a fresh
+// internet or VPN egress creates its exporter (flowguard.AutoAccept).
+// Anything else reads as off. The flow_auto_accept_devices key of earlier
+// releases, which accepted every managed address, is not read any more
+// (migration 031 sets it to false for a previous binary on this schema).
+func AutoAcceptClasses(db *sql.DB) string {
+	if db == nil {
+		return ""
+	}
+	v, err := queries.GetSetting(db, "flow_auto_accept_classes")
+	if err != nil {
+		return ""
+	}
+	return flowguard.ParseAutoAccept(v)
+}
 
 // prefixListSetting parses a CIDR/IP CSV setting (bare IPs are /32 or /128;
 // junk entries are skipped).

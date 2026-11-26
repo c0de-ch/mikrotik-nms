@@ -379,7 +379,12 @@ func TestCollectorFlushTiming(t *testing.T) {
 
 func TestCollectorAutoAcceptOnce(t *testing.T) {
 	db := testDB(t)
-	seedDevice(t, db, "rb", rosAddr.String(), "switch002-rb5009")
+	// A strong router with an egress of its own, and auto-accept switched
+	// on for routers (it is off by default: see guard_test.go).
+	seedRoleDevice(t, db, "rb", rosAddr, "RB5009UG+S+", "C3", "egress")
+	if err := queries.SetSetting(db, "flow_auto_accept_classes", "router"); err != nil {
+		t.Fatal(err)
+	}
 	c := newTestCollector(t, db)
 	recv := tLab.Add(lag)
 	c.now = func() time.Time { return recv }
@@ -389,7 +394,7 @@ func TestCollectorAutoAcceptOnce(t *testing.T) {
 	feed(c, rosAddr, data, recv)
 	exps, _ := queries.ListFlowExporters(db)
 	if len(exps) != 1 || !exps[0].Auto || exps[0].Kind != "routeros" || exps[0].DeviceID != "rb" ||
-		exps[0].Name != "switch002-rb5009" || !exps[0].Enabled {
+		exps[0].Name != "rb" || !exps[0].Enabled { // named after the device (its identity)
 		t.Fatalf("auto-accepted exporters = %+v", exps)
 	}
 	if st := statusOf(t, c, exps[0].ID); st.Counters["datagrams"] != 2 || st.Counters["flows"] != 5 {
@@ -399,7 +404,6 @@ func TestCollectorAutoAcceptOnce(t *testing.T) {
 	// Auto-accept off: a device's datagrams are an unknown sender with its id.
 	db2 := testDB(t)
 	seedDevice(t, db2, "rb", rosAddr.String(), "switch002-rb5009")
-	_ = queries.SetSetting(db2, "flow_auto_accept_devices", "false")
 	c2 := newTestCollector(t, db2)
 	c2.reconcile(recv)
 	feed(c2, rosAddr, tmpl, recv)

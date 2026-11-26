@@ -76,23 +76,43 @@ type exporterGate struct {
 	bucket      *tokenBucket
 	rateLimited atomic.Int64
 	oversized   atomic.Int64 // datagrams > maxDatagram
+	// guard is set while the exporter sits on a managed device that must
+	// not export: its datagrams — accepted or ignored, as configured — are
+	// sightings for the flow_export_on_switch alert (guardStats throttles
+	// them). nil for every other exporter.
+	guard      atomic.Pointer[guardGate]
+	guardStats guardStats
 }
 
-// candidateGate is a managed device's address, accepted automatically on its
-// first datagram (flow_auto_accept_devices).
+// candidateGate is the address of a managed router that may be accepted
+// automatically on its first datagram (flow_auto_accept_classes = router).
 type candidateGate struct {
 	deviceID, name string
 	bucket         *tokenBucket
 }
 
-// deviceInfo names a managed device.
+// deviceInfo is what the collector knows about a managed device: its name
+// and, from the stored facts, its role and what the guardrails make of it.
 type deviceInfo struct {
 	id, name string
+	role     string // devclass.Role
+	reason   string // why it has that role
+	// never: the device must not export flows (switch, access point, CPE,
+	// C1 hardware); neverWhy says why.
+	never    bool
+	neverWhy string
+	// accept: its first datagram may create its exporter under the current
+	// flow_auto_accept_classes setting.
+	accept bool
 }
 
 // allowList is the copy-on-write view the readers consult before any copy.
 type allowList struct {
-	exporters  map[netip.Addr]*exporterGate
+	exporters map[netip.Addr]*exporterGate
+	// guarded are the addresses dropped before decode: blocked senders and
+	// managed devices that must not export. An exporter row wins: an
+	// address is never in both maps.
+	guarded    map[netip.Addr]*guardGate
 	candidates map[netip.Addr]*candidateGate // only while auto-accept is on
 	devices    map[netip.Addr]deviceInfo     // every managed device (unknown-sender labels)
 }
@@ -113,6 +133,7 @@ func (d *datagram) bytes() []byte { return (*d.buf)[:d.n] }
 // lock-free by readers, worker and writer.
 type globalCounters struct {
 	datagrams, unknownDatagrams, rejected, rateLimited atomic.Int64
+	blocked                                            atomic.Int64
 	queueDropped, kernelDropped, writerDropped         atomic.Int64
 	lateRecords, overflowRecords                       atomic.Int64
 	selfExportDropped, dupDropped, panics              atomic.Int64
@@ -121,6 +142,7 @@ type globalCounters struct {
 func (g *globalCounters) snapshot() GlobalStats {
 	return GlobalStats{
 		Datagrams: g.datagrams.Load(), UnknownDatagrams: g.unknownDatagrams.Load(), Rejected: g.rejected.Load(),
+		Blocked:     g.blocked.Load(),
 		RateLimited: g.rateLimited.Load(), QueueDropped: g.queueDropped.Load(), KernelDropped: g.kernelDropped.Load(),
 		WriterDropped: g.writerDropped.Load(), LateRecords: g.lateRecords.Load(),
 		OverflowRecords: g.overflowRecords.Load(), SelfExportDropped: g.selfExportDropped.Load(),
@@ -140,8 +162,14 @@ func (c *Collector) handlePacket(b []byte, addr netip.Addr, now time.Time) {
 	if al == nil {
 		al = &allowList{}
 	}
+	flowLike := kind != decode.KindUnknown && len(b) >= 4
 	if g := al.exporters[addr]; g != nil {
-		if !g.enabled.Load() || kind == decode.KindUnknown || len(b) < 4 {
+		// An exporter on a device that must not export: the device is
+		// exporting whether the NMS reads the datagrams or ignores them.
+		if gg := g.guard.Load(); gg != nil && flowLike {
+			c.noteGuard(gg, now)
+		}
+		if !g.enabled.Load() || !flowLike {
 			c.global.rejected.Add(1)
 			return
 		}
@@ -158,7 +186,20 @@ func (c *Collector) handlePacket(b []byte, addr netip.Addr, now time.Time) {
 		c.enqueue(datagram{addr: addr, exporterID: g.id, received: now}, b)
 		return
 	}
-	if cg := al.candidates[addr]; cg != nil && kind != decode.KindUnknown && len(b) >= 4 {
+	if g := al.guarded[addr]; g != nil && (g.policy != nil || flowLike) {
+		// Dropped before decode: a blocked sender, or a managed device that
+		// must not export (its first flow datagram blocks it). Only
+		// something that looks like a flow export is a sighting — and a
+		// sighting is only ever a warning: the source address proves
+		// nothing by itself.
+		c.global.blocked.Add(1)
+		g.stats.drop(now)
+		if flowLike && (g.block || g.alarmDevice != "") {
+			c.noteGuard(g, now)
+		}
+		return
+	}
+	if cg := al.candidates[addr]; cg != nil && flowLike {
 		if len(b) > maxDatagram {
 			c.global.rejected.Add(1)
 			return
@@ -275,6 +316,7 @@ func (r *unknownRing) snapshot() []UnknownSender {
 		if e.isDevice {
 			id := e.device.id
 			u.DeviceID, u.DeviceName = &id, e.device.name
+			u.DeviceRole, u.DeviceRoleReason = e.device.role, e.device.reason
 		}
 		out = append(out, u)
 	}

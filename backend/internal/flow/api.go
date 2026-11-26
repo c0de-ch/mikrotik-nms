@@ -61,6 +61,13 @@ type Status struct {
 	Global         GlobalStats      `json:"global"`
 	Exporters      []ExporterStatus `json:"exporters"`       // never nil; every flow_exporters row, ordered by name
 	Unknown        []UnknownSender  `json:"unknown_senders"` // never nil; newest first, <= 16
+	// Blocked are the senders dropped before decode (flow_sender_policy):
+	// deleted exporters and managed devices that must not export. Never nil;
+	// ordered by name, then address.
+	Blocked []BlockedSender `json:"blocked_senders"`
+	// AutoAcceptClasses is the flow_auto_accept_classes setting in force:
+	// "" (nothing is accepted automatically) or "router".
+	AutoAcceptClasses string `json:"auto_accept_classes"`
 }
 
 // GlobalStats are collector-wide counters, all cumulative since process start.
@@ -68,6 +75,7 @@ type GlobalStats struct {
 	Datagrams         int64 `json:"datagrams"`
 	UnknownDatagrams  int64 `json:"unknown_datagrams"`
 	Rejected          int64 `json:"rejected"` // bad version, precheck failures, disabled exporter
+	Blocked           int64 `json:"blocked"`  // from blocked senders, dropped before decode
 	RateLimited       int64 `json:"rate_limited"`
 	QueueDropped      int64 `json:"queue_dropped"`
 	KernelDropped     int64 `json:"kernel_dropped"` // /proc/self/net/udp{,6} drops for our sockets
@@ -110,6 +118,40 @@ type ExporterStatus struct {
 	LastError        string           `json:"last_error"`
 	LastErrorAt      *time.Time       `json:"last_error_at"`
 	InterfacesSeen   int              `json:"interfaces_seen"` // distinct non-zero ifIndexes with last_seen < 1 h
+	// DeviceRole / DeviceRoleReason: the role of the managed device at the
+	// exporter's address (devclass.Role; "" when it is not a managed device).
+	DeviceRole       string `json:"device_role"`
+	DeviceRoleReason string `json:"device_role_reason"`
+	// ExportWarning is set when that device must not export flows (switch,
+	// access point, CPE, C1): the exporter keeps working, the reason is shown.
+	ExportWarning string `json:"export_warning"`
+}
+
+// BlockedSender is a sender whose datagrams are dropped before decode until
+// an admin unblocks or re-adds it.
+type BlockedSender struct {
+	Address string `json:"address"`
+	Name    string `json:"name"`
+	Kind    string `json:"kind"`
+	Reason  string `json:"reason"`
+	Source  string `json:"source"` // deleted (a deleted exporter) | auto (a device that must not export)
+	// DeviceID is the managed device the block was created for ("" = none).
+	DeviceID         string     `json:"device_id"`
+	DeviceName       string     `json:"device_name"`
+	DeviceRole       string     `json:"device_role"`
+	DeviceRoleReason string     `json:"device_role_reason"`
+	CreatedBy        string     `json:"created_by"` // "" = the collector
+	CreatedAt        *time.Time `json:"created_at"`
+	LastSeen         *time.Time `json:"last_seen"` // last dropped datagram
+	Datagrams        int64      `json:"datagrams"` // dropped since blocked
+}
+
+// BlockedSenderFromRow builds a blocked sender from its row (persisted
+// counters; the device fields are left to the caller).
+func BlockedSenderFromRow(p queries.FlowSenderPolicy) BlockedSender {
+	return BlockedSender{Address: p.Address, Name: p.Name, Kind: p.Kind, Reason: p.Reason, Source: p.Source,
+		DeviceID: p.DeviceID, CreatedBy: p.CreatedBy, CreatedAt: timePtr(p.CreatedAt), LastSeen: timePtr(p.LastSeen),
+		Datagrams: p.Datagrams}
 }
 
 // ExporterCounterKeys: datagrams, flows, bytes, decode_errors, template_misses
@@ -139,8 +181,11 @@ type UnknownSender struct {
 	LastSeen   time.Time `json:"last_seen"`
 	Datagrams  int64     `json:"datagrams"`
 	Protocol   string    `json:"protocol"`    // sniffed from the header; "" when unrecognised
-	DeviceID   *string   `json:"device_id"`   // set when the address is a managed device (auto-accept off)
+	DeviceID   *string   `json:"device_id"`   // set when the address is a managed device that was not accepted
 	DeviceName string    `json:"device_name"` // identity or address; "" when not a device
+	// DeviceRole / DeviceRoleReason: that device's role (devclass.Role).
+	DeviceRole       string `json:"device_role"`
+	DeviceRoleReason string `json:"device_role_reason"`
 }
 
 // disabledStatus is the Status of a nil or disabled collector.
@@ -150,6 +195,7 @@ func disabledStatus() Status {
 		ListenErrors: []string{},
 		Exporters:    []ExporterStatus{},
 		Unknown:      []UnknownSender{},
+		Blocked:      []BlockedSender{},
 	}
 }
 
