@@ -220,9 +220,9 @@ the real target address.
    ```
 
    From RouterOS 7.25 the same step applies without the warning and without the download
-   (changelog: *"traffic-flow - fix a kernel failure when disabling traffic flow on a busy
-   system"*; first in 7.25beta3). A device whose version the NMS does not know is treated
-   as older than 7.25.
+   (7.25 changelog: *"traffic-flow - fix a kernel failure when disabling traffic flow on a
+   busy system"*). A 7.25 beta or release candidate, and a device whose version the NMS
+   does not know, are treated as older than 7.25.
 
 3. **Remove the target.**
 

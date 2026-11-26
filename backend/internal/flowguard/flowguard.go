@@ -181,9 +181,13 @@ func GraphingAdvice(days1m, days1h int) string {
 
 // ---- rollback ----
 
-// fixedSince is the first RouterOS build whose changelog carries the fix for
-// the kernel failure when traffic-flow is disabled on a busy system.
-var fixedSince = firmware.Version{Nums: []int{7, 25}, Pre: 0, PreN: 3} // 7.25beta3
+// fixedSince is the first RouterOS release whose changelog names the fix:
+// 7.25, "traffic-flow - fix a kernel failure when disabling traffic flow on
+// a busy system". The 7.25 pre-releases (the 7.25beta3 changelog has
+// "improved system stability when disabling traffic flow on a busy system")
+// are deliberately treated as not fixed: the careful text costs a
+// pre-release nothing, the short one could cost it a reboot.
+var fixedSince = firmware.Version{Nums: []int{7, 25}, Pre: 2} // 7.25 (release)
 
 // DisableIsSafe reports whether a RouterOS version has that fix. known is
 // false when the version cannot be parsed; it is then treated as not fixed.

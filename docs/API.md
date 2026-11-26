@@ -541,8 +541,8 @@ collector and the API therefore judge every managed device by its
 - **The rollback** always has the same five steps in the same order: profile
   first (the decision point), disable the one target, switch traffic-flow off
   *only if still needed*, remove the target, verify. Before RouterOS 7.25 —
-  read from the device's stored version; an unknown version counts as older —
-  the third step carries a warning (disabling traffic-flow on a busy system
+  read from the device's stored version; an unknown version and a 7.25 beta or
+  release candidate count as older — the third step carries a warning (disabling traffic-flow on a busy system
   can crash the kernel) and downloads the update first; from 7.25 it has
   neither. Every `[find …]` names the one target. When the device was seen
   exporting, the target is the one the device itself reported.

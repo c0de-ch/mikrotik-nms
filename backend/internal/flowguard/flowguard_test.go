@@ -121,7 +121,7 @@ func indexOf(list []string, sub string) int {
 // target, download before the risky disable (which carries the warning),
 // remove the target, verify.
 func TestRollbackBefore725(t *testing.T) {
-	for _, version := range []string{"7.23.1 (stable)", "7.24.2", "7.25beta2", "7.16", "", "garbage"} {
+	for _, version := range []string{"7.23.1 (stable)", "7.24.2", "7.25beta2", "7.25beta3", "7.25rc2", "7.16", "", "garbage"} {
 		rb := Rollback(version, "198.51.100.5", 2055)
 		if rb.Fixed {
 			t.Fatalf("%q treated as having the 7.25 fix", version)
@@ -177,7 +177,7 @@ func TestRollbackBefore725(t *testing.T) {
 
 // From 7.25 the same order applies, without the warning and the download.
 func TestRollbackFrom725(t *testing.T) {
-	for _, version := range []string{"7.25", "7.25.1 (stable)", "7.25beta3", "7.25rc1", "7.26", "8.0"} {
+	for _, version := range []string{"7.25", "7.25 (stable)", "7.25.1 (stable)", "7.26beta1", "7.26", "8.0"} {
 		rb := Rollback(version, "198.51.100.5", 9995)
 		if !rb.Fixed {
 			t.Fatalf("%q not treated as fixed", version)
