@@ -322,6 +322,15 @@ export default function FirmwarePage() {
                     </Badge>
                   ) : fw?.update_available ? (
                     <Badge variant="default">Update Available</Badge>
+                  ) : fw && !fw.latest_version ? (
+                    // Nothing to compare with: a RouterOS 6 device (the feed
+                    // is v7's), or a channel whose fetch has not succeeded.
+                    <Badge
+                      variant="outline"
+                      title="MikroTik's release feed has no version to compare this device with (RouterOS 6, or the channel has not been fetched yet)"
+                    >
+                      Not compared
+                    </Badge>
                   ) : fw ? (
                     <Badge variant="secondary">Up to date</Badge>
                   ) : (
