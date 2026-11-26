@@ -48,6 +48,11 @@ type Manager struct {
 	// firmware fetches MikroTik's release feed and keeps the firmware
 	// comparison current; the info refresh records each device's read in it.
 	firmware *FirmwareChecker
+	// load turns the routeros observer, the liveness results and the CPU
+	// samples into device_minutes rows; cpu is the Tier 1 / 1c sampler that
+	// feeds it. Both only do anything once Start runs with polling on.
+	load *LoadRecorder
+	cpu  *CPUSampler
 	// inventory schedules Tier 6 (the info refresh) per device, topoClock
 	// the topology loop's neighbor and route reads; classes holds the class
 	// probe's pending changes (hysteresis).
@@ -119,7 +124,21 @@ func NewManager(db *sql.DB, pool *routeros.Pool, hub *ws.Hub, cfg *config.Config
 	m.flows.UseIfaceSource(m.portStats)
 	// The flow plan and point facing judge egress rows as the map does.
 	m.flows.UseUplinkAge(UplinkAge(m.cadence))
+	// Device load: the recorder gets the collector's Tier 0 coverage on
+	// every flush and writes the device-minutes; the sampler adds the CPU.
+	m.load = NewLoadRecorder(db)
+	m.load.SetLivenessSpan(3 * cfg.HealthInterval)
+	m.portStats.UseCoverageSink(m.load)
+	m.cpu = NewCPUSampler(db, pool, hub, m.load, m.portStats)
+	m.cpu.UseCadence(m.cadence)
 	return m
+}
+
+// LatestCPU returns every device's latest quiet-window CPU sample with its
+// time, for the telemetry export (which must not pass an old value off as
+// current). Empty until the sampler has run.
+func (m *Manager) LatestCPU() map[string]CPUReading {
+	return m.load.LatestCPU()
 }
 
 // PortStats returns the fleet-wide port-counter collector (non-nil right
@@ -163,6 +182,11 @@ func (m *Manager) Start() {
 		log.Println("poller: device polling is off (MIKROTIK_NMS_POLLERS=off) — only database maintenance runs")
 		return
 	}
+
+	// Every command and pooled dial from here on is counted against its
+	// device (device_minutes.nms_*) and times the CPU sample's quiet window.
+	routeros.SetObserver(m.load)
+	go m.cpu.Run(ctx)
 
 	go m.healthLoop(ctx)
 	go m.infoLoop(ctx)
@@ -284,7 +308,11 @@ func (m *Manager) safePollDevice(dev queries.Device) {
 // slowness. The full stats/version/interface refresh is the infoLoop's job
 // (see refreshDeviceInfo).
 func (m *Manager) pollDevice(dev queries.Device) {
-	if err := m.ping(dev); err != nil {
+	err := m.ping(dev)
+	if m.load != nil {
+		m.load.NoteLiveness(dev.ID, time.Now(), err == nil)
+	}
+	if err != nil {
 		m.markUnreachable(dev, err)
 		return
 	}
@@ -986,6 +1014,7 @@ func (m *Manager) retentionLoop(ctx context.Context) {
 			}
 
 			sweepPortStats(m.db, time.Now())
+			sweepDeviceLoad(m.db, time.Now())
 
 			flow.Sweep(m.db, time.Now())
 
