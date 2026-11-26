@@ -9,6 +9,7 @@ import (
 
 	"github.com/mikrotik-nms/backend/internal/auth"
 	"github.com/mikrotik-nms/backend/internal/database/queries"
+	"github.com/mikrotik-nms/backend/internal/flowguard"
 	"github.com/mikrotik-nms/backend/internal/mailer"
 	"github.com/mikrotik-nms/backend/internal/opnsense"
 	"github.com/mikrotik-nms/backend/internal/telemetry"
@@ -154,7 +155,11 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		"flow_1m_days":             true,
 		"flow_1h_days":             true,
 		"flow_rate_limit_pps":      true,
-		"flow_auto_accept_devices": true,
+		// '' (off) or 'router' (validated below). The
+		// flow_auto_accept_devices key of earlier releases is no longer
+		// accepted: it accepted every managed address, nothing reads it,
+		// and it must stay false for a previous binary on this schema.
+		"flow_auto_accept_classes": true,
 		"flow_internal_prefixes":   true,
 		"flow_external_prefixes":   true,
 		"flow_resolve_ptr":         true,
@@ -190,6 +195,16 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		"otel_service_name": true,
 	}
 
+	// Flow guardrails: both values are checked before anything is written,
+	// so a refused save changes nothing.
+	if msg, err := s.checkFlowGuardSettings(req); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to check settings")
+		return
+	} else if msg != "" {
+		writeError(w, http.StatusBadRequest, msg)
+		return
+	}
+
 	// The page saves every field it holds, including the ones it shows
 	// read-only because the environment fixes them: those are not written,
 	// or the value on display would replace the stored setting.
@@ -215,6 +230,43 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	s.showEnvLocked(settings)
 	writeJSON(w, http.StatusOK, settings)
+}
+
+// checkFlowGuardSettings validates the two flow settings a wrong value of
+// which would send exports astray or accept senders nobody approved, and
+// normalises them in req. It returns the 400 message, or "".
+//
+//   - flow_advertise_address is the collector address every setup hint
+//     hands to operators: empty, or an IP address — and never the address of
+//     a managed device (a device told to export to another device).
+//   - flow_auto_accept_classes is empty (off) or "router".
+func (s *Server) checkFlowGuardSettings(req map[string]string) (string, error) {
+	if v, ok := req["flow_advertise_address"]; ok {
+		v = strings.TrimSpace(v)
+		if v != "" {
+			a, ok := parseIP(v)
+			if !ok {
+				return "flow_advertise_address must be an IP address (or empty)", nil
+			}
+			devices, err := queries.ListDevices(s.db)
+			if err != nil {
+				return "", err
+			}
+			if _, warning := advertiseAddress(a.String(), devices); warning != "" {
+				return "flow_advertise_address: " + a.String() + " is the address of a managed device, not of this NMS", nil
+			}
+			v = a.String()
+		}
+		req["flow_advertise_address"] = v
+	}
+	if v, ok := req["flow_auto_accept_classes"]; ok {
+		v = strings.ToLower(strings.TrimSpace(v))
+		if v != "" && v != flowguard.AutoAcceptRouter {
+			return "flow_auto_accept_classes must be empty (off) or 'router'", nil
+		}
+		req["flow_auto_accept_classes"] = v
+	}
+	return "", nil
 }
 
 // handleTestOpnsense validates an OPNsense Kea connection using the credentials

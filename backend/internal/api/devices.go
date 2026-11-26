@@ -37,13 +37,18 @@ type updateDeviceRequest struct {
 }
 
 func (s *Server) handleListDevices(w http.ResponseWriter, r *http.Request) {
-	devices, err := queries.ListDevices(s.db)
+	// Every device carries its role (router, weak-router, switch, ap-cpe,
+	// unknown) with the reason, derived from stored facts only.
+	roles, devices, err := s.deviceRoles(time.Now())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list devices")
 		return
 	}
 	if devices == nil {
 		devices = []queries.Device{}
+	}
+	for i := range devices {
+		attachRole(&devices[i], roles[devices[i].ID])
 	}
 	writeJSON(w, http.StatusOK, devices)
 }
@@ -58,6 +63,13 @@ func (s *Server) handleGetDevice(w http.ResponseWriter, r *http.Request) {
 		}
 		writeError(w, http.StatusInternalServerError, "failed to get device")
 		return
+	}
+	// The role is a nicety here: a failure to derive it must not hide the
+	// device.
+	if roles, _, err := s.deviceRoles(time.Now()); err == nil {
+		if role, ok := roles[device.ID]; ok {
+			attachRole(device, role)
+		}
 	}
 	writeJSON(w, http.StatusOK, withPolling(device))
 }

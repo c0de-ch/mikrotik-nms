@@ -74,6 +74,9 @@ var exportableTables = []string{
 	"flow_exporters",
 	"flow_exporter_ifaces",
 	"flow_points",
+	// The block list (deleted exporters, devices that must not export): a
+	// restore must not make a blocked sender one click away from accepted.
+	"flow_sender_policy",
 }
 
 // tableAllowed is the security gate for any caller-supplied table name.

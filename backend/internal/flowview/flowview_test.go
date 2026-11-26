@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/mikrotik-nms/backend/internal/database/queries"
+	"github.com/mikrotik-nms/backend/internal/devclass"
 )
 
 func ip(s string) netip.Addr { return netip.MustParseAddr(s) }
@@ -353,6 +354,41 @@ func labSuggestInput() SuggestInput {
 			{DevA: rbID, IfA: "bridge", DevB: swID, IfB: "bridge"},
 		},
 		IfaceTypes: map[string]string{rbID + "\x00eth3": "ether", rbID + "\x00bridge": "bridge"},
+		Roles:      map[string]devclass.Role{rbID: devclass.RoleRouter, swID: devclass.RoleSwitch},
+	}
+}
+
+// The router-trunk rule rests on "the exporter routes what crosses the
+// trunk": it only applies to exporters whose device is a router. An exporter
+// on a switch, an access point or a device of unknown role gets no trunk
+// views; rule G (a gateway without a device) is not affected.
+func TestSuggestTrunkOnlyForRouterExporters(t *testing.T) {
+	count := func(in SuggestInput) (trunk, gateway int) {
+		for _, s := range Suggest(in) {
+			switch s.Rule {
+			case RuleTrunk:
+				trunk++
+			case RuleGatewayHost:
+				gateway++
+			}
+		}
+		return
+	}
+	for role, wantTrunk := range map[devclass.Role]int{
+		devclass.RoleRouter: 2, devclass.RoleWeakRouter: 2,
+		devclass.RoleSwitch: 0, devclass.RoleAPCPE: 0, devclass.RoleUnknown: 0,
+	} {
+		in := labSuggestInput()
+		in.Roles[rbID] = role
+		if trunk, gateway := count(in); trunk != wantTrunk || gateway != 1 {
+			t.Errorf("exporter role %s: %d trunk and %d gateway-host suggestions, want %d and 1", role, trunk, gateway, wantTrunk)
+		}
+	}
+	// No role known at all (not loaded): no trunk view is offered.
+	in := labSuggestInput()
+	in.Roles = nil
+	if trunk, gateway := count(in); trunk != 0 || gateway != 1 {
+		t.Errorf("without roles: %d trunk, %d gateway-host", trunk, gateway)
 	}
 }
 
