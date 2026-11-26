@@ -164,11 +164,11 @@ user), **admin** (admin role required).
 | GET | `/devices/{id}/ports` | any | The device's faceplate ports (ethernet, SFP, QSFP, combo) with their rates from the port-stats snapshot — **no device call** (the map's port grid). `{device_id, source: "snapshot", sampled_at, age_seconds, interval_seconds, ready, ports: [{name, type, running, disabled, comment, rx_bps, tx_bps}]}`. Inventory order, then any port the snapshot has but the hourly inventory does not yet; running/disabled come from the snapshot when it has the port. `sampled_at` is when **this device's** counters were last read (a device whose reads fail keeps its last rates for up to three intervals, and shows their real age); it and `age_seconds` are `null` (and rates 0) while the snapshot has none of the device's interfaces. `404` for an unknown device. |
 | GET | `/devices/{id}/live-limits` | any | What a per-port live stream (WS `traffic.<id>.<iface>`) of the device may do for the caller: `{device_id, class, profile, min_period_seconds, max_ifaces, leases, admin_only, snapshot_interval_seconds, allowed, reason?, message?}`. `class` is the one the caps follow (`C1` on the `light` profile). `allowed` covers role, an admin pause and the polling mode (`reason`: `admin_only`, `polling_paused`, `pollers_off`); the interface and viewer ceilings depend on other viewers and are decided on subscribe. Database only. See [Live streams](#live-streams). |
 | GET | `/devices/{id}/audit` | any | Operator actions on the device (pauses, profile and class changes, address-move decisions, firmware requests — `firmware_upgrade_requested` / `firmware_channel_requested` / `firmware_routerboard_requested`, never with the RouterOS login typed for them), newest first. Query `limit` (default 50, max 500). `[{id, at, user_id, username, action, device_id, detail}]`. |
-| POST | `/devices` | admin | Add a device. `username` and `password` are **required** (there are no default credentials). Tests the RouterOS connection first; `400` if unreachable. `500` when the password cannot be stored encrypted — it is never stored in plaintext instead. |
-| PUT | `/devices/{id}` | admin | Update device fields (only non-empty fields override). The stored password changes only when the body carries a new `password`. A change of address, port, TLS flag, username or password closes the device's pooled API session, so the next poll connects with the new values. |
+| POST | `/devices` | admin | Add a device. `username` and `password` are **required** (there are no default credentials); with `use_tls` so is `pin_cert_sha256`, the fingerprint of the device's api-ssl certificate (`400` without it, before anything is dialled). Tests the RouterOS connection first; `400` if unreachable — or, over TLS, if the device presents another certificate than the pinned one (no login is sent). `500` when the password cannot be stored encrypted — it is never stored in plaintext instead. |
+| PUT | `/devices/{id}` | admin | Update device fields (only non-empty fields override; `use_tls` and `pin_cert_sha256` change only when the body carries them, and an empty `pin_cert_sha256` clears the pin). The stored password changes only when the body carries a new `password`. `400` for a malformed fingerprint (nothing is changed). A change of address, port, TLS flag, pin, username or password closes the device's pooled API session and forgets its reconnect backoff, so the next poll connects with the new values. |
 | DELETE | `/devices/{id}` | admin | Remove a device (and its pooled API session). |
 | GET | `/devices/address-proposals` | any | IP auto-follow proposals (see below), newest sighting first. Pending only by default; `?status=all` or one status. `[{id, device_id, device_identity, old_address, new_address, mac, first_seen, last_seen, status, decided_by?, decided_at?, result?}]`. Database only. |
-| POST | `/devices/address-proposals/{id}/approve` | admin + fresh login | Log in at `new_address` with the device's **stored** credential (a separate one-off session), check board, RouterOS version and the matched MAC, and re-point the device when all hold. `200` with the proposal — `status` `approved`, or `failed` with the reason in `result` (the address is untouched). `409` when the proposal is no longer pending, the device's address changed since (the proposal becomes `superseded`) or its polling is paused; `503`/`403` from the polling fence (the proposal stays pending). Audited (`address_move_approved` / `address_move_refused`). |
+| POST | `/devices/address-proposals/{id}/approve` | admin + fresh login | Log in at `new_address` with the device's **stored** credential (a separate one-off session; for a device on API-TLS only after the certificate presented there matched its pin), check board, RouterOS version and the matched MAC, and re-point the device when all hold. `200` with the proposal — `status` `approved`, or `failed` with the reason in `result` (the address is untouched). `409` when the proposal is no longer pending, the device's address changed since (the proposal becomes `superseded`) or its polling is paused; `503`/`403` from the polling fence (the proposal stays pending). Audited (`address_move_approved` / `address_move_refused`). |
 | POST | `/devices/address-proposals/{id}/dismiss` | admin | Close a pending proposal without contacting anything. Audited (`address_move_dismissed`). The same move (device, old → new address) is not proposed again for 7 days; after a failed approval, for 24 h. A sighting at another address opens a new proposal. |
 | POST | `/devices/{id}/polling/pause` | admin | Pause every poller but liveness for `{"hours": 1…168}` (the UI offers 1 h and 24 h). Returns the device. |
 | POST | `/devices/{id}/polling/resume` | admin | Clear a pause. Returns the device. |
@@ -216,15 +216,37 @@ Create/update body fields:
   "username": "admin",
   "password": "secret",
   "use_tls": false,
+  "pin_cert_sha256": "",
   "api_port": 8728,
   "tags": "[]",
   "notes": ""
 }
 ```
 
-`address` is required on create. Omitted `username`/`api_port`/`password` fall
-back to the `MIKROTIK_NMS_DEFAULT_ROS_*` config values. On create the backend
-dials the device, and if `identity` is blank it reads `/system/identity`.
+`address`, `username` and `password` are required on create; an omitted
+`api_port` falls back to `MIKROTIK_NMS_DEFAULT_ROS_PORT`. On create the
+backend dials the device, and if `identity` is blank it reads
+`/system/identity`.
+
+**TLS pins.** `pin_cert_sha256` is the SHA-256 fingerprint of the certificate
+the device's api-ssl service presents — what RouterOS prints as
+`fingerprint` in `/certificate print detail`. It is accepted in upper or
+lower case, with or without colons between the bytes, stored as 64
+lower-case hex digits, and returned with every device (a fingerprint is not
+a secret). With `use_tls` the NMS logs in only when the certificate
+presented in the TLS handshake has that fingerprint:
+
+- a TLS device **without a pin** is not contacted over the API at all — the
+  pollers skip it, and on-demand actions that would reach it say why
+  (`TLS pin missing: …`): `409` from `GET /devices/{id}/addresses`, the
+  speed-test and traceroute run-nows and the approval of an address
+  proposal; the firmware actions list it as that device's error;
+- a device that presents **another certificate** is refused before any
+  credential is sent; the refusal is recorded as a `tls_pin_mismatch`
+  finding of the device (`GET /devices/{id}/findings`, `detail` = the
+  fingerprint presented) and raises the alert of the same name.
+
+Plain-API devices (`use_tls: false`) ignore the pin.
 
 ### Discovery
 
@@ -673,7 +695,10 @@ open alert per rule and key. Runbooks: [`RUNBOOKS.md`](RUNBOOKS.md).
 **Rules.** `device_unreachable` (critical): the liveness check reports the
 device `offline`, i.e. past `offline_threshold_seconds`. `parallel_api_poller`
 (warning): the login watch confirmed a live API session from an address that
-is not this NMS.
+is not this NMS. `tls_pin_mismatch` (critical): a device on API-TLS presented
+another certificate than the one pinned for it and the NMS withheld its
+login; it resolves when the device is pinned to the presented certificate or
+taken off TLS, otherwise 2 h 15 min after the last refused handshake.
 
 **Notifications.** A firing alert goes to every enabled channel whose
 `min_severity` it reaches: when it starts, every 4 hours while nobody

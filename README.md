@@ -98,7 +98,6 @@ The backend is configured entirely via `MIKROTIK_NMS_*` environment variables. T
 | `MIKROTIK_NMS_POLLERS` | No | `off` | `local` = poll the devices from this backend; `off` = no device or UDP I/O at all (history only — the default, so a dev checkout never polls a production fleet by accident). Installer/Compose/K8s set `local` |
 | `MIKROTIK_NMS_ALLOWED_TARGET_CIDRS` | With `local` | — | Comma-separated CIDRs the backend may dial (the management subnet(s)). Every device dial outside them is refused; required with `local` — the backend refuses to start while it is empty |
 | `MIKROTIK_NMS_ALLOWED_ORIGINS` | No | — | Comma-separated CORS / WebSocket origin allow-list. Unset = accept any origin (warns) |
-| `MIKROTIK_NMS_ROS_TLS_VERIFY` | No | `false` | Verify RouterOS API-TLS device certificates (off by default; self-signed certs) |
 | `MIKROTIK_NMS_HEALTH_INTERVAL` | No | `30s` | How often to poll `/system/resource` |
 | `MIKROTIK_NMS_TOPOLOGY_INTERVAL` | No | `60s` | How often to poll `/ip/neighbor` and rebuild the link graph |
 | `MIKROTIK_NMS_FIRMWARE_INTERVAL` | No | `24h` | How often the NMS refetches MikroTik's release feed (devices are never asked to check) |

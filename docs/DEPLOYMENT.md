@@ -237,7 +237,6 @@ The backend is configured **entirely** via `MIKROTIK_NMS_*` environment variable
 | `MIKROTIK_NMS_ALLOWED_TARGET_CIDRS` | Comma-separated CIDRs (a bare address counts as `/32` or `/128`) the backend may dial — the management subnet(s) the devices live in, e.g. `192.0.2.0/24,2001:db8::/48`. Every device dial — pollers, the add-device connection test, MNDP/subnet discovery, run-now ping/traceroute/speed tests, firmware jobs — is refused outside it (API: `403`; `503` while polling is off); a hostname is checked on every address it resolves to. **Required with `MIKROTIK_NMS_POLLERS=local`:** the process refuses to start while it is empty, and an invalid entry is a startup error, never a silent skip | — | With `local` |
 | `MIKROTIK_NMS_ALLOWED_ORIGINS` | Comma-separated CORS / WebSocket origin allow-list (e.g. `https://nms.example.com`). Unset = reflect any origin (logs a warning) | — | No |
 | `MIKROTIK_NMS_TRUSTED_PROXIES` | Comma-separated addresses/CIDRs of the reverse proxies whose `X-Forwarded-For` names the real client (used for the login rate limit: 10 attempts per minute per client). Forwarding headers from anyone else are ignored, so a client cannot pick its own address. The default fits a proxy on the same host (the LXC's Caddy). Behind an ingress controller or a proxy in another container, set it to that proxy's address range — otherwise all users share the proxy's address and its login budget. An invalid entry is a startup error | `127.0.0.0/8,::1/128` | Behind a non-local proxy |
-| `MIKROTIK_NMS_ROS_TLS_VERIFY` | Verify RouterOS API-TLS device certificates. Off by default (self-signed certs) | `false` | No |
 | `MIKROTIK_NMS_HEALTH_INTERVAL` | Liveness ping cadence | `30s` | No |
 | `MIKROTIK_NMS_TOPOLOGY_INTERVAL` | **Floor** of each device's `/ip/neighbor` and default-route reads (they run on the device's class cadence when slower), and the link-graph rebuild cadence | `60s` | No |
 | `MIKROTIK_NMS_FIRMWARE_INTERVAL` | Max age of MikroTik's release feed (fetched by the NMS; devices are never asked to check) | `24h` | No |
@@ -277,6 +276,22 @@ Every device is read on the cadence of its **CPU class**, probed from `/system/r
 
 Each device's next read is the end of its last one plus the interval, ±10 % by a per-device phase, so a fleet spreads out instead of polling in lockstep. On a device's page an admin can switch it to the **light** profile (the C1 cadences), override its class with a gentler one, or **pause** polling for 1–168 hours: during a pause only the liveness ping runs, nothing derived from the device ages (links stay up, rows are not pruned), and its charts show the time as a gap. The liveness ping (`MIKROTIK_NMS_HEALTH_INTERVAL`), firmware checks, connectivity probes and speed tests keep their fleet-wide cadences.
 
+### API sessions: deadlines and reconnects
+
+The backend keeps one API session per device and bounds every step of it (none of this is configurable):
+
+| Step | Bound |
+|---|---|
+| TCP connect | 5 s (TCP keep-alive every 15 s on an open session) |
+| TLS handshake (API-TLS only) | 10 s; 15 s on a C1 device |
+| Login | 10 s |
+| One command, **including its wait** for the session behind other commands | 10 s; 15 s on a C1 device; 30 s for the table dumps whose size the network sets (bridge FDB, log buffer, ARP, DHCP leases, registration tables, bridge VLAN table, the default-route query, ethernet counters, `/ping`) |
+| Speed tests, traceroutes, firmware jobs | their own longer limits, on a separate one-off session |
+
+A command that passes its deadline while it is on the wire ends the session (the reply could arrive later and be read as the next command's); so does a `!fatal`, a malformed reply, or a reply over the caps — one word of 1 MiB, 32 MiB or 50,000 rows per command. The session is then redialled, at most once per 15 s. A command that runs out of time while still *waiting* for the session fails on its own and leaves the session alone.
+
+When a dial fails the device is retried after 15 s, 30 s, 1 min … up to 10 min (each ±20 %); a refused login or a certificate that is not the pinned one goes straight to 10 min. The wait ends at once when the device is edited, and when the liveness check sees its API port answer again after it was down — so a device the liveness check saw go down is polled again within seconds of answering, while a wrong password costs a device one login attempt (and one line in its log) every ten minutes, not every poll.
+
 ### Restart required vs. runtime-tunable
 
 - **Env-var pollers (restart required):** every `MIKROTIK_NMS_*` interval above (`HEALTH`, `TOPOLOGY`, `FIRMWARE`, `NETWORK_HEALTH`, `RETENTION`) is read once at startup, and so are the flow collector's `MIKROTIK_NMS_FLOW_LISTEN` and the polling fence (`MIKROTIK_NMS_POLLERS`, `MIKROTIK_NMS_ALLOWED_TARGET_CIDRS`). Changing them means editing the env/ConfigMap/Secret and restarting the backend.
@@ -289,6 +304,11 @@ Each device's next read is the end of its last one plus the interval, ±10 % by 
 - **Generate a real JWT secret:** `openssl rand -hex 32`. Set it via `JWT_SECRET` (Compose), `secret.yaml` (K8s), or the auto-generated `/etc/mikrotik-nms/env` (LXC). If the backend starts with the placeholder, rotate it — changing it invalidates all existing tokens (users must log in again).
 - **TLS termination:** the Go backend speaks plain HTTP. Put TLS at the edge — Caddy (LXC, automatic Let's Encrypt or `tls internal`), the Kubernetes ingress, or your own reverse proxy. The LXC Caddyfile already sets HSTS, `X-Content-Type-Options: nosniff`, and a `Referrer-Policy`.
 - **Device credentials:** stored in the `devices.password_enc` SQLite column. See the limitation in [§10](#10-security-hardening-checklist).
+- **Devices on API-TLS (`api-ssl`, port 8729) are pinned.** A RouterOS certificate is self-signed, so no CA says whose it is: an admin pastes the certificate's SHA-256 fingerprint into the device (add-device form, or the device page → **Connection**) and the NMS compares the certificate presented in every TLS handshake with it — before any user name or password is sent. Read the fingerprint **on the device**: `/ip service print where name=api-ssl` names the certificate, `/certificate print detail where name=<it>` prints `fingerprint=…`; upper case and colon-separated bytes are accepted. There is no trust on first use and no "skip verification" switch (`MIKROTIK_NMS_ROS_TLS_VERIFY` is gone; a warning is logged if it is still set):
+  - **no pin** — the device is not contacted over the API at all (only the liveness check). It shows **TLS pin missing** on the Devices page, and startup logs how many such devices there are. Devices that used API-TLS before this version are in that state until their fingerprint is entered;
+  - **another certificate** — the handshake is aborted, the login withheld, and the `tls_pin_mismatch` alert fires ([runbook](RUNBOOKS.md#tls_pin_mismatch)).
+
+  Devices on the plain API (port 8728, the default) are unaffected. The api-ssl service must have a certificate assigned: without one RouterOS offers only anonymous cipher suites, which the NMS does not speak.
 - **Deploy secrets** (HMAC secret, SSH keys, Proxmox tokens) stay on the agent/runner host and never transit GitHub.
 
 ---
@@ -359,7 +379,8 @@ MikroTik NMS is read-only monitoring intended for a trusted network. Most of the
 
 - [ ] **Set `MIKROTIK_NMS_ALLOWED_ORIGINS`** to your frontend origin(s). Until you do, CORS reflects any origin and the WebSocket accepts any origin (a startup warning is logged). Setting it enforces a strict allow-list for both. *(HIGH)*
 - [ ] **Back up `MIKROTIK_NMS_ENCRYPTION_KEY`** with (but not inside) your database backups: a lost key means every device password has to be entered again. *(HIGH)*
-- [ ] **Terminate TLS at the proxy** and consider `MIKROTIK_NMS_ROS_TLS_VERIFY=true` if your devices present trusted certs (RouterOS self-signed certs are not verified by default). *(MEDIUM)*
+- [ ] **Terminate TLS at the proxy.** *(MEDIUM)*
+- [ ] **Devices on API-TLS need their certificate fingerprint** (Devices page → the device → Connection). The NMS logs in to a TLS device only when it presents the pinned certificate; a TLS device without a pin is not polled and shows "TLS pin missing". After an upgrade from a version without pins, the startup log counts those devices. See [§8](#8-tls--secrets). *(HIGH for TLS devices)*
 - [ ] **Treat backup files as secrets.** Even with redaction/encryption they contain inventory and bcrypt user hashes; store them encrypted and restrict distribution. *(MEDIUM)*
 - [ ] **If the flow collector is on, restrict UDP 2055 to your exporters** (host firewall, LB `loadBalancerSourceRanges`, or an nftables allow-list — see [`deploy/lxc/README.md`](../deploy/lxc/README.md#flow-collector-netflow--ipfix--sflow)). Flow export is unauthenticated UDP: the collector already drops unknown senders before decoding them and rate-limits each exporter, but an on-link spoofer can still inject false statistics. Per-host flow details (who talked to whom) are visible to **every logged-in user**, like the Clients page. *(LOW)*
 
