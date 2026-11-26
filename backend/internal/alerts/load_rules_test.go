@@ -100,7 +100,7 @@ func TestEscalationIsNotifiedAgain(t *testing.T) {
 
 	// Acknowledged, then worse again: the operator already knows.
 	open := openAlerts(t, e)
-	if err := queries.AckAlert(e.db, open[0].ID, "kim", *now); err != nil {
+	if err := queries.AckAlert(e.db, open[0].ID, "operator", *now); err != nil {
 		t.Fatal(err)
 	}
 	rule.obs = []Observation{{Key: "d1", Severity: SeverityCritical, Summary: "hot"}}
