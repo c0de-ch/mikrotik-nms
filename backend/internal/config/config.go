@@ -60,6 +60,13 @@ type Config struct {
 
 	// Data retention
 	RetentionDays int
+	// EnvLocked names the app settings whose value is fixed by an
+	// environment variable set for this process (topology_interval,
+	// network_health_interval, retention_days). A deployment that is
+	// configured by env keeps being configured by env: the setting is
+	// ignored and the Settings page shows it locked. Unset = the setting
+	// applies and the variable's default is only its default.
+	EnvLocked map[string]bool
 
 	// PlaintextSecrets is MIKROTIK_NMS_DEV_PLAINTEXT_SECRETS: store device
 	// passwords unencrypted when no encryption key is set. Development only:
@@ -128,29 +135,34 @@ func Load() (*Config, error) {
 		RetentionInterval:     envDurationOr("MIKROTIK_NMS_RETENTION_INTERVAL", 1*time.Hour),
 		NetworkHealthInterval: envDurationOr("MIKROTIK_NMS_NETWORK_HEALTH_INTERVAL", 60*time.Second),
 		RetentionDays:         envIntOr("MIKROTIK_NMS_RETENTION_DAYS", 7),
-		PlaintextSecrets:      envBoolOr("MIKROTIK_NMS_DEV_PLAINTEXT_SECRETS", false),
-		DefaultROSPort:        envIntOr("MIKROTIK_NMS_DEFAULT_ROS_PORT", 8728),
-		DefaultROSTLS:         envBoolOr("MIKROTIK_NMS_DEFAULT_ROS_TLS", false),
-		AllowedOrigins:        envListOr("MIKROTIK_NMS_ALLOWED_ORIGINS", nil),
-		ROSTLSVerify:          envBoolOr("MIKROTIK_NMS_ROS_TLS_VERIFY", false),
-		SMTPHost:              os.Getenv("MIKROTIK_NMS_SMTP_HOST"),
-		SMTPPort:              envIntOr("MIKROTIK_NMS_SMTP_PORT", 587),
-		SMTPUser:              os.Getenv("MIKROTIK_NMS_SMTP_USER"),
-		SMTPPass:              os.Getenv("MIKROTIK_NMS_SMTP_PASS"),
-		SMTPFrom:              os.Getenv("MIKROTIK_NMS_SMTP_FROM"),
-		SMTPTLSMode:           envOr("MIKROTIK_NMS_SMTP_TLS_MODE", "starttls"),
-		SMTPTLSSkipVerify:     envBoolOr("MIKROTIK_NMS_SMTP_TLS_SKIP_VERIFY", false),
-		PublicBaseURL:         os.Getenv("MIKROTIK_NMS_PUBLIC_BASE_URL"),
-		PasswordResetTTL:      envDurationOr("MIKROTIK_NMS_PASSWORD_RESET_TTL", time.Hour),
-		OTelEnabled:           envBoolOr("MIKROTIK_NMS_OTEL_ENABLED", false),
-		OTelEndpoint:          os.Getenv("MIKROTIK_NMS_OTEL_ENDPOINT"),
-		OTelProtocol:          envOr("MIKROTIK_NMS_OTEL_PROTOCOL", "grpc"),
-		OTelInsecure:          envBoolOr("MIKROTIK_NMS_OTEL_INSECURE", true),
-		OTelHeaders:           os.Getenv("MIKROTIK_NMS_OTEL_HEADERS"),
-		OTelServiceName:       envOr("MIKROTIK_NMS_OTEL_SERVICE_NAME", "mikrotik-nms"),
-		OTelSampleRatio:       envFloatOr("MIKROTIK_NMS_OTEL_SAMPLE_RATIO", 1.0),
-		FlowListen:            parseFlowListen(os.Getenv("MIKROTIK_NMS_FLOW_LISTEN")),
-		FlowCaptureDir:        os.Getenv("MIKROTIK_NMS_FLOW_CAPTURE_DIR"),
+		EnvLocked: map[string]bool{
+			"topology_interval":       envUsable("MIKROTIK_NMS_TOPOLOGY_INTERVAL", isDuration),
+			"network_health_interval": envUsable("MIKROTIK_NMS_NETWORK_HEALTH_INTERVAL", isDuration),
+			"retention_days":          envUsable("MIKROTIK_NMS_RETENTION_DAYS", isInt),
+		},
+		PlaintextSecrets:  envBoolOr("MIKROTIK_NMS_DEV_PLAINTEXT_SECRETS", false),
+		DefaultROSPort:    envIntOr("MIKROTIK_NMS_DEFAULT_ROS_PORT", 8728),
+		DefaultROSTLS:     envBoolOr("MIKROTIK_NMS_DEFAULT_ROS_TLS", false),
+		AllowedOrigins:    envListOr("MIKROTIK_NMS_ALLOWED_ORIGINS", nil),
+		ROSTLSVerify:      envBoolOr("MIKROTIK_NMS_ROS_TLS_VERIFY", false),
+		SMTPHost:          os.Getenv("MIKROTIK_NMS_SMTP_HOST"),
+		SMTPPort:          envIntOr("MIKROTIK_NMS_SMTP_PORT", 587),
+		SMTPUser:          os.Getenv("MIKROTIK_NMS_SMTP_USER"),
+		SMTPPass:          os.Getenv("MIKROTIK_NMS_SMTP_PASS"),
+		SMTPFrom:          os.Getenv("MIKROTIK_NMS_SMTP_FROM"),
+		SMTPTLSMode:       envOr("MIKROTIK_NMS_SMTP_TLS_MODE", "starttls"),
+		SMTPTLSSkipVerify: envBoolOr("MIKROTIK_NMS_SMTP_TLS_SKIP_VERIFY", false),
+		PublicBaseURL:     os.Getenv("MIKROTIK_NMS_PUBLIC_BASE_URL"),
+		PasswordResetTTL:  envDurationOr("MIKROTIK_NMS_PASSWORD_RESET_TTL", time.Hour),
+		OTelEnabled:       envBoolOr("MIKROTIK_NMS_OTEL_ENABLED", false),
+		OTelEndpoint:      os.Getenv("MIKROTIK_NMS_OTEL_ENDPOINT"),
+		OTelProtocol:      envOr("MIKROTIK_NMS_OTEL_PROTOCOL", "grpc"),
+		OTelInsecure:      envBoolOr("MIKROTIK_NMS_OTEL_INSECURE", true),
+		OTelHeaders:       os.Getenv("MIKROTIK_NMS_OTEL_HEADERS"),
+		OTelServiceName:   envOr("MIKROTIK_NMS_OTEL_SERVICE_NAME", "mikrotik-nms"),
+		OTelSampleRatio:   envFloatOr("MIKROTIK_NMS_OTEL_SAMPLE_RATIO", 1.0),
+		FlowListen:        parseFlowListen(os.Getenv("MIKROTIK_NMS_FLOW_LISTEN")),
+		FlowCaptureDir:    os.Getenv("MIKROTIK_NMS_FLOW_CAPTURE_DIR"),
 	}
 
 	if cfg.JWTSecret == "" {
@@ -367,6 +379,21 @@ func envFloatOr(key string, fallback float64) float64 {
 		}
 	}
 	return fallback
+}
+
+// envUsable reports whether key is set to a value its reader accepts — the
+// case in which the variable, not its fallback, is in force.
+func envUsable(key string, ok func(string) bool) bool {
+	v := os.Getenv(key)
+	return v != "" && ok(v)
+}
+
+func isDuration(v string) bool { _, err := time.ParseDuration(v); return err == nil }
+func isInt(v string) bool      { _, err := strconv.Atoi(v); return err == nil }
+
+// Locked reports whether the app setting key is fixed by the environment.
+func (c *Config) Locked(key string) bool {
+	return c != nil && c.EnvLocked[key]
 }
 
 func envDurationOr(key string, fallback time.Duration) time.Duration {

@@ -12,6 +12,8 @@ import (
 	"github.com/mikrotik-nms/backend/internal/mailer"
 	"github.com/mikrotik-nms/backend/internal/opnsense"
 	"github.com/mikrotik-nms/backend/internal/telemetry"
+	"sort"
+	"time"
 )
 
 // opnsenseSourceKey matches the app_settings keys for an OPNsense DHCP source —
@@ -58,7 +60,42 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	// (what alert notifications need).
 	settings["smtp_configured"] = strconv.FormatBool(s.effectiveMailer().CanBuildLinks())
 	settings["smtp_can_send"] = strconv.FormatBool(s.effectiveMailer().Enabled())
+	s.showEnvLocked(settings)
 	writeJSON(w, http.StatusOK, settings)
+}
+
+// envLockedSettings are the settings an environment variable can fix
+// (config.EnvLocked), with the value in force as the page shows it.
+func (s *Server) envLockedSettings() map[string]string {
+	out := map[string]string{}
+	if s.cfg == nil {
+		return out
+	}
+	if s.cfg.Locked("topology_interval") {
+		out["topology_interval"] = strconv.Itoa(int(s.cfg.TopologyInterval / time.Second))
+	}
+	if s.cfg.Locked("network_health_interval") {
+		out["network_health_interval"] = strconv.Itoa(int(s.cfg.NetworkHealthInterval / time.Second))
+	}
+	if s.cfg.Locked("retention_days") {
+		out["retention_days"] = strconv.Itoa(s.cfg.RetentionDays)
+	}
+	return out
+}
+
+// showEnvLocked makes the settings map say what is in force: a setting fixed
+// by the environment shows the environment's value, and the synthetic,
+// never-stored key env_locked lists those settings (comma-separated, sorted)
+// so the page can show them read-only.
+func (s *Server) showEnvLocked(settings map[string]string) {
+	locked := s.envLockedSettings()
+	keys := make([]string, 0, len(locked))
+	for k, v := range locked {
+		settings[k] = v
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	settings["env_locked"] = strings.Join(keys, ",")
 }
 
 func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
@@ -69,9 +106,16 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	allowed := map[string]bool{
-		"health_interval":               true,
+		// health_interval and firmware_interval do nothing and are no
+		// longer offered (liveness is a fixed TCP connect, firmware
+		// availability a daily feed fetch); they are still accepted so that
+		// a tab running the previous frontend can save.
+		"health_interval":   true,
+		"firmware_interval": true,
+		// topology_interval, network_health_interval and retention_days
+		// are read by the pollers (poller.TopologyFloor, NetworkHealthFloor,
+		// RetentionDays) unless the environment fixes them.
 		"topology_interval":             true,
-		"firmware_interval":             true,
 		"wifi_interval":                 true,
 		"client_discovery_interval":     true,
 		"connectivity_interval":         true,
@@ -146,8 +190,15 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		"otel_service_name": true,
 	}
 
+	// The page saves every field it holds, including the ones it shows
+	// read-only because the environment fixes them: those are not written,
+	// or the value on display would replace the stored setting.
+	locked := s.envLockedSettings()
 	for key, value := range req {
 		if !allowed[key] && !isOpnsenseSourceKey(key) {
+			continue
+		}
+		if _, fixed := locked[key]; fixed {
 			continue
 		}
 		if err := queries.SetSetting(s.db, key, value); err != nil {
@@ -162,6 +213,7 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to get settings")
 		return
 	}
+	s.showEnvLocked(settings)
 	writeJSON(w, http.StatusOK, settings)
 }
 

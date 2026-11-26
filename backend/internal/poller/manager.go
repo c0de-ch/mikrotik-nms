@@ -93,6 +93,9 @@ func NewManager(db *sql.DB, pool *routeros.Pool, hub *ws.Hub, cfg *config.Config
 		// even when a listen address is configured.
 		flowCfg.Listen = nil
 	}
+	// Once per database: bring the settings that used to do nothing to
+	// what has been in force, before any loop reads them.
+	AdoptIntervalSettings(db, cfg)
 	m := &Manager{
 		db:        db,
 		pool:      pool,
@@ -196,6 +199,7 @@ func (m *Manager) Start() {
 	go clientDisc.Run(ctx)
 
 	netHealth := NewNetworkHealthPoller(m.db, m.pool, m.hub, m.cfg.NetworkHealthInterval)
+	netHealth.UseFloor(func() time.Duration { return NetworkHealthFloor(m.db, m.cfg) })
 	netHealth.UseLogReader(logs)
 	netHealth.UseInterfaceSnapshots(m.portStats)
 	netHealth.UseCadence(m.cadence)
@@ -575,7 +579,7 @@ func (m *Manager) pollTopology(ctx context.Context) {
 		}
 	}
 
-	if !m.lastBuild.IsZero() && now.Sub(m.lastBuild) < m.cfg.TopologyInterval {
+	if !m.lastBuild.IsZero() && now.Sub(m.lastBuild) < TopologyFloor(m.db, m.cfg) {
 		return
 	}
 	m.lastBuild = now
@@ -910,7 +914,10 @@ func (m *Manager) retentionLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			cutoff := time.Now().AddDate(0, 0, -m.cfg.RetentionDays)
+			// Read every cycle: the retention_days setting, or the env
+			// variable when one is set.
+			days := RetentionDays(m.db, m.cfg)
+			cutoff := time.Now().AddDate(0, 0, -days)
 			if n, err := queries.DeleteOldTrafficSamples(m.db, cutoff); err != nil {
 				log.Printf("poller retention: traffic: %v", err)
 			} else if n > 0 {
@@ -919,7 +926,7 @@ func (m *Manager) retentionLoop(ctx context.Context) {
 
 			m.sweepNeighbors(time.Now())
 
-			wifiCutoff := time.Now().AddDate(0, 0, -m.cfg.RetentionDays)
+			wifiCutoff := time.Now().AddDate(0, 0, -days)
 			if n, err := queries.DeleteOldWifiHistory(m.db, wifiCutoff); err != nil {
 				log.Printf("poller retention: wifi history: %v", err)
 			} else if n > 0 {
@@ -953,7 +960,7 @@ func (m *Manager) retentionLoop(ctx context.Context) {
 			// Speed samples (~4 rows/day) and traceroute runs are sparse series
 			// and the UI offers a 30d trend, so keep them at least 90 days
 			// regardless of the general retention setting.
-			speedDays := m.cfg.RetentionDays
+			speedDays := days
 			if speedDays < 90 {
 				speedDays = 90
 			}

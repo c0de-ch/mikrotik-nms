@@ -120,9 +120,18 @@ func TestClassCadenceFloors(t *testing.T) {
 			t.Errorf("after raising the floors: %s %s = %v, want %v", tt.dev.ID, tt.tier, got, tt.want)
 		}
 	}
-	envFloor := NewCadence(db, &config.Config{TopologyInterval: 10 * time.Minute, NetworkHealthInterval: time.Minute})
+	// MIKROTIK_NMS_TOPOLOGY_INTERVAL=10m set in the environment wins over the
+	// topology_interval setting; unset, the setting is the floor.
+	envFloor := NewCadence(db, &config.Config{TopologyInterval: 10 * time.Minute, NetworkHealthInterval: time.Minute,
+		EnvLocked: map[string]bool{"topology_interval": true}})
 	if got := envFloor.Interval(c3, devclass.TierNeighbors, now); got != 10*time.Minute {
 		t.Errorf("topology env floor 10 min: neighbors = %v", got)
+	}
+	if err := queries.SetSetting(db, "topology_interval", "900"); err != nil {
+		t.Fatal(err)
+	}
+	if got := NewCadence(db, &config.Config{TopologyInterval: time.Minute}).Interval(c3, devclass.TierNeighbors, now); got != 15*time.Minute {
+		t.Errorf("topology_interval setting 15 min: neighbors = %v", got)
 	}
 }
 

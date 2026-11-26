@@ -48,6 +48,8 @@ type NetworkHealthPoller struct {
 	pool     *routeros.Pool
 	hub      *ws.Hub
 	interval time.Duration
+	// floor, when set, replaces interval (UseFloor).
+	floor func() time.Duration
 
 	// previous per-port topology_changes (key device|bridge|interface) and the
 	// time of each bridge's previous sample: TCN deltas are summed per bridge
@@ -434,7 +436,24 @@ func (n *NetworkHealthPoller) settingsOnce(s **healthSettings) *healthSettings {
 // snapshot only changes on a counter read; interface_state rows are written
 // per scan.
 func (n *NetworkHealthPoller) portScanInterval(dev queries.Device, now time.Time) time.Duration {
-	return max(n.interval, n.cadence.Interval(dev, devclass.TierCounters, now))
+	return max(n.floorInterval(), n.cadence.Interval(dev, devclass.TierCounters, now))
+}
+
+// UseFloor makes the poller ask fn for its fleet floor interval (how often
+// it prunes, publishes the summary and at most scans ports) instead of the
+// fixed interval it was built with: the manager hands it NetworkHealthFloor,
+// so the network_health_interval setting applies without a restart.
+func (n *NetworkHealthPoller) UseFloor(fn func() time.Duration) {
+	n.floor = fn
+}
+
+func (n *NetworkHealthPoller) floorInterval() time.Duration {
+	if n.floor != nil {
+		if d := n.floor(); d > 0 {
+			return d
+		}
+	}
+	return n.interval
 }
 
 // visit runs dev's work that is due at now: the port monitor, then the bridge
@@ -703,7 +722,7 @@ const pausedSeenKeep = 24 * time.Hour
 // as the pause, and a first read that fails (no pooled connection yet, a
 // session lost during the pause) must not wipe the device off the page.
 func (n *NetworkHealthPoller) maintain(devices []queries.Device, now time.Time) {
-	if !n.lastMaint.IsZero() && now.Sub(n.lastMaint) < n.interval {
+	if !n.lastMaint.IsZero() && now.Sub(n.lastMaint) < n.floorInterval() {
 		return
 	}
 	n.lastMaint = now

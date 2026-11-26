@@ -76,13 +76,13 @@ func runInterval(cs CadenceSource, dev queries.Device, tier devclass.Tier, now t
 	return cs.Interval(dev, tier, now)
 }
 
-// floors resolves the fleet-wide interval that floors each tier: the env vars
-// for the loops that are configured by env (topology, network health), the
-// app settings for the others, re-read at most every floorTTL.
+// floors resolves the fleet-wide interval that floors each tier from the app
+// settings, re-read at most every floorTTL. For topology and network health
+// an environment variable set for this process wins over the setting
+// (config.Locked); unset, its default is only the setting's default.
 type floors struct {
-	db            *sql.DB
-	topology      time.Duration // MIKROTIK_NMS_TOPOLOGY_INTERVAL
-	networkHealth time.Duration // MIKROTIK_NMS_NETWORK_HEALTH_INTERVAL
+	db  *sql.DB
+	cfg *config.Config
 
 	mu     sync.Mutex
 	readAt time.Time
@@ -90,50 +90,111 @@ type floors struct {
 }
 
 func newFloors(db *sql.DB, cfg *config.Config) *floors {
-	f := &floors{db: db, topology: defaultTopologyFloor, networkHealth: defaultNetworkHealthFloor}
-	if cfg != nil {
-		if cfg.TopologyInterval > 0 {
-			f.topology = cfg.TopologyInterval
-		}
-		if cfg.NetworkHealthInterval > 0 {
-			f.networkHealth = cfg.NetworkHealthInterval
-		}
-	}
-	return f
+	return &floors{db: db, cfg: cfg}
 }
 
 // of returns tier's floor at now (0 = none).
 func (f *floors) of(tier devclass.Tier, now time.Time) time.Duration {
-	switch tier {
-	case devclass.TierNeighbors, devclass.TierRoutes:
-		return f.topology
-	case devclass.TierBridgePorts, devclass.TierBridgeVLAN, devclass.TierLogs:
-		return f.networkHealth
-	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.byTier == nil || now.Sub(f.readAt) >= floorTTL || now.Before(f.readAt) {
-		f.byTier = settingFloors(f.db)
+		f.byTier = settingFloors(f.db, f.cfg)
 		f.readAt = now
 	}
 	return f.byTier[tier]
 }
 
-// settingFloors reads the runtime-tunable intervals that floor the tiers of
-// the settings-driven loops. Tier 1 (cpu) has no loop yet and no floor.
-func settingFloors(db *sql.DB) map[devclass.Tier]time.Duration {
+// Bounds of the settings-backed floors. A floor below the lower bound would
+// only make a loop spin (the class cadences are never faster), and the upper
+// bound keeps a typo from switching a read off.
+const (
+	minLoopFloor      = 30 * time.Second // topology, network health
+	maxLoopFloor      = time.Hour
+	minWifiFloor      = 15 * time.Second
+	maxWifiFloor      = time.Hour
+	minClientsFloor   = 5 * time.Minute
+	maxClientsFloor   = 24 * time.Hour
+	minRetentionDays  = 1
+	maxRetentionDays  = 3650
+	defaultRetainDays = 7
+)
+
+// settingFloors reads the runtime-tunable intervals that floor the tiers.
+// Tier 1 (cpu) has no floor.
+func settingFloors(db *sql.DB, cfg *config.Config) map[devclass.Tier]time.Duration {
 	counters, hosts := PortStatsInterval(db), PortHostsInterval(db)
-	clients := settingSeconds(db, "client_discovery_interval", defaultClientDiscovery)
+	clients := clampDuration(settingSeconds(db, "client_discovery_interval", defaultClientDiscovery), minClientsFloor, maxClientsFloor)
+	topo, health := TopologyFloor(db, cfg), NetworkHealthFloor(db, cfg)
 	return map[devclass.Tier]time.Duration{
 		devclass.TierCounters:          counters,
 		devclass.TierEthernet:          counters,
 		devclass.TierBridgeHosts:       hosts,
 		devclass.TierRelations:         hosts,
-		devclass.TierWifiRegistrations: settingSeconds(db, "wifi_interval", defaultWifiFloor),
+		devclass.TierWifiRegistrations: clampDuration(settingSeconds(db, "wifi_interval", defaultWifiFloor), minWifiFloor, maxWifiFloor),
 		devclass.TierARP:               clients,
 		devclass.TierDHCPLeases:        clients,
 		devclass.TierInventory:         settingSeconds(db, "info_interval", defaultInfoInterval),
+		devclass.TierNeighbors:         topo,
+		devclass.TierRoutes:            topo,
+		devclass.TierBridgePorts:       health,
+		devclass.TierBridgeVLAN:        health,
+		devclass.TierLogs:              health,
 	}
+}
+
+func clampDuration(d, lo, hi time.Duration) time.Duration {
+	return min(max(d, lo), hi)
+}
+
+// TopologyFloor is how often the topology loop rebuilds the graph and the
+// fleet floor of the neighbor and route reads:
+// MIKROTIK_NMS_TOPOLOGY_INTERVAL when it is set in the environment, else the
+// topology_interval setting (seconds, 30 s .. 1 h).
+func TopologyFloor(db *sql.DB, cfg *config.Config) time.Duration {
+	def := defaultTopologyFloor
+	if cfg != nil && cfg.TopologyInterval > 0 {
+		def = cfg.TopologyInterval
+	}
+	if cfg.Locked("topology_interval") {
+		return def
+	}
+	return clampDuration(settingSeconds(db, "topology_interval", def), minLoopFloor, maxLoopFloor)
+}
+
+// NetworkHealthFloor is the same for the bridge / STP / log reads and the
+// network-health summary: MIKROTIK_NMS_NETWORK_HEALTH_INTERVAL when set,
+// else the network_health_interval setting.
+func NetworkHealthFloor(db *sql.DB, cfg *config.Config) time.Duration {
+	def := defaultNetworkHealthFloor
+	if cfg != nil && cfg.NetworkHealthInterval > 0 {
+		def = cfg.NetworkHealthInterval
+	}
+	if cfg.Locked("network_health_interval") {
+		return def
+	}
+	return clampDuration(settingSeconds(db, "network_health_interval", def), minLoopFloor, maxLoopFloor)
+}
+
+// RetentionDays is how many days of history the retention job keeps:
+// MIKROTIK_NMS_RETENTION_DAYS when it is set in the environment, else the
+// retention_days setting (1 .. 3650). Read every retention cycle.
+func RetentionDays(db *sql.DB, cfg *config.Config) int {
+	def := defaultRetainDays
+	if cfg != nil && cfg.RetentionDays > 0 {
+		def = cfg.RetentionDays
+	}
+	if db == nil || cfg.Locked("retention_days") {
+		return def
+	}
+	v, err := queries.GetSetting(db, "retention_days")
+	if err != nil {
+		return def
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil || n <= 0 {
+		return def
+	}
+	return min(max(n, minRetentionDays), maxRetentionDays)
 }
 
 // settingSeconds reads a positive app_setting in seconds, capped at maxFloor;
@@ -258,4 +319,53 @@ func (p *pauseNotices) skip(consumer string, dev queries.Device) {
 	p.mu.Unlock()
 	log.Printf("poller: %s skips %s while its polling is paused (until %s)",
 		consumer, nonempty(dev.Identity, dev.Address), until.Format(time.RFC3339))
+}
+
+// adoptedKey marks a database whose once-dead settings were adopted.
+const adoptedKey = "interval_settings_adopted"
+
+// AdoptIntervalSettings runs once per database, on the first start of a
+// version in which topology_interval, network_health_interval and
+// retention_days take effect. Until then the Settings page saved them and
+// nothing read them, so a database can hold anything there: the seeded
+// defaults, or a value typed long ago that never did anything — and a stale
+// retention_days=1 springing to life would delete history. Each key is
+// therefore set to what has actually been in force (the env value or its
+// default); from then on the settings are the truth and edits apply.
+func AdoptIntervalSettings(db *sql.DB, cfg *config.Config) {
+	if db == nil {
+		return
+	}
+	if v, err := queries.GetSetting(db, adoptedKey); err == nil && v == "1" {
+		return
+	}
+	topology, health, days := defaultTopologyFloor, defaultNetworkHealthFloor, defaultRetainDays
+	if cfg != nil {
+		if cfg.TopologyInterval > 0 {
+			topology = cfg.TopologyInterval
+		}
+		if cfg.NetworkHealthInterval > 0 {
+			health = cfg.NetworkHealthInterval
+		}
+		if cfg.RetentionDays > 0 {
+			days = cfg.RetentionDays
+		}
+	}
+	values := map[string]string{
+		"topology_interval":       strconv.Itoa(int(topology / time.Second)),
+		"network_health_interval": strconv.Itoa(int(health / time.Second)),
+		"retention_days":          strconv.Itoa(days),
+	}
+	for key, value := range values {
+		if err := queries.SetSetting(db, key, value); err != nil {
+			log.Printf("poller: adopt setting %s: %v", key, err)
+			return // not marked: tried again at the next start
+		}
+	}
+	if err := queries.SetSetting(db, adoptedKey, "1"); err != nil {
+		log.Printf("poller: adopt settings: %v", err)
+		return
+	}
+	log.Printf("poller: topology_interval=%s network_health_interval=%s retention_days=%s taken over from the running configuration — they are settings now",
+		values["topology_interval"], values["network_health_interval"], values["retention_days"])
 }

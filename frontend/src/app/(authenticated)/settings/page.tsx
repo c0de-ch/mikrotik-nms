@@ -139,16 +139,62 @@ interface IntervalSetting {
   key: string;
   label: string;
   description: string;
+  // The range the backend accepts, in seconds: a value outside it is
+  // applied as the nearest bound.
+  min: number;
+  max: number;
+  // The environment variable that fixes this setting when it is set.
+  env?: string;
 }
 
+// Each is the fleet-wide floor of its reads: a device is never read more
+// often than this, and less often when its CPU class says so. Liveness (a TCP
+// connect every 30 s) and firmware availability (MikroTik's release feed,
+// once a day) are not settings.
 const intervalSettings: IntervalSetting[] = [
-  { key: "health_interval", label: "Health Polling", description: "How often to poll device CPU, memory, uptime" },
-  { key: "topology_interval", label: "Topology Discovery", description: "How often to discover neighbors and rebuild topology" },
-  { key: "wifi_interval", label: "WiFi Tracking", description: "How often to poll CAPsMAN for client positions" },
-  { key: "client_discovery_interval", label: "Client Discovery", description: "How often to scan ARP/DHCP and update MAC cache" },
-  { key: "network_health_interval", label: "Network Health", description: "How often to poll bridge / STP state and check for loops" },
-  { key: "firmware_interval", label: "Firmware Check", description: "How often to check for RouterOS updates" },
+  {
+    key: "topology_interval",
+    label: "Topology",
+    description: "Neighbor and default-route reads, and how often the map is rebuilt",
+    min: 30,
+    max: 3600,
+    env: "MIKROTIK_NMS_TOPOLOGY_INTERVAL",
+  },
+  {
+    key: "network_health_interval",
+    label: "Network Health",
+    description: "Bridge / STP state, the bridge log and the health summary",
+    min: 30,
+    max: 3600,
+    env: "MIKROTIK_NMS_NETWORK_HEALTH_INTERVAL",
+  },
+  { key: "wifi_interval", label: "WiFi Tracking", description: "Registration tables of the WiFi controllers", min: 15, max: 3600 },
+  {
+    key: "client_discovery_interval",
+    label: "Client Discovery",
+    description: "ARP and DHCP reads, and the external lease sources",
+    min: 300,
+    max: 86400,
+  },
 ];
+
+function secondsLabel(n: number): string {
+  if (n % 3600 === 0) return `${n / 3600}h`;
+  if (n % 60 === 0) return `${n / 60}m`;
+  return `${n}s`;
+}
+
+// The choices for one interval: the standard steps inside its range, plus the
+// stored value when it is not one of them, labelled with what it is applied
+// as when it lies outside the range.
+function intervalChoices(is: IntervalSetting, stored: string): { label: string; value: string }[] {
+  const inRange = intervalOptions.filter((o) => Number(o.value) >= is.min && Number(o.value) <= is.max);
+  const n = Number(stored);
+  if (!stored || !Number.isFinite(n) || n <= 0 || inRange.some((o) => o.value === stored)) return inRange;
+  const applied = Math.min(Math.max(n, is.min), is.max);
+  const label = applied === n ? secondsLabel(n) : `${secondsLabel(n)} (applied as ${secondsLabel(applied)})`;
+  return [{ label, value: stored }, ...inRange];
+}
 
 export default function SettingsPage() {
   const { token } = useAuth();
@@ -400,6 +446,9 @@ export default function SettingsPage() {
     };
   }, [token]);
 
+  // Settings the backend environment fixes (GET /settings: env_locked).
+  const envLocked = new Set((settings.env_locked || "").split(",").filter(Boolean));
+
   const updateSetting = (key: string, value: string) => {
     setSettings((prev) => ({ ...prev, [key]: value }));
     setDirty(true);
@@ -412,7 +461,7 @@ export default function SettingsPage() {
       const updated = await api.settings.update(token, settings);
       setSettings(updated);
       setDirty(false);
-      toast.success("Settings saved. Restart backend for interval changes to take effect.");
+      toast.success("Settings saved");
 
       // Apply dark mode immediately
       if (updated.dark_mode === "true") {
@@ -536,42 +585,69 @@ export default function SettingsPage() {
         <CardHeader>
           <CardTitle className="text-base">Polling Intervals</CardTitle>
           <p className="text-xs text-muted-foreground">
-            Configure how often the backend polls MikroTik devices. Changes take effect after backend restart.
-            Device reads are floors: a device whose CPU class allows less is read at its class cadence instead
-            (see NMS polling on each device&apos;s page).
+            The fastest the backend reads any device. Each is a floor: a device whose CPU class allows less is read at
+            its class cadence instead (see NMS polling on each device&apos;s page). Changes apply within seconds, without
+            a restart.
           </p>
         </CardHeader>
         <CardContent className="space-y-4">
-          {intervalSettings.map((is) => (
-            <div key={is.key} className="flex items-center justify-between gap-4">
-              <div className="flex-1">
-                <p className="font-medium text-sm">{is.label}</p>
-                <p className="text-xs text-muted-foreground">{is.description}</p>
+          {intervalSettings.map((is) => {
+            const locked = envLocked.has(is.key);
+            return (
+              <div key={is.key} className="flex items-center justify-between gap-4">
+                <div className="flex-1">
+                  <p className="font-medium text-sm">{is.label}</p>
+                  <p className="text-xs text-muted-foreground">{is.description}</p>
+                  {locked && (
+                    <p className="text-xs text-amber-700 dark:text-amber-400">
+                      Set by <code>{is.env}</code> in the backend environment — remove the variable to change it here.
+                    </p>
+                  )}
+                </div>
+                <select
+                  className="flex h-8 w-44 rounded-md border bg-transparent px-2 text-sm disabled:opacity-60"
+                  value={settings[is.key] || ""}
+                  disabled={locked}
+                  onChange={(e) => updateSetting(is.key, e.target.value)}
+                >
+                  {!settings[is.key] && <option value="">default</option>}
+                  {intervalChoices(is, settings[is.key] || "").map((opt) => (
+                    <option key={opt.value} value={opt.value}>{opt.label}</option>
+                  ))}
+                </select>
               </div>
-              <select
-                className="flex h-8 w-28 rounded-md border bg-transparent px-2 text-sm"
-                value={settings[is.key] || ""}
-                onChange={(e) => updateSetting(is.key, e.target.value)}
-              >
-                {intervalOptions.map((opt) => (
-                  <option key={opt.value} value={opt.value}>{opt.label}</option>
-                ))}
-              </select>
-            </div>
-          ))}
+            );
+          })}
+          <p className="text-xs text-muted-foreground">
+            Not settings: liveness is a TCP connect to each device every 30 s, and firmware availability comes from
+            MikroTik&apos;s release feed once a day.
+          </p>
 
           <Separator />
 
           <div className="flex items-center justify-between gap-4">
             <div className="flex-1">
               <p className="font-medium text-sm">Data Retention</p>
-              <p className="text-xs text-muted-foreground">How long to keep traffic samples, WiFi history, and client history</p>
+              <p className="text-xs text-muted-foreground">
+                How long to keep traffic samples, WiFi history, and client history. Applied by the hourly cleanup:
+                shortening it deletes the older history then.
+              </p>
+              {envLocked.has("retention_days") && (
+                <p className="text-xs text-amber-700 dark:text-amber-400">
+                  Set by <code>MIKROTIK_NMS_RETENTION_DAYS</code> in the backend environment — remove the variable to
+                  change it here.
+                </p>
+              )}
             </div>
             <select
-              className="flex h-8 w-28 rounded-md border bg-transparent px-2 text-sm"
+              className="flex h-8 w-28 rounded-md border bg-transparent px-2 text-sm disabled:opacity-60"
               value={settings.retention_days || "7"}
+              disabled={envLocked.has("retention_days")}
               onChange={(e) => updateSetting("retention_days", e.target.value)}
             >
+              {!retentionOptions.some((o) => o.value === (settings.retention_days || "7")) && (
+                <option value={settings.retention_days}>{settings.retention_days} days</option>
+              )}
               {retentionOptions.map((opt) => (
                 <option key={opt.value} value={opt.value}>{opt.label}</option>
               ))}
