@@ -66,10 +66,21 @@ type Collector struct {
 	syncWrites bool
 	drainBy    time.Time // shutdown: submit may wait until then
 
+	// Guardrails. guardCh carries sightings of guarded senders from the
+	// readers to the worker; exportCheckReq asks the maintenance loop for
+	// the confirmation read of a device (exportChecked: when each was last
+	// read, maintenance-loop-owned). reconciled is set by the worker's
+	// first reconcile; onAccepted is the accept hook (UseAcceptHook).
+	guardCh        chan guardEvent
+	exportCheckReq chan string
+	exportChecked  map[string]time.Time
+	reconciled     bool
+	onAccepted     func(e queries.FlowExporter, at time.Time)
+
 	// Maintenance loop. ifaceSrc (UseIfaceSource) serves the ifIndex
 	// sync's interface rows from memory; uplinkAge (UseUplinkAge) judges
-	// the egress rows the plan and the point facing read. Both are set
-	// before Run and only read afterwards.
+	// the egress rows the plan, the point facing and the device roles
+	// read. Both are set before Run and only read afterwards.
 	ifsyncReq chan int64
 	ifaceSrc  IfaceSource
 	uplinkAge queries.UplinkAge
@@ -106,11 +117,15 @@ func New(db *sql.DB, pool *routeros.Pool, hub *ws.Hub, cfg Config) *Collector {
 		ifaces:       map[int64]map[uint32]queries.FlowIface{},
 		acceptLog:    map[netip.Addr]*logThrottle{},
 		pointLog:     map[int64]*logThrottle{},
-		settings:     runtimeSettings{topN: 50, maxRows: 1500, pps: 2000, autoAccept: true},
+		settings:     runtimeSettings{topN: 50, maxRows: 1500, pps: 2000},
 		writeCh:      make(chan writeOp, writerCap),
-		ifsyncReq:    make(chan int64, 16),
-		reload:       make(chan struct{}, 1),
-		done:         make(chan struct{}),
+		guardCh:      make(chan guardEvent, guardQueueCap),
+		// One slot per device would be enough; the cap only bounds a burst.
+		exportCheckReq: make(chan string, guardQueueCap),
+		exportChecked:  map[string]time.Time{},
+		ifsyncReq:      make(chan int64, 16),
+		reload:         make(chan struct{}, 1),
+		done:           make(chan struct{}),
 	}
 	c.bufPool.New = func() any {
 		b := make([]byte, pooledBufSize)
@@ -307,6 +322,7 @@ func (c *Collector) Status() Status {
 	s.FlushedThrough = timePtr(c.FlushedThrough())
 	s.RolledThrough = timePtr(c.RolledThrough())
 	s.Unknown = c.unknown.snapshot()
+	s.Blocked = c.blockedSnapshot()
 	return s
 }
 

@@ -112,20 +112,30 @@ func TestExporterStatusFromRow(t *testing.T) {
 func TestSettingsReadersClamp(t *testing.T) {
 	db := testDB(t)
 	if TopN(db) != 50 || TopNHourly(db) != 100 || MaxRowsPerMinute(db) != 1500 || Retention1mDays(db) != 3 ||
-		Retention1hDays(db) != 90 || RateLimitPPS(db) != 2000 || !AutoAcceptDevices(db) {
+		Retention1hDays(db) != 90 || RateLimitPPS(db) != 2000 || AutoAcceptClasses(db) != "" {
 		t.Fatal("migration defaults not read")
 	}
 	for k, v := range map[string]string{"flow_top_n": "5", "flow_top_n_hourly": "999999", "flow_1m_days": "junk",
-		"flow_rate_limit_pps": " 300 ", "flow_auto_accept_devices": "false"} {
+		"flow_rate_limit_pps": " 300 ", "flow_auto_accept_classes": " Router "} {
 		if err := queries.SetSetting(db, k, v); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if TopN(db) != 10 || TopNHourly(db) != 2000 || Retention1mDays(db) != 3 || RateLimitPPS(db) != 300 || AutoAcceptDevices(db) {
-		t.Fatalf("clamps: topN %d hourly %d 1m %d pps %d auto %v", TopN(db), TopNHourly(db), Retention1mDays(db),
-			RateLimitPPS(db), AutoAcceptDevices(db))
+	if TopN(db) != 10 || TopNHourly(db) != 2000 || Retention1mDays(db) != 3 || RateLimitPPS(db) != 300 || AutoAcceptClasses(db) != "router" {
+		t.Fatalf("clamps: topN %d hourly %d 1m %d pps %d auto %q", TopN(db), TopNHourly(db), Retention1mDays(db),
+			RateLimitPPS(db), AutoAcceptClasses(db))
 	}
-	if TopN(nil) != 50 || AutoAcceptDevices(nil) != true {
+	// Auto-accept is off for anything but "router" — including the values
+	// the old boolean key took.
+	for _, v := range []string{"true", "all", "switch", "1", ""} {
+		if err := queries.SetSetting(db, "flow_auto_accept_classes", v); err != nil {
+			t.Fatal(err)
+		}
+		if got := AutoAcceptClasses(db); got != "" {
+			t.Errorf("flow_auto_accept_classes=%q read as %q, want off", v, got)
+		}
+	}
+	if TopN(nil) != 50 || AutoAcceptClasses(nil) != "" {
 		t.Fatal("nil db must yield defaults")
 	}
 	got := parsePrefixCSV("192.168.23.0/24, 10.1.2.3 ,junk,2001:db8::1,::ffff:10.0.0.0/104\n172.16.0.1/12")

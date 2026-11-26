@@ -13,6 +13,8 @@ import (
 
 	"github.com/mikrotik-nms/backend/internal/database/queries"
 	"github.com/mikrotik-nms/backend/internal/flow/decode"
+	"github.com/mikrotik-nms/backend/internal/flowguard"
+	"github.com/mikrotik-nms/backend/internal/topology"
 )
 
 // Worker cadence and limits.
@@ -40,12 +42,12 @@ const (
 // runtimeSettings are the flow_* settings the worker reads on reconcile.
 type runtimeSettings struct {
 	topN, maxRows, pps int
-	autoAccept         bool
+	autoAccept         string // flow_auto_accept_classes: "" (off) | "router"
 }
 
 func readSettings(c *Collector) runtimeSettings {
 	return runtimeSettings{topN: TopN(c.db), maxRows: MaxRowsPerMinute(c.db), pps: RateLimitPPS(c.db),
-		autoAccept: AutoAcceptDevices(c.db)}
+		autoAccept: AutoAcceptClasses(c.db)}
 }
 
 // minuteRate counts one receive minute for ExporterStatus.PerMinute.
@@ -101,6 +103,13 @@ type expState struct {
 	captured          int
 	lastHint          time.Time
 	lastIfsyncReq     time.Time
+
+	// guardDevice is the managed device at this exporter's address when
+	// that device must not export flows (rebuilt on reconcile): the
+	// exporter keeps working, each minute with datagrams is a sighting for
+	// the flow_export_on_switch alert (lastGuardNote).
+	guardDevice   string
+	lastGuardNote time.Time
 
 	// ifKnown are the ifIndexes that may be touched / get a native point:
 	// the exporter's flow_exporter_ifaces rows and native points (rebuilt on
@@ -218,20 +227,7 @@ func (c *Collector) reconcile(now time.Time) {
 		log.Printf("flow collector: reconcile: %v", err)
 		return
 	}
-	devices := map[netip.Addr]deviceInfo{}
-	if list, err := queries.ListDevices(c.db); err == nil {
-		for _, d := range list {
-			a, err := netip.ParseAddr(d.Address)
-			if err != nil {
-				continue
-			}
-			name := d.Identity
-			if name == "" {
-				name = d.Address
-			}
-			devices[a.Unmap()] = deviceInfo{id: d.ID, name: name}
-		}
-	}
+	devices := c.loadDevices(now)
 	if points, err := queries.ListFlowPoints(c.db); err == nil {
 		natives := map[pointKey]bool{}
 		for _, p := range points {
@@ -253,9 +249,12 @@ func (c *Collector) reconcile(now time.Time) {
 	}
 
 	old := c.allow.Load()
-	al := &allowList{exporters: map[netip.Addr]*exporterGate{}, candidates: map[netip.Addr]*candidateGate{},
-		devices: devices}
+	al := &allowList{exporters: map[netip.Addr]*exporterGate{}, guarded: map[netip.Addr]*guardGate{},
+		candidates: map[netip.Addr]*candidateGate{}, devices: devices}
 	seen := map[int64]bool{}
+	// Exporters the collector starts accepting with this reload (not the
+	// ones it finds at startup): the accept hook runs for them below.
+	var accepted []queries.FlowExporter
 	for _, r := range rows {
 		a, err := netip.ParseAddr(r.Address)
 		if err != nil {
@@ -266,8 +265,22 @@ func (c *Collector) reconcile(now time.Time) {
 		if st == nil || st.addr != a {
 			st = c.newExpState(r, a, now)
 			c.exps[r.ID] = st
+			if c.reconciled && r.Enabled {
+				accepted = append(accepted, r)
+			}
 		} else {
+			wasEnabled := st.row.Enabled
 			st.configure(r, now)
+			if !wasEnabled && r.Enabled {
+				accepted = append(accepted, r)
+			}
+		}
+		// An exporter on a device that must not export keeps working (it
+		// was accepted, by an admin or by an earlier release); it is
+		// flagged, not blocked.
+		st.guardDevice = ""
+		if dev, ok := devices[a]; ok && dev.never {
+			st.guardDevice = dev.id
 		}
 		st.gate.bucket.setRate(float64(c.settings.pps))
 		al.exporters[a] = st.gate
@@ -282,9 +295,58 @@ func (c *Collector) reconcile(now time.Time) {
 	for id, st := range c.exps {
 		c.rebuildIfKnown(id, st)
 	}
-	if c.settings.autoAccept {
+
+	// Guarded addresses: the block list, then every managed device that
+	// must not export and is not blocked yet (its first flow datagram
+	// blocks it). The counters of an address carry over reloads.
+	statsOf := func(a netip.Addr, persisted int64) *guardStats {
+		if old != nil && old.guarded[a] != nil {
+			return old.guarded[a].stats
+		}
+		s := &guardStats{}
+		s.total.Store(persisted)
+		return s
+	}
+	policies, err := queries.ListFlowSenderPolicies(c.db)
+	if err != nil {
+		log.Printf("flow collector: reconcile: block list: %v", err)
+		if old != nil { // keep blocking what was blocked
+			for a, g := range old.guarded {
+				if g.policy != nil && al.exporters[a] == nil {
+					al.guarded[a] = g
+				}
+			}
+		}
+	}
+	for i := range policies {
+		p := policies[i]
+		a, err := netip.ParseAddr(p.Address)
+		if err != nil {
+			continue
+		}
+		a = a.Unmap()
+		if al.exporters[a] != nil {
+			continue
+		}
+		g := &guardGate{addr: a, policy: &p, stats: statsOf(a, p.Datagrams)}
+		if dev, ok := devices[a]; ok && dev.never {
+			g.alarmDevice, g.name, g.reason = dev.id, dev.name, dev.neverWhy
+		}
+		al.guarded[a] = g
+		c.unknown.forget(a)
+	}
+	for a, d := range devices {
+		if !d.never || al.exporters[a] != nil || al.guarded[a] != nil {
+			continue
+		}
+		al.guarded[a] = &guardGate{addr: a, alarmDevice: d.id, name: d.name, reason: d.neverWhy, stats: statsOf(a, 0)}
+	}
+
+	// Auto-accept candidates: only under flow_auto_accept_classes = router,
+	// and only router-role C3 devices with a fresh egress of their own.
+	if c.settings.autoAccept != "" {
 		for a, d := range devices {
-			if al.exporters[a] != nil {
+			if !d.accept || al.exporters[a] != nil || al.guarded[a] != nil {
 				continue
 			}
 			if old != nil && old.candidates[a] != nil && old.candidates[a].deviceID == d.id {
@@ -300,6 +362,10 @@ func (c *Collector) reconcile(now time.Time) {
 	c.allow.Store(al)
 	c.rows = rows
 	c.devices = devices
+	c.reconciled = true
+	for _, e := range accepted {
+		c.exporterAccepted(e, now)
+	}
 
 	if n, ok := kernelDrops(c.boundPorts); ok {
 		c.global.kernelDropped.Store(n)
@@ -312,6 +378,37 @@ func (c *Collector) reconcile(now time.Time) {
 	if c.hub != nil && c.hub.TopicSubscriberCount(TopicStatus) > 0 {
 		c.hub.Publish(TopicStatus, c.Status())
 	}
+}
+
+// loadDevices reads the managed devices with their roles (from stored facts
+// only: topology.LoadDeviceRoles) and what the guardrails make of each. When
+// the read fails the previous view is kept: a database hiccup must neither
+// unblock a switch nor stop accepting a router.
+func (c *Collector) loadDevices(now time.Time) map[netip.Addr]deviceInfo {
+	roles, list, err := topology.LoadDeviceRoles(c.db, c.uplinkAge, now)
+	if err != nil {
+		log.Printf("flow collector: reconcile: devices: %v", err)
+		return c.devices
+	}
+	devices := make(map[netip.Addr]deviceInfo, len(list))
+	for _, d := range list {
+		a, err := netip.ParseAddr(d.Address)
+		if err != nil {
+			continue
+		}
+		name := d.Identity
+		if name == "" {
+			name = d.Address
+		}
+		info := deviceInfo{id: d.ID, name: name}
+		if r, ok := roles[d.ID]; ok {
+			info.role, info.reason = string(r.Role), r.Reason
+			info.never, info.neverWhy = flowguard.NeverExports(name, r)
+			info.accept = flowguard.AutoAccept(c.settings.autoAccept, r)
+		}
+		devices[a.Unmap()] = info
+	}
+	return devices
 }
 
 // rebuildIfKnown resets an exporter's known ifIndexes to its interface rows
@@ -364,15 +461,28 @@ func (c *Collector) absorbDecodeStats(st *expState) {
 	st.prev = s
 }
 
-// acceptCandidate turns a managed device's first datagram into an auto
-// exporter (flow_auto_accept_devices), exactly once.
+// acceptCandidate turns a managed router's first datagram into an auto
+// exporter (flow_auto_accept_classes = router), exactly once. The device is
+// judged again here, by the worker's current view: a candidate the readers
+// still held from before a reload is an unknown sender when auto-accept was
+// switched off or the device stopped qualifying, and a blocked address is
+// never accepted.
 func (c *Collector) acceptCandidate(d *datagram, now time.Time) *expState {
 	if st := c.stateByAddr(d.addr); st != nil {
 		return st
 	}
-	if !c.settings.autoAccept || c.db == nil {
+	dev := c.devices[d.addr]
+	blocked := false
+	if c.db != nil {
+		p, err := queries.GetFlowSenderPolicy(c.db, d.addr.String())
+		blocked = err != nil || p != nil // cannot tell = do not accept
+	}
+	if !dev.accept || c.db == nil || blocked {
+		if blocked {
+			c.global.blocked.Add(1)
+			return nil
+		}
 		c.global.unknownDatagrams.Add(1)
-		dev := c.devices[d.addr]
 		c.unknown.record(d.addr, decode.Sniff(d.bytes()), now, dev, dev.id != "")
 		return nil
 	}
@@ -431,6 +541,10 @@ func (c *Collector) processDatagram(d datagram) {
 	if !st.gate.enabled.Load() {
 		c.global.rejected.Add(1)
 		return
+	}
+	if st.guardDevice != "" && (st.lastGuardNote.IsZero() || now.Sub(st.lastGuardNote) >= guardNoteEvery) {
+		st.lastGuardNote = now
+		c.noteExportSighting(st.guardDevice, st.addr, now)
 	}
 	pkt := d.bytes()
 	c.capture(st, pkt, now)
@@ -665,9 +779,11 @@ func (c *Collector) flushMinute(m int64, now time.Time, final bool) {
 	c.submit(writeOp{flush: b})
 }
 
-// persistStatus writes every exporter's counter deltas and health (60 s tick
-// and shutdown). A delta that cannot be queued is retried next time.
+// persistStatus writes every exporter's counter deltas and health, and the
+// datagrams dropped from blocked senders (60 s tick and shutdown). A delta
+// that cannot be queued is retried next time.
 func (c *Collector) persistStatus() {
+	c.persistDrops()
 	var ops []statusDelta
 	var marks []*expState
 	for _, st := range c.exps {
@@ -711,10 +827,19 @@ func (c *Collector) rebuildStatus(now time.Time) {
 				es.InterfacesSeen++
 			}
 		}
+		if a, err := netip.ParseAddr(r.Address); err == nil {
+			if dev, ok := c.devices[a.Unmap()]; ok {
+				es.DeviceRole, es.DeviceRoleReason = dev.role, dev.reason
+				if dev.never {
+					es.ExportWarning = dev.neverWhy
+				}
+			}
+		}
 		exps = append(exps, es)
 	}
 	c.statusMu.Lock()
 	c.status.Exporters = exps
+	c.status.AutoAcceptClasses = c.settings.autoAccept
 	c.status.RcvBufBytes = c.rcvBuf
 	c.status.ListenErrors = slices.Clone(c.listenErrors)
 	if c.status.ListenErrors == nil {
@@ -785,6 +910,8 @@ func (c *Collector) workerLoop(ctx context.Context) {
 			return
 		case d := <-c.queue:
 			c.processDatagram(d)
+		case ev := <-c.guardCh:
+			c.guard("guard", func() { c.handleGuard(ev) })
 		case <-flushT.C:
 			now := c.now()
 			c.guard("flush", func() {
@@ -812,12 +939,15 @@ func (c *Collector) guard(what string, f func()) {
 	f()
 }
 
-// drainQueue processes whatever the readers queued before they stopped.
+// drainQueue processes whatever the readers queued before they stopped:
+// datagrams and the sightings of guarded senders.
 func (c *Collector) drainQueue() {
 	for {
 		select {
 		case d := <-c.queue:
 			c.processDatagram(d)
+		case ev := <-c.guardCh:
+			c.guard("guard", func() { c.handleGuard(ev) })
 		default:
 			return
 		}
