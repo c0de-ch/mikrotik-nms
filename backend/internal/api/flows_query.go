@@ -335,7 +335,8 @@ func (s *Server) handleFlowCoverage(w http.ResponseWriter, r *http.Request) {
 
 	var counters []queries.SeriesPoint
 	if coverageCapable(*p) {
-		present, err := queries.PortStatsPresentBuckets(s.db, rng.portTable, from, win.end)
+		// The counter line breaks where the port's device was not read.
+		cov, err := s.portCounterCoverage(rng.portTable, rng.native, p.DeviceID, from, win.end)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to read port stats")
 			return
@@ -345,8 +346,7 @@ func (s *Server) handleFlowCoverage(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "failed to read port stats")
 			return
 		}
-		counters = queries.DownsampleSeriesCovered(series, from, win.end, rng.step,
-			queries.NewCoverage(rng.native, present, from))
+		counters = queries.DownsampleSeriesCovered(series, from, win.end, rng.step, cov)
 	}
 
 	for k, ts := 0, from; ts.Before(win.end); k, ts = k+1, ts.Add(rng.step) {
