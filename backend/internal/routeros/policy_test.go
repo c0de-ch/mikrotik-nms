@@ -52,10 +52,10 @@ func TestCheckTargetPollersOff(t *testing.T) {
 	if err := Ping("127.0.0.1", 1, time.Second); !errors.Is(err, ErrPollersOff) {
 		t.Errorf("Ping = %v, want ErrPollersOff", err)
 	}
-	if _, err := DialOnce("127.0.0.1", 1, "u", "p", false, false); !errors.Is(err, ErrPollersOff) {
+	if _, err := DialOnce(Target{Address: "127.0.0.1", Port: 1}, "u", "p"); !errors.Is(err, ErrPollersOff) {
 		t.Errorf("DialOnce = %v, want ErrPollersOff", err)
 	}
-	if _, err := NewPool(false).Dial("dev", "127.0.0.1", 1, "u", "p", false); !errors.Is(err, ErrPollersOff) {
+	if _, err := NewPool().Dial("dev", Target{Address: "127.0.0.1", Port: 1}, "u", "p"); !errors.Is(err, ErrPollersOff) {
 		t.Errorf("Pool.Dial = %v, want ErrPollersOff", err)
 	}
 	if _, err := ScanMNDP(time.Millisecond); !errors.Is(err, ErrPollersOff) {

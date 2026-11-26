@@ -88,7 +88,7 @@ func TestUpdateDeviceSecretsAndPooledSession(t *testing.T) {
 	if err := queries.CreateDevice(db, dev); err != nil {
 		t.Fatal(err)
 	}
-	pool := routeros.NewPool(false)
+	pool := routeros.NewPool()
 	fake := routerostest.NewDevice(t)
 	s := &Server{db: db, cfg: &config.Config{}, pool: pool}
 	h := devicesRouter(s)

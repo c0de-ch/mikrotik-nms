@@ -43,7 +43,8 @@ type PingOptions struct {
 
 // RunPing executes the RouterOS /ping command from the device the client is
 // connected to and summarizes the replies. Count is clamped to 1..10 so the
-// burst (count × pingProbeInterval) stays far under the shared CommandTimeout.
+// burst (count × pingProbeInterval) stays far under the command's deadline
+// (SlowCommandTimeout: a host-name target is resolved by the device first).
 //
 // Not to be confused with Ping (the plain TCP liveness dial): RunPing sends
 // real ICMP from the RouterOS device to an arbitrary address.

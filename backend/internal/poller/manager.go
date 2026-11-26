@@ -201,10 +201,10 @@ func (m *Manager) Start() {
 	netHealth.UseCadence(m.cadence)
 	go netHealth.Run(ctx)
 
-	connectivity := NewConnectivityPoller(m.db, m.pool, m.hub, defaultConnectivityInterval, m.cfg.ROSTLSVerify)
+	connectivity := NewConnectivityPoller(m.db, m.pool, m.hub, defaultConnectivityInterval)
 	go connectivity.Run(ctx)
 
-	speedTests := NewSpeedTestPoller(m.db, m.hub, m.cfg.ROSTLSVerify, defaultSpeedTestInterval)
+	speedTests := NewSpeedTestPoller(m.db, m.hub, defaultSpeedTestInterval)
 	go speedTests.Run(ctx)
 
 	// Alerting reads what the loops above store — it never contacts a
@@ -287,6 +287,12 @@ func (m *Manager) pollDevice(dev queries.Device) {
 	if err := m.ping(dev); err != nil {
 		m.markUnreachable(dev, err)
 		return
+	}
+	// The API port answers again after the device was reported down: the
+	// pool must not make the pollers wait out a reconnect backoff that grew
+	// (up to ten minutes) while it was away.
+	if dev.Status != "online" {
+		m.pool.ResetBackoff(dev.ID)
 	}
 
 	_ = queries.MarkDeviceOnline(m.db, dev.ID)
@@ -456,16 +462,18 @@ func (m *Manager) refreshDeviceInfo(dev queries.Device) {
 		m.inventory.ran(dev.ID, devclass.TierInventory, runInterval(m.cadence, dev, devclass.TierInventory, end), end)
 	}()
 
-	client, err := m.pool.EnsureConnection(
-		dev.ID, dev.Address, dev.APIPort, dev.Username, dev.PasswordEnc, dev.UseTLS,
-	)
+	client, err := m.pool.EnsureConnection(dev.ID, DialTarget(dev), dev.Username, dev.PasswordEnc)
 	if err != nil {
 		return
 	}
 
 	res, err := routeros.GetSystemResource(client)
 	if err != nil {
-		m.pool.Close(dev.ID)
+		// A session that is merely busy with another poller's command is
+		// left alone: closing it would end that command too.
+		if !routeros.IsSessionBusy(err) {
+			m.pool.Close(dev.ID)
+		}
 		return
 	}
 	m.probeClass(dev, res.Fields, m.clock())

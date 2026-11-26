@@ -47,9 +47,9 @@ func (c *Credentials) Zero() {
 // ErrCredentialsCleared is returned by DialOnceWith after Zero.
 var ErrCredentialsCleared = errors.New("job credentials already cleared")
 
-// DialOnceWith is DialOnce with job credentials: the same dial fence
-// (CheckTarget), one dedicated session the caller must Close.
-func DialOnceWith(address string, port int, creds *Credentials, useTLS, verifyTLS bool) (*ros.Client, error) {
+// DialOnceWith is DialOnce with job credentials: the same dial (policy,
+// timeouts, pinned TLS), one dedicated session the caller must Close.
+func DialOnceWith(t Target, creds *Credentials) (*ros.Client, error) {
 	creds.mu.Lock()
 	if creds.password == nil {
 		creds.mu.Unlock()
@@ -57,7 +57,7 @@ func DialOnceWith(address string, port int, creds *Credentials, useTLS, verifyTL
 	}
 	user, pass := creds.username, string(creds.password)
 	creds.mu.Unlock()
-	return DialOnce(address, port, user, pass, useTLS, verifyTLS)
+	return DialOnce(t, user, pass)
 }
 
 // IsLoginRefused reports a dial the device answered with a trap: the TCP

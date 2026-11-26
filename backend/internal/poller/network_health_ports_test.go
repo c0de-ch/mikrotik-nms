@@ -33,7 +33,7 @@ func TestNetworkHealthPortMonitorReadsSnapshot(t *testing.T) {
 	mustCreateDevice(t, db, &queries.Device{ID: "cold", Identity: "cold", Address: "192.0.2.11"})
 	mustCreateDevice(t, db, &queries.Device{ID: "off", Identity: "off", Address: "192.0.2.12", Status: "offline"})
 
-	n := NewNetworkHealthPoller(db, routeros.NewPool(false), ws.NewHub(), time.Minute)
+	n := NewNetworkHealthPoller(db, routeros.NewPool(), ws.NewHub(), time.Minute)
 	t0 := time.Now().UTC().Truncate(time.Second)
 	clock := &testClock{t: t0}
 	n.now = clock.now
@@ -89,7 +89,7 @@ func TestNetworkHealthPortMonitorReadsSnapshot(t *testing.T) {
 
 	// Without a snapshot source the port monitor does not run (it never
 	// falls back to a device print).
-	quiet := NewNetworkHealthPoller(db, routeros.NewPool(false), ws.NewHub(), time.Minute)
+	quiet := NewNetworkHealthPoller(db, routeros.NewPool(), ws.NewHub(), time.Minute)
 	if events, ports := quiet.monitorPorts(queries.Device{ID: "sw"}, portMonitorDefaults); events != 0 || ports != 0 {
 		t.Errorf("monitorPorts without a source = %d events, %d ports", events, ports)
 	}

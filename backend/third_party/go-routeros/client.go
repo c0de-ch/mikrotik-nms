@@ -6,17 +6,14 @@ package routeros
 import (
 	"context"
 	"crypto/md5" //nolint:gosec
-	"crypto/tls"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"os"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/go-routeros/routeros/v3/proto"
 )
@@ -75,62 +72,10 @@ func (c *Client) IsAsync() bool {
 	return c.async
 }
 
-// Dial connects and logs in to a RouterOS device.
-func Dial(address, username, password string) (*Client, error) {
-	return DialContext(context.Background(), address, username, password)
-}
-
-// DialTimeout connects and logs in to a RouterOS device with timeout.
-func DialTimeout(address, username, password string, timeout time.Duration) (*Client, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	return DialContext(ctx, address, username, password)
-}
-
-// DialContext connects and logs in to a RouterOS device using context.
-func DialContext(ctx context.Context, address, username, password string) (*Client, error) {
-	conn, err := new(net.Dialer).DialContext(ctx, "tcp", address)
-	if err != nil {
-		return nil, fmt.Errorf("could not connect to router os: %w", err)
-	}
-	return newClientAndLogin(ctx, conn, username, password)
-}
-
-// DialTLS connects and logs in to a RouterOS device using TLS.
-func DialTLS(address, username, password string, tlsConfig *tls.Config) (*Client, error) {
-	return DialTLSContext(context.Background(), address, username, password, tlsConfig)
-}
-
-// DialTLSTimeout connects and logs in to a RouterOS device using TLS with timeout.
-func DialTLSTimeout(address, username, password string, tlsConfig *tls.Config, timeout time.Duration) (*Client, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	return DialTLSContext(ctx, address, username, password, tlsConfig)
-}
-
-// DialTLSContext connects and logs in to a RouterOS device using TLS and context.
-func DialTLSContext(ctx context.Context, address, username, password string, tlsConfig *tls.Config) (*Client, error) {
-	conn, err := (&tls.Dialer{Config: tlsConfig}).DialContext(ctx, "tcp", address)
-	if err != nil {
-		return nil, fmt.Errorf("could not connect to router os: %w", err)
-	}
-	return newClientAndLogin(ctx, conn, username, password)
-}
-
-// newClientAndLogin - creates a new client with context over specified rwc, then logs in to the RouterOS, returns new client.
-func newClientAndLogin(ctx context.Context, rwc io.ReadWriteCloser, username, password string) (*Client, error) {
-	c, err := NewClient(rwc)
-	if err != nil {
-		return nil, fmt.Errorf("could not connect to router os: %w; close: %w", err, rwc.Close())
-	}
-	err = c.LoginContext(ctx, username, password)
-	if err != nil {
-		return nil, fmt.Errorf("could not login: %w; close %w", err, c.Close())
-	}
-	return c, nil
-}
+// The dialers of upstream (Dial, DialTimeout, DialContext, DialTLS,
+// DialTLSTimeout, DialTLSContext) are removed in this copy (local patch):
+// the NMS opens every connection itself, behind its dial policy and with the
+// device's certificate pinned, and hands it to NewClient.
 
 // fail records err as the end of the session, closes the connection and
 // returns the typed error every later command is answered with (local patch).

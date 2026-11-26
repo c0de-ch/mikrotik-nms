@@ -38,7 +38,7 @@ func TestObserverSeesCommandsAndSessions(t *testing.T) {
 	fake := routerostest.NewDevice(t)
 	fake.SetReply("/interface/print", map[string]string{"name": "ether1"}, map[string]string{"name": "ether2"})
 	fake.SetTrap("/interface/wifi/print", "no such command prefix")
-	pool := routeros.NewPool(false)
+	pool := routeros.NewPool()
 	fake.Dial(t, pool, "dev-1")
 
 	before := time.Now()
@@ -49,7 +49,7 @@ func TestObserverSeesCommandsAndSessions(t *testing.T) {
 		t.Fatal("the trap did not surface")
 	}
 
-	once, err := routeros.DialOnce(fake.Host, fake.Port, "u", "p", false, false)
+	once, err := routeros.DialOnce(fake.Target(""), "u", "p")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +97,7 @@ func TestObserverReportsTimeouts(t *testing.T) {
 	release := make(chan struct{})
 	fake.OnCommand("/log/print", func() { <-release })
 	t.Cleanup(func() { close(release) })
-	pool := routeros.NewPool(false)
+	pool := routeros.NewPool()
 	fake.Dial(t, pool, "slow")
 
 	if _, err := routeros.RunCommandWithTimeout(pool.Get("slow"), 30*time.Millisecond, "/log/print"); err == nil {

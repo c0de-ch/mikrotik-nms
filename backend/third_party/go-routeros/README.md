@@ -30,13 +30,19 @@ Each one is marked "local patch" in the code.
   dropped rows that arrived in between — its own `TestProtoRunAsync` failed
   about once in a hundred runs. (The backend uses sync mode only; the fix is
   here so that this copy's test suite is not flaky.)
+- **No dialers**: `Dial`, `DialTimeout`, `DialContext`, `DialTLS`,
+  `DialTLSTimeout` and `DialTLSContext` are removed. The backend opens every
+  connection itself (dial policy, timeouts, pinned certificate) and passes it
+  to `NewClient`.
 - **Removed files**: `client_test.go` (tests against a live device and
   non-loopback dials), `examples/`, `.github/`.
 - **Removed tests**: `TestRandomData` and `TestReadRandom`. Both fed the
   reader `crypto/rand` bytes and asserted one outcome, so they failed a few
   runs in a hundred (upstream too); the fuzz targets cover arbitrary input.
 - **Added tests**: `limits_test.go`, `proto/limits_test.go` (incl.
-  `FuzzReadSentence`).
+  `FuzzReadSentence`). The backend's own `FuzzSentence`
+  (`backend/internal/routeros`, `make fuzz-ros`) fuzzes the reader and the
+  sync reply loop together.
 
 Run this copy's tests with `cd backend/third_party/go-routeros && go test ./...`
 (`make test` does).

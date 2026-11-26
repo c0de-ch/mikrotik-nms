@@ -98,10 +98,6 @@ func jobCredentials(w http.ResponseWriter, username, password string) (*routeros
 	return routeros.NewCredentials(username, password), true
 }
 
-func (s *Server) verifyTLS() bool {
-	return s.cfg != nil && s.cfg.ROSTLSVerify
-}
-
 func (s *Server) handleUpgradeFirmware(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		DeviceIDs []string `json:"device_ids"`
@@ -169,7 +165,7 @@ func (s *Server) handleUpgradeFirmware(w http.ResponseWriter, r *http.Request) {
 
 	// The job's sessions are one-shot connections logged in with the typed
 	// credentials, which the executor zeroes when the job ends.
-	executor := poller.NewUpgradeExecutor(s.db, s.pool, s.hub, creds, s.verifyTLS())
+	executor := poller.NewUpgradeExecutor(s.db, s.pool, s.hub, creds)
 	executor.RecordFirmwareWith(s.firmwareChecker())
 	launched = true
 	go executor.Execute(jobID)
@@ -237,7 +233,7 @@ func (s *Server) firmwareAction(deviceIDs []string, creds *routeros.Credentials,
 			errs = append(errs, name+": skipped: "+poller.LoginRefusedMessage(refusedOn))
 			continue
 		}
-		client, err := routeros.DialOnceWith(dev.Address, dev.APIPort, creds, dev.UseTLS, s.verifyTLS())
+		client, err := routeros.DialOnceWith(poller.DialTarget(*dev), creds)
 		if err != nil {
 			if routeros.IsLoginRefused(err) {
 				refusedOn = name

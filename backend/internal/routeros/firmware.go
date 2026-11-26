@@ -141,7 +141,8 @@ func Reboot(run Runner) error {
 }
 
 // OnceRunner runs commands on a dedicated one-shot client (DialOnce) with its
-// own timeout: firmware downloads and installs outlast CommandTimeout.
+// own timeout: OnceCommandTimeout unless Timeout says otherwise (firmware
+// downloads and installs take minutes).
 type OnceRunner struct {
 	Client  *ros.Client
 	Timeout time.Duration
@@ -151,7 +152,7 @@ type OnceRunner struct {
 func (o OnceRunner) Run(command string, args ...string) (*ros.Reply, error) {
 	t := o.Timeout
 	if t <= 0 {
-		t = CommandTimeout
+		t = OnceCommandTimeout
 	}
 	return RunCommandWithTimeout(o.Client, t, command, args...)
 }

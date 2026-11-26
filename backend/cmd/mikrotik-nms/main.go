@@ -67,6 +67,17 @@ func main() {
 			log.Printf("warning: %s is no longer used (a device is added with its own username and password) — remove it from the environment", gone)
 		}
 	}
+	if os.Getenv("MIKROTIK_NMS_ROS_TLS_VERIFY") != "" {
+		log.Println("warning: MIKROTIK_NMS_ROS_TLS_VERIFY is no longer used (every API-TLS session is verified against the certificate fingerprint pinned on the device) — remove it from the environment")
+	}
+	// A TLS device without a pinned fingerprint is not logged in to at all:
+	// say so once, loudly, rather than leave it silently unpolled.
+	if n, err := queries.CountTLSDevicesWithoutPin(db); err != nil {
+		log.Printf("warning: could not check the devices' TLS pins: %v", err)
+	} else if n > 0 {
+		log.Printf("ERROR: %d device(s) use API-TLS without a pinned certificate fingerprint — "+
+			"they are not polled until the fingerprint (/certificate print detail on the device) is entered on the Devices page", n)
+	}
 	if len(cfg.JWTSecret) < 32 {
 		log.Println("warning: MIKROTIK_NMS_JWT_SECRET is shorter than 32 characters — use a longer, random secret")
 	}
@@ -101,7 +112,7 @@ func main() {
 	hub := ws.NewHub()
 	go hub.Run()
 
-	pool := routeros.NewPool(cfg.ROSTLSVerify)
+	pool := routeros.NewPool()
 
 	// The device I/O fence. MIKROTIK_NMS_POLLERS=off is the code default, so a
 	// checkout started against a copy of a production database never contacts
@@ -109,6 +120,9 @@ func main() {
 	// Installed before the manager and the router exist, so nothing can dial
 	// ahead of it.
 	routeros.SetDialPolicy(&routeros.DialPolicy{Enabled: cfg.PollersEnabled(), Allowed: cfg.AllowedTargetCIDRs})
+	// The client's questions to the database: which devices are weak (C1:
+	// longer deadlines), and where a TLS pin mismatch is recorded.
+	poller.InstallRouterOSHooks(db)
 	if cfg.PollersEnabled() {
 		n := 0
 		if devices, err := queries.ListDevices(db); err == nil {

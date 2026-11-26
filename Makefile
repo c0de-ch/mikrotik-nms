@@ -1,4 +1,4 @@
-.PHONY: dev dev-backend dev-backend-poll dev-frontend build build-backend build-frontend test fuzz-flow lint docker-build docker-up docker-down
+.PHONY: dev dev-backend dev-backend-poll dev-frontend build build-backend build-frontend test fuzz-flow fuzz-ros lint docker-build docker-up docker-down
 
 # Development
 dev: dev-backend dev-frontend
@@ -42,6 +42,12 @@ test-verbose:
 # guards neutralise); `go test ./...` only replays the seed corpus.
 fuzz-flow:
 	cd backend && go test ./internal/flow/decode -run '^$$' -fuzz FuzzDecode -fuzztime=60s
+
+# Fuzz the RouterOS API sentence reader and reply loop of the vendored
+# go-routeros (word, reply and row caps; session-fatal errors); `go test ./...`
+# only replays the seed corpus.
+fuzz-ros:
+	cd backend && go test ./internal/routeros -run '^$$' -fuzz FuzzSentence -fuzztime=60s
 
 # Lint
 lint:

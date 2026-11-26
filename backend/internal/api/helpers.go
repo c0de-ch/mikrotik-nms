@@ -29,7 +29,8 @@ func decodeJSON(r *http.Request, v interface{}) error {
 
 // writeDialPolicyError maps a refused device dial to its HTTP status — 503
 // while polling is off on this instance (MIKROTIK_NMS_POLLERS=off), 403 when
-// the target lies outside MIKROTIK_NMS_ALLOWED_TARGET_CIDRS — and reports
+// the target lies outside MIKROTIK_NMS_ALLOWED_TARGET_CIDRS, 409 for a TLS
+// device without a pinned certificate fingerprint — and reports
 // whether err was one of those. Anything else (nil included) is the caller's
 // to handle, so handlers can write `if writeDialPolicyError(w, err) { return }`
 // ahead of their usual error path.
@@ -44,8 +45,25 @@ func writeDialPolicyError(w http.ResponseWriter, err error) bool {
 	case errors.Is(err, routeros.ErrTargetNotAllowed):
 		writeError(w, http.StatusForbidden, err.Error())
 		return true
+	case errors.Is(err, routeros.ErrPinMissing):
+		// The device is set to API-TLS and nobody has said which
+		// certificate is its own: nothing was sent to it.
+		writeError(w, http.StatusConflict, err.Error())
+		return true
 	}
 	return false
+}
+
+// writeTLSPinMissing refuses an on-demand action on a device that is set to
+// API-TLS and has no pinned certificate fingerprint — 409 with what to do —
+// and reports whether it did. The dial itself would refuse too
+// (routeros.ErrPinMissing); checking up front tells the caller why, instead
+// of "no connection yet" or a failed sample minutes later.
+func writeTLSPinMissing(w http.ResponseWriter, dev *queries.Device) bool {
+	if dev == nil || !dev.UseTLS || dev.PinCertSHA256 != "" {
+		return false
+	}
+	return writeDialPolicyError(w, routeros.ErrPinMissing)
 }
 
 // writePollingPaused refuses an on-demand device action while an admin pause
