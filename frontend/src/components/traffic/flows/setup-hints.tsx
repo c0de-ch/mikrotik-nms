@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useMemo, useState } from "react";
-import { Check, ChevronDown, ChevronRight, Copy, Plus, Split } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, Plus, Split } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -11,72 +11,86 @@ import { cn } from "@/lib/utils";
 import { usePolledFetch } from "../hooks";
 import { deviceName, errorMessage } from "../lib";
 import { Notice } from "../notice";
-import { copyText, listenPort } from "./flow-lib";
+import { roleLabel } from "@/lib/device-role";
+import { listenPort } from "./flow-lib";
+import { CodeBlock, RollbackSteps } from "./rollback";
 
 const SUGGESTIONS_REFRESH_MS = 300_000;
 
-function CodeBlock({ title, lines }: { title: string; lines: string[] }) {
-  const [copied, setCopied] = useState(false);
-  const copy = async () => {
-    const ok = await copyText(lines.join("\n"));
-    if (ok) {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } else toast.error("Copy failed — select the text instead");
-  };
-  return (
-    <div className="min-w-0 space-y-1">
-      <div className="flex items-center justify-between gap-2">
-        <span className="text-xs font-medium">{title}</span>
-        <Button size="xs" variant="ghost" onClick={copy} aria-label={`Copy ${title}`}>
-          {copied ? <Check /> : <Copy />}
-          {copied ? "Copied" : "Copy"}
-        </Button>
-      </div>
-      <pre className="overflow-x-auto rounded-md border bg-muted/40 px-3 py-2 font-mono text-[11px] leading-relaxed whitespace-pre">
-        {lines.join("\n")}
-      </pre>
-    </div>
-  );
-}
-
-// SetupInstructions: RouterOS commands (apply + rollback) and the OPNsense
-// steps from /flows/setup, for the NMS address and port the backend reports.
+// SetupInstructions: the RouterOS hints for one device and the OPNsense
+// steps, from /flows/setup. The commands that ENABLE export are shown only
+// for a device the NMS classifies as an eligible router (a weak one with a
+// warning); everything else gets the read-only check and the rollback. The
+// picker therefore lists eligible routers only — plus the device the page
+// was opened for, when that one is not eligible (so its rollback is at hand).
 function SetupInstructions({ devices, defaultDevice }: { devices: Device[]; defaultDevice: string }) {
   const { token } = useAuth();
   const [device, setDevice] = useState(defaultDevice);
   const fetcher = useCallback(() => api.flows.setup(token!, device || undefined), [token, device]);
   const { data, error } = usePolledFetch(token ? `fsetup|${device}` : null, fetcher, null, { group: "fsetup" });
-  const sorted = useMemo(() => [...devices].sort((a, b) => deviceName(a).localeCompare(deviceName(b))), [devices]);
+  const eligible = useMemo(
+    () => devices.filter((d) => d.flow_export_eligible).sort((a, b) => deviceName(a).localeCompare(deviceName(b))),
+    [devices],
+  );
+  const chosen = devices.find((d) => d.id === device);
+  const extra = chosen && !chosen.flow_export_eligible ? chosen : null;
 
   if (error && !data) return <Notice kind="error">Could not load setup instructions: {error}</Notice>;
   if (!data) return <div className="h-24 animate-pulse rounded-md bg-muted" />;
+  const ros = data.routeros;
   return (
     <div className="grid min-w-0 gap-4 lg:grid-cols-2">
       <div className="min-w-0 space-y-2">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <h4 className="text-sm font-medium">RouterOS (IPFIX)</h4>
           <select
-            aria-label="RouterOS device"
-            title="Pins src-address to the device's management address, so the NMS recognises it as that managed device"
-            className="h-7 max-w-[220px] rounded-md border bg-background px-2 text-xs"
+            aria-label="Router to set up"
+            title="Only routers the NMS classifies as eligible are listed: flow export costs CPU for every routed packet"
+            className="h-7 max-w-[240px] rounded-md border bg-background px-2 text-xs"
             value={device}
             onChange={(e) => setDevice(e.target.value)}
           >
-            <option value="">Any device (no src-address)</option>
-            {sorted.map((d) => (
+            <option value="">{eligible.length > 0 ? "Choose a router…" : "No eligible router"}</option>
+            {extra && <option value={extra.id}>{deviceName(extra)} (check and rollback only)</option>}
+            {eligible.map((d) => (
               <option key={d.id} value={d.id}>
                 {deviceName(d)}
+                {d.role === "weak-router" ? " (weak router)" : ""}
               </option>
             ))}
           </select>
         </div>
-        <CodeBlock title="Apply" lines={data.routeros.apply} />
-        <CodeBlock title="Rollback" lines={data.routeros.rollback} />
+        {data.role && (
+          <p className="text-xs text-muted-foreground">
+            <span className="mr-1.5 rounded-full border px-1.5 text-[10px] font-medium text-foreground">
+              {roleLabel(data.role)}
+              {data.class ? ` · ${data.class}` : ""}
+            </span>
+            {data.role_reason}.
+          </p>
+        )}
+        {data.warnings.map((w, i) => (
+          <Notice key={i} kind="warn">
+            {w}
+          </Notice>
+        ))}
+        <CodeBlock title="Check (read-only): does it export already?" lines={ros.check} />
+        {ros.apply.length > 0 && (
+          <>
+            <CodeBlock title="Apply" lines={ros.apply} />
+            {ros.interfaces_note && <p className="text-[11px] text-muted-foreground">{ros.interfaces_note}</p>}
+          </>
+        )}
+        <RollbackSteps plan={ros.rollback} />
         <p className="text-[11px] text-muted-foreground">
           Traffic Flow sees what the router&apos;s CPU forwards or terminates; hardware-offloaded bridging and FastTrack
-          bypass it.
+          bypass it — which is why a switch or an access point has nothing to gain from exporting.
         </p>
+        {data.advice.map((a, i) => (
+          <p key={i} className="text-[11px] text-muted-foreground">
+            {a}
+          </p>
+        ))}
       </div>
       <div className="min-w-0 space-y-2">
         <h4 className="text-sm font-medium">OPNsense (NetFlow {data.opnsense.version})</h4>
@@ -91,11 +105,6 @@ function SetupInstructions({ devices, defaultDevice }: { devices: Device[]; defa
           unknown sender).
         </p>
       </div>
-      {data.advertise_source === "unknown" && (
-        <Notice kind="warn" className="lg:col-span-2">
-          The NMS could not work out its own address — replace &lt;NMS-IP&gt;, or set “Flow advertise address” in Settings.
-        </Notice>
-      )}
     </div>
   );
 }

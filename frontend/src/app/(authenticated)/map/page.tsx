@@ -159,7 +159,10 @@ export default function MapPage() {
   const deviceById = useMemo(() => new Map(devices.map((d) => [d.id, d])), [devices]);
   const statusById = useMemo(() => new Map(devices.map((d) => [d.id, d.status])), [devices]);
   const typeById = useMemo(() => new Map(nodes.map((n) => [n.id, n.type])), [nodes]);
-  const isInfra = useCallback((id: string) => { const t = typeById.get(id); return t === "router" || t === "switch"; }, [typeById]);
+  // "unknown" is a managed device whose board the NMS does not know as a
+  // router, switch or AP (it used to be drawn as a router): it keeps its
+  // links and its port grid like one.
+  const isInfra = useCallback((id: string) => { const t = typeById.get(id); return t === "router" || t === "switch" || t === "unknown"; }, [typeById]);
 
   // interface degree: how many distinct neighbours a device hears on each port.
   const ifaceDegree = useMemo(() => {
@@ -481,7 +484,7 @@ export default function MapPage() {
               </SheetHeader>
 
               <div className="px-4 pb-6 space-y-4">
-                {(detail.node.type === "switch" || detail.node.type === "router") && (
+                {(detail.node.type === "switch" || detail.node.type === "router" || detail.node.type === "unknown") && (
                   <section>
                     <PortGrid deviceId={detail.node.id} device={detail.dev} dark={dark} />
                   </section>

@@ -1168,20 +1168,22 @@ export default function SettingsPage() {
 
           <div className="flex items-center justify-between gap-4">
             <div className="flex-1">
-              <p className="font-medium text-sm">Accept managed devices automatically</p>
+              <p className="font-medium text-sm">Accept routers automatically</p>
               <p className="text-xs text-muted-foreground">
-                Flows from a managed device&apos;s own address are accepted as an exporter without an admin adding it. Off:
-                they are listed as unknown senders until added.
+                Off (the default): nothing is accepted by itself — a sender is listed as unknown until an admin adds it.
+                Routers: a managed router with a capable CPU (class C3) and an internet or VPN egress of its own is
+                accepted on its first datagram. Switches, access points and weak devices are never accepted; they are
+                blocked and raise an alert.
               </p>
             </div>
             <Button
               variant="outline"
               size="sm"
               onClick={() =>
-                updateSetting("flow_auto_accept_devices", settings.flow_auto_accept_devices === "false" ? "true" : "false")
+                updateSetting("flow_auto_accept_classes", settings.flow_auto_accept_classes === "router" ? "" : "router")
               }
             >
-              {settings.flow_auto_accept_devices === "false" ? "Off" : "On"}
+              {settings.flow_auto_accept_classes === "router" ? "Routers" : "Off"}
             </Button>
           </div>
 
@@ -1204,12 +1206,12 @@ export default function SettingsPage() {
             <p className="font-medium text-sm">External prefixes</p>
             <p className="text-xs text-muted-foreground">
               Addresses to always treat as outside, even when a device has an address in them (CIDR or IP,
-              comma-separated), e.g. LTE transit 192.168.23.0/24.
+              comma-separated), e.g. a private LTE or ISP transit network.
             </p>
             <Textarea
               rows={2}
               className="font-mono text-xs"
-              placeholder="192.168.23.0/24"
+              placeholder="192.0.2.0/24"
               value={settings.flow_external_prefixes ?? ""}
               onChange={(e) => updateSetting("flow_external_prefixes", e.target.value)}
             />
@@ -1235,12 +1237,14 @@ export default function SettingsPage() {
             <div className="flex-1">
               <p className="font-medium text-sm">Advertise address</p>
               <p className="text-xs text-muted-foreground">
-                The NMS address devices should send flows to, used in the setup commands. Empty = detected automatically.
+                The address of this NMS that exporters send flows to. The setup and rollback commands use it and nothing
+                else — it is never guessed, so while it is empty they carry a placeholder. An address that belongs to a
+                managed device is refused.
               </p>
             </div>
             <Input
               className="w-40 font-mono"
-              placeholder="auto"
+              placeholder="not set"
               value={settings.flow_advertise_address ?? ""}
               onChange={(e) => updateSetting("flow_advertise_address", e.target.value)}
             />

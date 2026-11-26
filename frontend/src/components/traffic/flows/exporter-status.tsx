@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ChevronDown, ChevronRight, ListTree, Pencil, Plus, Power, PowerOff, Radio, Trash2 } from "lucide-react";
+import { AlertTriangle, Ban, ChevronDown, ChevronRight, ListTree, Pencil, Plus, Power, PowerOff, Radio, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -12,7 +12,9 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { useAuth } from "@/context/auth";
 import {
   api,
+  ApiError,
   type Device,
+  type FlowBlockedSender,
   type FlowExporterBody,
   type FlowExporterKind,
   type FlowExporterState,
@@ -27,6 +29,8 @@ import { cn } from "@/lib/utils";
 import { deviceName, errorMessage } from "../lib";
 import { Notice } from "../notice";
 import { fmtAgo, fmtCount, fmtSkew, protocolLabel } from "./flow-lib";
+import { roleLabel } from "@/lib/device-role";
+import { StopExportDialog } from "./rollback";
 
 const KIND_LABEL: Record<FlowExporterKind, string> = {
   routeros: "RouterOS",
@@ -37,8 +41,14 @@ const KIND_LABEL: Record<FlowExporterKind, string> = {
 const STATE_META: Record<FlowExporterState, { label: string; dot: string; hint: string }> = {
   ok: { label: "OK", dot: "bg-green-500", hint: "Datagrams received within the last 3 minutes" },
   stale: { label: "stale", dot: "bg-amber-500", hint: "No datagrams for 3 minutes or more" },
-  never: { label: "no data yet", dot: "bg-gray-400", hint: "Enabled, but nothing received from this address yet" },
-  disabled: { label: "disabled", dot: "bg-gray-400", hint: "Disabled: datagrams from this address are dropped" },
+  never: { label: "no data yet", dot: "bg-gray-400", hint: "Accepted, but nothing received from this address yet" },
+  // "disabled" on the wire. It only stops the NMS from reading the
+  // datagrams: the device keeps exporting (and paying for it).
+  disabled: {
+    label: "ignored",
+    dot: "bg-gray-400",
+    hint: "Ignored: the NMS drops this address's datagrams — the device keeps exporting",
+  },
 };
 
 export function StateDot({ state }: { state: FlowExporterState }) {
@@ -61,9 +71,21 @@ interface ExporterForm {
   nat: string;
   sampling: string;
   enabled: boolean;
+  // Why the address is blocked ("" = it is not): adding it then needs the
+  // admin to say so explicitly.
+  blocked: string;
 }
 
-const EMPTY_FORM: ExporterForm = { name: "", address: "", kind: "other", device_id: "", nat: "", sampling: "0", enabled: true };
+const EMPTY_FORM: ExporterForm = {
+  name: "",
+  address: "",
+  kind: "other",
+  device_id: "",
+  nat: "",
+  sampling: "0",
+  enabled: true,
+  blocked: "",
+};
 
 function formFromExporter(e: FlowExporterStatus): ExporterForm {
   return {
@@ -74,6 +96,19 @@ function formFromExporter(e: FlowExporterStatus): ExporterForm {
     nat: e.nat_addresses.join(", "),
     sampling: String(e.sampling_override || 0),
     enabled: e.enabled,
+    blocked: "",
+  };
+}
+
+// A blocked sender, to be added again on the admin's say-so.
+function formFromBlocked(b: FlowBlockedSender): ExporterForm {
+  return {
+    ...EMPTY_FORM,
+    name: b.name || b.device_name || b.address,
+    address: b.address,
+    kind: b.kind,
+    device_id: b.device_id,
+    blocked: b.reason || "the sender was blocked",
   };
 }
 
@@ -118,12 +153,16 @@ function ExporterDialog({
   const [form, setForm] = useState<ExporterForm>(initial);
   const [err, setErr] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  // A blocked address is only added when the admin ticks "add it anyway".
+  const [override, setOverride] = useState(false);
   const [prevInitial, setPrevInitial] = useState(initial);
   if (initial !== prevInitial) {
     setPrevInitial(initial);
     setForm(initial);
     setErr(null);
+    setOverride(false);
   }
+  const needsOverride = editId === null && form.blocked !== "";
   const sortedDevices = useMemo(() => [...devices].sort((a, b) => deviceName(a).localeCompare(deviceName(b))), [devices]);
   const set = (patch: Partial<ExporterForm>) => setForm((f) => ({ ...f, ...patch }));
 
@@ -151,13 +190,19 @@ function ExporterDialog({
     setSaving(true);
     setErr(null);
     try {
-      if (editId === null) await api.flows.createExporter(token, body);
+      if (editId === null) await api.flows.createExporter(token, needsOverride && override ? { ...body, unblock: true } : body);
       else await api.flows.updateExporter(token, editId, body);
       toast.success(editId === null ? `Exporter ${name} added` : `Exporter ${name} saved`);
       onOpenChange(false);
       onSaved();
     } catch (e2) {
-      setErr(errorMessage(e2));
+      if (editId === null && e2 instanceof ApiError && e2.code === "sender_blocked") {
+        // The server says the address is blocked: show why and ask.
+        set({ blocked: e2.message.replace(/^sender \S+ is blocked: /, "") });
+        setOverride(false);
+      } else {
+        setErr(errorMessage(e2));
+      }
     } finally {
       setSaving(false);
     }
@@ -170,7 +215,8 @@ function ExporterDialog({
           <DialogTitle>{editId === null ? "Add flow exporter" : "Edit flow exporter"}</DialogTitle>
           <DialogDescription>
             Datagrams are accepted only from exporter addresses. A RouterOS exporter linked to its managed device gets
-            interface names and port views automatically.
+            interface names and port views automatically. Flow export belongs on routers: a switch or an access point
+            gains nothing from it and pays for it in CPU.
           </DialogDescription>
         </DialogHeader>
         <form onSubmit={submit} className="space-y-3">
@@ -258,18 +304,30 @@ function ExporterDialog({
               />
               <p className="text-xs text-muted-foreground">0 = use the rate the exporter announces (none = unsampled).</p>
             </div>
-            <label className="flex items-center gap-2 self-start pt-6 text-sm">
+            <label
+              className="flex items-center gap-2 self-start pt-6 text-sm"
+              title="Off: the NMS ignores its datagrams. The device keeps exporting."
+            >
               <input type="checkbox" checked={form.enabled} onChange={(e) => set({ enabled: e.target.checked })} />
-              Enabled (accept its datagrams)
+              Accept its datagrams
             </label>
           </div>
+          {needsOverride && (
+            <Notice kind="warn">
+              <p>This sender is blocked: {form.blocked}.</p>
+              <label className="mt-1.5 flex items-center gap-2 font-medium">
+                <input type="checkbox" checked={override} onChange={(e) => setOverride(e.target.checked)} />
+                Add it anyway (its datagrams are accepted and decoded from then on)
+              </label>
+            </Notice>
+          )}
           {err && <Notice kind="error">{err}</Notice>}
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
               Cancel
             </Button>
-            <Button type="submit" disabled={saving}>
-              {saving ? "Saving…" : editId === null ? "Add exporter" : "Save"}
+            <Button type="submit" disabled={saving || (needsOverride && !override)}>
+              {saving ? "Saving…" : editId === null ? (needsOverride ? "Add anyway" : "Add exporter") : "Save"}
             </Button>
           </DialogFooter>
         </form>
@@ -450,9 +508,14 @@ function countersTitle(e: FlowExporterStatus): string {
 }
 
 // ExporterStatusCard: every configured exporter with its health, plus (for
-// admins) unknown senders and suggested exporters with one-click "Add", and
-// enable / edit / interfaces / delete actions. Collapsed while every
-// exporter is OK and nothing needs an admin's attention.
+// admins) unknown senders and suggested exporters with one-click "Add", the
+// blocked senders with their reason, and accept / ignore / edit / interfaces
+// / delete actions. Collapsed while every exporter is OK and nothing needs
+// an admin's attention.
+//
+// Nothing here stops a device from exporting: "ignore" and "delete" only
+// decide what the NMS does with the datagrams. Stopping the export is done
+// on the device, with the rollback steps (StopExportDialog).
 export function ExporterStatusCard({
   status,
   isAdmin,
@@ -468,10 +531,17 @@ export function ExporterStatusCard({
   const exporters = useMemo(() => status?.exporters ?? [], [status]);
   const unknown = status?.unknown_senders ?? [];
   const suggested = status?.suggested_exporters ?? [];
+  const blocked = status?.blocked_senders ?? [];
+  const blockedAddrs = new Set(blocked.map((b) => b.address));
+  // A blocked sender is shown as blocked, not as an unknown one to add.
+  const unknownOpen = unknown.filter((u) => !blockedAddrs.has(u.address));
   const unknownAddrs = new Set(unknown.map((u) => u.address));
-  const suggestedOnly = suggested.filter((s) => !unknownAddrs.has(s.address));
+  const suggestedOnly = suggested.filter((s) => !unknownAddrs.has(s.address) && !blockedAddrs.has(s.address));
   const allOk = exporters.length > 0 && exporters.every((e) => e.state === "ok");
-  const attention = isAdmin && (unknown.length > 0 || suggestedOnly.length > 0);
+  // A device that must not export and does — blocked on its first datagram,
+  // or accepted earlier — is worth opening the card for.
+  const exportingAnyway = blocked.some((b) => b.source === "auto" && b.last_seen) || exporters.some((e) => !!e.export_warning);
+  const attention = isAdmin && (unknownOpen.length > 0 || suggestedOnly.length > 0 || exportingAnyway);
   // Collector off: nothing is received, so nothing needs attention yet —
   // start collapsed.
   const off = status?.enabled === false;
@@ -482,6 +552,9 @@ export function ExporterStatusCard({
   const [ifaceOf, setIfaceOf] = useState<FlowExporterStatus | null>(null);
   const [deleting, setDeleting] = useState<FlowExporterStatus | null>(null);
   const [busy, setBusy] = useState<number | null>(null);
+  const [unblocking, setUnblocking] = useState<string | null>(null);
+  // The device whose rollback steps are shown.
+  const [stopping, setStopping] = useState<{ id: string; name: string } | null>(null);
   const byDevice = useMemo(() => new Map(devices.map((d) => [d.id, d])), [devices]);
 
   if (!status) return null;
@@ -492,7 +565,7 @@ export function ExporterStatusCard({
     setBusy(e.id);
     try {
       await api.flows.updateExporter(token, e.id, bodyFromExporter(e, { enabled: !e.enabled }));
-      toast.success(`${e.name} ${e.enabled ? "disabled" : "enabled"}`);
+      toast.success(e.enabled ? `Datagrams from ${e.name} are ignored now — the device keeps exporting` : `Datagrams from ${e.name} are accepted again`);
       onChanged();
     } catch (err) {
       toast.error(errorMessage(err));
@@ -505,7 +578,7 @@ export function ExporterStatusCard({
     setBusy(deleting.id);
     try {
       await api.flows.deleteExporter(token, deleting.id);
-      toast.success(`Exporter ${deleting.name} deleted`);
+      toast.success(`Exporter ${deleting.name} deleted — ${deleting.address} is blocked now`);
       setDeleting(null);
       onChanged();
     } catch (err) {
@@ -513,6 +586,24 @@ export function ExporterStatusCard({
     } finally {
       setBusy(null);
     }
+  };
+  const unblock = async (b: FlowBlockedSender) => {
+    if (!token) return;
+    setUnblocking(b.address);
+    try {
+      await api.flows.unblockSender(token, b.address);
+      toast.success(`${b.address} is no longer blocked`);
+      onChanged();
+    } catch (err) {
+      toast.error(errorMessage(err));
+    } finally {
+      setUnblocking(null);
+    }
+  };
+  const stopFor = (deviceId: string | null | undefined, fallbackName: string) => {
+    if (!deviceId) return;
+    const dev = byDevice.get(deviceId);
+    setStopping({ id: deviceId, name: dev ? deviceName(dev) : fallbackName });
   };
 
   const okCount = exporters.filter((e) => e.state === "ok").length;
@@ -591,6 +682,26 @@ export function ExporterStatusCard({
                             {e.last_error_at ? ` (${fmtAgo(e.last_error_at)})` : ""}
                           </div>
                         )}
+                        {e.export_warning && (
+                          <div className="mt-0.5 flex items-start gap-1 whitespace-normal text-[11px] text-amber-800 dark:text-amber-300">
+                            <AlertTriangle className="mt-px h-3 w-3 shrink-0" />
+                            <span>
+                              {roleLabel(e.device_role) || "This device"} — should not export flows: {e.export_warning}.
+                              {e.device_id && (
+                                <>
+                                  {" "}
+                                  <button
+                                    type="button"
+                                    className="underline underline-offset-2"
+                                    onClick={() => stopFor(e.device_id, e.name)}
+                                  >
+                                    How to stop it
+                                  </button>
+                                </>
+                              )}
+                            </span>
+                          </div>
+                        )}
                       </TableCell>
                       <TableCell className="text-xs">
                         <StateDot state={e.state} />
@@ -625,8 +736,8 @@ export function ExporterStatusCard({
                               <Button
                                 size="icon-sm"
                                 variant="ghost"
-                                title={e.enabled ? "Disable" : "Enable"}
-                                aria-label={`${e.enabled ? "Disable" : "Enable"} ${e.name}`}
+                                title={e.enabled ? "Ignore datagrams (device keeps exporting)" : "Accept datagrams again"}
+                                aria-label={`${e.enabled ? "Ignore datagrams from" : "Accept datagrams from"} ${e.name}`}
                                 disabled={busy === e.id}
                                 onClick={() => toggle(e)}
                               >
@@ -668,22 +779,29 @@ export function ExporterStatusCard({
                   No exporters configured. Flow collector is off — nothing is received until{" "}
                   <code className="font-mono">MIKROTIK_NMS_FLOW_LISTEN</code> is set.
                 </>
+              ) : status.auto_accept_classes === "router" ? (
+                <>
+                  No exporters configured. A managed router (a strong device with an internet or VPN egress of its own) is
+                  accepted automatically when it sends from its management address; add anything else (a firewall, a
+                  probe) here. Switches and access points are never accepted.
+                </>
               ) : (
                 <>
-                  No exporters configured. RouterOS devices that are managed here are accepted automatically when they send
-                  from their management address; add anything else (OPNsense, probes) here.
+                  No exporters configured. Nothing is accepted automatically: senders show up below as unknown until you
+                  add them. Flow export belongs on routers and firewalls — switches and access points are blocked.
                 </>
               )}
             </p>
           )}
 
-          {isAdmin && unknown.length > 0 && (
+          {isAdmin && unknownOpen.length > 0 && (
             <div className="space-y-2">
               <Notice kind="warn">
-                {unknown.length} unknown sender{unknown.length === 1 ? "" : "s"} — add them as exporters to accept their flows.
+                {unknownOpen.length} unknown sender{unknownOpen.length === 1 ? "" : "s"} — add them as exporters to accept their
+                flows.
               </Notice>
               <ul className="divide-y rounded-md border">
-                {unknown.map((u) => {
+                {unknownOpen.map((u) => {
                   const sug = suggested.find((s) => s.address === u.address);
                   // The suggested name falls back to the address itself; don't repeat it.
                   const label = [sug?.name, u.device_name].find((n) => n && n !== u.address);
@@ -697,6 +815,12 @@ export function ExporterStatusCard({
                           {fmtAgo(u.last_seen)}
                           {sug?.reason ? ` · ${sug.reason}` : ""}
                         </div>
+                        {u.device_role && (
+                          <div className="text-muted-foreground" title={u.device_role_reason}>
+                            Managed device: {roleLabel(u.device_role)}
+                            {u.device_role === "unknown" && u.device_role_reason ? ` — ${u.device_role_reason}` : ""}
+                          </div>
+                        )}
                       </div>
                       <Button size="xs" variant="outline" onClick={() => setDialog({ form: formFromSender(u, sug), editId: null })}>
                         <Plus /> Add
@@ -731,6 +855,57 @@ export function ExporterStatusCard({
               </ul>
             </div>
           )}
+
+          {blocked.length > 0 && (
+            <div className="space-y-2">
+              <p className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                <Ban className="h-3.5 w-3.5" />
+                Blocked senders — their datagrams are dropped before decoding
+              </p>
+              <ul className="divide-y rounded-md border">
+                {blocked.map((b) => {
+                  const label = [b.name, b.device_name].find((n) => n && n !== b.address);
+                  // A managed device that must not export is blocked again by
+                  // its next datagram, so "Unblock" alone would do nothing.
+                  const auto = b.source === "auto";
+                  return (
+                    <li key={b.address} className="flex flex-wrap items-start justify-between gap-2 px-3 py-2 text-xs">
+                      <div className="min-w-0 flex-1">
+                        <span className="font-mono font-medium">{b.address}</span>
+                        {label && <span className="ml-1.5">{label}</span>}
+                        <div className={cn(auto && b.last_seen ? "text-amber-800 dark:text-amber-300" : "text-muted-foreground")}>
+                          blocked: {b.reason || "no reason recorded"}
+                        </div>
+                        <div className="text-muted-foreground">
+                          {b.datagrams > 0
+                            ? `${fmtCount(b.datagrams)} datagrams dropped · last ${fmtAgo(b.last_seen)}`
+                            : "nothing received since it was blocked"}
+                          {auto && b.last_seen ? " · the device is exporting: stop it on the device" : ""}
+                        </div>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-1">
+                        {b.device_id && (
+                          <Button size="xs" variant="outline" onClick={() => stopFor(b.device_id, b.name || b.address)}>
+                            How to stop the export
+                          </Button>
+                        )}
+                        {isAdmin && !auto && (
+                          <Button size="xs" variant="ghost" disabled={unblocking === b.address} onClick={() => unblock(b)}>
+                            Unblock
+                          </Button>
+                        )}
+                        {isAdmin && (
+                          <Button size="xs" variant="ghost" onClick={() => setDialog({ form: formFromBlocked(b), editId: null })}>
+                            Add anyway…
+                          </Button>
+                        )}
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          )}
         </CardContent>
       )}
 
@@ -745,13 +920,16 @@ export function ExporterStatusCard({
         />
       )}
       <InterfacesDialog exporter={ifaceOf} isAdmin={isAdmin} onClose={() => setIfaceOf(null)} onSaved={onChanged} />
+      <StopExportDialog deviceId={stopping?.id ?? null} deviceName={stopping?.name ?? ""} onClose={() => setStopping(null)} />
       <Dialog open={deleting !== null} onOpenChange={(o) => !o && setDeleting(null)}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Delete exporter {deleting?.name}?</DialogTitle>
             <DialogDescription>
               Its configuration, interface names and views are removed now; its stored flow history is purged by the next
-              retention sweep. Datagrams from {deleting?.address} are then treated as an unknown sender.
+              retention sweep. The address {deleting?.address} is then blocked: its datagrams are dropped before decoding, and
+              it is not accepted again until you unblock it or add it again. Deleting does not stop the device from
+              exporting — that is done on the device, with the rollback steps.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>

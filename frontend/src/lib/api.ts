@@ -387,8 +387,12 @@ export const api = {
       apiFetch<FlowExporterStatus>("/flows/exporters", { method: "POST", token, body: JSON.stringify(body) }),
     updateExporter: (token: string, id: number, body: FlowExporterBody) =>
       apiFetch<FlowExporterStatus>(`/flows/exporters/${id}`, { method: "PUT", token, body: JSON.stringify(body) }),
+    // Deleting leaves the address blocked (see FlowBlockedSender).
     deleteExporter: (token: string, id: number) =>
       apiFetch<void>(`/flows/exporters/${id}`, { method: "DELETE", token }),
+    // Removes a block: the sender is an unknown sender again.
+    unblockSender: (token: string, address: string) =>
+      apiFetch<void>(`/flows/blocked?address=${encodeURIComponent(address)}`, { method: "DELETE", token }),
     updateIface: (token: string, exporterId: number, ifIndex: number, body: { name: string; role: FlowIfaceRole }) =>
       apiFetch<FlowIface>(`/flows/exporters/${exporterId}/interfaces/${ifIndex}`, {
         method: "PUT",
@@ -718,7 +722,15 @@ export interface Device {
   // How the pollers treat the device right now — GET /devices/{id} and the
   // polling-control responses only.
   polling?: DevicePolling;
+  // What the stored facts say the device does in the network, with the
+  // reason (GET /devices and /devices/{id}), and whether flow export may be
+  // set up on it (only routers; never a C1 device).
+  role?: DeviceRole;
+  role_reason?: string;
+  flow_export_eligible?: boolean;
 }
+
+export type DeviceRole = "router" | "weak-router" | "switch" | "ap-cpe" | "unknown";
 
 // next_runs maps a scheduled read (counters, neighbors, bridge_ports, …) to
 // when it runs next; empty while the device is paused or offline.
@@ -1200,6 +1212,8 @@ export interface FlowGlobalStats {
   unknown_datagrams: number;
   rejected: number;
   rate_limited: number;
+  // From blocked senders, dropped before decode.
+  blocked?: number;
   queue_dropped: number;
   kernel_dropped: number;
   writer_dropped: number;
@@ -1245,6 +1259,12 @@ export interface FlowExporterStatus {
   last_error: string;
   last_error_at: string | null;
   interfaces_seen: number;
+  // The role of the managed device at the exporter's address ("" = not a
+  // managed device), and — when that device must not export flows (switch,
+  // access point, CPE, C1) — why. The exporter keeps working either way.
+  device_role?: DeviceRole | "";
+  device_role_reason?: string;
+  export_warning?: string;
 }
 
 export interface FlowUnknownSender {
@@ -1255,6 +1275,27 @@ export interface FlowUnknownSender {
   protocol: FlowProtocol;
   device_id: string | null;
   device_name: string;
+  device_role?: DeviceRole | "";
+  device_role_reason?: string;
+}
+
+// A sender whose datagrams are dropped before decode: a deleted exporter
+// ("deleted") or a managed device that must not export ("auto"). It stays
+// blocked until an admin unblocks it or adds it with unblock.
+export interface FlowBlockedSender {
+  address: string;
+  name: string;
+  kind: FlowExporterKind;
+  reason: string;
+  source: "deleted" | "auto";
+  device_id: string;
+  device_name: string;
+  device_role: DeviceRole | "";
+  device_role_reason: string;
+  created_by: string;
+  created_at: string | null;
+  last_seen: string | null;
+  datagrams: number;
 }
 
 export interface FlowSuggestedExporter {
@@ -1275,16 +1316,45 @@ export interface FlowStatus {
   global: FlowGlobalStats;
   exporters: FlowExporterStatus[];
   unknown_senders: FlowUnknownSender[];
+  blocked_senders?: FlowBlockedSender[];
+  // "" = nothing is accepted automatically; "router" = routers only.
+  auto_accept_classes?: "" | "router";
   // REST only (the "flows.status" WS payload omits it).
   suggested_exporters?: FlowSuggestedExporter[];
+}
+
+// One numbered step of the rollback. The one risky step carries a warning.
+export interface FlowRollbackStep {
+  text: string;
+  commands: string[];
+  warning?: string;
+  optional?: boolean;
 }
 
 export interface FlowSetup {
   enabled: boolean;
   port: number;
+  // The admin-approved collector address ("Flow advertise address" in
+  // Settings); "" with source "unknown" while it is not set. Never guessed.
   advertise_address: string;
-  advertise_source: "setting" | "auto" | "unknown";
-  routeros: { device_id: string | null; apply: string[]; rollback: string[] };
+  advertise_source: "setting" | "unknown";
+  // The chosen device: the class it is budgeted as, its role and why, and
+  // whether the commands that enable export are shown. Empty without one.
+  class: DeviceClass | "";
+  role: DeviceRole | "";
+  role_reason: string;
+  eligible: boolean;
+  warnings: string[];
+  advice: string[];
+  routeros: {
+    device_id: string | null;
+    // Read-only: does the device export?
+    check: string[];
+    // Empty unless the device is eligible.
+    apply: string[];
+    interfaces_note: string;
+    rollback: { fixed: boolean; note: string; steps: FlowRollbackStep[] };
+  };
   opnsense: {
     destination: string;
     version: string;
@@ -1489,6 +1559,10 @@ export interface FlowExporterBody {
   enabled: boolean;
   sampling_override: number;
   nat_addresses: string[];
+  // POST only: add the exporter although its address is blocked (a deleted
+  // exporter, or a device that must not export). Without it the server
+  // answers 409 with code "sender_blocked" and the reason.
+  unblock?: boolean;
 }
 
 // One physical port of a device with its rate from the port-counter snapshot.
@@ -1911,7 +1985,11 @@ export interface Alert {
   acked_by?: string;
   acked_at?: string;
   summary: string;
+  // Rule-specific details. "rollback" / "check" are lists of text lines.
   facts?: Record<string, unknown>;
+  // false = raised on evidence that can be forged or mistaken (a UDP source
+  // address); such an alert is never critical until it is confirmed.
+  confirmed?: boolean;
   runbook_url: string;
   // A silence in force keeps this alert from being notified.
   silenced: boolean;
