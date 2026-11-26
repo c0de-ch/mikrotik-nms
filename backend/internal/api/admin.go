@@ -15,7 +15,7 @@ type purgeRequest struct {
 	WiFi          bool `json:"wifi"`            // wifi_history
 	Clients       bool `json:"clients"`         // client_history
 	NetworkHealth bool `json:"network_health"`  // loop_events
-	Traffic       bool `json:"traffic"`         // traffic_samples + port_stats_1m + port_stats_1h
+	Traffic       bool `json:"traffic"`         // traffic_samples + port_stats_1m/1h + device_minutes / device_hours
 	Flows         bool `json:"flows"`           // flow_1m + flow_1h (+ their meta rows)
 	OlderThanDays int  `json:"older_than_days"` // 0 = everything
 }
@@ -80,6 +80,17 @@ func (s *Server) handlePurgeHistory(w http.ResponseWriter, r *http.Request) {
 		// millions of rows, and one DELETE would lock out every other writer.
 		for _, table := range []queries.PortStatsTable{queries.PortStats1m, queries.PortStats1h} {
 			n, err := queries.DeleteOldPortStats(s.db, table, purgeCutoff(req.OlderThanDays))
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, fmt.Sprintf("purge %s: %v", table, err))
+				return
+			}
+			deleted[string(table)] = n
+		}
+		// And the device telemetry that says which of those buckets were
+		// covered (with the CPU history of the same period): left behind,
+		// it would make every purged port minute read "covered, 0 bps".
+		for _, table := range []queries.DeviceLoadTable{queries.DeviceMinutes, queries.DeviceHours} {
+			n, err := queries.DeleteOldDeviceLoad(s.db, table, purgeCutoff(req.OlderThanDays))
 			if err != nil {
 				writeError(w, http.StatusInternalServerError, fmt.Sprintf("purge %s: %v", table, err))
 				return

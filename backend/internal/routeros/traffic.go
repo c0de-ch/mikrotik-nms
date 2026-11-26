@@ -121,6 +121,12 @@ type InterfaceStats struct {
 	RxDrops, TxDrops     int64 // 0 when absent
 	TxQueueDrops         int64 // 0 when absent
 	HasCounters          bool  // false when the row carried neither rx-byte nor tx-byte
+	// Which of the error and drop counters the row carried: some interfaces
+	// lack them (ether ports on the RB5009), and an absent counter is stored
+	// as "not measured", never as zero drops.
+	HasRxErrors, HasTxErrors bool
+	HasRxDrops, HasTxDrops   bool
+	HasTxQueueDrops          bool
 }
 
 // interfaceStatsProplist is Tier 0, the only scheduled /interface/print: it
@@ -179,11 +185,11 @@ func parseInterfaceStats(m map[string]string) (InterfaceStats, bool) {
 	s.HasCounters = hasRx || hasTx
 	s.RxPackets, _ = parseCounter(m, "rx-packet")
 	s.TxPackets, _ = parseCounter(m, "tx-packet")
-	s.RxErrors, _ = parseCounter(m, "rx-error")
-	s.TxErrors, _ = parseCounter(m, "tx-error")
-	s.RxDrops, _ = parseCounter(m, "rx-drop")
-	s.TxDrops, _ = parseCounter(m, "tx-drop")
-	s.TxQueueDrops, _ = parseCounter(m, "tx-queue-drop")
+	s.RxErrors, s.HasRxErrors = parseCounter(m, "rx-error")
+	s.TxErrors, s.HasTxErrors = parseCounter(m, "tx-error")
+	s.RxDrops, s.HasRxDrops = parseCounter(m, "rx-drop")
+	s.TxDrops, s.HasTxDrops = parseCounter(m, "tx-drop")
+	s.TxQueueDrops, s.HasTxQueueDrops = parseCounter(m, "tx-queue-drop")
 	return s, true
 }
 

@@ -102,17 +102,103 @@ type portCounterSample struct {
 	hasCounters          bool
 	rxBytes, txBytes     int64
 	rxPackets, txPackets int64
+	extra                extraCounters
 	rate                 PortRate
 }
 
-// minuteAcc accumulates, for one interface, the share of every usable poll
+// The drop, error and link-down counters of a Tier 0 row, stored per minute
+// as deltas next to the bytes.
+const (
+	extraRxDrop = iota
+	extraTxDrop
+	extraRxError
+	extraTxError
+	extraTxQueueDrop
+	extraLinkDowns
+	extraCount
+)
+
+// extraCounters holds those counters, or their deltas; bit i of has says
+// counter i was present. Some interfaces carry none of them (ether ports on
+// the RB5009): absent stays absent all the way into the row (NULL), it is
+// never zero drops.
+type extraCounters struct {
+	v   [extraCount]int64
+	has uint8
+}
+
+func extrasOf(s routeros.InterfaceStats) extraCounters {
+	var e extraCounters
+	set := func(i int, v int64, present bool) {
+		if present {
+			e.v[i] = v
+			e.has |= 1 << i
+		}
+	}
+	set(extraRxDrop, s.RxDrops, s.HasRxDrops)
+	set(extraTxDrop, s.TxDrops, s.HasTxDrops)
+	set(extraRxError, s.RxErrors, s.HasRxErrors)
+	set(extraTxError, s.TxErrors, s.HasTxErrors)
+	set(extraTxQueueDrop, s.TxQueueDrops, s.HasTxQueueDrops)
+	set(extraLinkDowns, s.LinkDowns, s.HasLinkDowns)
+	return e
+}
+
+// since is the increase of every counter present in both readings. A counter
+// that went backwards (cleared on the device) contributes nothing for the
+// interval, like a byte counter that reset.
+func (e extraCounters) since(prev extraCounters) extraCounters {
+	var d extraCounters
+	d.has = e.has & prev.has
+	for i := range e.v {
+		if d.has&(1<<i) != 0 && e.v[i] > prev.v[i] {
+			d.v[i] = e.v[i] - prev.v[i]
+		}
+	}
+	return d
+}
+
+// minuteAcc accumulates, for one interface, the share of every observed poll
 // interval that overlaps one minute (see accumulate).
 type minuteAcc struct {
 	rxBytes, txBytes     int64
 	rxPackets, txPackets int64
-	seconds              float64 // Σ overlap of the accumulated intervals with this minute
+	seconds              float64 // Σ overlap of the intervals with usable byte counters with this minute
 	rxMax, txMax         int64   // highest rate of any interval overlapping this minute
-	samples              int64   // intervals that ENDED in this minute
+	samples              int64   // intervals with usable byte counters that ENDED in this minute
+	extra                extraCounters
+	covered              float64 // Σ overlap of every observed interval with this minute (covered_s)
+}
+
+// devMinuteAcc accumulates one device's Tier 0 coverage of one minute: the
+// seconds inside a usable interval between two reads, the reads that landed
+// in it, and the reads that could not run, by cause.
+type devMinuteAcc struct {
+	polled                   float64
+	reads, noSession, failed int
+}
+
+// DeviceMinuteCoverage is one device's Tier 0 coverage of one minute, as the
+// collector hands it to the CoverageSink once the minute is final. A device
+// without an entry for a minute was not read in it at all.
+type DeviceMinuteCoverage struct {
+	DeviceID string
+	Minute   time.Time // UTC minute start
+	// PolledSeconds is how much of the minute lies between two successful
+	// reads no further apart than the counter-delta gap rule allows.
+	PolledSeconds float64
+	Reads         int // successful Tier 0 reads in the minute
+	NoSession     int // reads that could not start: no pooled connection
+	Failed        int // reads that were sent and failed or timed out
+}
+
+// CoverageSink receives, on every flush, the device coverage of the minutes
+// that just became final. through is the flush boundary: every minute before
+// it is final in port_stats_1m, and the hourly rollups that follow read what
+// the sink wrote. The manager plugs in the device-load recorder, which turns
+// it into device_minutes rows.
+type CoverageSink interface {
+	FlushMinutes(through time.Time, coverage []DeviceMinuteCoverage)
 }
 
 // PortStatsCollector owns the one scheduled interface read. Per device it
@@ -163,6 +249,8 @@ type PortStatsCollector struct {
 	// tier's next run is published (Schedule()).
 	hostClock *tierClock
 	reg       *ScheduleRegistry
+	// sink receives the device coverage of every flushed minute (nil = none).
+	sink CoverageSink
 
 	flushMu sync.Mutex // serializes flush (DB writes + rollup)
 
@@ -172,6 +260,7 @@ type PortStatsCollector struct {
 	ready          bool
 	samples        map[portStatsKey]*portCounterSample
 	minutes        map[int64]map[portStatsKey]*minuteAcc // keyed by minute start, Unix seconds
+	coverage       map[int64]map[string]*devMinuteAcc    // device coverage, same keying
 	devs           map[string]*deviceState
 	inFlight       map[string]bool
 	flushedThrough time.Time
@@ -195,6 +284,7 @@ func NewPortStatsCollector(db *sql.DB, pool *routeros.Pool, hub *ws.Hub) *PortSt
 		interval:  defaultPortStatsInterval,
 		samples:   make(map[portStatsKey]*portCounterSample),
 		minutes:   make(map[int64]map[portStatsKey]*minuteAcc),
+		coverage:  make(map[int64]map[string]*devMinuteAcc),
 		devs:      make(map[string]*deviceState),
 		inFlight:  make(map[string]bool),
 		lastLog:   make(map[string]time.Time),
@@ -263,6 +353,12 @@ func (c *PortStatsCollector) UseCadence(cs CadenceSource) {
 	c.tierInterval = func(dev queries.Device, tier devclass.Tier, now time.Time) time.Duration {
 		return runInterval(cs, dev, tier, now)
 	}
+}
+
+// UseCoverageSink hands the device coverage of every flushed minute to sink.
+// Call before Run.
+func (c *PortStatsCollector) UseCoverageSink(sink CoverageSink) {
+	c.sink = sink
 }
 
 // fleetTierInterval is the schedule without a CadenceSource: Tier 0 at the
@@ -350,6 +446,9 @@ func (c *PortStatsCollector) startupRollup() {
 	from = minTime(from, hour.Add(-portStatsStartupRollback))
 	if err := queries.RollupPortStats1h(c.db, from, hour); err != nil {
 		log.Printf("poller portstats: startup rollup: %v", err)
+	}
+	if err := queries.RollupDeviceHours(c.db, from, hour); err != nil {
+		log.Printf("poller portstats: startup rollup of device hours: %v", err)
 	}
 	c.mu.Lock()
 	if hour.After(c.rolledThrough) {
@@ -559,6 +658,7 @@ func (c *PortStatsCollector) pollDevice(dev queries.Device, p tierPlan, wg *sync
 			c.scheduleNext(dev.ID, devclass.TierCounters, t, p.statsInterval)
 		}
 		if err != nil {
+			c.noteTier0Miss(dev.ID, t, err)
 			if !errors.Is(err, errNoClient) {
 				c.logThrottled("stats:"+dev.ID, "poller portstats: interface counters for %s: %v", dev.Identity, err)
 			}
@@ -589,21 +689,33 @@ func (c *PortStatsCollector) pollDevice(dev queries.Device, p tierPlan, wg *sync
 
 // ingest turns one device's counter reading taken at t into rates and minute
 // accumulations, and keeps the rows as the device's interface snapshot. The
-// previous sample is usable when it exists and carried counters, 0 < dt <=
-// 3*interval (the device's own Tier 0 interval), the interface is running
-// with counters, and neither byte counter went backwards (reset/reboot).
-// Otherwise the rates are 0 and nothing is accumulated. The reading always
-// becomes the new previous sample. stats is retained: the caller must not
-// modify it afterwards.
+// previous sample of a port is usable when it exists and 0 < dt <= 3*interval
+// (the device's own Tier 0 interval): the port was observed over that
+// interval. Its byte and packet deltas count when both readings carried
+// counters, the interface is running and neither byte counter went backwards
+// (reset/reboot) — otherwise the rates are 0. Its drop, error and link-down
+// deltas count whether or not it is running (a link going down is exactly
+// such a delta), each counter on its own, unless the byte counters reset.
+// The reading always becomes the new previous sample. The same gap rule on
+// the device's own reads is its coverage (creditCoverageLocked). stats is
+// retained: the caller must not modify it afterwards.
 func (c *PortStatsCollector) ingest(deviceID string, stats []routeros.InterfaceStats, t time.Time, interval time.Duration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	maxGap := 3 * interval.Seconds()
+
 	st := c.deviceLocked(deviceID)
+	if !st.at.IsZero() {
+		if dt := t.Sub(st.at).Seconds(); dt > 0 && dt <= maxGap {
+			c.creditCoverageLocked(deviceID, st.at, t)
+		}
+	}
+	if acc := c.coverageAccLocked(t.Truncate(time.Minute), deviceID); acc != nil {
+		acc.reads++
+	}
 	st.rows, st.at, st.interval = stats, t, interval
 	c.changed = true
-
-	maxGap := 3 * interval.Seconds()
 
 	for _, s := range stats {
 		key := portStatsKey{deviceID, s.Name}
@@ -616,19 +728,33 @@ func (c *PortStatsCollector) ingest(deviceID string, stats []routeros.InterfaceS
 			Running:  s.Running,
 			Disabled: s.Disabled,
 		}
+		extra := extrasOf(s)
 
-		if prev != nil && prev.hasCounters && s.Running && s.HasCounters {
-			dt := t.Sub(prev.at).Seconds()
-			dRx, dTx := s.RxBytes-prev.rxBytes, s.TxBytes-prev.txBytes
-			if dt > 0 && dt <= maxGap && dRx >= 0 && dTx >= 0 {
-				dRxP := max(s.RxPackets-prev.rxPackets, 0)
-				dTxP := max(s.TxPackets-prev.txPackets, 0)
-				rate.RxBps = roundRate(float64(dRx) * 8 / dt)
-				rate.TxBps = roundRate(float64(dTx) * 8 / dt)
-				rate.RxPps = roundRate(float64(dRxP) / dt)
-				rate.TxPps = roundRate(float64(dTxP) / dt)
-				c.ready = true
-				c.accumulate(key, prev.at, t, portDelta{dRx, dTx, dRxP, dTxP}, rate.RxBps, rate.TxBps)
+		if prev != nil {
+			if dt := t.Sub(prev.at).Seconds(); dt > 0 && dt <= maxGap {
+				var d portDelta
+				reset := false
+				if prev.hasCounters && s.HasCounters {
+					dRx, dTx := s.RxBytes-prev.rxBytes, s.TxBytes-prev.txBytes
+					switch {
+					case dRx < 0 || dTx < 0:
+						reset = true
+					case s.Running:
+						d.bytes = true
+						d.rxBytes, d.txBytes = dRx, dTx
+						d.rxPackets = max(s.RxPackets-prev.rxPackets, 0)
+						d.txPackets = max(s.TxPackets-prev.txPackets, 0)
+						rate.RxBps = roundRate(float64(dRx) * 8 / dt)
+						rate.TxBps = roundRate(float64(dTx) * 8 / dt)
+						rate.RxPps = roundRate(float64(d.rxPackets) / dt)
+						rate.TxPps = roundRate(float64(d.txPackets) / dt)
+						c.ready = true
+					}
+				}
+				if !reset {
+					d.extra = extra.since(prev.extra)
+				}
+				c.accumulate(key, prev.at, t, d, rate.RxBps, rate.TxBps)
 			}
 		}
 
@@ -640,25 +766,30 @@ func (c *PortStatsCollector) ingest(deviceID string, stats []routeros.InterfaceS
 		prev.hasCounters = s.HasCounters
 		prev.rxBytes, prev.txBytes = s.RxBytes, s.TxBytes
 		prev.rxPackets, prev.txPackets = s.RxPackets, s.TxPackets
+		prev.extra = extra
 		prev.rate = rate
 	}
 }
 
-// portDelta is one interval's counter increase.
+// portDelta is one observed interval's counter increase. bytes says the byte
+// and packet deltas are usable (see ingest); the extra deltas carry their own
+// presence bits.
 type portDelta struct {
+	bytes                bool
 	rxBytes, txBytes     int64
 	rxPackets, txPackets int64
+	extra                extraCounters
 }
 
-// accumulate spreads one usable poll interval [from, to) over the minutes it
-// overlaps, in proportion to the overlap: each minute gets that share of the
-// byte and packet deltas and of the covered seconds, and the interval's rates
-// as a candidate maximum. Crediting a whole interval to the minute it ended in
-// would put, say, two minutes of bytes into one bucket at a 120 s interval (and
-// 3 or 5 fifteen-second intervals into a minute when replies jitter across
-// :00), so 1-minute charts would comb. Shares are rounded cumulatively, so they
-// sum to the exact delta. The interval counts as a sample in the last minute
-// it touches.
+// accumulate spreads one observed poll interval [from, to) over the minutes
+// it overlaps, in proportion to the overlap: each minute gets that share of
+// the byte, packet, drop, error and link-down deltas and of the covered
+// seconds, and the interval's rates as a candidate maximum. Crediting a whole
+// interval to the minute it ended in would put, say, two minutes of bytes into
+// one bucket at a 120 s interval (and 3 or 5 fifteen-second intervals into a
+// minute when replies jitter across :00), so 1-minute charts would comb.
+// Shares are rounded cumulatively, so they sum to the exact delta. An interval
+// with usable byte counters counts as a sample in the last minute it touches.
 //
 // A share for a minute that has already been flushed (a reply taken before a
 // flush but ingested after it) is carried into the first open minute instead.
@@ -684,6 +815,22 @@ func (c *PortStatsCollector) accumulate(key portStatsKey, from, to time.Time, d 
 			}
 			return int64(math.Round(float64(delta)*done.Seconds()/total.Seconds())) - sofar
 		}
+
+		bucket := m
+		if bucket.Before(c.flushedThrough) {
+			bucket = c.flushedThrough
+		}
+		acc := c.minuteAccFor(bucket, key)
+		acc.covered += overlap.Seconds()
+		acc.extra.has |= d.extra.has
+		for i := range d.extra.v {
+			slice := share(d.extra.v[i], credited.extra.v[i])
+			credited.extra.v[i] += slice
+			acc.extra.v[i] += slice
+		}
+		if !d.bytes {
+			continue
+		}
 		slice := portDelta{
 			rxBytes:   share(d.rxBytes, credited.rxBytes),
 			txBytes:   share(d.txBytes, credited.txBytes),
@@ -695,11 +842,6 @@ func (c *PortStatsCollector) accumulate(key portStatsKey, from, to time.Time, d 
 		credited.rxPackets += slice.rxPackets
 		credited.txPackets += slice.txPackets
 
-		bucket := m
-		if bucket.Before(c.flushedThrough) {
-			bucket = c.flushedThrough
-		}
-		acc := c.minuteAccFor(bucket, key)
 		acc.rxBytes += slice.rxBytes
 		acc.txBytes += slice.txBytes
 		acc.rxPackets += slice.rxPackets
@@ -725,6 +867,88 @@ func maxTime(a, b time.Time) time.Time {
 		return a
 	}
 	return b
+}
+
+// coverageAccLocked returns (creating) deviceID's coverage accumulator of
+// minute, or nil when that minute is already final: late coverage is not
+// carried into another minute (a minute holds at most its own 60 s). c.mu
+// held.
+func (c *PortStatsCollector) coverageAccLocked(minute time.Time, deviceID string) *devMinuteAcc {
+	if minute.Before(c.flushedThrough) {
+		return nil
+	}
+	devs := c.coverage[minute.Unix()]
+	if devs == nil {
+		devs = make(map[string]*devMinuteAcc)
+		c.coverage[minute.Unix()] = devs
+	}
+	acc := devs[deviceID]
+	if acc == nil {
+		acc = &devMinuteAcc{}
+		devs[deviceID] = acc
+	}
+	return acc
+}
+
+// creditCoverageLocked credits the usable interval [from, to) between two
+// Tier 0 reads of deviceID to the minutes it overlaps. c.mu held.
+func (c *PortStatsCollector) creditCoverageLocked(deviceID string, from, to time.Time) {
+	for m := from.Truncate(time.Minute); m.Before(to); m = m.Add(time.Minute) {
+		overlap := minTime(to, m.Add(time.Minute)).Sub(maxTime(from, m))
+		if overlap <= 0 {
+			continue
+		}
+		if acc := c.coverageAccLocked(m, deviceID); acc != nil {
+			acc.polled += overlap.Seconds()
+		}
+	}
+}
+
+// noteTier0Miss records a Tier 0 read of deviceID that did not produce rows
+// at t: one that could not start for want of a pooled connection
+// (errNoClient), or one that was sent and failed. The device-load recorder
+// names the gap by it.
+func (c *PortStatsCollector) noteTier0Miss(deviceID string, t time.Time, err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	acc := c.coverageAccLocked(t.UTC().Truncate(time.Minute), deviceID)
+	if acc == nil {
+		return
+	}
+	if errors.Is(err, errNoClient) {
+		acc.noSession++
+	} else {
+		acc.failed++
+	}
+}
+
+// takeCoverageBefore removes the device coverage of the minutes before
+// boundary and returns it, ordered by minute, then device.
+func (c *PortStatsCollector) takeCoverageBefore(boundary time.Time) []DeviceMinuteCoverage {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	var out []DeviceMinuteCoverage
+	for unix, devs := range c.coverage {
+		minute := time.Unix(unix, 0).UTC()
+		if !minute.Before(boundary) {
+			continue
+		}
+		delete(c.coverage, unix)
+		for id, acc := range devs {
+			out = append(out, DeviceMinuteCoverage{
+				DeviceID: id, Minute: minute, PolledSeconds: min(acc.polled, 60),
+				Reads: acc.reads, NoSession: acc.noSession, Failed: acc.failed,
+			})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].Minute.Equal(out[j].Minute) {
+			return out[i].Minute.Before(out[j].Minute)
+		}
+		return out[i].DeviceID < out[j].DeviceID
+	})
+	return out
 }
 
 // minuteAccFor returns (creating) the accumulator of key in minute. c.mu held.
@@ -812,9 +1036,10 @@ func (c *PortStatsCollector) flushBoundaryLocked(now time.Time) time.Time {
 
 // flush writes every accumulated minute before the flush boundary (now's
 // minute, or earlier while a device's open interval still credits one; see
-// flushBoundaryLocked) to port_stats_1m and advances FlushedThrough; crossing
-// an hour boundary rolls the hours before it into port_stats_1h. On a DB
-// error the buckets are logged and dropped.
+// flushBoundaryLocked) to port_stats_1m, hands the device coverage of those
+// minutes to the coverage sink, and advances FlushedThrough; crossing an hour
+// boundary rolls the hours before it into port_stats_1h and device_hours. On
+// a DB error the buckets are logged and dropped.
 func (c *PortStatsCollector) flush(now time.Time) {
 	c.flushMu.Lock()
 	defer c.flushMu.Unlock()
@@ -823,10 +1048,16 @@ func (c *PortStatsCollector) flush(now time.Time) {
 	boundary := c.flushBoundaryLocked(now)
 	c.mu.Unlock()
 	rows := c.takeMinutesBefore(boundary)
+	coverage := c.takeCoverageBefore(boundary)
 	if len(rows) > 0 {
 		if err := queries.InsertPortStats1m(c.db, rows); err != nil {
 			log.Printf("poller portstats: write %d minute rows: %v", len(rows), err)
 		}
+	}
+	// Before the hourly rollups below, which read the device-minutes the
+	// sink writes.
+	if c.sink != nil {
+		c.sink.FlushMinutes(boundary, coverage)
 	}
 
 	c.mu.Lock()
@@ -851,6 +1082,9 @@ func (c *PortStatsCollector) flush(now time.Time) {
 	if err := queries.RollupPortStats1h(c.db, from, hour); err != nil {
 		log.Printf("poller portstats: hourly rollup to %s: %v", hour.Format(time.RFC3339), err)
 	}
+	if err := queries.RollupDeviceHours(c.db, from, hour); err != nil {
+		log.Printf("poller portstats: hourly rollup of device hours to %s: %v", hour.Format(time.RFC3339), err)
+	}
 	c.mu.Lock()
 	if hour.After(c.rolledThrough) {
 		c.rolledThrough = hour
@@ -859,7 +1093,8 @@ func (c *PortStatsCollector) flush(now time.Time) {
 }
 
 // takeMinutesBefore removes the accumulated minutes before boundary and
-// returns them as rows, skipping idle ones (0 bytes both ways).
+// returns them as rows, skipping idle ones: no bytes either way and no drop,
+// error or link-down delta.
 func (c *PortStatsCollector) takeMinutesBefore(boundary time.Time) []queries.PortStatRow {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -872,7 +1107,7 @@ func (c *PortStatsCollector) takeMinutesBefore(boundary time.Time) []queries.Por
 		}
 		delete(c.minutes, unix)
 		for key, acc := range ports {
-			if acc.rxBytes == 0 && acc.txBytes == 0 {
+			if acc.idle() {
 				continue
 			}
 			rows = append(rows, acc.row(key, minute))
@@ -891,9 +1126,20 @@ func (c *PortStatsCollector) takeMinutesBefore(boundary time.Time) []queries.Por
 	return rows
 }
 
+// idle reports a minute with nothing to store: no bytes either way and every
+// drop, error and link-down delta zero.
+func (a *minuteAcc) idle() bool {
+	return a.rxBytes == 0 && a.txBytes == 0 && a.extra.v == [extraCount]int64{}
+}
+
 // row converts an accumulated minute: avg = Σbytes*8/Σdt (not the mean of the
-// interval rates), max = highest interval rate, pps = Σpackets/Σdt.
+// interval rates), max = highest interval rate, pps = Σpackets/Σdt; the drop,
+// error and link-down deltas as accumulated (NULL for a counter the
+// interface does not carry), and the seconds the port was observed for.
 func (a *minuteAcc) row(key portStatsKey, minute time.Time) queries.PortStatRow {
+	extra := func(i int) sql.NullInt64 {
+		return sql.NullInt64{Int64: a.extra.v[i], Valid: a.extra.has&(1<<i) != 0}
+	}
 	r := queries.PortStatRow{
 		DeviceID:      key.device,
 		InterfaceName: key.iface,
@@ -903,6 +1149,13 @@ func (a *minuteAcc) row(key portStatsKey, minute time.Time) queries.PortStatRow 
 		RxBytes:       a.rxBytes,
 		TxBytes:       a.txBytes,
 		Samples:       a.samples,
+		RxDrop:        extra(extraRxDrop),
+		TxDrop:        extra(extraTxDrop),
+		RxError:       extra(extraRxError),
+		TxError:       extra(extraTxError),
+		TxQueueDrop:   extra(extraTxQueueDrop),
+		LinkDowns:     extra(extraLinkDowns),
+		CoveredS:      sql.NullInt64{Int64: roundRate(min(a.covered, 60)), Valid: true},
 	}
 	if a.seconds > 0 {
 		r.RxBpsAvg = roundRate(float64(a.rxBytes) * 8 / a.seconds)

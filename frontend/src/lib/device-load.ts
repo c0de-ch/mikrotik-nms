@@ -206,6 +206,7 @@ export function fmtAgo(seconds: number): string {
 export const TIER_LABELS: Record<string, string> = {
   counters: "Interface counters",
   cpu: "CPU and memory",
+  cpu_post: "CPU after a counter read",
   logs: "Log",
   bridge_ports: "Bridge ports and STP",
   bridge_vlan: "Bridge VLANs",
@@ -217,7 +218,7 @@ export const TIER_LABELS: Record<string, string> = {
   arp: "ARP table",
   dhcp_leases: "DHCP leases",
   wifi_registrations: "Wi-Fi registrations",
-  inventory: "Inventory, CPU and memory",
+  inventory: "Inventory and firmware",
 };
 
 export function tierLabel(tier: string): string {

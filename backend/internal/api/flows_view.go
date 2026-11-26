@@ -1024,7 +1024,7 @@ func ratioPtr(flowBytes, counterBytes int64) *float64 {
 
 // portCoverage compares the point's flow bytes with its managed port's
 // Phase 1 counters over the native buckets both covered (the exporter's meta
-// buckets ∩ the fleet-wide port-stats buckets; at 1h resolution only fully
+// buckets ∩ the buckets the port's device was read in; at 1h resolution only fully
 // covered hours when there are any, so a partial hour never compares partial
 // flow bytes with a full hour of counter bytes). rowsAll are the point's
 // window rows grouped over the whole window (step 0). The flow bytes of the
@@ -1037,17 +1037,17 @@ func (s *Server) portCoverage(p queries.FlowPoint, fp flowview.Point, pl *flowvi
 	if !coverageCapable(p) || !win.covered() {
 		return c, nil
 	}
-	present, err := queries.PortStatsPresentBuckets(s.db, win.rng.portTable, win.start, win.end)
+	// The counters cover a bucket when the port's device was read through
+	// (nearly) all of it — a bucket it was paused or unreachable in, or only
+	// partly covered, would compare a whole bucket of flow bytes with part
+	// of the counter bytes.
+	counters, err := s.portCounterCoverage(win.rng.portTable, win.rng.native, p.DeviceID, win.start, win.end)
 	if err != nil {
 		return c, err
 	}
-	counterBucket := make(map[int64]bool, len(present))
-	for _, b := range present {
-		counterBucket[b.Unix()] = true
-	}
 	both := make(map[int64]bool, len(win.buckets))
 	for _, b := range win.buckets {
-		if counterBucket[b.Unix()] {
+		if counters.Seconds(b) >= 0.95*win.rng.native.Seconds() {
 			both[b.Unix()] = true
 		}
 	}

@@ -85,6 +85,33 @@ type PortStatRow struct {
 	RxBytes, TxBytes   int64
 	RxPpsAvg, TxPpsAvg int64
 	Samples            int64
+	// Drop, error and link-down deltas of the bucket. NULL (not Valid) = the
+	// interface does not carry the attribute, or the row predates them.
+	RxDrop, TxDrop   sql.NullInt64
+	RxError, TxError sql.NullInt64
+	TxQueueDrop      sql.NullInt64
+	LinkDowns        sql.NullInt64
+	// CoveredS is how many seconds of the bucket the port's counters were
+	// observed for: on a 1-minute row the port's own read intervals, on an
+	// hourly row the device's covered seconds (idle minutes included). NULL =
+	// not recorded.
+	CoveredS sql.NullInt64
+}
+
+// portStatColumns is the SELECT / INSERT list of a PortStatRow, in
+// scanPortStatRow's order.
+const portStatColumns = `device_id, interface_name, bucket, rx_bps_avg, tx_bps_avg, rx_bps_max, tx_bps_max,
+	rx_bytes, tx_bytes, rx_pps_avg, tx_pps_avg, samples,
+	rx_drop, tx_drop, rx_error, tx_error, tx_queue_drop, link_downs, covered_s`
+
+func scanPortStatRow(rows *sql.Rows) (PortStatRow, error) {
+	var r PortStatRow
+	var b dbTime
+	err := rows.Scan(&r.DeviceID, &r.InterfaceName, &b, &r.RxBpsAvg, &r.TxBpsAvg,
+		&r.RxBpsMax, &r.TxBpsMax, &r.RxBytes, &r.TxBytes, &r.RxPpsAvg, &r.TxPpsAvg, &r.Samples,
+		&r.RxDrop, &r.TxDrop, &r.RxError, &r.TxError, &r.TxQueueDrop, &r.LinkDowns, &r.CoveredS)
+	r.Bucket = b.Time
+	return r, err
 }
 
 // InsertPortStats1m writes rows in ONE transaction (INSERT OR REPLACE on the
@@ -102,10 +129,8 @@ func InsertPortStats1m(db *sql.DB, rows []PortStatRow) error {
 	defer func() { _ = tx.Rollback() }()
 
 	stmt, err := tx.Prepare(
-		`INSERT OR REPLACE INTO port_stats_1m (device_id, interface_name, bucket,
-		    rx_bps_avg, tx_bps_avg, rx_bps_max, tx_bps_max, rx_bytes, tx_bytes,
-		    rx_pps_avg, tx_pps_avg, samples)
-		 SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+		`INSERT OR REPLACE INTO port_stats_1m (` + portStatColumns + `)
+		 SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 		 WHERE EXISTS (SELECT 1 FROM devices WHERE id = ?)`)
 	if err != nil {
 		return err
@@ -117,6 +142,7 @@ func InsertPortStats1m(db *sql.DB, rows []PortStatRow) error {
 			r.DeviceID, r.InterfaceName, sqlTime(r.Bucket.UTC().Truncate(time.Minute)),
 			r.RxBpsAvg, r.TxBpsAvg, r.RxBpsMax, r.TxBpsMax, r.RxBytes, r.TxBytes,
 			r.RxPpsAvg, r.TxPpsAvg, r.Samples,
+			r.RxDrop, r.TxDrop, r.RxError, r.TxError, r.TxQueueDrop, r.LinkDowns, r.CoveredS,
 			r.DeviceID,
 		); err != nil {
 			return err
@@ -130,7 +156,11 @@ func InsertPortStats1m(db *sql.DB, rows []PortStatRow) error {
 // idempotent: re-rolling an hour replaces its rows. Per port and hour:
 // avg = SUM(bytes)*8/3600 (minutes without a row count as idle),
 // max = MAX(minute max), bytes = SUM, pps = SUM(minute pps_avg)/60,
-// samples = SUM. Averages are rounded to the nearest integer.
+// samples = SUM. Averages are rounded to the nearest integer. The drop, error
+// and link-down deltas are summed (NULL while no minute carried the
+// attribute); covered_s is the device's covered seconds in the hour
+// (SUM(device_minutes.polled_s) — the port's idle minutes have no row of
+// their own to count), NULL for an hour device_minutes does not hold.
 func RollupPortStats1h(db *sql.DB, from, to time.Time) error {
 	from = from.UTC().Truncate(time.Hour)
 	to = to.UTC().Truncate(time.Hour)
@@ -138,16 +168,24 @@ func RollupPortStats1h(db *sql.DB, from, to time.Time) error {
 		return nil
 	}
 	_, err := db.Exec(
-		`INSERT OR REPLACE INTO port_stats_1h (device_id, interface_name, bucket,
-		    rx_bps_avg, tx_bps_avg, rx_bps_max, tx_bps_max, rx_bytes, tx_bytes,
-		    rx_pps_avg, tx_pps_avg, samples)
-		 SELECT device_id, interface_name, strftime('%Y-%m-%d %H:00:00', bucket) AS hour,
-		        (SUM(rx_bytes) * 8 + 1800) / 3600, (SUM(tx_bytes) * 8 + 1800) / 3600,
-		        MAX(rx_bps_max), MAX(tx_bps_max), SUM(rx_bytes), SUM(tx_bytes),
-		        (SUM(rx_pps_avg) + 30) / 60, (SUM(tx_pps_avg) + 30) / 60, SUM(samples)
-		 FROM port_stats_1m
-		 WHERE bucket >= ? AND bucket < ?
-		 GROUP BY device_id, interface_name, hour`,
+		`INSERT OR REPLACE INTO port_stats_1h (`+portStatColumns+`)
+		 SELECT a.device_id, a.interface_name, a.hour,
+		        a.rx_avg, a.tx_avg, a.rx_max, a.tx_max, a.rx_bytes, a.tx_bytes, a.rx_pps, a.tx_pps, a.samples,
+		        a.rx_drop, a.tx_drop, a.rx_error, a.tx_error, a.tx_queue_drop, a.link_downs,
+		        (SELECT SUM(dm.polled_s) FROM device_minutes dm
+		          WHERE dm.device_id = a.device_id
+		            AND dm.bucket >= CAST(strftime('%s', a.hour) AS INTEGER)
+		            AND dm.bucket <  CAST(strftime('%s', a.hour) AS INTEGER) + 3600)
+		 FROM (SELECT device_id, interface_name, strftime('%Y-%m-%d %H:00:00', bucket) AS hour,
+		              (SUM(rx_bytes) * 8 + 1800) / 3600 AS rx_avg, (SUM(tx_bytes) * 8 + 1800) / 3600 AS tx_avg,
+		              MAX(rx_bps_max) AS rx_max, MAX(tx_bps_max) AS tx_max,
+		              SUM(rx_bytes) AS rx_bytes, SUM(tx_bytes) AS tx_bytes,
+		              (SUM(rx_pps_avg) + 30) / 60 AS rx_pps, (SUM(tx_pps_avg) + 30) / 60 AS tx_pps, SUM(samples) AS samples,
+		              SUM(rx_drop) AS rx_drop, SUM(tx_drop) AS tx_drop, SUM(rx_error) AS rx_error, SUM(tx_error) AS tx_error,
+		              SUM(tx_queue_drop) AS tx_queue_drop, SUM(link_downs) AS link_downs
+		       FROM port_stats_1m
+		       WHERE bucket >= ? AND bucket < ?
+		       GROUP BY device_id, interface_name, hour) a`,
 		sqlTime(from), sqlTime(to))
 	return err
 }
@@ -160,8 +198,7 @@ func GetPortStatsSeries(db *sql.DB, table PortStatsTable, deviceID, iface string
 		return nil, err
 	}
 	rows, err := db.Query(
-		`SELECT device_id, interface_name, bucket, rx_bps_avg, tx_bps_avg, rx_bps_max, tx_bps_max,
-		        rx_bytes, tx_bytes, rx_pps_avg, tx_pps_avg, samples
+		`SELECT `+portStatColumns+`
 		 FROM `+name+`
 		 WHERE device_id = ? AND interface_name = ? AND bucket >= ? AND bucket < ?
 		 ORDER BY bucket`,
@@ -173,13 +210,36 @@ func GetPortStatsSeries(db *sql.DB, table PortStatsTable, deviceID, iface string
 
 	var out []PortStatRow
 	for rows.Next() {
-		var r PortStatRow
-		var b dbTime
-		if err := rows.Scan(&r.DeviceID, &r.InterfaceName, &b, &r.RxBpsAvg, &r.TxBpsAvg,
-			&r.RxBpsMax, &r.TxBpsMax, &r.RxBytes, &r.TxBytes, &r.RxPpsAvg, &r.TxPpsAvg, &r.Samples); err != nil {
+		r, err := scanPortStatRow(rows)
+		if err != nil {
 			return nil, err
 		}
-		r.Bucket = b.Time
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// ListPortEgressMinutes returns every port_stats_1m row with from <= bucket <
+// to, ordered by device, interface and bucket — the egress-drop alert rule's
+// input (a few minutes of the fleet, through the bucket index).
+func ListPortEgressMinutes(db *sql.DB, from, to time.Time) ([]PortStatRow, error) {
+	rows, err := db.Query(
+		`SELECT `+portStatColumns+`
+		 FROM port_stats_1m
+		 WHERE bucket >= ? AND bucket < ?
+		 ORDER BY device_id, interface_name, bucket`,
+		sqlTime(from), sqlTime(to))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []PortStatRow
+	for rows.Next() {
+		r, err := scanPortStatRow(rows)
+		if err != nil {
+			return nil, err
+		}
 		out = append(out, r)
 	}
 	return out, rows.Err()

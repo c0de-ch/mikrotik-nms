@@ -3,12 +3,60 @@ package telemetry
 import (
 	"context"
 	"database/sql"
+	"sync/atomic"
 	"time"
 
 	"github.com/mikrotik-nms/backend/internal/database/queries"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 )
+
+// CPUSample is a device's latest CPU load reading and when it was taken.
+type CPUSample struct {
+	Load int // percent
+	At   time.Time
+}
+
+// cpuSampleMaxAge is how old a CPU sample may be and still be exported. The
+// sampler reads every device once a minute, so three minutes covers a missed
+// read or two; past that the device is paused, unreachable or the sampler is
+// not running, and re-exporting the last value every cycle would draw a flat
+// line that looks measured.
+const cpuSampleMaxAge = 3 * time.Minute
+
+// cpuSource is the registered sample provider (nil = none).
+var cpuSource atomic.Pointer[func() map[string]CPUSample]
+
+// SetCPUSource registers the function the metrics callback reads each
+// device's latest CPU sample from, keyed by device id (atomic; nil clears).
+// main adapts the poller's sampler to it. Without a source — an instance
+// that does not poll — the CPU gauge exports nothing.
+func SetCPUSource(f func() map[string]CPUSample) {
+	if f == nil {
+		cpuSource.Store(nil)
+		return
+	}
+	cpuSource.Store(&f)
+}
+
+func currentCPUSamples() map[string]CPUSample {
+	f := cpuSource.Load()
+	if f == nil || *f == nil {
+		return nil
+	}
+	return (*f)()
+}
+
+// freshCPUSample reports whether s may be exported at now: taken within
+// cpuSampleMaxAge (a sample stamped slightly ahead of now — clock skew
+// between two readings of the clock — still counts).
+func freshCPUSample(s CPUSample, now time.Time) bool {
+	if s.At.IsZero() {
+		return false
+	}
+	age := now.Sub(s.At)
+	return age < cpuSampleMaxAge && age > -time.Minute
+}
 
 // registerMetrics wires observable instruments that read the data the NMS already
 // collects (devices, connectivity, speed tests, wifi, loop events) straight from
@@ -18,7 +66,7 @@ func registerMetrics(meter metric.Meter, db *sql.DB) error {
 	devCount, _ := meter.Int64ObservableGauge("mikrotik.devices",
 		metric.WithDescription("Managed device count by status (online/offline/unknown)"))
 	cpu, _ := meter.Int64ObservableGauge("mikrotik.device.cpu_load",
-		metric.WithUnit("%"), metric.WithDescription("Per-device CPU load"))
+		metric.WithUnit("%"), metric.WithDescription("Per-device CPU load: the latest quiet-window sample, exported only while younger than 3 min (sample_time = when it was taken)"))
 	memUsed, _ := meter.Int64ObservableGauge("mikrotik.device.memory.used",
 		metric.WithUnit("By"), metric.WithDescription("Per-device memory used"))
 	memTotal, _ := meter.Int64ObservableGauge("mikrotik.device.memory.total",
@@ -59,6 +107,7 @@ func registerMetrics(meter metric.Meter, db *sql.DB) error {
 		// Devices: status counts + per-device cpu/mem
 		if devices, err := queries.ListDevices(db); err == nil {
 			counts := map[string]int64{"online": 0, "offline": 0, "unknown": 0}
+			samples, now := currentCPUSamples(), time.Now()
 			for _, d := range devices {
 				st := d.Status
 				if st == "" {
@@ -69,8 +118,16 @@ func registerMetrics(meter metric.Meter, db *sql.DB) error {
 					attribute.String("device", d.Identity),
 					attribute.String("address", d.Address),
 				)
-				if d.CPULoad != nil {
-					o.ObserveInt64(cpu, int64(*d.CPULoad), da)
+				// The CPU load is exported from the sampler's own latest
+				// reading, never from the device row: only while it is
+				// fresh, and with the time it was taken, so a consumer can
+				// tell a measurement from a held value.
+				if s, ok := samples[d.ID]; ok && freshCPUSample(s, now) {
+					o.ObserveInt64(cpu, int64(s.Load), metric.WithAttributes(
+						attribute.String("device", d.Identity),
+						attribute.String("address", d.Address),
+						attribute.String("sample_time", s.At.UTC().Format(time.RFC3339)),
+					))
 				}
 				if d.MemoryUsed != nil {
 					o.ObserveInt64(memUsed, *d.MemoryUsed, da)

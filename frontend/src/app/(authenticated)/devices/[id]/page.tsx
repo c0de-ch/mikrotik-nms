@@ -24,6 +24,7 @@ import { EditConnectionDialog, TLSPinMissingBadge, TLSPinMissingNotice } from "@
 import { DeviceLoadBadges } from "@/components/devices/device-load";
 import { FindingsCard } from "@/components/devices/findings-card";
 import { LoadCard } from "@/components/devices/load-card";
+import { DeviceLoadTab } from "@/components/devices/load-tab";
 import { PollingCard } from "@/components/devices/polling-card";
 
 // The device is re-read this often (database only): the polling card's
@@ -156,11 +157,16 @@ export default function DeviceDetailPage() {
 
       {token && <FindingsCard deviceId={device.id} token={token} />}
 
-      <Tabs defaultValue="interfaces">
+      {/* The load tab comes first: it continues the two cards above — the
+          device's CPU over time next to what the NMS sent it. */}
+      <Tabs defaultValue="load">
         <TabsList>
+          <TabsTrigger value="load">{"CPU & NMS load"}</TabsTrigger>
           <TabsTrigger value="interfaces">Interfaces ({interfaces.length})</TabsTrigger>
           <TabsTrigger value="neighbors">Neighbors ({neighbors.length})</TabsTrigger>
         </TabsList>
+
+        <TabsContent value="load">{token && <DeviceLoadTab device={device} token={token} />}</TabsContent>
 
         <TabsContent value="interfaces">
           <Table>

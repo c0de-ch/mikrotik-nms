@@ -41,6 +41,9 @@ func TestParseInterfaceStats(t *testing.T) {
 				ID: "*40C", Name: "net28", Type: "vlan", Comment: "iot", Running: true,
 				RxBytes: 100, TxBytes: 200, RxPackets: 3, TxPackets: 4,
 				RxErrors: 5, TxErrors: 6, RxDrops: 7, TxDrops: 8, TxQueueDrops: 9, HasCounters: true,
+				// Present counters are flagged, so an absent one (the ether
+				// port above) is never mistaken for zero drops.
+				HasRxErrors: true, HasTxErrors: true, HasRxDrops: true, HasTxDrops: true, HasTxQueueDrops: true,
 			},
 		},
 		{

@@ -126,6 +126,13 @@ func MarkAlertNotified(db *sql.DB, id int64, at time.Time) error {
 	return err
 }
 
+// RenotifyAlert makes a firing alert due for notification again at once (its
+// severity rose). An acknowledged or resolved alert is left alone.
+func RenotifyAlert(db *sql.DB, id int64) error {
+	_, err := db.Exec(`UPDATE alerts SET last_notified_at = NULL WHERE id = ? AND state = 'firing'`, id)
+	return err
+}
+
 // ErrAlertNotOpen is returned by AckAlert for a missing or resolved alert.
 var ErrAlertNotOpen = errors.New("alert is not open")
 

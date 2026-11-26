@@ -340,8 +340,15 @@ func (s *Server) handleTrafficPortsTop(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusInternalServerError, "failed to read port stats")
 				return
 			}
-			secs := win.seconds()
+			// Each port's average runs over the seconds its own device was
+			// covered: a paused device is not diluted by its pause.
+			secsOf, err := s.coveredSeconds(win, rng.table)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to read port stats")
+				return
+			}
 			for _, a := range aggs {
+				secs, _ := secsOf(a.DeviceID)
 				totals[ifaceKey{a.DeviceID, a.InterfaceName}] = portTotals{
 					rxAvg: bpsOver(a.RxBytes, secs), txAvg: bpsOver(a.TxBytes, secs),
 					rxMax: a.RxBpsMax, txMax: a.TxBpsMax,
@@ -410,15 +417,28 @@ func (s *Server) handleTrafficPortsTop(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if sw.covered {
+			// Every row's sparkline spans the same steps (the fleet-wide
+			// window); which of them are gaps is each device's own.
 			from := sw.pointsFrom(sparkRange.sparkStep)
+			byDevice := make(map[string]*queries.Coverage)
 			for i := range resp.Rows {
 				row := &resp.Rows[i]
+				cov, ok := byDevice[row.DeviceID]
+				if !ok {
+					dw, err := s.deviceWindow(sw, sparkRange.table, row.DeviceID)
+					if err != nil {
+						writeError(w, http.StatusInternalServerError, "failed to read port stats")
+						return
+					}
+					cov = dw.cov
+					byDevice[row.DeviceID] = cov
+				}
 				series, err := queries.GetPortStatsSeries(s.db, sparkRange.table, row.DeviceID, row.Iface, from, sw.end)
 				if err != nil {
 					writeError(w, http.StatusInternalServerError, "failed to read port stats")
 					return
 				}
-				row.Sparkline = queries.DownsampleSeriesCovered(series, from, sw.end, sparkRange.sparkStep, sw.cov)
+				row.Sparkline = queries.DownsampleSeriesCovered(series, from, sw.end, sparkRange.sparkStep, cov)
 			}
 		}
 	}
@@ -522,6 +542,11 @@ func (s *Server) handleTrafficPortHistory(w http.ResponseWriter, r *http.Request
 	}
 
 	win, err := s.resolveWindow(rng, now)
+	if err == nil {
+		// Gaps are the device's own: a minute it was paused or unreachable
+		// in is a gap on its ports whatever the rest of the fleet did.
+		win, err = s.deviceWindow(win, rng.table, deviceID)
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to read port stats")
 		return
