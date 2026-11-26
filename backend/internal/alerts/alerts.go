@@ -62,8 +62,14 @@ type Observation struct {
 	Severity string
 	// Summary is the one-line, human-readable statement of the condition.
 	Summary string
-	// Facts are rule-specific details stored with the alert.
+	// Facts are rule-specific details stored with the alert. A "rollback"
+	// fact (a list of text lines) is appended to the mail of a firing alert.
 	Facts map[string]any
+	// Unconfirmed marks a condition raised on evidence that can be forged
+	// or mistaken (a UDP source address, a log line): it is stored with the
+	// alert (confirmed = false) and such an observation must never be
+	// critical — the rule raises the severity once it has confirmed it.
+	Unconfirmed bool
 }
 
 // Rule looks at the stored state and reports every condition that holds
@@ -230,12 +236,29 @@ func (e *Engine) Tick() error {
 		delete(seen, k)
 		if err := queries.TouchAlert(e.db, a.ID, o.Severity, encodePayload(o), now); err != nil {
 			errs = append(errs, err)
+			continue
+		}
+		if a.Confirmed == o.Unconfirmed {
+			if err := queries.SetAlertConfirmed(e.db, a.ID, !o.Unconfirmed); err != nil {
+				errs = append(errs, err)
+			}
+		}
+		// A rising severity is news: the alert fires again and is notified
+		// in this tick, even when the lower severity had been delivered or
+		// acknowledged (a warning someone acknowledged as "maybe" that is
+		// now a confirmed critical must reach them).
+		if SeverityRank(o.Severity) > SeverityRank(a.Severity) {
+			if err := queries.EscalateAlert(e.db, a.ID); err != nil {
+				errs = append(errs, err)
+			} else {
+				changed = true
+			}
 		}
 	}
 	for k, o := range seen {
 		if _, err := queries.InsertAlert(e.db, &queries.Alert{
 			Rule: k.rule, Key: k.key, DeviceID: o.DeviceID, Severity: o.Severity,
-			FirstAt: now, LastAt: now, Confirmed: true, Payload: encodePayload(o),
+			FirstAt: now, LastAt: now, Confirmed: !o.Unconfirmed, Payload: encodePayload(o),
 		}); err != nil {
 			errs = append(errs, err)
 			continue

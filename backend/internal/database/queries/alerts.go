@@ -114,6 +114,22 @@ func TouchAlert(db *sql.DB, id int64, severity, payload string, at time.Time) er
 	return err
 }
 
+// SetAlertConfirmed records whether an open alert rests on confirmed
+// evidence (confirmed = 0: raised on something that can be forged).
+func SetAlertConfirmed(db *sql.DB, id int64, confirmed bool) error {
+	_, err := db.Exec(`UPDATE alerts SET confirmed = ? WHERE id = ? AND state <> 'resolved'`, confirmed, id)
+	return err
+}
+
+// EscalateAlert makes an open alert fire again after its severity rose: an
+// acknowledgement of the lower severity is dropped and the alert counts as
+// not notified yet, so the next notification pass delivers it.
+func EscalateAlert(db *sql.DB, id int64) error {
+	_, err := db.Exec(`UPDATE alerts SET state = 'firing', acked_by = NULL, acked_at = NULL, last_notified_at = NULL
+		WHERE id = ? AND state <> 'resolved'`, id)
+	return err
+}
+
 // ResolveAlert closes an open alert.
 func ResolveAlert(db *sql.DB, id int64, at time.Time) error {
 	_, err := db.Exec(`UPDATE alerts SET state = 'resolved', resolved_at = ? WHERE id = ? AND state <> 'resolved'`, at.Unix(), id)
