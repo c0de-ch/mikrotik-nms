@@ -205,6 +205,22 @@ func (c *PortStatsCollector) DeviceIfaces(deviceID string) (DeviceIfaces, bool) 
 	return d, true
 }
 
+// LastTier0 is when deviceID's latest successful Tier 0 read ended (the
+// reading its snapshot and rates come from); zero before the first one and
+// once it has expired. The post-poll CPU sample is timed by it. A nil
+// collector has none.
+func (c *PortStatsCollector) LastTier0(deviceID string) time.Time {
+	if c == nil {
+		return time.Time{}
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if st := c.devs[deviceID]; st != nil {
+		return st.at
+	}
+	return time.Time{}
+}
+
 // DeviceVLANs returns deviceID's /interface/vlan rows (name, vlan-id, parent)
 // from its latest stacking read (Tier 3c) and when that was read; ok is false
 // until the first read since startup. Unlike the counter snapshot it does
