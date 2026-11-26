@@ -42,6 +42,7 @@
   --color-load-meter: var(--load-meter);
   --color-load-track: var(--load-track);
   --color-load-hold: var(--load-hold);
+  --color-load-nms: var(--load-nms);
   --radius-sm: calc(var(--radius) * 0.6);
   --radius-md: calc(var(--radius) * 0.8);
   --radius-lg: var(--radius);
@@ -92,6 +93,10 @@
   --load-meter: #4f8fa8;
   --load-track: #d3dde6;
   --load-hold: #a14a06;
+  /* What the NMS itself did to a device (the CPU & NMS load charts): the
+     post-poll markers and the NMS panels. Mode-specific steps of the chart
+     orange: >= 3:1 on the card in both themes. */
+  --load-nms: #c2610c;
 }
 
 .dark {
@@ -129,6 +134,7 @@
   --load-meter: #5A9CB5;
   --load-track: #33465d;
   --load-hold: #FACE68;
+  --load-nms: #F29A4E;
 }
 
 @layer base {
