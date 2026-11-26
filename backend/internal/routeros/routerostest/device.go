@@ -31,6 +31,7 @@ type Device struct {
 	args         [][]string
 	replies      map[string][]map[string]string
 	traps        map[string]string
+	hooks        map[string]func()
 	refuseLogins bool
 }
 
@@ -105,6 +106,12 @@ func (d *Device) serve(c net.Conn) {
 			return
 		}
 		d.mu.Lock()
+		hook := d.hooks[sen.Word]
+		d.mu.Unlock()
+		if hook != nil {
+			hook()
+		}
+		d.mu.Lock()
 		refuse := d.refuseLogins
 		rows := d.replies[sen.Word]
 		trap, trapped := d.traps[sen.Word]
@@ -163,6 +170,19 @@ func (d *Device) SetTrap(command, message string) {
 		d.traps = make(map[string]string)
 	}
 	d.traps[command] = message
+}
+
+// OnCommand runs fn each time the device receives command, before it answers
+// — for a device whose state changes with what it is told, e.g. one that
+// reports a new version once it was told to install it. fn may call SetReply
+// and SetTrap.
+func (d *Device) OnCommand(command string, fn func()) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.hooks == nil {
+		d.hooks = make(map[string]func())
+	}
+	d.hooks[command] = fn
 }
 
 // RefuseLogins makes every later login fail as a wrong password does.

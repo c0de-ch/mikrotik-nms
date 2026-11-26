@@ -62,6 +62,18 @@ function auditVerb(action: string): string {
       return "changed the class override";
     case "device_class_probed":
       return "probed the class";
+    case "firmware_upgrade_requested":
+      return "started a RouterOS upgrade";
+    case "firmware_channel_requested":
+      return "changed the update channel";
+    case "firmware_routerboard_requested":
+      return "started a RouterBOARD firmware upgrade";
+    case "address_move_approved":
+      return "approved an address change";
+    case "address_move_refused":
+      return "approved an address change that was refused";
+    case "address_move_dismissed":
+      return "dismissed an address change";
     default:
       return action.replaceAll("_", " ");
   }

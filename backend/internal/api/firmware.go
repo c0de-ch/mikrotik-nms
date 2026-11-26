@@ -161,9 +161,16 @@ func (s *Server) handleUpgradeFirmware(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	how := "download only (installs on the next reboot)"
+	if req.Reboot {
+		how = "reboot to install"
+	}
+	s.auditFirmware(r, "firmware_upgrade_requested", req.DeviceIDs, fmt.Sprintf("job %.8s, %s", jobID, how))
+
 	// The job's sessions are one-shot connections logged in with the typed
 	// credentials, which the executor zeroes when the job ends.
 	executor := poller.NewUpgradeExecutor(s.db, s.pool, s.hub, creds, s.verifyTLS())
+	executor.RecordFirmwareWith(s.firmwareChecker())
 	launched = true
 	go executor.Execute(jobID)
 
@@ -196,6 +203,17 @@ func (s *Server) handleGetUpgradeJob(w http.ResponseWriter, r *http.Request) {
 		"job":     job,
 		"devices": devices,
 	})
+}
+
+// auditFirmware records a device-changing firmware request on every device
+// it names: who asked for what. It is written once the request is about to
+// reach the devices (the outcome is in the job rows or the response), and
+// never carries the RouterOS login typed for the action — not the user name
+// either, which is where a mistyped password ends up.
+func (s *Server) auditFirmware(r *http.Request, action string, deviceIDs []string, detail string) {
+	for _, id := range deviceIDs {
+		s.audit(r, action, id, detail)
+	}
 }
 
 // firmwareAction runs act on a one-shot session per device, logged in with
@@ -276,6 +294,7 @@ func (s *Server) handleSetChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.auditFirmware(r, "firmware_channel_requested", req.DeviceIDs, "→ "+req.Channel)
 	changed, errs := s.firmwareAction(req.DeviceIDs, creds, func(_ *queries.Device, run routeros.Runner) error {
 		return routeros.SetChannel(run, req.Channel)
 	})
@@ -313,6 +332,11 @@ func (s *Server) handleUpgradeRouterboard(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	when := "applied on the next reboot"
+	if req.Reboot {
+		when = "reboot to apply"
+	}
+	s.auditFirmware(r, "firmware_routerboard_requested", req.DeviceIDs, when)
 	upgraded, errs := s.firmwareAction(req.DeviceIDs, creds, func(dev *queries.Device, run routeros.Runner) error {
 		if err := routeros.UpgradeRouterboard(run); err != nil {
 			return err

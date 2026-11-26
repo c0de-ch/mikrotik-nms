@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { RefreshCw, Download, Cpu, ArrowRightLeft } from "lucide-react";
 import {
   DropdownMenu,
@@ -46,6 +46,9 @@ interface UpgradeProgress {
   message: string;
 }
 
+// How often a running job's stored state is read (see syncJob).
+const JOB_POLL_MS = 3_000;
+
 export default function FirmwarePage() {
   const { token, user } = useAuth();
   // Upgrades, channel changes and RouterBOARD upgrades need a recent
@@ -56,6 +59,9 @@ export default function FirmwarePage() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [checking, setChecking] = useState(false);
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
+  // The job this page is following: what a late answer for an earlier job is
+  // checked against.
+  const activeJobRef = useRef<string | null>(null);
   const [upgradeProgress, setUpgradeProgress] = useState<Map<string, UpgradeProgress>>(new Map());
   const [releases, setReleases] = useState<FirmwareRelease[]>([]);
   const [pending, setPending] = useState<PendingAction | null>(null);
@@ -107,6 +113,7 @@ export default function FirmwarePage() {
     try {
       if (action.kind === "upgrade") {
         const result = await withFreshAuth((t) => api.firmware.upgrade(t, action.ids, values.reboot, creds));
+        activeJobRef.current = result.job_id;
         setActiveJobId(result.job_id);
         setUpgradeProgress(new Map());
         toast.success(`Upgrade job started for ${action.ids.length} device(s)`);
@@ -153,6 +160,56 @@ export default function FirmwarePage() {
     routerboard: { title: "Upgrade RouterBOARD firmware", confirm: "Upgrade", reboot: "Reboot when done" },
   };
 
+  // syncJob reads the job's stored state and ends the job on this page once
+  // the server says it is over. The WS frames below are the live view, but
+  // they only reach a page that is already subscribed: a job whose login is
+  // refused, or whose device is unreachable, is over before the subscription
+  // exists, and frames are lost across a reconnect. So the stored state is
+  // read when a job starts, every few seconds while it runs, and when the
+  // job-finished frame arrives.
+  const syncJob = useCallback(
+    async (jobId: string) => {
+      if (!token) return;
+      let state;
+      try {
+        state = await api.firmware.job(token, jobId);
+      } catch {
+        return; // the next read tries again
+      }
+      if (activeJobRef.current !== jobId) return;
+      setUpgradeProgress((prev) => {
+        const next = new Map(prev);
+        for (const d of state.devices) {
+          if (d.status !== "pending") next.set(d.device_id, d);
+        }
+        return next;
+      });
+      if (state.job.status !== "completed" && state.job.status !== "failed") return;
+      activeJobRef.current = null;
+      setActiveJobId(null);
+      const failed = state.devices.filter((d) => d.status === "failed").length;
+      if (state.job.status === "failed") {
+        toast.error("The upgrade job could not run", { duration: 10_000 });
+      } else if (failed > 0) {
+        toast.error(`Upgrade job finished: ${failed} of ${state.devices.length} device(s) failed`, { duration: 10_000 });
+      } else {
+        toast.success("Firmware upgrade job completed");
+      }
+      setTimeout(load, 2000);
+    },
+    [token, load],
+  );
+
+  useEffect(() => {
+    if (!activeJobId) return;
+    const first = setTimeout(() => void syncJob(activeJobId), 500);
+    const timer = setInterval(() => void syncJob(activeJobId), JOB_POLL_MS);
+    return () => {
+      clearTimeout(first);
+      clearInterval(timer);
+    };
+  }, [activeJobId, syncJob]);
+
   // Subscribe to upgrade progress
   const wsTopic = activeJobId ? `upgrade.progress.${activeJobId}` : "";
   useWebSocket(wsTopic, (data) => {
@@ -163,12 +220,9 @@ export default function FirmwarePage() {
         next.set(progress.device_id, progress);
         return next;
       });
-    }
-    if (progress.status === "completed" && !progress.device_id) {
-      // Job completed
-      toast.success("Firmware upgrade job completed");
-      setActiveJobId(null);
-      setTimeout(load, 2000);
+    } else if (progress.status === "completed" && progress.job_id) {
+      // The job is over: the stored state has every device's outcome.
+      void syncJob(progress.job_id);
     }
   });
 
@@ -178,7 +232,7 @@ export default function FirmwarePage() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
         <div>
           <h1 className="text-2xl font-bold">Firmware Management</h1>
           <p className="text-xs text-muted-foreground">
@@ -186,7 +240,7 @@ export default function FirmwarePage() {
             {lastFetched ? `, checked ${ago(lastFetched)}` : " — not fetched yet"}. Devices are not asked to check.
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           {isAdmin && (
             <>
               <Button variant="outline" onClick={handleCheckAll} disabled={checking}>

@@ -152,8 +152,10 @@ export function AddressProposalsPanel({
           <DialogHeader>
             <DialogTitle>Move {confirm?.device_identity || confirm?.device_id}?</DialogTitle>
             <DialogDescription>
-              The NMS will log in at <span className="font-mono">{confirm?.new_address}</span> with this
-              device&apos;s stored username and password, and move the device there only if the same board,
+              {/* The explicit space matters: SWC (Next 16.2) drops the leading
+                  space of a multi-line JSX text that contains an HTML entity. */}
+              The NMS will log in at <span className="font-mono">{confirm?.new_address}</span>{" "}
+              with this device&apos;s stored username and password, and move the device there only if the same board,
               RouterOS version and MAC answer. The address came from neighbor discovery, which anyone on the
               network can fake — approve only if you expect the device to be there.
             </DialogDescription>

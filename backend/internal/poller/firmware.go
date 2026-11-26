@@ -45,11 +45,22 @@ type UpgradeExecutor struct {
 	// remaining devices are skipped rather than sent the same wrong
 	// password (each failure is a line in their log, and may lock out).
 	refusedOn string
+	// firmware, when set, stores the firmware facts the job reads from a
+	// device it upgraded (RecordFirmwareWith).
+	firmware *FirmwareChecker
 }
 
 // NewUpgradeExecutor takes ownership of creds: Execute zeroes them.
 func NewUpgradeExecutor(db *sql.DB, pool *routeros.Pool, hub *ws.Hub, creds *routeros.Credentials, verifyTLS bool) *UpgradeExecutor {
 	return &UpgradeExecutor{db: db, pool: pool, hub: hub, creds: creds, verifyTLS: verifyTLS}
+}
+
+// RecordFirmwareWith makes the job store the firmware facts of every device
+// it upgraded, read on the session that verified the new version — so the
+// firmware page shows the result at once instead of "update available" until
+// the device's next info pass.
+func (ue *UpgradeExecutor) RecordFirmwareWith(c *FirmwareChecker) {
+	ue.firmware = c
 }
 
 // Execute runs an upgrade job: upgrades each device sequentially, broadcasting progress.
@@ -221,6 +232,16 @@ func (ue *UpgradeExecutor) upgradeDevice(jobID string, jd queries.UpgradeJobDevi
 		return false
 	}
 	_ = queries.UpdateDeviceInfo(ue.db, dev.ID, res.Platform, res.Board, res.Version, "", res.Architecture)
+	if ue.firmware != nil {
+		// Two read-only prints on the job's own session, as the channel and
+		// RouterBOARD actions do; whatever the device reports is recorded,
+		// also when it is not the version the job expected.
+		if pkg, rb, err := ReadFirmware(routeros.OnceRunner{Client: verify}); err != nil {
+			log.Printf("firmware: read firmware facts of %s after the upgrade: %v", dev.Identity, err)
+		} else {
+			ue.firmware.RecordDevice(dev.ID, pkg, rb)
+		}
+	}
 	if firmware.UpdateAvailable(res.Version, fw.LatestVersion) {
 		publish("failed", fmt.Sprintf("%s came back on %s, expected %s", dev.Identity, res.Version, fw.LatestVersion))
 		return false

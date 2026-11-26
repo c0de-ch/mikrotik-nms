@@ -422,6 +422,10 @@ export const api = {
         token,
         body: JSON.stringify({ device_ids: deviceIds, reboot, ...creds }),
       }),
+    // An upgrade job's stored state: what the WS progress frames said so far,
+    // for a page that missed some of them.
+    job: (token: string, jobId: string) =>
+      apiFetch<UpgradeJobState>(`/firmware/upgrade/${encodeURIComponent(jobId)}`, { token }),
     setChannel: (token: string, deviceIds: string[], channel: string, creds: DeviceCredentials) =>
       apiFetch<{ changed: number; errors: string[] }>("/firmware/channel", {
         method: "POST",
@@ -1523,6 +1527,14 @@ export interface FirmwareRelease {
   version: string;
   build_time: string | null;
   fetched_at: string;
+}
+
+// An upgrade job and the outcome of each of its devices so far. A job ends as
+// "completed" whatever its devices did (each row has its own status), or as
+// "failed" when it could not run at all.
+export interface UpgradeJobState {
+  job: { id: string; status: "pending" | "running" | "completed" | "failed" | string };
+  devices: { device_id: string; status: string; message: string }[];
 }
 
 // A RouterOS login typed for one firmware action.

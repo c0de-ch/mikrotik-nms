@@ -158,3 +158,68 @@ func TestCheckFirmwareFetchesTheFeedOnly(t *testing.T) {
 		t.Errorf("Check All contacted the device: %v", cmds)
 	}
 }
+
+// Every device-changing firmware action leaves an audit entry on each device
+// it was asked for: what was asked, never the RouterOS login typed for it.
+func TestFirmwareActionsAreAudited(t *testing.T) {
+	s, r := firmwareTestServer(t)
+	fake := routerostest.NewDevice(t)
+	fake.SetReply("/system/package/update/print", map[string]string{"channel": "stable", "installed-version": "7.12.1"})
+	// "b" answers nowhere: a request is audited whether or not it succeeds.
+	for id, addr := range map[string]string{"a": fake.Host, "b": "127.0.0.2"} {
+		if err := queries.CreateDevice(s.db, &queries.Device{ID: id, Identity: "sw-" + id, Address: addr, APIPort: fake.Port, Username: "nms", Status: "online"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	post := func(path, body string) {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, path, strings.NewReader(body)))
+		if rec.Code != http.StatusOK && rec.Code != http.StatusAccepted {
+			t.Fatalf("%s = %d %s", path, rec.Code, rec.Body.String())
+		}
+	}
+	post("/firmware/channel", `{"device_ids":["a","b"],"channel":"testing","username":"ros-admin","password":"typed-secret"}`)
+	post("/firmware/routerboard", `{"device_ids":["a"],"reboot":false,"username":"ros-admin","password":"typed-secret"}`)
+	post("/firmware/upgrade", `{"device_ids":["a"],"reboot":false,"username":"ros-admin","password":"typed-secret"}`)
+
+	want := map[string][]string{
+		"a": {"firmware_channel_requested", "firmware_routerboard_requested", "firmware_upgrade_requested"},
+		"b": {"firmware_channel_requested"},
+	}
+	for id, actions := range want {
+		es, err := queries.ListAuditLog(s.db, id, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got []string
+		for _, e := range es {
+			got = append(got, e.Action)
+			if strings.Contains(e.Detail, "typed-secret") || strings.Contains(e.Detail, "ros-admin") {
+				t.Errorf("audit detail carries the typed login: %q", e.Detail)
+			}
+		}
+		slices.Sort(got)
+		if !slices.Equal(got, actions) {
+			t.Errorf("audit of %s = %v, want %v", id, got, actions)
+		}
+	}
+	es, _ := queries.ListAuditLog(s.db, "a", 10)
+	var details []string
+	for _, e := range es {
+		details = append(details, e.Action+": "+e.Detail)
+	}
+	joined := strings.Join(details, "\n")
+	for _, part := range []string{"→ testing", "download only", "applied on the next reboot"} {
+		if !strings.Contains(joined, part) {
+			t.Errorf("audit details lack %q:\n%s", part, joined)
+		}
+	}
+
+	// A request refused before it reaches a device is not an action.
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/firmware/channel", strings.NewReader(`{"device_ids":["b"],"channel":"stable"}`)))
+	if es, _ := queries.ListAuditLog(s.db, "b", 10); rec.Code != http.StatusBadRequest || len(es) != 1 {
+		t.Errorf("refused request: %d, %d audit entries on b (want 400, 1)", rec.Code, len(es))
+	}
+}

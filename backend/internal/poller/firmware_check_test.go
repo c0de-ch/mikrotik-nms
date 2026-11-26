@@ -311,3 +311,64 @@ func TestFirmwareV6DeviceIsNotOfferedV7(t *testing.T) {
 		t.Error("7.16.2 on stable should be offered 7.17")
 	}
 }
+
+// A device the job upgraded shows its new version at once: the job re-reads
+// the firmware facts on the session it verified the version on, rather than
+// leaving "update available" on the page until the next hourly info pass.
+func TestUpgradeRecordsTheFirmwareItVerified(t *testing.T) {
+	shortUpgradeTimings(t)
+	db := pollerTestDB(t)
+	hub := ws.NewHub()
+	checker := NewFirmwareChecker(db, hub)
+	if err := queries.UpsertFirmwareRelease(db, queries.FirmwareRelease{Channel: "stable", Version: "7.17", FetchedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	fake := routerostest.NewDevice(t)
+	fake.SetReply("/system/package/update/print", map[string]string{
+		"channel": "stable", "installed-version": "7.16.2", "latest-version": "7.17", "status": "New version is available",
+	})
+	fake.SetReply("/system/routerboard/print", map[string]string{"routerboard": "true", "current-firmware": "7.16.2", "upgrade-firmware": "7.16.2"})
+	fake.SetReply("/system/resource/print", map[string]string{"version": "7.17 (stable)", "board-name": "RB5009"})
+	// Once told to install, the device reports the new version.
+	fake.OnCommand("/system/package/update/install", func() {
+		fake.SetReply("/system/package/update/print", map[string]string{
+			"channel": "stable", "installed-version": "7.17", "latest-version": "7.17", "status": "System is already up to date",
+		})
+		fake.SetReply("/system/routerboard/print", map[string]string{"routerboard": "true", "current-firmware": "7.16.2", "upgrade-firmware": "7.17"})
+	})
+	mustCreateDevice(t, db, &queries.Device{ID: "r1", Identity: "r1", Address: fake.Host, APIPort: fake.Port, Status: "online"})
+	// What the last info pass stored: the old version, an update available.
+	checker.RecordDevice("r1", &routeros.FirmwareInfo{Channel: "stable", InstalledVersion: "7.16.2"},
+		&routeros.RouterboardInfo{CurrentFirmware: "7.16.2", UpgradeFirmware: "7.16.2"})
+	if st, err := queries.GetFirmwareStatusByDevice(db, "r1"); err != nil || !st.UpdateAvailable {
+		t.Fatalf("before the job: %+v %v", st, err)
+	}
+	if err := queries.CreateUpgradeJob(db, &queries.UpgradeJob{ID: "job", Status: "pending", Reboot: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := queries.CreateUpgradeJobDevice(db, &queries.UpgradeJobDevice{ID: "jd1", JobID: "job", DeviceID: "r1", Status: "pending"}); err != nil {
+		t.Fatal(err)
+	}
+	pool := routeros.NewPool(false)
+	ue := NewUpgradeExecutor(db, pool, hub, routeros.NewCredentials("u", "p"), false)
+	ue.RecordFirmwareWith(checker)
+	ue.Execute("job")
+
+	devs, _ := queries.ListUpgradeJobDevices(db, "job")
+	if len(devs) != 1 || devs[0].Status != "completed" {
+		t.Fatalf("job device = %+v", devs)
+	}
+	st, err := queries.GetFirmwareStatusByDevice(db, "r1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.InstalledVersion != "7.17" || st.UpdateAvailable {
+		t.Errorf("after the job: installed %q, update available %v; want 7.17, false", st.InstalledVersion, st.UpdateAvailable)
+	}
+	if st.RouterboardUpgrade == nil || *st.RouterboardUpgrade != "7.17" {
+		t.Errorf("RouterBOARD upgrade firmware not recorded as 7.17: %+v", st)
+	}
+	if pool.Get("r1") != nil {
+		t.Error("the job used the pool")
+	}
+}
