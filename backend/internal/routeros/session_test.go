@@ -156,17 +156,26 @@ func TestSessionFatalReplies(t *testing.T) {
 		wantEvicted(t, pool, "d1", client)
 	})
 
+	// bigReplyTimeout bounds the reads of the two cap-sized replies below.
+	const bigReplyTimeout = 5 * time.Minute
+
 	t.Run("more than 50,000 rows", func(t *testing.T) {
 		fake := routerostest.NewDevice(t)
 		fake.SetRaw("/ip/arp/print", routerostest.Rows(ros.MaxReplyRows+1))
 		fake.SetRaw("/ip/dhcp-server/lease/print", routerostest.Rows(ros.MaxReplyRows))
 		pool, client := pooled(t, fake, "d1")
 
-		reply, err := routeros.RunCommand(client, "/ip/dhcp-server/lease/print")
-		if err != nil || len(reply.Re) != ros.MaxReplyRows {
-			t.Fatalf("a reply of exactly the cap: %d rows, %v", len(reply.Re), err)
+		// The caps are the subject here, not the deadline: under the race
+		// detector on a loaded runner, parsing 50,000 rows can take longer
+		// than the 30 s these reads get in production.
+		reply, err := routeros.RunCommandWithTimeout(client, bigReplyTimeout, "/ip/dhcp-server/lease/print")
+		if err != nil {
+			t.Fatalf("a reply of exactly the cap: %v", err)
 		}
-		_, err = routeros.RunCommand(client, "/ip/arp/print")
+		if len(reply.Re) != ros.MaxReplyRows {
+			t.Fatalf("a reply of exactly the cap: %d rows, want %d", len(reply.Re), ros.MaxReplyRows)
+		}
+		_, err = routeros.RunCommandWithTimeout(client, bigReplyTimeout, "/ip/arp/print")
 		var le *proto.LimitError
 		if !errors.As(err, &le) || le.What != proto.LimitRows || !routeros.IsSessionFatal(err) {
 			t.Fatalf("err = %v, want a rows limit error, session-fatal", err)
@@ -183,7 +192,7 @@ func TestSessionFatalReplies(t *testing.T) {
 		}
 		fake.SetRaw("/log/print", routerostest.Sentences(append(rows, []string{"!done"})...))
 		pool, client := pooled(t, fake, "d1")
-		_, err := routeros.RunCommand(client, "/log/print")
+		_, err := routeros.RunCommandWithTimeout(client, bigReplyTimeout, "/log/print")
 		var le *proto.LimitError
 		if !errors.As(err, &le) || le.What != proto.LimitReply || !routeros.IsSessionFatal(err) {
 			t.Fatalf("err = %v, want a reply limit error, session-fatal", err)
