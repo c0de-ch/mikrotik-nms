@@ -361,6 +361,20 @@ func TestExistingExporterOnSwitchKeepsWorking(t *testing.T) {
 	if f == nil || f.Severity != "warn" || f.Count != 1 {
 		t.Fatalf("finding = %+v, want one unconfirmed finding for two datagrams in the same minute", f)
 	}
+	// "Ignore datagrams" only stops the NMS from reading them: the device
+	// keeps exporting, so the sightings — and with them the alert — go on.
+	if _, err := db.Exec(`UPDATE flow_exporters SET enabled = 0 WHERE id = ?`, id); err != nil {
+		t.Fatal(err)
+	}
+	later := recv.Add(2 * time.Minute)
+	c.reconcile(later)
+	feed(c, switchAddr, data, later)
+	if es := statusOf(t, c, id); es.Counters["datagrams"] != 2 || es.State != StateDisabled {
+		t.Fatalf("an ignored exporter's datagram was read: %+v %s", es.Counters, es.State)
+	}
+	if f := exportFinding(t, db, "sw"); f == nil || f.Count != 2 {
+		t.Fatalf("finding after a datagram to an ignored exporter = %+v, want a second sighting", f)
+	}
 	// A router's exporter is not flagged at all.
 	seedRoleDevice(t, db, "edge", routerAddr, "RB5009UG+S+", devclass.C3, "egress")
 	rid := seedExporter(t, db, queries.FlowExporter{Name: "edge", Address: routerAddr.String(), Kind: "routeros", DeviceID: "edge"})

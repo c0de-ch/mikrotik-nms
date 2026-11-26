@@ -76,6 +76,12 @@ type exporterGate struct {
 	bucket      *tokenBucket
 	rateLimited atomic.Int64
 	oversized   atomic.Int64 // datagrams > maxDatagram
+	// guard is set while the exporter sits on a managed device that must
+	// not export: its datagrams — accepted or ignored, as configured — are
+	// sightings for the flow_export_on_switch alert (guardStats throttles
+	// them). nil for every other exporter.
+	guard      atomic.Pointer[guardGate]
+	guardStats guardStats
 }
 
 // candidateGate is the address of a managed router that may be accepted
@@ -156,8 +162,14 @@ func (c *Collector) handlePacket(b []byte, addr netip.Addr, now time.Time) {
 	if al == nil {
 		al = &allowList{}
 	}
+	flowLike := kind != decode.KindUnknown && len(b) >= 4
 	if g := al.exporters[addr]; g != nil {
-		if !g.enabled.Load() || kind == decode.KindUnknown || len(b) < 4 {
+		// An exporter on a device that must not export: the device is
+		// exporting whether the NMS reads the datagrams or ignores them.
+		if gg := g.guard.Load(); gg != nil && flowLike {
+			c.noteGuard(gg, now)
+		}
+		if !g.enabled.Load() || !flowLike {
 			c.global.rejected.Add(1)
 			return
 		}
@@ -174,7 +186,6 @@ func (c *Collector) handlePacket(b []byte, addr netip.Addr, now time.Time) {
 		c.enqueue(datagram{addr: addr, exporterID: g.id, received: now}, b)
 		return
 	}
-	flowLike := kind != decode.KindUnknown && len(b) >= 4
 	if g := al.guarded[addr]; g != nil && (g.policy != nil || flowLike) {
 		// Dropped before decode: a blocked sender, or a managed device that
 		// must not export (its first flow datagram blocks it). Only
@@ -183,7 +194,7 @@ func (c *Collector) handlePacket(b []byte, addr netip.Addr, now time.Time) {
 		// nothing by itself.
 		c.global.blocked.Add(1)
 		g.stats.drop(now)
-		if flowLike && (g.policy == nil || g.alarmDevice != "") {
+		if flowLike && (g.block || g.alarmDevice != "") {
 			c.noteGuard(g, now)
 		}
 		return

@@ -188,7 +188,7 @@ func TestFlowExportFindingSeverityFollowsTheCheck(t *testing.T) {
 		return rows[0].Severity, rows[0].Count
 	}
 	t0 := time.Unix(1_800_000_000, 0).UTC()
-	if err := UpsertFlowExportFinding(db, "s1", kind, detail); err != nil { // no check row at all
+	if err := UpsertFlowExportFinding(db, "s1", kind, detail, t0); err != nil { // no check row at all
 		t.Fatal(err)
 	}
 	if s, n := severity(); s != "warn" || n != 1 {
@@ -197,27 +197,43 @@ func TestFlowExportFindingSeverityFollowsTheCheck(t *testing.T) {
 	if err := SetFlowExportCheckResult(db, "s1", t0, FlowExportExporting, "enabled", nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := RefreshFlowExportFindingSeverity(db, "s1", kind); err != nil {
+	if err := RefreshFlowExportFindingSeverity(db, "s1", kind, t0); err != nil {
 		t.Fatal(err)
 	}
 	if s, n := severity(); s != "critical" || n != 1 {
 		t.Fatalf("after a confirming check: %s ×%d (a refresh is not a sighting)", s, n)
 	}
-	if err := UpsertFlowExportFinding(db, "s1", kind, detail); err != nil {
+	if err := UpsertFlowExportFinding(db, "s1", kind, detail, t0.Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	if s, n := severity(); s != "critical" || n != 2 {
 		t.Fatalf("a later sighting: %s ×%d", s, n)
 	}
+	// A confirmation nobody renewed expires: a datagram that arrives long
+	// after the last read — it may be forged — is unconfirmed again.
+	stale := t0.Add(FlowExportConfirmationValid + time.Minute)
+	chk, _ := GetFlowExportCheck(db, "s1")
+	if !chk.Confirmed(t0.Add(time.Hour)) || chk.Confirmed(stale) {
+		t.Fatalf("Confirmed: within the window %v, after it %v", chk.Confirmed(t0.Add(time.Hour)), chk.Confirmed(stale))
+	}
+	if err := UpsertFlowExportFinding(db, "s1", kind, detail, stale); err != nil {
+		t.Fatal(err)
+	}
+	if s, _ := severity(); s != "warn" {
+		t.Fatalf("a sighting after the confirmation expired: severity %s, want warn", s)
+	}
 	for _, result := range []string{FlowExportNotExporting, FlowExportCheckFailed} {
 		if err := SetFlowExportCheckResult(db, "s1", t0, result, "", nil); err != nil {
 			t.Fatal(err)
 		}
-		if err := UpsertFlowExportFinding(db, "s1", kind, detail); err != nil {
+		if err := UpsertFlowExportFinding(db, "s1", kind, detail, t0); err != nil {
 			t.Fatal(err)
 		}
 		if s, _ := severity(); s != "warn" {
 			t.Fatalf("check result %s: severity %s, want warn", result, s)
+		}
+		if c, _ := GetFlowExportCheck(db, "s1"); c.Confirmed(t0) {
+			t.Fatalf("check result %s counts as a confirmation", result)
 		}
 	}
 }

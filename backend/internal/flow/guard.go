@@ -47,14 +47,19 @@ func (s *guardStats) drop(now time.Time) {
 	s.lastSeen.Store(now.Unix())
 }
 
-// guardGate is the reader's view of an address whose flow datagrams are
-// dropped before decode. It is immutable; a reload builds a new one.
+// guardGate is the reader's view of an address the guardrails watch. It is
+// immutable; a reload builds a new one. There are three kinds:
+//
+//   - a blocked sender (policy set): its datagrams are dropped before decode;
+//   - a managed device that must not export and is not blocked yet (block
+//     set): its first flow datagram blocks it;
+//   - an exporter that sits on a device that must not export (neither set,
+//     hung on its exporterGate): it keeps working — accepted or ignored as
+//     configured — and every minute with datagrams is a sighting.
 type guardGate struct {
-	addr netip.Addr
-	// policy is the address's flow_sender_policy row. nil = a managed device
-	// that must not export and has not sent anything yet: its first flow
-	// datagram blocks it.
-	policy *queries.FlowSenderPolicy
+	addr   netip.Addr
+	policy *queries.FlowSenderPolicy // the address's flow_sender_policy row
+	block  bool                      // the first flow datagram creates that row
 	// alarmDevice is the managed device the address belongs to when that
 	// device must not export (switch, access point, CPE, C1); "" = a plain
 	// block (a deleted router or firewall) that raises no alarm.
@@ -97,10 +102,7 @@ func (c *Collector) handleGuard(ev guardEvent) {
 	if c.db == nil {
 		return
 	}
-	if g.policy == nil {
-		if g.alarmDevice == "" {
-			return
-		}
+	if g.block && g.alarmDevice != "" {
 		created, err := queries.BlockFlowSender(c.db, &queries.FlowSenderPolicy{
 			Address: g.addr.String(), Reason: g.reason, Source: queries.FlowBlockAuto, Name: g.name,
 			Kind: "routeros", DeviceID: g.alarmDevice, CreatedAt: ev.at,
@@ -130,7 +132,7 @@ func (c *Collector) noteExportSighting(deviceID string, addr netip.Addr, at time
 		return
 	}
 	if err := queries.UpsertFlowExportFinding(c.db, deviceID, flowguard.FindingExportOnSwitch,
-		flowguard.FindingDetail(addr.String())); err != nil {
+		flowguard.FindingDetail(addr.String()), at); err != nil {
 		log.Printf("flow collector: record finding for %s: %v", addr, err)
 	}
 	select {
@@ -148,7 +150,11 @@ func (c *Collector) noteExportSighting(deviceID string, addr netip.Addr, at time
 // sighting to confirm, without a pooled session, or within exportCheckEvery
 // of the device's last read (the time is stored, so a restart does not reset
 // the budget). Only a read that says the device exports makes the finding
-// critical; "does not export" and a failed read leave it a warning.
+// critical; "does not export" and a failed read leave it a warning. A
+// confirmation lasts queries.FlowExportConfirmationValid: while datagrams
+// keep arriving it is renewed every hour, and one that is not renewed (the
+// device is paused, or the datagrams stopped) expires — an old "yes" must
+// not make a new, possibly forged datagram critical.
 func (c *Collector) checkExport(deviceID string, now time.Time) bool {
 	if c.db == nil || routeros.PollingAllowed() != nil {
 		return false
@@ -203,7 +209,7 @@ func (c *Collector) checkExport(deviceID string, now time.Time) bool {
 		log.Printf("flow collector: store the export check of %s: %v", name, err)
 		return true
 	}
-	if err := queries.RefreshFlowExportFindingSeverity(c.db, deviceID, flowguard.FindingExportOnSwitch); err != nil {
+	if err := queries.RefreshFlowExportFindingSeverity(c.db, deviceID, flowguard.FindingExportOnSwitch, now); err != nil {
 		log.Printf("flow collector: update the finding of %s: %v", name, err)
 	}
 	return true

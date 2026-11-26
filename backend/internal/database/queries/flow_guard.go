@@ -227,6 +227,20 @@ type FlowExportCheck struct {
 	Targets []netip.AddrPort
 }
 
+// FlowExportConfirmationValid is how long a read that found the device
+// exporting counts as a confirmation. The read is repeated every hour while
+// datagrams keep arriving, so a live export stays confirmed; a confirmation
+// nobody renewed — the datagrams stopped, the device is paused — expires
+// after two missed reads and a margin. An old "yes" must not make a new,
+// possibly forged datagram critical.
+const FlowExportConfirmationValid = 2*time.Hour + 15*time.Minute
+
+// Confirmed reports whether the device's own settings confirmed the export
+// recently enough to count at now.
+func (c FlowExportCheck) Confirmed(now time.Time) bool {
+	return c.Result == FlowExportExporting && !c.CheckedAt.IsZero() && now.Sub(c.CheckedAt) <= FlowExportConfirmationValid
+}
+
 const flowExportCheckCols = `device_id, address, collector_port, first_seen, last_seen, checked_at, result, detail, targets`
 
 func scanFlowExportCheck(s rowScanner) (FlowExportCheck, error) {
@@ -308,29 +322,33 @@ func SetFlowExportCheckResult(db *sql.DB, deviceID string, at time.Time, result,
 
 // exportFindingSeverity is the severity a device's finding carries, read in
 // the same statement that writes it so a sighting and a confirmation read
-// landing together cannot leave it stale: critical once the device's own
-// settings confirmed the export, warn otherwise (unconfirmed).
-const exportFindingSeverity = `COALESCE((SELECT CASE WHEN result = 'exporting' THEN 'critical' ELSE 'warn' END
+// landing together cannot leave it stale: critical while the device's own
+// settings confirmed the export recently enough (FlowExportCheck.Confirmed),
+// warn otherwise (unconfirmed). Binds: the confirmation cutoff (unix
+// seconds), the device id.
+const exportFindingSeverity = `COALESCE((SELECT CASE WHEN result = 'exporting' AND checked_at >= ? THEN 'critical' ELSE 'warn' END
 	FROM flow_export_checks WHERE device_id = ?), 'warn')`
 
-// UpsertFlowExportFinding records one sighting as a device_findings row of
-// the given kind and detail: a repeat bumps count and last_seen.
-func UpsertFlowExportFinding(db *sql.DB, deviceID, kind, detail string) error {
+// UpsertFlowExportFinding records one sighting at now as a device_findings
+// row of the given kind and detail: a repeat bumps count and last_seen.
+func UpsertFlowExportFinding(db *sql.DB, deviceID, kind, detail string, now time.Time) error {
 	_, err := db.Exec(`INSERT INTO device_findings (device_id, kind, severity, detail)
 		VALUES (?, ?, `+exportFindingSeverity+`, ?)
 		ON CONFLICT(device_id, kind, detail) DO UPDATE SET
 		  severity  = excluded.severity,
 		  last_seen = CURRENT_TIMESTAMP,
-		  count     = device_findings.count + 1`, deviceID, kind, deviceID, detail)
+		  count     = device_findings.count + 1`,
+		deviceID, kind, now.Add(-FlowExportConfirmationValid).Unix(), deviceID, detail)
 	return err
 }
 
 // RefreshFlowExportFindingSeverity sets the severity of a device's findings
 // of that kind from its check row, after a confirmation read: no new
 // sighting, so count and last_seen stay.
-func RefreshFlowExportFindingSeverity(db *sql.DB, deviceID, kind string) error {
+func RefreshFlowExportFindingSeverity(db *sql.DB, deviceID, kind string, now time.Time) error {
 	_, err := db.Exec(`UPDATE device_findings SET severity = `+exportFindingSeverity+`
-		WHERE device_id = ? AND kind = ?`, deviceID, deviceID, kind)
+		WHERE device_id = ? AND kind = ?`,
+		now.Add(-FlowExportConfirmationValid).Unix(), deviceID, deviceID, kind)
 	return err
 }
 

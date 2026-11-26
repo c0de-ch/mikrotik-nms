@@ -31,7 +31,7 @@ func exportDevice(t *testing.T, db *sql.DB, id, addr, version string, at time.Ti
 	if err := queries.NoteFlowExportSighting(db, id, addr, 2055, at); err != nil {
 		t.Fatal(err)
 	}
-	if err := queries.UpsertFlowExportFinding(db, id, RuleFlowExportOnSwitch, "flow datagrams from "+addr); err != nil {
+	if err := queries.UpsertFlowExportFinding(db, id, RuleFlowExportOnSwitch, "flow datagrams from "+addr, at); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -130,6 +130,19 @@ func TestFlowExportOnSwitchRule(t *testing.T) {
 	if strings.Contains(rollback, "WARNING") || strings.Contains(rollback, "package update download") ||
 		!strings.Contains(rollback, "/ip traffic-flow set enabled=no") {
 		t.Errorf("7.25 rollback:\n%s", rollback)
+	}
+
+	// A confirmation nobody renewed does not last: datagrams that keep
+	// arriving (they may be forged) long after the device was last read are
+	// a warning again, not a critical alert resting on an old "yes".
+	if err := queries.SetFlowExportCheckResult(db, "sw", now.Add(-queries.FlowExportConfirmationValid-time.Hour),
+		queries.FlowExportExporting, "traffic-flow enabled", nil); err != nil {
+		t.Fatal(err)
+	}
+	obs, _ = rule.Evaluate(now.Add(time.Minute))
+	if len(obs) != 1 || obs[0].Severity != SeverityWarning || !obs[0].Unconfirmed || !strings.Contains(obs[0].Summary, "too old") ||
+		len(factStrings(t, obs[0], "rollback")) != 0 {
+		t.Fatalf("with an expired confirmation: %+v", obs)
 	}
 
 	// No datagram for longer than the window: the condition is gone.

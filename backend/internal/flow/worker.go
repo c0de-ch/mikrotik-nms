@@ -104,13 +104,6 @@ type expState struct {
 	lastHint          time.Time
 	lastIfsyncReq     time.Time
 
-	// guardDevice is the managed device at this exporter's address when
-	// that device must not export flows (rebuilt on reconcile): the
-	// exporter keeps working, each minute with datagrams is a sighting for
-	// the flow_export_on_switch alert (lastGuardNote).
-	guardDevice   string
-	lastGuardNote time.Time
-
 	// ifKnown are the ifIndexes that may be touched / get a native point:
 	// the exporter's flow_exporter_ifaces rows and native points (rebuilt on
 	// reconcile) plus those admitted since. ifLearned counts the ones not
@@ -277,10 +270,13 @@ func (c *Collector) reconcile(now time.Time) {
 		}
 		// An exporter on a device that must not export keeps working (it
 		// was accepted, by an admin or by an earlier release); it is
-		// flagged, not blocked.
-		st.guardDevice = ""
+		// flagged, not blocked: the readers report its datagrams —
+		// accepted or ignored — as sightings.
 		if dev, ok := devices[a]; ok && dev.never {
-			st.guardDevice = dev.id
+			st.gate.guard.Store(&guardGate{addr: a, alarmDevice: dev.id, name: dev.name, reason: dev.neverWhy,
+				stats: &st.gate.guardStats})
+		} else {
+			st.gate.guard.Store(nil)
 		}
 		st.gate.bucket.setRate(float64(c.settings.pps))
 		al.exporters[a] = st.gate
@@ -339,7 +335,8 @@ func (c *Collector) reconcile(now time.Time) {
 		if !d.never || al.exporters[a] != nil || al.guarded[a] != nil {
 			continue
 		}
-		al.guarded[a] = &guardGate{addr: a, alarmDevice: d.id, name: d.name, reason: d.neverWhy, stats: statsOf(a, 0)}
+		al.guarded[a] = &guardGate{addr: a, block: true, alarmDevice: d.id, name: d.name, reason: d.neverWhy,
+			stats: statsOf(a, 0)}
 	}
 
 	// Auto-accept candidates: only under flow_auto_accept_classes = router,
@@ -541,10 +538,6 @@ func (c *Collector) processDatagram(d datagram) {
 	if !st.gate.enabled.Load() {
 		c.global.rejected.Add(1)
 		return
-	}
-	if st.guardDevice != "" && (st.lastGuardNote.IsZero() || now.Sub(st.lastGuardNote) >= guardNoteEvery) {
-		st.lastGuardNote = now
-		c.noteExportSighting(st.guardDevice, st.addr, now)
 	}
 	pkt := d.bytes()
 	c.capture(st, pkt, now)

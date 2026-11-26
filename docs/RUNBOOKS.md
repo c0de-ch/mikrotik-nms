@@ -72,9 +72,17 @@ Severity depends on what is known:
   enabled and has an enabled target. The alert then carries the rollback
   steps for the device's RouterOS version.
 
-The NMS drops the datagrams either way (the sender is listed under Traffic →
-Flows → Flow exporters → Blocked senders). **Resolves** about 30 minutes
-after the last datagram.
+While datagrams keep arriving the read is repeated every hour. A
+confirmation that could not be renewed for about two hours (the device is
+paused or unreachable) no longer counts: the alert is a warning again until
+the device can be read.
+
+The NMS drops the datagrams (the sender is listed under Traffic → Flows →
+Flow exporters → Blocked senders) — unless the device already was an
+exporter before, which keeps working and is flagged in the exporter list.
+The alert fires either way, also when such an exporter is set to "ignore
+datagrams": the device exports regardless of what the NMS does with them.
+**Resolves** about 30 minutes after the last datagram.
 
 What to do:
 

@@ -865,9 +865,10 @@ export function ExporterStatusCard({
               <ul className="divide-y rounded-md border">
                 {blocked.map((b) => {
                   const label = [b.name, b.device_name].find((n) => n && n !== b.address);
-                  // A managed device that must not export is blocked again by
-                  // its next datagram, so "Unblock" alone would do nothing.
                   const auto = b.source === "auto";
+                  // A device that still must not export is blocked again by
+                  // its next datagram: "Unblock" alone would do nothing.
+                  const stillNever = auto && (b.device_role === "switch" || b.device_role === "ap-cpe");
                   return (
                     <li key={b.address} className="flex flex-wrap items-start justify-between gap-2 px-3 py-2 text-xs">
                       <div className="min-w-0 flex-1">
@@ -889,8 +890,14 @@ export function ExporterStatusCard({
                             How to stop the export
                           </Button>
                         )}
-                        {isAdmin && !auto && (
-                          <Button size="xs" variant="ghost" disabled={unblocking === b.address} onClick={() => unblock(b)}>
+                        {isAdmin && !stillNever && (
+                          <Button
+                            size="xs"
+                            variant="ghost"
+                            title="Remove the block: the sender is listed as unknown again"
+                            disabled={unblocking === b.address}
+                            onClick={() => unblock(b)}
+                          >
                             Unblock
                           </Button>
                         )}

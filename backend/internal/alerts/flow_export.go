@@ -89,18 +89,25 @@ func (r flowExportOnSwitch) Evaluate(now time.Time) ([]Observation, error) {
 			facts["evidence"] = chk.Detail
 		}
 		o := Observation{Key: d.ID, DeviceID: d.ID, Severity: SeverityWarning, Unconfirmed: true, Facts: facts}
-		switch chk.Result {
-		case queries.FlowExportExporting:
+		switch {
+		case chk.Confirmed(now):
 			o.Severity, o.Unconfirmed = SeverityCritical, false
 			o.Summary = who + " is exporting flows although it must not — confirmed on the device (" + chk.Detail +
 				"). The export loads its CPU: stop it with the rollback steps"
 			facts["confirmed"] = true
 			target, port := flowguard.RollbackTarget(advertise, chk.CollectorPort, chk.Targets)
 			facts["rollback"] = flowguard.Rollback(d.ROSVersion, target, port).Lines()
-		case queries.FlowExportNotExporting:
+		case chk.Result == queries.FlowExportExporting:
+			// The device confirmed it once, but nobody has read it since
+			// (it is paused, or unreachable): that is no confirmation of
+			// the datagrams arriving now.
+			o.Summary = "Flow datagrams arrive from the address of " + who + ", which must not export flows — not " +
+				"confirmed: the device's last read (" + chk.CheckedAt.UTC().Format("2006-01-02 15:04 UTC") +
+				") is too old to count"
+		case chk.Result == queries.FlowExportNotExporting:
 			o.Summary = "Flow datagrams carry the address of " + who + ", which must not export flows, but the device " +
 				"says it does not export (" + chk.Detail + ") — not confirmed: the source address may be forged"
-		case queries.FlowExportCheckFailed:
+		case chk.Result == queries.FlowExportCheckFailed:
 			o.Summary = "Flow datagrams arrive from the address of " + who + ", which must not export flows — not " +
 				"confirmed: the device could not be read (" + chk.Detail + ")"
 		default:
