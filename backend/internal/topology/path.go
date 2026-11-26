@@ -25,7 +25,7 @@ import (
 type PathDevice struct {
 	ID      string
 	Name    string // identity, or address when identity is empty
-	Type    string // router|switch|ap|unknown (inferDeviceType(board)); informational
+	Type    string // router|switch|ap|unknown (inferDeviceType(board, arch)); informational
 	Status  string
 	Address string // used to recognise managed next-hops
 }
