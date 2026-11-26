@@ -143,6 +143,17 @@ func main() {
 	// cheap in-memory snapshot, no DB I/O).
 	flows := pollerMgr.Flows()
 	telemetry.SetFlowMetricsSource(func() telemetry.FlowMetrics { return flowMetrics(flows.Status(), time.Now()) })
+	// The CPU gauge exports the sampler's own latest reading per device —
+	// only while fresh, with its time — instead of whatever the device row
+	// last held.
+	telemetry.SetCPUSource(func() map[string]telemetry.CPUSample {
+		latest := pollerMgr.LatestCPU()
+		out := make(map[string]telemetry.CPUSample, len(latest))
+		for id, r := range latest {
+			out[id] = telemetry.CPUSample{Load: r.CPU, At: r.At}
+		}
+		return out
+	})
 
 	router := api.NewRouter(db, hub, cfg, pool, nil, pollerMgr.PortStats(), flows, pollerMgr.Cadence(), pollerMgr.ClientRefresh())
 

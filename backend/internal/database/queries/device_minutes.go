@@ -454,6 +454,40 @@ func ListDeviceHours(db *sql.DB, deviceID string, from, to time.Time) ([]DeviceH
 	return out, rows.Err()
 }
 
+// DeviceHourExtras is what device_hours does not keep of an hour, summed
+// from the minute rows while they last: whether the device rebooted, the
+// average post-poll CPU, and the NMS's wall time, reply rows, timeouts and
+// reconnects.
+type DeviceHourExtras struct {
+	Rebooted                           bool
+	CPUPost                            sql.NullFloat64
+	WallMs, Rows, Timeouts, Reconnects int64
+}
+
+// ListDeviceHourExtras aggregates one device's minute rows in [from, to) per
+// hour (key: hour start in unix seconds). An hour device_minutes no longer
+// holds has no entry.
+func ListDeviceHourExtras(db *sql.DB, deviceID string, from, to time.Time) (map[int64]DeviceHourExtras, error) {
+	rows, err := db.Query(`SELECT bucket - bucket % 3600 AS hour, MAX(rebooted), AVG(cpu_post),
+		        SUM(nms_wall_ms), SUM(nms_rows), SUM(nms_timeouts), SUM(nms_reconnects)
+		 FROM device_minutes WHERE device_id = ? AND bucket >= ? AND bucket < ? GROUP BY hour`,
+		deviceID, from.Unix(), to.Unix())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[int64]DeviceHourExtras{}
+	for rows.Next() {
+		var hour int64
+		var x DeviceHourExtras
+		if err := rows.Scan(&hour, &x.Rebooted, &x.CPUPost, &x.WallMs, &x.Rows, &x.Timeouts, &x.Reconnects); err != nil {
+			return nil, err
+		}
+		out[hour] = x
+	}
+	return out, rows.Err()
+}
+
 // LatestDeviceLoadBucket returns MAX(bucket) over the whole table; ok is
 // false when it is empty.
 func LatestDeviceLoadBucket(db *sql.DB, t DeviceLoadTable) (time.Time, bool, error) {
