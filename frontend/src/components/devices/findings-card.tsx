@@ -18,6 +18,10 @@ const KINDS: Record<string, { label: string; hint: string }> = {
     label: "Another API client",
     hint: "Something other than this NMS logged in to the device's API — another monitoring system, a script or an app. Its reads add load this NMS does not budget for. If the address belongs to this NMS (behind NAT, or a second address), add it to NMS source addresses in Settings.",
   },
+  tls_pin_mismatch: {
+    label: "TLS certificate is not the pinned one",
+    hint: "The device answered API-TLS with another certificate than the fingerprint pinned for it, so the NMS did not log in. Each row is a fingerprint that was presented. Compare it with the certificate on the device itself (/certificate print detail) before pinning it: if they differ, something else is answering at this address.",
+  },
   login_failure: {
     label: "Failed login",
     hint: "A login to the device failed. Repeated failures from one address are usually a script with an old password, or someone guessing.",

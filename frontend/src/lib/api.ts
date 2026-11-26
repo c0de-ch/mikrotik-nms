@@ -690,6 +690,9 @@ export interface Device {
   architecture: string;
   username: string;
   use_tls: boolean;
+  // The fingerprint the device's TLS certificate must have (SHA-256,
+  // lower-case hex); "" = none — a TLS device is then not logged in to.
+  pin_cert_sha256: string;
   api_port: number;
   status: "online" | "offline" | "unknown";
   cpu_load: number | null;
@@ -751,7 +754,9 @@ export interface DeviceAuditEntry {
 // One device_findings row: something a poller noticed about the device,
 // deduplicated by (kind, detail) — count and last_seen grow on repeats.
 // kind: parallel_api_poller (an API login from an address that is not this
-// NMS) or login_failure; others may follow.
+// NMS), login_failure, or tls_pin_mismatch (a TLS session refused because
+// the device presented another certificate than the pinned one; detail is
+// the fingerprint it presented); others may follow.
 export interface DeviceFinding {
   id: number;
   device_id: string;
@@ -794,6 +799,9 @@ export interface CreateDeviceRequest {
   username?: string;
   password?: string;
   use_tls?: boolean;
+  // Required with use_tls on create; on update "" clears the pin and an
+  // omitted field keeps it. Upper case and colon-separated bytes are accepted.
+  pin_cert_sha256?: string;
   api_port?: number;
   tags?: string;
   notes?: string;

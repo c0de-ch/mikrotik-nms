@@ -25,6 +25,7 @@ import { toast } from "sonner";
 const RULE_LABELS: Record<string, string> = {
   device_unreachable: "Device unreachable",
   parallel_api_poller: "Another API poller",
+  tls_pin_mismatch: "TLS pin mismatch",
 };
 
 function ruleLabel(rule: string): string {
