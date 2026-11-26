@@ -382,9 +382,6 @@ func TestCollectorAutoAcceptOnce(t *testing.T) {
 	// A strong router with an egress of its own, and auto-accept switched
 	// on for routers (it is off by default: see guard_test.go).
 	seedRoleDevice(t, db, "rb", rosAddr, "RB5009UG+S+", "C3", "egress")
-	if _, err := db.Exec(`UPDATE devices SET identity = 'switch002-rb5009' WHERE id = 'rb'`); err != nil {
-		t.Fatal(err)
-	}
 	if err := queries.SetSetting(db, "flow_auto_accept_classes", "router"); err != nil {
 		t.Fatal(err)
 	}
@@ -397,7 +394,7 @@ func TestCollectorAutoAcceptOnce(t *testing.T) {
 	feed(c, rosAddr, data, recv)
 	exps, _ := queries.ListFlowExporters(db)
 	if len(exps) != 1 || !exps[0].Auto || exps[0].Kind != "routeros" || exps[0].DeviceID != "rb" ||
-		exps[0].Name != "switch002-rb5009" || !exps[0].Enabled {
+		exps[0].Name != "rb" || !exps[0].Enabled { // named after the device (its identity)
 		t.Fatalf("auto-accepted exporters = %+v", exps)
 	}
 	if st := statusOf(t, c, exps[0].ID); st.Counters["datagrams"] != 2 || st.Counters["flows"] != 5 {
