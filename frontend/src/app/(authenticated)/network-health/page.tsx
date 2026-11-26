@@ -65,7 +65,7 @@ function HintPanel({ hint, extra }: { hint: HealthHint; extra?: ReactNode }) {
                 )}
                 {f.text}
                 {f.command && (
-                  <code className="mt-0.5 block w-fit max-w-full break-all rounded-sm bg-muted px-1.5 py-0.5 font-mono text-[11px] text-foreground">
+                  <code className="mt-0.5 block w-fit max-w-full whitespace-pre-wrap break-words rounded-sm bg-muted px-1.5 py-0.5 font-mono text-[11px] text-foreground">
                     {f.command}
                   </code>
                 )}
