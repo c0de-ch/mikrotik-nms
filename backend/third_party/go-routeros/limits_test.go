@@ -31,19 +31,60 @@ func (s *scripted) Read(p []byte) (int, error)  { return s.reply.Read(p) }
 func (s *scripted) Write(p []byte) (int, error) { return len(p), nil }
 func (s *scripted) Close() error                { s.closed = true; return nil }
 
+// encode puts sentences on the wire. It encodes by hand rather than through
+// proto.Writer, which starts a goroutine for every word it writes: a
+// 50,000-row reply would take minutes under the race detector on a small
+// CI runner. TestEncodeMatchesTheWriter keeps the two in step.
 func encode(sentences ...[]string) []byte {
 	var buf bytes.Buffer
-	w := proto.NewWriter(&buf)
 	for _, sen := range sentences {
+		for _, word := range sen {
+			buf.Write(encodeLength(len(word)))
+			buf.WriteString(word)
+		}
+		buf.WriteByte(0)
+	}
+	return buf.Bytes()
+}
+
+func encodeLength(l int) []byte {
+	switch {
+	case l < 0x80:
+		return []byte{byte(l)}
+	case l < 0x4000:
+		return []byte{byte(l>>8) | 0x80, byte(l)}
+	case l < 0x200000:
+		return []byte{byte(l>>16) | 0xC0, byte(l >> 8), byte(l)}
+	case l < 0x10000000:
+		return []byte{byte(l>>24) | 0xE0, byte(l >> 16), byte(l >> 8), byte(l)}
+	default:
+		return []byte{0xF0, byte(l >> 24), byte(l >> 16), byte(l >> 8), byte(l)}
+	}
+}
+
+// The hand encoder above writes what proto.Writer writes, for every length
+// class a word can have.
+func TestEncodeMatchesTheWriter(t *testing.T) {
+	var sens [][]string
+	for _, n := range []int{0, 1, 0x7F, 0x80, 0x3FFF, 0x4000, 0x1FFFFF, 0x200000} {
+		sens = append(sens, []string{"!re", "=k=" + string(bytes.Repeat([]byte{'x'}, n))})
+	}
+	sens = append(sens, []string{"!done"})
+
+	var want bytes.Buffer
+	w := proto.NewWriter(&want)
+	for _, sen := range sens {
 		w.BeginSentence()
 		for _, word := range sen {
 			w.WriteWord(word)
 		}
 		if err := w.EndSentence(); err != nil {
-			panic(err)
+			t.Fatal(err)
 		}
 	}
-	return buf.Bytes()
+	if got := encode(sens...); !bytes.Equal(got, want.Bytes()) {
+		t.Errorf("encode differs from proto.Writer (%d vs %d bytes)", len(got), want.Len())
+	}
 }
 
 func scriptedClient(t *testing.T, reply []byte) (*Client, *scripted) {

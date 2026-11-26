@@ -30,6 +30,14 @@ Each one is marked "local patch" in the code.
   dropped rows that arrived in between — its own `TestProtoRunAsync` failed
   about once in a hundred runs. (The backend uses sync mode only; the fix is
   here so that this copy's test suite is not flaky.)
+- **Buffered reads take no goroutine** (`proto/io_context.go`): the reader
+  asks for every length byte and every word separately, and upstream started
+  a goroutine, a channel and a copy buffer for each of those reads so that a
+  blocked one could be cancelled — some 400,000 for a reply of 50,000 rows.
+  A read the `bufio.Reader` can satisfy from its buffer cannot block and is
+  now answered directly; only a read that has to wait for the peer goes
+  through the goroutine, and after one of those was abandoned (cancel, close)
+  the direct path is not used again.
 - **No dialers**: `Dial`, `DialTimeout`, `DialContext`, `DialTLS`,
   `DialTLSTimeout` and `DialTLSContext` are removed. The backend opens every
   connection itself (dial policy, timeouts, pinned certificate) and passes it
