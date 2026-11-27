@@ -713,13 +713,26 @@ func (a *Auditor) nextReadLocked(p *pass) *hygiene.Read {
 // step sends one read and records the answer; after the last read of the
 // plan the pass is finished at once.
 func (a *Auditor) step(p *pass, dev queries.Device, read hygiene.Read) {
+	recorded := false // the read's answer is in the pass, and the pass is past it
 	defer func() {
-		if r := recover(); r != nil {
-			log.Printf("poller audit: panic reading %s from %s: %v\n%s", read.Command, nonempty(dev.Identity, dev.Address), r, debug.Stack())
-			a.mu.Lock()
-			p.busy, p.nextAt = false, a.now().Add(p.gap)
-			a.mu.Unlock()
+		r := recover()
+		if r == nil {
+			return
 		}
+		log.Printf("poller audit: panic reading %s from %s: %v\n%s", read.Command, nonempty(dev.Identity, dev.Address), r, debug.Stack())
+		// The pass must get past this read: left where it is, it would send
+		// the same command — and log the same panic — at every look until
+		// its time limit. The read counts as failed, the next look goes on
+		// with the plan, and the pass ends as partial.
+		a.mu.Lock()
+		if !recorded && a.passes[dev.ID] == p {
+			p.sections[read.Key] = hygiene.Section{State: routeros.ConfigFailed, Error: fmt.Sprintf("internal error: %v", r)}
+			p.reads++
+			p.failed++
+			p.idx++
+		}
+		p.busy, p.nextAt = false, a.now().Add(p.gap)
+		a.mu.Unlock()
 	}()
 	run := a.runner(dev.ID)
 	if run == nil {
@@ -750,6 +763,7 @@ func (a *Auditor) step(p *pass, dev queries.Device, read hygiene.Read) {
 			p.failed++
 		}
 		p.idx++
+		recorded = true
 		p.busy, p.nextAt = false, end.Add(p.gap)
 		return a.nextReadLocked(p) == nil
 	}()

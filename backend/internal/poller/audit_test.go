@@ -1284,6 +1284,40 @@ func TestAlertTriggeredDiagnoseChecksTheBudgetWhenItStarts(t *testing.T) {
 	}
 }
 
+// A panic while one read is handled must not make the pass send that read
+// again and again until its time limit: the read counts as failed, the pass
+// moves on, and ends as partial.
+func TestPanicWhileHandlingAReadDoesNotRepeatIt(t *testing.T) {
+	h := newAuditHarness(t)
+	h.add("r", hygienetest.Load(t, "ap_clean").With("/tool/graphing/interface/print", graphingRule))
+	h.mu.Lock()
+	h.panicOn["r"] = "/tool/sniffer/print"
+	h.mu.Unlock()
+
+	h.run(10 * time.Minute)
+	seen := map[string]int{}
+	for _, c := range h.commands("r") {
+		seen[strings.Fields(c.command)[0]]++
+	}
+	if n := seen["/tool/sniffer/print"]; n != 1 {
+		t.Fatalf("the read whose handling panicked was sent %d times in ten minutes, want once", n)
+	}
+	if len(seen) != 12 || h.count("r") != 12 {
+		t.Fatalf("%d commands (%d different), want the audit's 12, each once", h.count("r"), len(seen))
+	}
+	r := h.lastRun("r", queries.AuditKindAudit)
+	if r.Status != queries.AuditPartial || r.Reads != 12 || r.FailedReads != 1 || !strings.Contains(r.Detail, "sniffer") {
+		t.Fatalf("run = %+v, want partial with the one failed read named", r)
+	}
+	// What the other reads returned was judged.
+	if _, ok := h.findings("r")[hygiene.KindGraphing]; !ok {
+		t.Fatalf("findings = %v, want graphing", h.findings("r"))
+	}
+	if h.a.Running("r") != "" {
+		t.Fatalf("the pass is still running (%q)", h.a.Running("r"))
+	}
+}
+
 // A pass ends when the device is paused under it: nothing more is sent, and
 // nothing it had read is judged.
 func TestPassIsAbortedByAPause(t *testing.T) {
