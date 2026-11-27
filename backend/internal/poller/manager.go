@@ -264,6 +264,8 @@ func (m *Manager) Start() {
 	go netHealth.Run(ctx)
 
 	connectivity := NewConnectivityPoller(m.db, m.pool, m.hub, defaultConnectivityInterval)
+	// A watched client's signal is what the wifi tracker last read of it.
+	connectivity.UseWifiReadings(wifiTracker)
 	go connectivity.Run(ctx)
 
 	speedTests := NewSpeedTestPoller(m.db, m.hub, defaultSpeedTestInterval)

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"log"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/mikrotik-nms/backend/internal/database/queries"
@@ -85,6 +86,56 @@ type WifiTracker struct {
 	regs    map[string]*regRead
 	runner  func(deviceID string) routeros.Runner
 	now     func() time.Time
+
+	// readings is the current registration reads by client MAC, published
+	// after every tick for readers outside the tracker (Reading).
+	readings atomic.Pointer[map[string]WifiReading]
+}
+
+// WifiReading is a wireless client as its controller's registration table
+// last listed it.
+type WifiReading struct {
+	MAC      string
+	DeviceID string // the controller whose table listed the client
+	AP       string
+	SSID     string
+	Band     string
+	Signal   string
+	TxRate   string
+	RxRate   string
+	At       time.Time // when that table was read
+}
+
+// Reading returns the client's row in the freshest current registration
+// read. It is how code outside the tracker learns a wireless client's signal
+// without asking a device: the tables are read once, here, on each
+// controller's own cadence. ok is false when no current read lists the
+// client — it is not on wifi, or its controller's read has aged out. Safe
+// for concurrent use.
+func (wt *WifiTracker) Reading(mac string) (WifiReading, bool) {
+	m := wt.readings.Load()
+	if m == nil {
+		return WifiReading{}, false
+	}
+	r, ok := (*m)[strings.ToUpper(mac)]
+	return r, ok
+}
+
+// publishReadings makes the tick's current registration reads visible to
+// Reading.
+func (wt *WifiTracker) publishReadings(current map[string]*wifiSnapshot) {
+	out := make(map[string]WifiReading, len(current))
+	for mac, snap := range current {
+		rr := wt.regs[snap.devID]
+		if rr == nil {
+			continue
+		}
+		out[mac] = WifiReading{
+			MAC: mac, DeviceID: snap.devID, AP: snap.ap, SSID: snap.ssid, Band: snap.band,
+			Signal: snap.signal, TxRate: snap.txRate, RxRate: snap.rxRate, At: rr.at,
+		}
+	}
+	wt.readings.Store(&out)
 }
 
 // UseCadence schedules the controllers by cs. Call before Run.
@@ -242,6 +293,7 @@ func (wt *WifiTracker) poll(ctx context.Context) {
 			}
 		}
 	}
+	wt.publishReadings(current)
 
 	// Phase 3: enrich state from the tables read this tick. If a client
 	// appears in one that the log never told us about, emit a join from the

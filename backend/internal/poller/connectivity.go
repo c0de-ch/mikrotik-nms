@@ -53,6 +53,24 @@ type ConnectivityPoller struct {
 	traceMu      sync.Mutex
 	traceLastRun map[string]time.Time
 	traceSem     chan struct{}
+
+	// wifi is where a watched client's signal comes from (UseWifiReadings);
+	// signalAt is the registration read each watched MAC's last sample was
+	// taken from. Both belong to the poll goroutine.
+	wifi     WifiReadings
+	signalAt map[string]time.Time
+}
+
+// WifiReadings is the wifi tracker as the connectivity poller sees it: the
+// latest registration read that lists a client (WifiTracker.Reading).
+type WifiReadings interface {
+	Reading(mac string) (WifiReading, bool)
+}
+
+// UseWifiReadings names the source of the watched clients' signal samples.
+// Without one no signal is recorded. Call before Run.
+func (cp *ConnectivityPoller) UseWifiReadings(src WifiReadings) {
+	cp.wifi = src
 }
 
 // autoTracerouteCooldown is the minimum spacing between auto-captured
@@ -71,6 +89,7 @@ func NewConnectivityPoller(db *sql.DB, pool *routeros.Pool, hub *ws.Hub, interva
 		interval:     interval,
 		traceLastRun: make(map[string]time.Time),
 		traceSem:     make(chan struct{}, 2),
+		signalAt:     make(map[string]time.Time),
 	}
 }
 
@@ -309,10 +328,8 @@ func (cp *ConnectivityPoller) poll(ctx context.Context) {
 	}
 	wg.Wait()
 
-	// Signal phase: snapshot wifi signal for watched client MACs.
-	if len(watchedMACs) > 0 {
-		cp.collectSignals(ctx, devices, watchedMACs)
-	}
+	// Signal phase: the watched clients' wifi signal, from the wifi tracker.
+	cp.collectSignals(watchedMACs)
 }
 
 // recordError persists (and broadcasts) a probe-couldn't-run sample: sent=0,
@@ -405,70 +422,39 @@ func (cp *ConnectivityPoller) maybeAutoTraceroute(t queries.PingTarget, dev quer
 	}()
 }
 
-// collectSignals fetches the wifi registration tables once per online,
-// unpaused device and records a ClientSignalSample for each watched MAC
-// found. Best-effort: errors are ignored, panics contained per device.
-func (cp *ConnectivityPoller) collectSignals(ctx context.Context, devices []queries.Device, watched map[string]bool) {
-	regByMAC := make(map[string]routeros.WifiRegistration)
-
-	now := time.Now()
-	for _, dev := range devices {
-		select {
-		case <-ctx.Done():
-			return
-		default:
+// collectSignals records a ClientSignalSample for each watched MAC from the
+// wifi tracker's registration reads. It sends no command: the tables are
+// read once, by the tracker, on each controller's own cadence and only on
+// devices with a wireless package — this loop used to print them on every
+// online device every cycle, three trapping prints on a switch.
+//
+// One sample per registration read, stamped with the time of that read: a
+// client on a C1 access point gets a point every 5 minutes, one whose
+// controller is paused or unreachable gets none until it is read again.
+func (cp *ConnectivityPoller) collectSignals(watched map[string]bool) {
+	for mac := range cp.signalAt {
+		if !watched[mac] {
+			delete(cp.signalAt, mac)
 		}
-		if dev.Status != "online" {
-			continue
-		}
-		if dev.PollingPaused(now) {
-			pauseLog.skip("connectivity signal reads", dev)
-			continue
-		}
-		client := cp.pool.GetLive(dev.ID)
-		if client == nil {
-			continue
-		}
-		func() {
-			defer func() {
-				if r := recover(); r != nil {
-					log.Printf("connectivity: panic reading registrations from %s: %v", dev.Identity, r)
-					cp.pool.Close(dev.ID)
-				}
-			}()
-			regs, err := routeros.GetCAPsMANRegistrations(client)
-			if err != nil {
-				return
-			}
-			for _, reg := range regs {
-				mac := strings.ToUpper(reg.MAC)
-				if mac == "" || !watched[mac] {
-					continue
-				}
-				if _, seen := regByMAC[mac]; !seen {
-					regByMAC[mac] = reg
-				}
-			}
-		}()
 	}
-
-	for mac, reg := range regByMAC {
-		ap := reg.AP
-		if ap == "" {
-			// Interface names like "cap-wifi1/2" carry the radio before the slash.
-			ap = reg.Interface
-			if i := strings.Index(ap, "/"); i >= 0 {
-				ap = ap[:i]
-			}
+	if cp.wifi == nil {
+		return
+	}
+	for mac := range watched {
+		r, ok := cp.wifi.Reading(mac)
+		if !ok || !r.At.After(cp.signalAt[mac]) {
+			continue
 		}
+		cp.signalAt[mac] = r.At
 		err := queries.InsertClientSignalSample(cp.db, &queries.ClientSignalSample{
 			MACAddress: mac,
-			APName:     ap,
-			SSID:       reg.SSID,
-			Band:       reg.Band,
-			SignalDBm:  parseSignalDBm(reg.Signal),
-			TxRate:     reg.TxRate,
-			RxRate:     reg.RxRate,
+			APName:     r.AP,
+			SSID:       r.SSID,
+			Band:       r.Band,
+			SignalDBm:  parseSignalDBm(r.Signal),
+			TxRate:     r.TxRate,
+			RxRate:     r.RxRate,
+			RecordedAt: r.At.UTC(),
 		})
 		if err != nil {
 			log.Printf("connectivity: insert signal sample for %s: %v", mac, err)
