@@ -23,12 +23,19 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: backend/go.mod
-          cache-dependency-path: backend/go.sum
+          cache-dependency-path: |
+            backend/go.sum
+            backend/third_party/go-routeros/go.sum
       - name: go vet
         run: go vet ./...
       - name: go build
         run: go build ./...
       - name: go test
+        run: go test -race ./...
+      # The vendored, patched go-routeros is its own module (a replace in
+      # backend/go.mod), so ./... above does not reach its tests.
+      - name: go test (vendored go-routeros)
+        working-directory: backend/third_party/go-routeros
         run: go test -race ./...
 
   frontend:

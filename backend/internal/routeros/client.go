@@ -1,98 +1,125 @@
 package routeros
 
 import (
-	"crypto/tls"
 	"errors"
 	"fmt"
-	"io"
 	"log"
+	"math/rand/v2"
 	"net"
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	ros "github.com/go-routeros/routeros/v3"
-	"github.com/go-routeros/routeros/v3/proto"
 )
 
-// CommandTimeout bounds a single RouterOS API call so one hung device cannot
-// stall a serial poller goroutine indefinitely.
-var CommandTimeout = 30 * time.Second
-
-// ReconnectCooldown bounds how often GetLive will redial a single device.
-// Pollers call GetLive as often as once per second (live traffic), so without a
-// floor here a device that is down would turn every poll cycle into a dial.
+// ReconnectCooldown is the least time between two automatic dials of one
+// device, and the first step of the backoff after a failed one. Pollers call
+// GetLive as often as once per second (live traffic), so without a floor a
+// device that is down would turn every poll cycle into a dial.
 var ReconnectCooldown = 15 * time.Second
+
+// ReconnectBackoffMax is where the backoff after repeated failures stops
+// growing: 15 s, 30 s, 1 min, … 10 min, each ±backoffJitter.
+var ReconnectBackoffMax = 10 * time.Minute
+
+// backoffJitter spreads the retries of a fleet that lost its devices at the
+// same moment (a switch reboot, a power cut): ±20 %.
+const backoffJitter = 0.2
 
 // dialSpec remembers how a device was last dialled so the Pool can re-establish
 // a connection on its own, without every caller having to carry credentials.
 // The credentials live in this process's memory either way — the pool is simply
 // holding on to what Dial was already given.
 type dialSpec struct {
-	address  string
-	port     int
+	target   Target
 	username string
 	password string
-	useTLS   bool
+}
+
+// dialFlight is one dial of a pool key in progress. Callers that want the
+// same session while it runs wait for it instead of dialling again.
+type dialFlight struct {
+	spec dialSpec
+	done chan struct{}
+	// superseded is set by Forget: the device was edited or removed while
+	// the dial ran, so its result is discarded.
+	superseded bool
+	client     *ros.Client
+	err        error
+}
+
+// backoffState is what the pool remembers about the dials of one key.
+type backoffState struct {
+	failures int
+	// next is the earliest time of the next automatic dial (GetLive,
+	// EnsureConnection). An explicit Dial is never held back by it.
+	next time.Time
+	// lastErr is the error of the last failed dial, nil after a success.
+	lastErr error
 }
 
 // Pool manages RouterOS API connections keyed by device ID.
+//
+// The pool's lock is never held across a dial or a close: both are network
+// I/O, and one unreachable device must not stall the pollers of every other.
 type Pool struct {
-	mu        sync.RWMutex
-	clients   map[string]*ros.Client
-	specs     map[string]dialSpec
-	lastDial  map[string]time.Time
-	verifyTLS bool
+	mu      sync.Mutex
+	clients map[string]*ros.Client
+	specs   map[string]dialSpec
+	flights map[string]*dialFlight
+	backoff map[string]*backoffState
+
+	// Seams for tests: the clock, the jitter (a factor in [-1, 1)), the
+	// dial itself, and a callback when a caller starts waiting for a dial
+	// already in flight.
+	now    func() time.Time
+	jitter func() float64
+	dialer func(spec dialSpec) (*ros.Client, error)
+	joined func()
 }
 
-// NewPool creates a connection pool. verifyTLS controls whether RouterOS
-// API-TLS connections validate the device certificate (false = skip, the
-// historical behaviour, since RouterOS ships self-signed certs).
-func NewPool(verifyTLS bool) *Pool {
+// NewPool creates a connection pool.
+func NewPool() *Pool {
 	return &Pool{
-		clients:   make(map[string]*ros.Client),
-		specs:     make(map[string]dialSpec),
-		lastDial:  make(map[string]time.Time),
-		verifyTLS: verifyTLS,
+		clients: make(map[string]*ros.Client),
+		specs:   make(map[string]dialSpec),
+		flights: make(map[string]*dialFlight),
+		backoff: make(map[string]*backoffState),
+		now:     time.Now,
+		jitter:  func() float64 { return 2*rand.Float64() - 1 },
+		dialer: func(spec dialSpec) (*ros.Client, error) {
+			return dialSession(spec.target, spec.username, spec.password)
+		},
 	}
 }
 
-// clientMutexes serializes access to each *ros.Client. The go-routeros
-// library wraps a single bufio.Reader per connection, which is NOT safe
-// for concurrent use. Two pollers calling RunArgs on the same client
-// from different goroutines corrupt the buffered reader and produce
-// "slice bounds out of range [:N] with capacity 4096" panics.
-//
-// The Pool registers a mutex on Dial and releases it on Close.
-// RunCommand looks up and acquires the mutex; clients that weren't
-// registered (one-shot connections created outside the Pool, e.g. the
-// device test endpoint) run unlocked, which is safe as long as they
-// are used from a single goroutine.
-var clientMutexes sync.Map // map[*ros.Client]*sync.Mutex
-
-// clientOwners maps a pooled client back to the Pool and device it belongs to.
-// RunCommand uses it to evict a connection whose socket has failed, without
-// having to thread the Pool through every command helper.
+// clientOwners maps a pooled client back to the Pool and key it belongs to,
+// and to the device its commands are counted against. Closing the client's
+// connection (sessionConn) uses it to take the client out of its pool,
+// without having to thread the Pool through every command helper.
 var clientOwners sync.Map // map[*ros.Client]clientOwner
 
+// sessionTags maps a one-shot session to the device its commands are counted
+// against (TagSession); pooled sessions are found through clientOwners.
+var sessionTags sync.Map // map[*ros.Client]string
+
 type clientOwner struct {
-	pool     *Pool
+	pool *Pool
+	// key is the pool key the client is stored under.
+	key string
+	// deviceID is what the session is observed as: the stored device the
+	// dial named (Target.DeviceID), or the pool key.
 	deviceID string
 }
 
-// registerClient records the per-client state the Pool keeps outside its map:
-// the serializing mutex and the owning pool/device.
-func registerClient(p *Pool, deviceID string, c *ros.Client) {
-	clientMutexes.Store(c, &sync.Mutex{})
-	clientOwners.Store(c, clientOwner{pool: p, deviceID: deviceID})
-}
-
-// unregisterClient drops everything registerClient recorded.
-func unregisterClient(c *ros.Client) {
-	clientMutexes.Delete(c)
-	clientOwners.Delete(c)
+// observedAs is the device a pooled session of key counts against.
+func observedAs(key string, t Target) string {
+	if t.DeviceID != "" {
+		return t.DeviceID
+	}
+	return key
 }
 
 // JoinHostPort builds a dial target from a host and port. Unlike a bare
@@ -109,338 +136,332 @@ func JoinHostPort(host string, port int) string {
 	return net.JoinHostPort(h, strconv.Itoa(port))
 }
 
-// Dial connects to a RouterOS device and stores the connection. The dial
-// policy is consulted first (outside the pool lock — a hostname check may
-// resolve), so a refused target never evicts the existing connection.
-func (p *Pool) Dial(deviceID, address string, port int, username, password string, useTLS bool) (*ros.Client, error) {
-	if err := CheckTarget(address); err != nil {
+// Dial connects to a RouterOS device and stores the connection under key,
+// replacing the one stored there. It is the explicit dial — an admin action,
+// a test — and is never held back by the backoff of earlier failures, though
+// its outcome counts for it. The dial policy, the stored secret and the TLS
+// pin are checked first, so a refused target never evicts the existing
+// connection.
+func (p *Pool) Dial(key string, t Target, username, password string) (*ros.Client, error) {
+	if err := checkDial(t, password); err != nil {
 		return nil, err
 	}
-	if err := checkSecret(password); err != nil {
-		return nil, err
+	return p.connect(key, dialSpec{target: t, username: username, password: password})
+}
+
+// connect opens the session for key with spec, outside the pool lock.
+// Callers asking for the same key with the same spec while it runs share its
+// result: two pollers that find a device without a session cause one dial.
+func (p *Pool) connect(key string, spec dialSpec) (*ros.Client, error) {
+	var flight *dialFlight
+	for {
+		p.mu.Lock()
+		running := p.flights[key]
+		if running == nil {
+			flight = &dialFlight{spec: spec, done: make(chan struct{})}
+			p.flights[key] = flight
+			break
+		}
+		p.mu.Unlock()
+		if p.joined != nil {
+			p.joined()
+		}
+		<-running.done
+		if running.spec == spec {
+			return running.client, running.err
+		}
+		// A dial with other parameters finished; ours is next.
+	}
+	// Remembered from the first attempt on, so that GetLive can retry a
+	// device that was down when it was first dialled.
+	p.specs[key] = spec
+	old := p.clients[key]
+	delete(p.clients, key)
+	p.mu.Unlock()
+
+	if old != nil {
+		_ = old.Close()
+	}
+	// A pooled session belongs to the device the dial names, or to the one
+	// its key names: that is whose class bounds the handshake, and whom the
+	// session and a pin mismatch are counted against.
+	as := spec
+	as.target.DeviceID = observedAs(key, spec.target)
+	client, err := p.dialContained(as)
+	observeSession(as.target.DeviceID, err)
+	if err == nil {
+		clientOwners.Store(client, clientOwner{pool: p, key: key, deviceID: as.target.DeviceID})
 	}
 
 	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	// Close existing connection if any
-	if c, ok := p.clients[deviceID]; ok {
-		c.Close()
-		unregisterClient(c)
-		delete(p.clients, deviceID)
+	if p.flights[key] == flight {
+		delete(p.flights, key)
 	}
-
-	addr := JoinHostPort(address, port)
-
-	var client *ros.Client
-	var err error
-
-	if useTLS {
-		client, err = ros.DialTLS(addr, username, password, &tls.Config{
-			InsecureSkipVerify: !p.verifyTLS, //nolint:gosec // self-signed certs are common; opt-in verification via MIKROTIK_NMS_ROS_TLS_VERIFY
-		})
-	} else {
-		client, err = ros.Dial(addr, username, password)
+	var discard *ros.Client
+	switch {
+	case flight.superseded:
+		// Forget ran while the dial did: the session was opened with
+		// parameters that no longer apply.
+		if err == nil {
+			discard, client = client, nil
+		}
+		err = ErrDialSuperseded
+	case err == nil:
+		p.clients[key] = client
+		p.backoff[key] = &backoffState{next: p.now().Add(ReconnectCooldown)}
+	default:
+		p.noteFailureLocked(key, err)
 	}
-	if err != nil {
-		return nil, fmt.Errorf("routeros dial %s: %w", addr, err)
-	}
+	p.mu.Unlock()
 
-	p.clients[deviceID] = client
-	p.specs[deviceID] = dialSpec{
-		address:  address,
-		port:     port,
-		username: username,
-		password: password,
-		useTLS:   useTLS,
+	if discard != nil {
+		_ = discard.Close()
 	}
-	registerClient(p, deviceID, client)
-	return client, nil
+	flight.client, flight.err = client, err
+	close(flight.done)
+	return client, err
 }
 
-// DialOnce opens a one-shot dedicated connection to a RouterOS device,
-// mirroring Pool.Dial's dial logic (TLS handling, IPv6-safe host:port) but NOT
-// registering the client in clientMutexes and NOT pooling it. The caller owns
-// the connection and must Close() it.
-//
-// Intended for long-running commands (speed-test /tool/fetch downloads,
-// /tool/traceroute) that would otherwise hold the shared per-client mutex past
-// CommandTimeout and force-close the pooled connection out from under every
-// other poller.
-func DialOnce(address string, port int, username, password string, useTLS, verifyTLS bool) (*ros.Client, error) {
-	if err := CheckTarget(address); err != nil {
-		return nil, err
-	}
-	if err := checkSecret(password); err != nil {
-		return nil, err
-	}
-	addr := JoinHostPort(address, port)
+// dialContained runs the dial and turns a panic in it into an error. The
+// callers that wait for this dial wait on its flight: were a panic to unwind
+// past connect, the flight would never finish, and every later GetLive of the
+// device would wait on it for ever.
+func (p *Pool) dialContained(spec dialSpec) (client *ros.Client, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			client, err = nil, fmt.Errorf("routeros dial %s: panic: %v", spec.target.Address, r)
+		}
+	}()
+	return p.dialer(spec)
+}
 
-	var client *ros.Client
-	var err error
-	if useTLS {
-		client, err = ros.DialTLS(addr, username, password, &tls.Config{
-			InsecureSkipVerify: !verifyTLS, //nolint:gosec // self-signed certs are common; opt-in verification via MIKROTIK_NMS_ROS_TLS_VERIFY
-		})
-	} else {
-		client, err = ros.Dial(addr, username, password)
+// ErrDialSuperseded is the result of a dial that was still running when its
+// device was edited or removed (Forget): the session it opened is closed.
+var ErrDialSuperseded = errors.New("routeros: the dial was overtaken by a change of the device")
+
+// noteFailureLocked records a failed dial of key and schedules the next
+// automatic one: ReconnectCooldown after the first failure, doubling up to
+// ReconnectBackoffMax, each ±backoffJitter. A refused login and a pin
+// mismatch go to the maximum at once — the same password or certificate
+// will be refused again, and every attempt is a line in the device's log.
+func (p *Pool) noteFailureLocked(key string, err error) {
+	b := p.backoff[key]
+	if b == nil {
+		b = &backoffState{}
+		p.backoff[key] = b
 	}
-	if err != nil {
-		return nil, fmt.Errorf("routeros dial %s: %w", addr, err)
+	b.failures++
+	b.lastErr = err
+	delay := backoffDelay(b.failures, ReconnectCooldown, ReconnectBackoffMax)
+	if IsLoginRefused(err) || errors.Is(err, ErrPinMismatch) {
+		delay = ReconnectBackoffMax
 	}
-	return client, nil
+	delay += time.Duration(float64(delay) * backoffJitter * p.jitter())
+	b.next = p.now().Add(delay)
+}
+
+// backoffDelay is the wait after the n-th consecutive failure, before
+// jitter: base, doubling, capped at limit.
+func backoffDelay(n int, base, limit time.Duration) time.Duration {
+	d := base
+	for i := 1; i < n && d < limit; i++ {
+		d *= 2
+	}
+	return min(d, limit)
+}
+
+// BackoffError is EnsureConnection's answer while the pool waits out earlier
+// failed dials of the device: no dial was made. It unwraps to the error of
+// the last one.
+type BackoffError struct {
+	Until time.Time
+	Last  error
+}
+
+func (e *BackoffError) Error() string {
+	if e.Last == nil {
+		return fmt.Sprintf("routeros: not redialled before %s (reconnect cooldown)", e.Until.Format(time.TimeOnly))
+	}
+	return fmt.Sprintf("routeros: not redialled before %s after: %v", e.Until.Format(time.TimeOnly), e.Last)
+}
+
+func (e *BackoffError) Unwrap() error { return e.Last }
+
+// heldLocked reports whether an automatic dial of key has to wait, with the
+// state that says until when.
+func (p *Pool) heldLocked(key string) (*backoffState, bool) {
+	b := p.backoff[key]
+	return b, b != nil && p.now().Before(b.next)
+}
+
+// ResetBackoff lets the next GetLive or EnsureConnection dial key at once,
+// whatever failed before. The liveness loop calls it when a device's API
+// port answers again after it was down: the pollers reconnect at their next
+// tick instead of waiting out a backoff that grew while the device was away.
+func (p *Pool) ResetBackoff(key string) {
+	p.mu.Lock()
+	delete(p.backoff, key)
+	p.mu.Unlock()
 }
 
 // Get returns an existing connection or nil.
 //
 // Prefer GetLive: Get never redials, so after a device reboots (which evicts the
-// dead client) it keeps returning nil until something calls EnsureConnection.
-func (p *Pool) Get(deviceID string) *ros.Client {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	return p.clients[deviceID]
+// dead client) it keeps returning nil until something dials again.
+func (p *Pool) Get(key string) *ros.Client {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.clients[key]
 }
 
 // GetLive returns a usable connection for a device, redialling if the pooled
-// one was evicted because its socket failed.
+// one was evicted because its session ended.
 //
 // This is what the pollers want. A device that reboots mid-session leaves a dead
 // socket behind; RunCommand evicts it, and GetLive then re-establishes the
 // session on the next cycle instead of leaving that device dark until the next
 // (hourly) info refresh happens to call EnsureConnection.
 //
-// Redials are throttled per device by ReconnectCooldown and are single-attempt,
-// so a device that is genuinely down costs one dial per cooldown rather than
-// stalling the caller in a retry/backoff loop. Returns nil when no connection is
-// available, which every caller already treats as "skip this device".
-func (p *Pool) GetLive(deviceID string) *ros.Client {
-	p.mu.RLock()
-	c, ok := p.clients[deviceID]
-	spec, hasSpec := p.specs[deviceID]
-	last := p.lastDial[deviceID]
-	p.mu.RUnlock()
-
-	if ok {
-		return c
-	}
-	if !hasSpec || time.Since(last) < ReconnectCooldown {
-		return nil
-	}
-
-	// Claim the redial under the write lock so concurrent pollers don't all
-	// dial the same device at once.
+// Redials are single-attempt and spaced per device: ReconnectCooldown apart
+// at least, backing off up to ReconnectBackoffMax while they keep failing
+// (ResetBackoff ends the wait). A caller that arrives while a dial of the
+// device is running waits for that dial instead of starting another. Returns
+// nil when no connection is available, which every caller already treats as
+// "skip this device".
+func (p *Pool) GetLive(key string) *ros.Client {
 	p.mu.Lock()
-	if c, ok := p.clients[deviceID]; ok {
+	if c, ok := p.clients[key]; ok {
 		p.mu.Unlock()
 		return c
 	}
-	if time.Since(p.lastDial[deviceID]) < ReconnectCooldown {
-		p.mu.Unlock()
-		return nil
-	}
-	p.lastDial[deviceID] = time.Now()
+	spec, hasSpec := p.specs[key]
+	_, held := p.heldLocked(key)
+	running := p.flights[key] != nil
 	p.mu.Unlock()
 
-	client, err := p.Dial(deviceID, spec.address, spec.port, spec.username, spec.password, spec.useTLS)
-	if err != nil {
-		log.Printf("routeros: reconnect to %s failed: %v", spec.address, err)
+	if !hasSpec || (held && !running) {
 		return nil
 	}
-	log.Printf("routeros: reconnected to %s", spec.address)
+	client, err := p.connect(key, spec)
+	if err != nil {
+		if !running {
+			log.Printf("routeros: reconnect to %s failed: %v", spec.target.Address, err)
+		}
+		return nil
+	}
+	if !running {
+		log.Printf("routeros: reconnected to %s", spec.target.Address)
+	}
 	return client
 }
 
-// closeIf drops the pooled connection for a device only if it is still the
-// client the caller saw fail. Without the identity check a slow failing command
-// could close a healthy connection that another goroutine just redialled.
-func (p *Pool) closeIf(deviceID string, client *ros.Client) {
+// dropClient takes client out of the pool if it is still what key holds. It
+// is called when the client's connection closes (sessionConn), whoever
+// closed it; the identity check keeps a late close of an old client from
+// removing the session that replaced it.
+func (p *Pool) dropClient(key string, client *ros.Client) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-	if c, ok := p.clients[deviceID]; ok && c == client {
-		c.Close()
-		unregisterClient(c)
-		delete(p.clients, deviceID)
+	if p.clients[key] == client {
+		delete(p.clients, key)
+	}
+	p.mu.Unlock()
+}
+
+// take removes and returns key's client; the caller closes it outside the
+// lock.
+func (p *Pool) take(key string) *ros.Client {
+	p.mu.Lock()
+	c := p.clients[key]
+	delete(p.clients, key)
+	p.mu.Unlock()
+	return c
+}
+
+// Close closes and removes a connection. The dial parameters stay, so
+// GetLive reconnects a device that merely rebooted.
+func (p *Pool) Close(key string) {
+	if c := p.take(key); c != nil {
+		_ = c.Close()
 	}
 }
 
-// Close closes and removes a connection.
-func (p *Pool) Close(deviceID string) {
+// Forget closes a connection and discards everything remembered about the
+// key: the dial parameters (GetLive will not redial it), the backoff, and a
+// dial still in flight, whose session is closed when it arrives. Use it when
+// the device was edited or deleted, and for transient pool keys (the
+// address-move verification dial) — Close deliberately keeps the dial
+// parameters so a rebooted device can be reconnected.
+func (p *Pool) Forget(key string) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-	if c, ok := p.clients[deviceID]; ok {
-		c.Close()
-		unregisterClient(c)
-		delete(p.clients, deviceID)
+	c := p.clients[key]
+	delete(p.clients, key)
+	delete(p.specs, key)
+	delete(p.backoff, key)
+	if f := p.flights[key]; f != nil {
+		f.superseded = true
 	}
-}
-
-// Forget closes a connection and discards the remembered dial parameters, so
-// GetLive will not redial it. Use it for transient pool keys (such as the
-// auto-follow verification dial) rather than Close, which deliberately keeps the
-// dial spec so a rebooted device can be reconnected.
-func (p *Pool) Forget(deviceID string) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if c, ok := p.clients[deviceID]; ok {
-		c.Close()
-		unregisterClient(c)
-		delete(p.clients, deviceID)
+	p.mu.Unlock()
+	if c != nil {
+		_ = c.Close()
 	}
-	delete(p.specs, deviceID)
-	delete(p.lastDial, deviceID)
 }
 
 // CloseAll closes all connections.
 func (p *Pool) CloseAll() {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-	for id, c := range p.clients {
-		c.Close()
-		unregisterClient(c)
-		delete(p.clients, id)
+	all := make([]*ros.Client, 0, len(p.clients))
+	for key, c := range p.clients {
+		all = append(all, c)
+		delete(p.clients, key)
+	}
+	p.mu.Unlock()
+	for _, c := range all {
+		_ = c.Close()
 	}
 }
 
-// evictFailedClient removes a pooled client whose connection is broken, so that
-// nothing hands the dead socket out again.
+// EnsureConnection returns the device's pooled session, opening it when
+// there is none, when the one there no longer answers, or when it was opened
+// with other parameters than the ones given (the address, port, TLS flag,
+// pin or credentials changed since).
 //
-// This is the guard against a device rebooting mid-session: the pool used to
-// keep the stale client indefinitely, and every poller that fetched it with Get
-// failed with "broken pipe" on the same socket until the process restarted.
-// Clients not created by Pool.Dial (DialOnce) are not registered and are the
-// caller's to close.
-func evictFailedClient(client *ros.Client) {
-	v, ok := clientOwners.Load(client)
-	if !ok {
-		return
-	}
-	owner := v.(clientOwner)
-	owner.pool.closeIf(owner.deviceID, client)
-}
+// It makes at most one dial and honours the backoff: while earlier dials of
+// the device are being waited out it returns a *BackoffError without
+// dialling. A refusal (IsDialRefusal) is returned as it is and costs nothing.
+func (p *Pool) EnsureConnection(key string, t Target, username, password string) (*ros.Client, error) {
+	spec := dialSpec{target: t, username: username, password: password}
 
-// isConnError reports whether err means the underlying socket is unusable, as
-// opposed to RouterOS rejecting the command itself (an unknown command or a bad
-// argument must not cost us a working connection).
-func isConnError(err error) bool {
-	if err == nil {
-		return false
-	}
+	p.mu.Lock()
+	c := p.clients[key]
+	known, hasSpec := p.specs[key]
+	p.mu.Unlock()
 	switch {
-	case errors.Is(err, io.EOF),
-		errors.Is(err, io.ErrUnexpectedEOF),
-		errors.Is(err, io.ErrClosedPipe),
-		errors.Is(err, net.ErrClosed),
-		errors.Is(err, syscall.EPIPE),
-		errors.Is(err, syscall.ECONNRESET),
-		errors.Is(err, syscall.ECONNABORTED):
-		return true
-	}
-	var ne net.Error
-	if errors.As(err, &ne) {
-		return true
-	}
-	// go-routeros surfaces some transport failures as plain fmt.Errorf values,
-	// so the wrapped-error checks above can miss them.
-	s := err.Error()
-	for _, frag := range []string{
-		"broken pipe",
-		"connection reset",
-		"connection refused",
-		"use of closed network connection",
-		"unexpected EOF",
-		"EOF",
-	} {
-		if strings.Contains(s, frag) {
-			return true
+	case hasSpec && known != spec:
+		// A session — or a backoff — that belongs to other parameters.
+		if c != nil {
+			log.Printf("routeros: connection parameters of %s changed, reconnecting", t.Address)
 		}
-	}
-	return false
-}
-
-// RunCommand executes a RouterOS command and returns the reply sentences.
-// Serializes access to clients that were created via Pool.Dial so multiple
-// pollers cannot trigger concurrent reads on the same bufio.Reader.
-//
-// The call is bounded by CommandTimeout: a hung device would otherwise block
-// the calling (serial) poller goroutine forever while holding the per-client
-// mutex. On timeout the client is closed, which unblocks the in-flight read so
-// the helper goroutine can exit, and the next EnsureConnection redials.
-func RunCommand(client *ros.Client, command string, args ...string) (*ros.Reply, error) {
-	return RunCommandWithTimeout(client, CommandTimeout, command, args...)
-}
-
-// RunCommandWithTimeout is RunCommand with a caller-chosen timeout, for
-// commands that legitimately run longer than CommandTimeout (speed-test
-// downloads, traceroutes). It acquires the per-client mutex IF the client was
-// registered via Pool.Dial — dedicated DialOnce clients aren't, which is fine
-// as long as they are used from a single goroutine.
-func RunCommandWithTimeout(client *ros.Client, timeout time.Duration, command string, args ...string) (*ros.Reply, error) {
-	if v, ok := clientMutexes.Load(client); ok {
-		mu := v.(*sync.Mutex)
-		mu.Lock()
-		defer mu.Unlock()
-	}
-
-	type result struct {
-		reply *ros.Reply
-		err   error
-	}
-	done := make(chan result, 1)
-	go func() {
-		reply, err := client.RunArgs(append([]string{command}, args...))
-		done <- result{reply, err}
-	}()
-
-	select {
-	case res := <-done:
-		if isConnError(res.err) {
-			evictFailedClient(client)
-		}
-		return res.reply, res.err
-	case <-time.After(timeout):
-		client.Close() // unblocks the goroutine's read; it then exits via the buffered chan
-		evictFailedClient(client)
-		return nil, fmt.Errorf("routeros command %q timed out after %s", command, timeout)
-	}
-}
-
-// GetSentenceMap returns the key-value map from a RouterOS reply sentence.
-func GetSentenceMap(s *proto.Sentence) map[string]string {
-	if s.Map != nil {
-		return s.Map
-	}
-	return make(map[string]string)
-}
-
-// KeepAlive sends a lightweight command to keep the connection alive.
-func KeepAlive(client *ros.Client) error {
-	_, err := RunCommand(client, "/system/identity/print")
-	return err
-}
-
-// EnsureConnection gets or establishes a connection to a device.
-func (p *Pool) EnsureConnection(deviceID, address string, port int, username, password string, useTLS bool) (*ros.Client, error) {
-	if c := p.Get(deviceID); c != nil {
-		// Test if connection is alive
-		if err := KeepAlive(c); err == nil {
+		p.Forget(key)
+	case c != nil:
+		// Test if the connection is alive. A session that is merely busy
+		// with another command is.
+		err := KeepAlive(c)
+		if err == nil || IsSessionBusy(err) {
 			return c, nil
 		}
-		log.Printf("routeros: stale connection to %s, reconnecting", address)
-		p.Close(deviceID)
+		log.Printf("routeros: stale connection to %s, reconnecting", t.Address)
+		p.Close(key)
 	}
 
-	// Retry with backoff
-	var lastErr error
-	for attempt := range 3 {
-		client, err := p.Dial(deviceID, address, port, username, password, useTLS)
-		if err == nil {
-			return client, nil
-		}
-		lastErr = err
-		if errors.Is(err, ErrPollersOff) || errors.Is(err, ErrTargetNotAllowed) || errors.Is(err, ErrCredentialsUnreadable) {
-			break // a refusal: retrying cannot change it
-		}
-		time.Sleep(time.Duration(attempt+1) * time.Second)
+	if err := checkDial(t, password); err != nil {
+		return nil, err
 	}
-	return nil, lastErr
+	p.mu.Lock()
+	b, held := p.heldLocked(key)
+	running := p.flights[key] != nil
+	p.mu.Unlock()
+	if held && !running {
+		return nil, &BackoffError{Until: b.next, Last: b.lastErr}
+	}
+	return p.connect(key, spec)
 }

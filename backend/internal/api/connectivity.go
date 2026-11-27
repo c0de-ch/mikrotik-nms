@@ -477,7 +477,7 @@ func (s *Server) handleRunTraceroute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Refuse a fenced device synchronously rather than recording a failed run.
-	if writeDialPolicyError(w, routeros.CheckTarget(dev.Address)) {
+	if writeDialPolicyError(w, routeros.CheckTarget(dev.Address)) || writeTLSPinMissing(w, dev) {
 		return
 	}
 
@@ -492,7 +492,6 @@ func (s *Server) handleRunTraceroute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	verifyTLS := s.cfg.ROSTLSVerify
 	go func() {
 		defer poller.EndRun(key)
 		defer poller.ReleaseAPIRunSlot()
@@ -503,7 +502,7 @@ func (s *Server) handleRunTraceroute(w http.ResponseWriter, r *http.Request) {
 		}()
 
 		run := &queries.TracerouteRun{TargetID: t.ID, Address: t.Address}
-		client, err := routeros.DialOnce(dev.Address, dev.APIPort, dev.Username, dev.PasswordEnc, dev.UseTLS, verifyTLS)
+		client, err := routeros.DialOnce(poller.DialTarget(*dev), dev.Username, dev.PasswordEnc)
 		if err != nil {
 			run.Error = err.Error()
 		} else {

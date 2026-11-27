@@ -40,7 +40,7 @@ func TestFirmwareRefreshSendsDevicesNothing(t *testing.T) {
 	resetFirmwareAttempts(t)
 	db := pollerTestDB(t)
 	fake := routerostest.NewDevice(t)
-	pool := routeros.NewPool(false)
+	pool := routeros.NewPool()
 	mustCreateDevice(t, db, &queries.Device{ID: "r1", Identity: "r1", Address: fake.Host, APIPort: fake.Port, Status: "online"})
 	fake.Dial(t, pool, "r1")
 
@@ -95,7 +95,7 @@ func TestReadFirmwareIsReadOnly(t *testing.T) {
 	fake := routerostest.NewDevice(t)
 	fake.SetReply("/system/package/update/print", map[string]string{"channel": "long-term", "installed-version": "7.12.1"})
 	fake.SetTrap("/system/routerboard/print", "no such command prefix")
-	pool := routeros.NewPool(false)
+	pool := routeros.NewPool()
 	fake.Dial(t, pool, "chr")
 
 	pkg, rb, err := ReadFirmware(routeros.ClientRunner{Client: pool.Get("chr")})
@@ -142,8 +142,8 @@ func TestUpgradeWithoutRebootDownloadsOnly(t *testing.T) {
 	}
 
 	creds := routeros.NewCredentials("admin-typed", "typed-secret")
-	pool := routeros.NewPool(false)
-	NewUpgradeExecutor(db, pool, ws.NewHub(), creds, false).Execute("job")
+	pool := routeros.NewPool()
+	NewUpgradeExecutor(db, pool, ws.NewHub(), creds).Execute("job")
 
 	cmds := fake.Commands()
 	if !slices.Contains(cmds, "/system/package/update/download") {
@@ -162,7 +162,7 @@ func TestUpgradeWithoutRebootDownloadsOnly(t *testing.T) {
 	if strings.Contains(devs[0].Message, "typed-secret") {
 		t.Error("the password leaked into the job row")
 	}
-	if _, err := routeros.DialOnceWith(fake.Host, fake.Port, creds, false, false); !errors.Is(err, routeros.ErrCredentialsCleared) {
+	if _, err := routeros.DialOnceWith(fake.Target(""), creds); !errors.Is(err, routeros.ErrCredentialsCleared) {
 		t.Errorf("credentials usable after the job: %v", err)
 	}
 }
@@ -185,7 +185,7 @@ func TestUpgradeLoginRefusedStopsTheJob(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	NewUpgradeExecutor(db, routeros.NewPool(false), ws.NewHub(), routeros.NewCredentials("u", "wrong"), false).Execute("job")
+	NewUpgradeExecutor(db, routeros.NewPool(), ws.NewHub(), routeros.NewCredentials("u", "wrong")).Execute("job")
 
 	devs, _ := queries.ListUpgradeJobDevices(db, "job")
 	if len(devs) != 2 {
@@ -222,7 +222,7 @@ func TestUpgradeWithRebootInstallsAndVerifies(t *testing.T) {
 	if err := queries.CreateUpgradeJobDevice(db, &queries.UpgradeJobDevice{ID: "jd1", JobID: "job", DeviceID: "r1", Status: "pending"}); err != nil {
 		t.Fatal(err)
 	}
-	NewUpgradeExecutor(db, routeros.NewPool(false), ws.NewHub(), routeros.NewCredentials("u", "p"), false).Execute("job")
+	NewUpgradeExecutor(db, routeros.NewPool(), ws.NewHub(), routeros.NewCredentials("u", "p")).Execute("job")
 
 	cmds := fake.Commands()
 	if !slices.Contains(cmds, "/system/package/update/install") || slices.Contains(cmds, "/system/package/update/download") {
@@ -349,8 +349,8 @@ func TestUpgradeRecordsTheFirmwareItVerified(t *testing.T) {
 	if err := queries.CreateUpgradeJobDevice(db, &queries.UpgradeJobDevice{ID: "jd1", JobID: "job", DeviceID: "r1", Status: "pending"}); err != nil {
 		t.Fatal(err)
 	}
-	pool := routeros.NewPool(false)
-	ue := NewUpgradeExecutor(db, pool, hub, routeros.NewCredentials("u", "p"), false)
+	pool := routeros.NewPool()
+	ue := NewUpgradeExecutor(db, pool, hub, routeros.NewCredentials("u", "p"))
 	ue.RecordFirmwareWith(checker)
 	ue.Execute("job")
 

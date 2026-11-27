@@ -59,7 +59,7 @@ func liveGet(t *testing.T, h http.Handler, path string, out any) int {
 // print — fails this test.
 func TestMapReadPathsNeverTouchDevices(t *testing.T) {
 	f := newTrafficFixture(t)
-	pool := routeros.NewPool(false)
+	pool := routeros.NewPool()
 	fake := routerostest.NewDevice(t)
 	ids := []string{"r", "c", "s", "a1", "a2"}
 	for _, id := range ids {

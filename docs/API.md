@@ -163,12 +163,13 @@ user), **admin** (admin role required).
 | GET | `/devices/{id}/neighbors` | any | Cached `/ip/neighbor` neighbors for the device. |
 | GET | `/devices/{id}/ports` | any | The device's faceplate ports (ethernet, SFP, QSFP, combo) with their rates from the port-stats snapshot — **no device call** (the map's port grid). `{device_id, source: "snapshot", sampled_at, age_seconds, interval_seconds, ready, ports: [{name, type, running, disabled, comment, rx_bps, tx_bps}]}`. Inventory order, then any port the snapshot has but the hourly inventory does not yet; running/disabled come from the snapshot when it has the port. `sampled_at` is when **this device's** counters were last read (a device whose reads fail keeps its last rates for up to three intervals, and shows their real age); it and `age_seconds` are `null` (and rates 0) while the snapshot has none of the device's interfaces. `404` for an unknown device. |
 | GET | `/devices/{id}/live-limits` | any | What a per-port live stream (WS `traffic.<id>.<iface>`) of the device may do for the caller: `{device_id, class, profile, min_period_seconds, max_ifaces, leases, admin_only, snapshot_interval_seconds, allowed, reason?, message?}`. `class` is the one the caps follow (`C1` on the `light` profile). `allowed` covers role, an admin pause and the polling mode (`reason`: `admin_only`, `polling_paused`, `pollers_off`); the interface and viewer ceilings depend on other viewers and are decided on subscribe. Database only. See [Live streams](#live-streams). |
+| GET | `/devices/{id}/load` | any | The device's CPU and memory telemetry next to what the NMS itself sent it. Query `range` (`1h` default, `6h`, `24h`: 1-minute points; `7d`, `30d`: hourly; anything else `400`). **Database only — no device call.** See [Device load](#device-load). `404` for an unknown device. |
 | GET | `/devices/{id}/audit` | any | Operator actions on the device (pauses, profile and class changes, address-move decisions, firmware requests — `firmware_upgrade_requested` / `firmware_channel_requested` / `firmware_routerboard_requested`, never with the RouterOS login typed for them), newest first. Query `limit` (default 50, max 500). `[{id, at, user_id, username, action, device_id, detail}]`. |
-| POST | `/devices` | admin | Add a device. `username` and `password` are **required** (there are no default credentials). Tests the RouterOS connection first; `400` if unreachable. `500` when the password cannot be stored encrypted — it is never stored in plaintext instead. |
-| PUT | `/devices/{id}` | admin | Update device fields (only non-empty fields override). The stored password changes only when the body carries a new `password`. A change of address, port, TLS flag, username or password closes the device's pooled API session, so the next poll connects with the new values. |
+| POST | `/devices` | admin | Add a device. `username` and `password` are **required** (there are no default credentials); with `use_tls` so is `pin_cert_sha256`, the fingerprint of the device's api-ssl certificate (`400` without it, before anything is dialled). Tests the RouterOS connection first; `400` if unreachable — or, over TLS, if the device presents another certificate than the pinned one (no login is sent). `500` when the password cannot be stored encrypted — it is never stored in plaintext instead. |
+| PUT | `/devices/{id}` | admin | Update device fields (only non-empty fields override; `use_tls` and `pin_cert_sha256` change only when the body carries them, and an empty `pin_cert_sha256` clears the pin). The stored password changes only when the body carries a new `password`. `400` for a malformed fingerprint (nothing is changed). A change of address, port, TLS flag, pin, username or password closes the device's pooled API session and forgets its reconnect backoff, so the next poll connects with the new values. |
 | DELETE | `/devices/{id}` | admin | Remove a device (and its pooled API session). |
 | GET | `/devices/address-proposals` | any | IP auto-follow proposals (see below), newest sighting first. Pending only by default; `?status=all` or one status. `[{id, device_id, device_identity, old_address, new_address, mac, first_seen, last_seen, status, decided_by?, decided_at?, result?}]`. Database only. |
-| POST | `/devices/address-proposals/{id}/approve` | admin + fresh login | Log in at `new_address` with the device's **stored** credential (a separate one-off session), check board, RouterOS version and the matched MAC, and re-point the device when all hold. `200` with the proposal — `status` `approved`, or `failed` with the reason in `result` (the address is untouched). `409` when the proposal is no longer pending, the device's address changed since (the proposal becomes `superseded`) or its polling is paused; `503`/`403` from the polling fence (the proposal stays pending). Audited (`address_move_approved` / `address_move_refused`). |
+| POST | `/devices/address-proposals/{id}/approve` | admin + fresh login | Log in at `new_address` with the device's **stored** credential (a separate one-off session; for a device on API-TLS only after the certificate presented there matched its pin), check board, RouterOS version and the matched MAC, and re-point the device when all hold. `200` with the proposal — `status` `approved`, or `failed` with the reason in `result` (the address is untouched). `409` when the proposal is no longer pending, the device's address changed since (the proposal becomes `superseded`) or its polling is paused; `503`/`403` from the polling fence (the proposal stays pending). Audited (`address_move_approved` / `address_move_refused`). |
 | POST | `/devices/address-proposals/{id}/dismiss` | admin | Close a pending proposal without contacting anything. Audited (`address_move_dismissed`). The same move (device, old → new address) is not proposed again for 7 days; after a failed approval, for 24 h. A sighting at another address opens a new proposal. |
 | POST | `/devices/{id}/polling/pause` | admin | Pause every poller but liveness for `{"hours": 1…168}` (the UI offers 1 h and 24 h). Returns the device. |
 | POST | `/devices/{id}/polling/resume` | admin | Clear a pause. Returns the device. |
@@ -195,6 +196,64 @@ it, and no job is created), and `GET /debug/wifi`. A firmware job already
 running when the pause starts is not interrupted. A granted live stream
 stops at its next sample.
 
+#### Device load
+
+`GET /devices/{id}/load` answers "is the NMS why this device is busy?" from
+`device_minutes` (one row per device and minute the NMS was polling) and its
+hourly rollup `device_hours`:
+
+```json
+{
+  "device_id": "…", "range": "6h", "resolution": "1m", "step_seconds": 60,
+  "from": "…Z", "to": "…Z", "coverage_from": "…Z" | null, "memory_total": 67108864 | null,
+  "points": [
+    { "ts": "…Z", "gap": null, "covered_s": 60, "paused": false, "rebooted": false,
+      "cpu_avg": 12.0, "cpu_max": 14, "cpu_p95": null, "cpu_post": 41, "free_memory": 20971520,
+      "nms_cmds": 6, "nms_wall_ms": 310, "nms_rows": 240, "nms_timeouts": 0, "nms_reconnects": 0 }
+  ],
+  "summary": { "covered_pct": 99.4, "cpu_avg": 11.8, "cpu_max": 63,
+               "cpu_post_avg": 38.5, "cpu_quiet_at_post": 12.1,
+               "nms_cmds_per_min": 5.9, "nms_wall_ms_per_min": 300.2,
+               "nms_timeouts": 0, "nms_reconnects": 1, "reboots": 0 }
+}
+```
+
+- `cpu_avg` / `cpu_max` are the **quiet-window** samples of the bucket: one
+  `/system/resource/print` (`cpu-load`, `free-memory`, `uptime`) per device
+  and minute, taken once the device has been left alone for 3 s (after at
+  most 10 s of waiting). `cpu_post` is the sample taken 3 s **after an
+  interface-counter read**, every 10 minutes: next to the quiet-window value
+  it shows what the NMS's own read does to the CPU. `free_memory` is the
+  lowest reading of the bucket (bytes).
+- `nms_*` is what the NMS sent the device in the bucket: commands, their
+  wall time (including the wait for the API session), reply rows, commands
+  that timed out, and API sessions that had to be re-opened.
+- **Gaps are explicit.** `gap` is `null` when the device's interface counters
+  covered at least part of the bucket (`covered_s` > 0). Otherwise it names
+  the reason and everything that was not measured is `null`, never `0`:
+  `paused` (admin pause), `unreachable` (the liveness check never saw the
+  device up), `read_failed` (the counter read failed or timed out),
+  `no_session` (no API session), `no_baseline` (the first read after a start,
+  a pause or an outage — nothing to compare with yet), `not_polled`, and
+  `no_data` — there is no row at all: the NMS was not running, or the
+  telemetry did not exist yet. An uncovered bucket with a row still carries
+  the `nms_*` figures (timeouts while a device is unreachable are real).
+  Hourly points use `not_covered` for an hour with a row but no covered
+  second.
+- `rebooted` marks a bucket in which the device's uptime went backwards.
+- Hourly points (`7d`, `30d`) add `cpu_p95` (of the hour's minute averages);
+  `rebooted`, `cpu_post` (the hour's average), `nms_wall_ms`, `nms_rows`,
+  `nms_timeouts` and `nms_reconnects` come from the minute rows and are
+  `null` for hours older than their 14-day retention.
+- `summary.cpu_post_avg` against `summary.cpu_quiet_at_post` is the
+  comparison in one pair of numbers: both run over the buckets that have a
+  post-poll sample **and** a quiet-window sample (`null` when there is no
+  such bucket). The `*_per_min` figures are per recorded minute.
+
+The series ends at the newest final minute (hour), like the port charts: a
+device-minute is written together with the port rows of that minute, one to
+three minutes after it ends.
+
 **IP auto-follow proposals.** With the `auto_follow_ip` setting on, the
 topology loop matches neighbor-discovery (MNDP/CDP) sightings to managed
 devices by MAC; a device seen at an address other than the one it is polled
@@ -216,15 +275,37 @@ Create/update body fields:
   "username": "admin",
   "password": "secret",
   "use_tls": false,
+  "pin_cert_sha256": "",
   "api_port": 8728,
   "tags": "[]",
   "notes": ""
 }
 ```
 
-`address` is required on create. Omitted `username`/`api_port`/`password` fall
-back to the `MIKROTIK_NMS_DEFAULT_ROS_*` config values. On create the backend
-dials the device, and if `identity` is blank it reads `/system/identity`.
+`address`, `username` and `password` are required on create; an omitted
+`api_port` falls back to `MIKROTIK_NMS_DEFAULT_ROS_PORT`. On create the
+backend dials the device, and if `identity` is blank it reads
+`/system/identity`.
+
+**TLS pins.** `pin_cert_sha256` is the SHA-256 fingerprint of the certificate
+the device's api-ssl service presents — what RouterOS prints as
+`fingerprint` in `/certificate print detail`. It is accepted in upper or
+lower case, with or without colons between the bytes, stored as 64
+lower-case hex digits, and returned with every device (a fingerprint is not
+a secret). With `use_tls` the NMS logs in only when the certificate
+presented in the TLS handshake has that fingerprint:
+
+- a TLS device **without a pin** is not contacted over the API at all — the
+  pollers skip it, and on-demand actions that would reach it say why
+  (`TLS pin missing: …`): `409` from `GET /devices/{id}/addresses`, the
+  speed-test and traceroute run-nows and the approval of an address
+  proposal; the firmware actions list it as that device's error;
+- a device that presents **another certificate** is refused before any
+  credential is sent; the refusal is recorded as a `tls_pin_mismatch`
+  finding of the device (`GET /devices/{id}/findings`, `detail` = the
+  fingerprint presented) and raises the alert of the same name.
+
+Plain-API devices (`use_tls: false`) ignore the pin.
 
 ### Discovery
 
@@ -297,15 +378,32 @@ Windows are end-anchored at the newest complete bucket, and points/stats start
 at `coverage_from` (the first stored bucket in the window, fleet-wide; on the
 hourly table the first covered minute of that hour while 1-minute data for it
 remains) — points before coverage are omitted, `coverage_from: null` means no
-data yet.
+data yet. For one port (`/traffic/ports/history`) whose device has telemetry
+(`device_minutes`) from before the window, `coverage_from` is the window
+start: every bucket is then either covered or an explicit gap point.
 
-**Coverage.** A native bucket (minute or hour) without a single row fleet-wide
-means the collector was not running (restart, deploy, outage): MNDP/ARP chatter
-makes every running port non-idle each minute. Such steps are gaps — points
-with `rx_bps`/`tx_bps` `null` — and are left out of every average and of the
-p95, while an idle port in a covered step is a real `0`. Every average (history
-stats, top talkers, Sankey) is `bytes*8 / covered seconds`, and a step covered
-only in part (coverage starting mid-step) is divided by its covered seconds.
+**Coverage.** A port bucket (minute or hour) is a **gap unless its own device
+was covered in it**: the device has a `device_minutes` row with `polled_s` > 0
+for the minute (`device_hours.covered_s` > 0 for the hour) — its interface
+counters were read on both sides of at least part of the bucket. A device
+that was paused, unreachable or not read shows a gap on every port, whatever
+the rest of the fleet did; only inside a covered bucket does a port without a
+row read `0` (idle). Gaps are points with `rx_bps`/`tx_bps` `null` and are
+left out of every average and of the p95. Every average (history stats, top
+talkers, Sankey) is `bytes*8 / the device's covered seconds`, and a bucket
+covered only in part is divided by its covered seconds.
+
+Buckets older than a device's first `device_minutes` (`device_hours`) row —
+history from before this telemetry existed, or beyond its 14-day (730-day)
+retention — are judged the earlier, fleet-wide way: a bucket without a single
+row for any port means the collector was not running (a gap); any row
+anywhere means it was, and a port without one was idle (`0`).
+
+Stored port rows also carry the per-bucket deltas of the drop, error and
+link-down counters (`rx_drop`, `tx_drop`, `rx_error`, `tx_error`,
+`tx_queue_drop`, `link_downs`; `NULL` where the interface does not report the
+counter) and `covered_s`; a port minute is stored when any byte or any of
+those deltas is non-zero.
 
 | `range` | Window | Source | History step (points) | Top sparkline step |
 |---|---|---|---|---|
@@ -656,7 +754,14 @@ coverage (above).
 
 Rules are evaluated every 30 seconds on an instance that polls
 (`MIKROTIK_NMS_POLLERS=local`), from the database only. There is at most one
-open alert per rule and key. Runbooks: [`RUNBOOKS.md`](RUNBOOKS.md).
+open alert per rule and key. Rules: `device_unreachable`,
+`parallel_api_poller`, `cpu_high`, `mem_low` (key: the device id) and
+`port_egress_drops` (key `<device id>|<interface>`). The three telemetry
+rules judge a window of the device's newest final minutes and treat a minute
+that was not measured as unknown, not as healthy: an open alert stays open
+while its device is paused, unreachable or not being recorded, and none
+opens. An alert whose severity rises is notified again at once. Runbooks:
+[`RUNBOOKS.md`](RUNBOOKS.md).
 
 | Method | Path | Role | Description |
 |---|---|---|---|
@@ -673,7 +778,10 @@ open alert per rule and key. Runbooks: [`RUNBOOKS.md`](RUNBOOKS.md).
 **Rules.** `device_unreachable` (critical): the liveness check reports the
 device `offline`, i.e. past `offline_threshold_seconds`. `parallel_api_poller`
 (warning): the login watch confirmed a live API session from an address that
-is not this NMS.
+is not this NMS. `tls_pin_mismatch` (critical): a device on API-TLS presented
+another certificate than the one pinned for it and the NMS withheld its
+login; it resolves when the device is pinned to the presented certificate or
+taken off TLS, otherwise 2 h 15 min after the last refused handshake.
 
 **Notifications.** A firing alert goes to every enabled channel whose
 `min_severity` it reaches: when it starts, every 4 hours while nobody
@@ -803,7 +911,7 @@ Valid `{type}` values: `manufacturers`, `device_types`, `device_roles`,
 |---|---|---|---|
 | GET | `/settings` | any | All `app_settings` key/value pairs. |
 | PUT | `/settings` | admin | Update settings. Body is a flat `{key: value}` map; unknown keys are silently ignored. |
-| POST | `/admin/purge-history` | admin | Wipe history tables. Body `{wifi, clients, network_health, traffic, flows, older_than_days}`. Returns `{deleted: {<table>: rows}}`. |
+| POST | `/admin/purge-history` | admin | Wipe history tables. Body `{wifi, clients, network_health, traffic, flows, older_than_days}`. Returns `{deleted: {<table>: rows}}`. `traffic` clears `traffic_samples`, `port_stats_1m` / `port_stats_1h` and — because they say which of those buckets were covered — the device telemetry `device_minutes` / `device_hours` (the CPU history of the same period goes with it). |
 | GET | `/admin/export/{table}` | admin | Download one table as a JSON file (allowlisted tables only). |
 | POST | `/admin/import/{table}` | admin | Import rows into one table (`INSERT OR IGNORE`). Body is a JSON array of row objects. |
 | GET | `/admin/backup` | admin | Download a full multi-table JSON backup bundle. |
@@ -935,7 +1043,7 @@ the same topic (new period after a class change) replaces the earlier one.
 
 | Topic pattern | Payload | Description |
 |---|---|---|
-| `device.health` | object | Device liveness/info updates from the health and info pollers. |
+| `device.health` | object | Device updates `{device_id, status, …}`: from the liveness check every health interval (`status`, `last_seen`, `error`), and from the CPU sample once a minute per device that is online, not paused and has an API session (`status: "online"`, `cpu_load`, `memory_pct`, `uptime`). |
 | `topology.update` | graph object | Full topology graph (`nodes` + `edges`); the one non-`map` payload. |
 | `traffic.<deviceID>.<iface>` | object | Live `/interface/monitor-traffic` samples of one interface `{device_id, interface_name, rx_bps, tx_bps, rx_pps, tx_pps, period_seconds, timestamp}`, within the device class's caps (see below). Vetted: every subscribe gets a `subscribe.ack` or `subscribe.error`. Sampling starts once granted and stops on the last unsubscribe. |
 | `traffic.ports` | object | Fleet-wide port snapshot `{ts, interval_seconds, ready, ports: [{device_id, iface, type, comment?, running, disabled, rx_bps, tx_bps, rx_pps, tx_pps}]}` while anyone is subscribed, after each counter cycle that changed the rates (a reading landed or rates expired; devices are read on their own cadences, so several times per `port_stats_interval`, but never from a cycle that read nothing). Raw: no `role`/`device_name` (join `/traffic/ports/roles`). |

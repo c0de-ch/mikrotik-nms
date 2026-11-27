@@ -380,6 +380,12 @@ fi
 if grep -Eq '^MIKROTIK_NMS_DEFAULT_ROS_PASS=.+' "$ENV_FILE"; then
     warn "MIKROTIK_NMS_DEFAULT_ROS_USER / MIKROTIK_NMS_DEFAULT_ROS_PASS in $ENV_FILE are no longer used — remove them (a device password does not belong in the environment)"
 fi
+# Neither is the certificate switch: every API-TLS session is verified against
+# the fingerprint pinned on the device (Devices page), and a TLS device
+# without one is not logged in to.
+if grep -Eq '^MIKROTIK_NMS_ROS_TLS_VERIFY=' "$ENV_FILE"; then
+    warn "MIKROTIK_NMS_ROS_TLS_VERIFY in $ENV_FILE is no longer used — remove it. Devices on API-TLS need their certificate fingerprint entered on the Devices page; the backend log counts the ones without"
+fi
 
 # Source the file so we can use its values during build.
 set -a

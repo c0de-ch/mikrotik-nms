@@ -323,7 +323,7 @@ func TestLiveTrafficCollectorPublishesFromTheSnapshot(t *testing.T) {
 	linkID := links[0].ID
 
 	// Both devices have a live pooled client to a tripwire endpoint.
-	pool := routeros.NewPool(false)
+	pool := routeros.NewPool()
 	fake := routerostest.NewDevice(t)
 	fake.Dial(t, pool, "a")
 	fake.Dial(t, pool, "b")

@@ -223,6 +223,10 @@ export const api = {
     // (class caps, admin-only, pause) — checked before subscribing.
     liveLimits: (token: string, id: string) =>
       apiFetch<LiveLimits>(`/devices/${id}/live-limits`, { token }),
+    // CPU and memory telemetry next to what the NMS sent the device, from
+    // the database (no device call) — the "CPU & NMS load" tab.
+    load: (token: string, id: string, range: DeviceLoadRange) =>
+      apiFetch<DeviceLoadResponse>(`/devices/${id}/load?range=${range}`, { token }),
     neighbors: (token: string, id: string) =>
       apiFetch<Neighbor[]>(`/devices/${id}/neighbors`, { token }),
     // Live from the device: configured IPv4/IPv6 addresses annotated with the
@@ -690,6 +694,9 @@ export interface Device {
   architecture: string;
   username: string;
   use_tls: boolean;
+  // The fingerprint the device's TLS certificate must have (SHA-256,
+  // lower-case hex); "" = none — a TLS device is then not logged in to.
+  pin_cert_sha256: string;
   api_port: number;
   status: "online" | "offline" | "unknown";
   cpu_load: number | null;
@@ -751,7 +758,9 @@ export interface DeviceAuditEntry {
 // One device_findings row: something a poller noticed about the device,
 // deduplicated by (kind, detail) — count and last_seen grow on repeats.
 // kind: parallel_api_poller (an API login from an address that is not this
-// NMS) or login_failure; others may follow.
+// NMS), login_failure, or tls_pin_mismatch (a TLS session refused because
+// the device presented another certificate than the pinned one; detail is
+// the fingerprint it presented); others may follow.
 export interface DeviceFinding {
   id: number;
   device_id: string;
@@ -794,6 +803,9 @@ export interface CreateDeviceRequest {
   username?: string;
   password?: string;
   use_tls?: boolean;
+  // Required with use_tls on create; on update "" clears the pin and an
+  // omitted field keeps it. Upper case and colon-separated bytes are accepted.
+  pin_cert_sha256?: string;
   api_port?: number;
   tags?: string;
   notes?: string;
@@ -923,6 +935,62 @@ export interface LiveLimits extends LiveCaps {
   allowed: boolean;
   reason?: string;
   message?: string;
+}
+
+// ---- Device load (GET /devices/{id}/load) ------------------------------------
+
+export type DeviceLoadRange = "1h" | "6h" | "24h" | "7d" | "30d";
+
+// One bucket (a minute up to 24h, an hour beyond). Every measurement is null
+// when it was not taken; gap is null when the device's counters covered the
+// bucket, else why not (paused, unreachable, read_failed, no_session,
+// no_baseline, not_polled, not_covered, or no_data: no row at all).
+export interface DeviceLoadPoint {
+  ts: string;
+  gap: string | null;
+  covered_s: number | null;
+  paused: boolean;
+  rebooted: boolean;
+  // Quiet-window CPU (%): sampled with the device left alone for 3 s.
+  cpu_avg: number | null;
+  cpu_max: number | null;
+  cpu_p95: number | null; // hourly buckets only
+  // CPU 3 s after an interface-counter read (every 10 min).
+  cpu_post: number | null;
+  free_memory: number | null; // lowest reading, bytes
+  // What the NMS sent the device in the bucket.
+  nms_cmds: number | null;
+  nms_wall_ms: number | null;
+  nms_rows: number | null;
+  nms_timeouts: number | null;
+  nms_reconnects: number | null;
+}
+
+export interface DeviceLoadSummary {
+  covered_pct: number;
+  cpu_avg: number | null;
+  cpu_max: number | null;
+  // The post-poll average, and the quiet-window average of the same buckets.
+  cpu_post_avg: number | null;
+  cpu_quiet_at_post: number | null;
+  nms_cmds_per_min: number | null;
+  nms_wall_ms_per_min: number | null;
+  nms_timeouts: number;
+  nms_reconnects: number;
+  reboots: number;
+}
+
+export interface DeviceLoadResponse {
+  device_id: string;
+  range: DeviceLoadRange;
+  resolution: "1m" | "1h";
+  step_seconds: number;
+  from: string;
+  to: string;
+  coverage_from: string | null;
+  memory_total: number | null;
+  points: DeviceLoadPoint[];
+  summary: DeviceLoadSummary;
 }
 
 // Data of the subscribe.ack / subscribe.error control frame on a

@@ -34,18 +34,16 @@ const speedTestFetchTimeout = 120 * time.Second
 //
 // Tests run SEQUENTIALLY (one device at a time) so parallel downloads don't
 // skew each other's results, and each uses a one-shot dedicated connection
-// (routeros.DialOnce): a download can take 60-120s, which would hold a pooled
-// client's mutex past CommandTimeout and force-close it under every other
-// poller.
+// (routeros.DialOnce): a download can take 60-120s, and on the pooled session
+// every other poller's command would wait behind it, past its own deadline.
 type SpeedTestPoller struct {
-	db        *sql.DB
-	hub       *ws.Hub
-	verifyTLS bool
-	interval  time.Duration
+	db       *sql.DB
+	hub      *ws.Hub
+	interval time.Duration
 }
 
-func NewSpeedTestPoller(db *sql.DB, hub *ws.Hub, verifyTLS bool, interval time.Duration) *SpeedTestPoller {
-	return &SpeedTestPoller{db: db, hub: hub, verifyTLS: verifyTLS, interval: interval}
+func NewSpeedTestPoller(db *sql.DB, hub *ws.Hub, interval time.Duration) *SpeedTestPoller {
+	return &SpeedTestPoller{db: db, hub: hub, interval: interval}
 }
 
 // currentInterval reads the runtime-tunable speedtest_interval (seconds) from
@@ -144,7 +142,7 @@ func (sp *SpeedTestPoller) safeRunTest(test queries.SpeedTest) {
 		return
 	}
 	defer EndRun("speedtest:" + test.ID)
-	sample := RunSpeedTest(sp.db, test, sp.verifyTLS)
+	sample := RunSpeedTest(sp.db, test)
 	sp.persistAndPublish(sample)
 }
 
@@ -154,7 +152,7 @@ func (sp *SpeedTestPoller) safeRunTest(test queries.SpeedTest) {
 // samples (mbps nil, error set) so the time series shows gaps honestly. Shared
 // by the scheduled poller and the API's run-now endpoint so both measure
 // identically.
-func RunSpeedTest(db *sql.DB, test queries.SpeedTest, verifyTLS bool) *queries.SpeedSample {
+func RunSpeedTest(db *sql.DB, test queries.SpeedTest) *queries.SpeedSample {
 	sample := &queries.SpeedSample{TestID: test.ID, DeviceID: test.DeviceID}
 
 	dev, err := queries.GetDevice(db, test.DeviceID)
@@ -167,7 +165,7 @@ func RunSpeedTest(db *sql.DB, test queries.SpeedTest, verifyTLS bool) *queries.S
 		return sample
 	}
 
-	client, err := routeros.DialOnce(dev.Address, dev.APIPort, dev.Username, dev.PasswordEnc, dev.UseTLS, verifyTLS)
+	client, err := routeros.DialOnce(DialTarget(*dev), dev.Username, dev.PasswordEnc)
 	if err != nil {
 		sample.Error = err.Error()
 		return sample

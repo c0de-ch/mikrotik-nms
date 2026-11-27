@@ -17,11 +17,14 @@ import {
 } from "@/components/ui/table";
 import { useAuth } from "@/context/auth";
 import { api, type Device, type DeviceInterface, type Neighbor } from "@/lib/api";
+import { shortFingerprint } from "@/lib/device-tls";
 import { deviceStatusBadgeClass, deviceStatusLabel } from "@/lib/status";
 import { useWebSocket } from "@/hooks/use-websocket";
+import { EditConnectionDialog, TLSPinMissingBadge, TLSPinMissingNotice } from "@/components/devices/device-connection";
 import { DeviceLoadBadges } from "@/components/devices/device-load";
 import { FindingsCard } from "@/components/devices/findings-card";
 import { LoadCard } from "@/components/devices/load-card";
+import { DeviceLoadTab } from "@/components/devices/load-tab";
 import { PollingCard } from "@/components/devices/polling-card";
 
 // The device is re-read this often (database only): the polling card's
@@ -35,6 +38,8 @@ export default function DeviceDetailPage() {
   const [error, setError] = useState<string | null>(null);
   const [interfaces, setInterfaces] = useState<DeviceInterface[]>([]);
   const [neighbors, setNeighbors] = useState<Neighbor[]>([]);
+  // Bumped after an edit of the connection: the device is read again at once.
+  const [reload, setReload] = useState(0);
 
   useEffect(() => {
     if (!token || !id) return;
@@ -58,7 +63,7 @@ export default function DeviceDetailPage() {
       alive = false;
       clearInterval(t);
     };
-  }, [token, id]);
+  }, [token, id, reload]);
 
   useWebSocket(
     "device.health",
@@ -109,13 +114,24 @@ export default function DeviceDetailPage() {
             <Badge variant="outline" className={deviceStatusBadgeClass(device.status)}>
               {deviceStatusLabel(device.status)}
             </Badge>
+            <TLSPinMissingBadge device={device} />
             <DeviceLoadBadges device={device} detail="full" />
           </div>
           <p className="mt-0.5 text-sm text-muted-foreground">
             {device.address}
             {device.board ? ` · ${device.board}` : ""}
+            {device.use_tls ? " · API-TLS" : ""}
+            {device.use_tls && device.pin_cert_sha256 ? (
+              <span title={`Pinned certificate fingerprint (SHA-256): ${device.pin_cert_sha256}`}>
+                {" "}
+                pinned <span className="font-mono text-xs">{shortFingerprint(device.pin_cert_sha256)}</span>
+              </span>
+            ) : null}
           </p>
         </div>
+        {token && user?.role === "admin" && (
+          <EditConnectionDialog device={device} token={token} onSaved={() => setReload((n) => n + 1)} />
+        )}
         <Button
           variant="outline"
           aria-label="Open WebFig"
@@ -125,6 +141,8 @@ export default function DeviceDetailPage() {
           <span className="hidden sm:inline">Open WebFig</span>
         </Button>
       </div>
+
+      <TLSPinMissingNotice device={device} isAdmin={user?.role === "admin"} />
 
       {/* The device's own load next to what the NMS asks of it: the two
           halves of "is the NMS why this switch is busy?". */}
@@ -139,11 +157,16 @@ export default function DeviceDetailPage() {
 
       {token && <FindingsCard deviceId={device.id} token={token} />}
 
-      <Tabs defaultValue="interfaces">
+      {/* The load tab comes first: it continues the two cards above — the
+          device's CPU over time next to what the NMS sent it. */}
+      <Tabs defaultValue="load">
         <TabsList>
+          <TabsTrigger value="load">{"CPU & NMS load"}</TabsTrigger>
           <TabsTrigger value="interfaces">Interfaces ({interfaces.length})</TabsTrigger>
           <TabsTrigger value="neighbors">Neighbors ({neighbors.length})</TabsTrigger>
         </TabsList>
+
+        <TabsContent value="load">{token && <DeviceLoadTab device={device} token={token} />}</TabsContent>
 
         <TabsContent value="interfaces">
           <Table>

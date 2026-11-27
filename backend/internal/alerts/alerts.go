@@ -64,6 +64,13 @@ type Observation struct {
 	Summary string
 	// Facts are rule-specific details stored with the alert.
 	Facts map[string]any
+	// Hold says the rule cannot tell whether the condition holds — the
+	// device was not measured, or the measurements disagree — which is
+	// neither "firing" nor "healthy": an open alert stays exactly as it is
+	// and no alert is opened. With a Key it holds that one alert; with only
+	// a DeviceID, every alert of the rule for that device. Severity and
+	// Summary are not needed.
+	Hold bool
 }
 
 // Rule looks at the stored state and reports every condition that holds
@@ -183,6 +190,9 @@ func (e *Engine) Tick() error {
 	now := e.now()
 
 	seen := make(map[ruleKey]Observation)
+	// What a rule could not tell: by (rule, key), and by (rule, device).
+	heldKeys := make(map[ruleKey]bool)
+	heldDevices := make(map[ruleKey]bool)
 	failed := make(map[string]bool)
 	var errs []error
 	for _, r := range e.rules {
@@ -193,6 +203,15 @@ func (e *Engine) Tick() error {
 			continue
 		}
 		for _, o := range obs {
+			if o.Hold {
+				switch {
+				case o.Key != "":
+					heldKeys[ruleKey{r.Name(), o.Key}] = true
+				case o.DeviceID != "":
+					heldDevices[ruleKey{r.Name(), o.DeviceID}] = true
+				}
+				continue
+			}
 			if o.Key == "" || !ValidSeverity(o.Severity) {
 				continue
 			}
@@ -219,6 +238,11 @@ func (e *Engine) Tick() error {
 		k := ruleKey{a.Rule, a.Key}
 		o, still := seen[k]
 		if !still {
+			// The rule could not tell for this alert: unknown is not
+			// healthy, so it neither resolves nor counts as seen.
+			if heldKeys[k] || (a.DeviceID != "" && heldDevices[ruleKey{a.Rule, a.DeviceID}]) {
+				continue
+			}
 			if err := queries.ResolveAlert(e.db, a.ID, now); err != nil {
 				errs = append(errs, err)
 				continue
@@ -230,6 +254,14 @@ func (e *Engine) Tick() error {
 		delete(seen, k)
 		if err := queries.TouchAlert(e.db, a.ID, o.Severity, encodePayload(o), now); err != nil {
 			errs = append(errs, err)
+			continue
+		}
+		// It got worse: announce it again now rather than at the next
+		// four-hourly reminder (an acknowledged alert stays quiet).
+		if a.State == queries.AlertFiring && SeverityRank(o.Severity) > SeverityRank(a.Severity) {
+			if err := queries.RenotifyAlert(e.db, a.ID); err != nil {
+				errs = append(errs, err)
+			}
 		}
 	}
 	for k, o := range seen {

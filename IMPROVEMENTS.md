@@ -23,7 +23,7 @@ Legend: ✅ = verified against source during this review · 📋 = reported by r
 redaction), #3 (configurable CORS allow-list), #4 (WS origin allow-list + token redacted from
 logs), #5 (per-IP auth rate limiting), #7 (settings secrets hidden from non-admins), #8
 (per-command RouterOS timeout), #9 (WAL checkpoint + daily VACUUM + retention index), #10
-(wifi/client-discovery intervals now honored), #11 (opt-in `MIKROTIK_NMS_ROS_TLS_VERIFY`), #12
+(wifi/client-discovery intervals now honored), #11 (first an opt-in `MIKROTIK_NMS_ROS_TLS_VERIFY`; since P0-13 every API-TLS session is checked against the certificate fingerprint pinned on the device, and the variable is gone), #12
 (atomic first-run setup), #13 (mac_lookup retention pruning), #14 (CI workflow), #15 (firmware
 reuses the shared pool), #18 (topology merges health deltas instead of refetching), plus the
 `ws.Message.timestamp`, security-headers, JWT-length-warning, and frontend error-boundary items.

@@ -149,6 +149,141 @@ func (s *Server) resolveWindow(r trafficRange, now time.Time) (rangeWindow, erro
 	return w, nil
 }
 
+// ---------- per-device coverage ----------
+//
+// resolveWindow infers coverage fleet-wide: a bucket with a row for any port
+// means the collector was running. That cannot see one device being paused
+// or unreachable while the others are read — its ports then read 0 bps. Since
+// device_minutes / device_hours exist the rule per device is: a bucket is a
+// gap unless the device has a covered row for it, and only inside a covered
+// bucket does an idle port read 0. Buckets older than the device's first row
+// in that table predate the telemetry (or outlived its retention) and keep
+// the fleet-wide inference, so old history renders as it always did.
+
+// loadTableFor is the device-load table of the same resolution as a
+// port-stats table.
+func loadTableFor(t queries.PortStatsTable) queries.DeviceLoadTable {
+	if t == queries.PortStats1h {
+		return queries.DeviceHours
+	}
+	return queries.DeviceMinutes
+}
+
+// mergeDeviceCoverage lays a device's own coverage over the fleet-wide
+// inference: legacy decides the buckets before first (the device's first
+// coverage row, clamped to the window), dc the buckets from it on — covered
+// for the seconds its row says, a gap without one.
+func mergeDeviceCoverage(native time.Duration, legacy *queries.Coverage, dc queries.DeviceCoverage, first time.Time) *queries.Coverage {
+	c := &queries.Coverage{Native: native, Present: make(map[int64]bool, len(dc.Secs)),
+		Secs: make(map[int64]float64, len(dc.Secs)), Start: first}
+	if legacy != nil {
+		c.Start = legacy.Start
+		for b := range legacy.Present {
+			if b >= first.Unix() {
+				continue
+			}
+			c.Present[b] = true
+			if s, ok := legacy.Secs[b]; ok {
+				c.Secs[b] = s
+			}
+		}
+	}
+	for b, s := range dc.Secs {
+		if b >= first.Unix() && s > 0 {
+			c.Present[b] = true
+			c.Secs[b] = float64(s)
+		}
+	}
+	return c
+}
+
+// forDevice narrows a fleet-resolved window to one device's coverage. A
+// device without telemetry in the window keeps the window as resolved.
+func (w rangeWindow) forDevice(dc queries.DeviceCoverage) rangeWindow {
+	if !dc.HasFirst || !dc.First.Before(w.end) {
+		return w
+	}
+	first := dc.First
+	if first.Before(w.start) {
+		first = w.start
+	}
+	legacy := w.cov
+	if !w.covered || !w.effStart.Before(first) {
+		legacy = nil // nothing in the window predates the device's telemetry
+	}
+	out := w
+	out.covered = true
+	out.cov = mergeDeviceCoverage(w.native, legacy, dc, first)
+	if legacy == nil {
+		// Every bucket from here on is the device's own: covered or an
+		// explicit gap, so the series starts here, gaps included.
+		out.effStart = first
+	}
+	return out
+}
+
+// deviceWindow is w as one device's counters covered it.
+func (s *Server) deviceWindow(w rangeWindow, table queries.PortStatsTable, deviceID string) (rangeWindow, error) {
+	dc, err := queries.GetDeviceCoverage(s.db, loadTableFor(table), deviceID, w.start, w.end)
+	if err != nil {
+		return w, err
+	}
+	return w.forDevice(dc), nil
+}
+
+// portCounterCoverage is the coverage of one device's port counters over the
+// native buckets in [from, to): the per-device rule on top of the
+// fleet-wide inference, for readers that do not go through a rangeWindow
+// (the flow views compare flow bytes with port counters).
+func (s *Server) portCounterCoverage(table queries.PortStatsTable, native time.Duration, deviceID string, from, to time.Time) (*queries.Coverage, error) {
+	present, err := queries.PortStatsPresentBuckets(s.db, table, from, to)
+	if err != nil {
+		return nil, err
+	}
+	legacy := queries.NewCoverage(native, present, from)
+	dc, err := queries.GetDeviceCoverage(s.db, loadTableFor(table), deviceID, from, to)
+	if err != nil {
+		return nil, err
+	}
+	if !dc.HasFirst || !dc.First.Before(to) {
+		return legacy, nil
+	}
+	first := dc.First
+	if first.Before(from) {
+		first = from
+	}
+	return mergeDeviceCoverage(native, legacy, dc, first), nil
+}
+
+// coveredSeconds returns, per device, how long its counters covered w — the
+// divisor of its ports' averages — and whether that comes from the device's
+// own telemetry (false: the fleet-wide inference, which cannot tell whether
+// this device was read).
+func (s *Server) coveredSeconds(w rangeWindow, table queries.PortStatsTable) (func(deviceID string) (secs float64, own bool), error) {
+	fleet, err := queries.GetFleetCoverage(s.db, loadTableFor(table), w.start, w.end)
+	if err != nil {
+		return nil, err
+	}
+	inferred := w.seconds()
+	before := make(map[int64]float64) // inferred seconds before a first row, by that row's bucket
+	return func(deviceID string) (float64, bool) {
+		c, ok := fleet[deviceID]
+		if !ok || !c.HasFirst || !c.First.Before(w.end) {
+			return inferred, false
+		}
+		var legacy float64
+		if w.covered && w.cov != nil && w.effStart.Before(c.First) {
+			v, done := before[c.First.Unix()]
+			if !done {
+				v = w.cov.SecondsIn(w.rowsFrom(), c.First)
+				before[c.First.Unix()] = v
+			}
+			legacy = v
+		}
+		return legacy + float64(c.Secs), true
+	}, nil
+}
+
 // pointsFrom is where a series with the given step begins: the step-aligned
 // bucket holding effStart, so buckets before coverage are omitted rather than
 // drawn as zeros.
@@ -458,15 +593,18 @@ func liveRates(live map[ifaceKey]poller.PortRate) topology.RateFunc {
 	}
 }
 
-// windowRates is a RateFunc of range averages (bytes*8 / effective-window
-// seconds). Known ports without rows are measured zeros (idle minutes are
-// not stored) — unless their device has no rows at all in the window, i.e.
-// the collector never reached it (offline): those ports are unmeasured, so
-// the Sankey falls back to the other end of the link, as it does live.
-func (t *trafficTopo) windowRates(aggs []queries.PortAggregate, secs float64) topology.RateFunc {
+// windowRates is a RateFunc of range averages: a port's bytes*8 over the
+// seconds its device's counters covered the window (secsOf, see
+// coveredSeconds). Known ports without rows are measured zeros (idle minutes
+// are not stored) — unless their device was not covered at all in the
+// window: by its own telemetry when it has any, else when it has no rows
+// (the collector never reached it). Those ports are unmeasured, so the
+// Sankey falls back to the other end of the link, as it does live.
+func (t *trafficTopo) windowRates(aggs []queries.PortAggregate, secsOf func(deviceID string) (float64, bool)) topology.RateFunc {
 	avg := make(map[ifaceKey][2]int64, len(aggs))
 	polled := make(map[string]bool)
 	for _, a := range aggs {
+		secs, _ := secsOf(a.DeviceID)
 		avg[ifaceKey{a.DeviceID, a.InterfaceName}] = [2]int64{bpsOver(a.RxBytes, secs), bpsOver(a.TxBytes, secs)}
 		polled[a.DeviceID] = true
 	}
@@ -475,8 +613,32 @@ func (t *trafficTopo) windowRates(aggs []queries.PortAggregate, secs float64) to
 		if v, ok := avg[k]; ok {
 			return v[0], v[1], true
 		}
-		return 0, 0, polled[deviceID] && t.known[k]
+		covered := polled[deviceID]
+		if secs, own := secsOf(deviceID); own {
+			covered = secs > 0
+		}
+		return 0, 0, covered && t.known[k]
 	}
+}
+
+// rangeRates resolves rng's window and returns the RateFunc of its averages
+// (the estimated Sankey's input) with the window.
+func (s *Server) rangeRates(t *trafficTopo, rng trafficRange, now time.Time) (topology.RateFunc, rangeWindow, error) {
+	win, err := s.resolveWindow(rng, now)
+	if err != nil {
+		return nil, win, err
+	}
+	secsOf, err := s.coveredSeconds(win, rng.table)
+	if err != nil {
+		return nil, win, err
+	}
+	// Also without a single port row in the window: a device its telemetry
+	// says was covered then reads idle, not unmeasured.
+	aggs, err := queries.AggregatePortStats(s.db, rng.table, win.rowsFrom(), win.end, "", nil)
+	if err != nil {
+		return nil, win, err
+	}
+	return t.windowRates(aggs, secsOf), win, nil
 }
 
 // ---------- /traffic/path ----------
@@ -587,20 +749,12 @@ func (s *Server) handleTrafficSankey(w http.ResponseWriter, r *http.Request) {
 	if rng.key == rangeLive {
 		rates = liveRates(indexSnapshot(s.portSnapshot()))
 	} else {
-		win, err := s.resolveWindow(rng, time.Now())
-		if err != nil {
+		var win rangeWindow
+		if rates, win, err = s.rangeRates(t, rng, time.Now()); err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to read port stats")
 			return
 		}
 		resp.From, resp.To = timePtr(win.start), timePtr(win.end)
-		var aggs []queries.PortAggregate
-		if win.covered {
-			if aggs, err = queries.AggregatePortStats(s.db, rng.table, win.rowsFrom(), win.end, "", nil); err != nil {
-				writeError(w, http.StatusInternalServerError, "failed to read port stats")
-				return
-			}
-		}
-		rates = t.windowRates(aggs, win.seconds())
 	}
 	resp.Sankey = t.graph.Sankey(rates, topology.SankeyOptions{Direction: dir, RootDeviceID: q.Get("device")})
 	writeJSON(w, http.StatusOK, resp)

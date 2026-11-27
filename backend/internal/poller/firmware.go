@@ -2,7 +2,6 @@ package poller
 
 import (
 	"database/sql"
-	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -36,11 +35,10 @@ var (
 // poll session and never the stored poll credential — and the credentials
 // are zeroed when the job ends.
 type UpgradeExecutor struct {
-	db        *sql.DB
-	pool      *routeros.Pool
-	hub       *ws.Hub
-	creds     *routeros.Credentials
-	verifyTLS bool
+	db    *sql.DB
+	pool  *routeros.Pool
+	hub   *ws.Hub
+	creds *routeros.Credentials
 	// refusedOn is the first device that refused the job's login: the
 	// remaining devices are skipped rather than sent the same wrong
 	// password (each failure is a line in their log, and may lock out).
@@ -51,8 +49,8 @@ type UpgradeExecutor struct {
 }
 
 // NewUpgradeExecutor takes ownership of creds: Execute zeroes them.
-func NewUpgradeExecutor(db *sql.DB, pool *routeros.Pool, hub *ws.Hub, creds *routeros.Credentials, verifyTLS bool) *UpgradeExecutor {
-	return &UpgradeExecutor{db: db, pool: pool, hub: hub, creds: creds, verifyTLS: verifyTLS}
+func NewUpgradeExecutor(db *sql.DB, pool *routeros.Pool, hub *ws.Hub, creds *routeros.Credentials) *UpgradeExecutor {
+	return &UpgradeExecutor{db: db, pool: pool, hub: hub, creds: creds}
 }
 
 // RecordFirmwareWith makes the job store the firmware facts of every device
@@ -112,9 +110,10 @@ func (ue *UpgradeExecutor) skipDevice(jobID string, jd queries.UpgradeJobDevice)
 	})
 }
 
-// dial opens a one-shot session to dev with the job's credentials.
+// dial opens a one-shot session to dev with the job's credentials — through
+// the same pinned dial as every other session, and counted against dev.
 func (ue *UpgradeExecutor) dial(dev *queries.Device) (*ros.Client, error) {
-	return routeros.DialOnceWith(dev.Address, dev.APIPort, ue.creds, dev.UseTLS, ue.verifyTLS)
+	return routeros.DialOnceWith(DialTarget(*dev), ue.creds)
 }
 
 func (ue *UpgradeExecutor) upgradeDevice(jobID string, jd queries.UpgradeJobDevice, reboot bool) bool {
@@ -140,11 +139,12 @@ func (ue *UpgradeExecutor) upgradeDevice(jobID string, jd queries.UpgradeJobDevi
 	// The device can be briefly unreachable when the job starts — e.g. still
 	// rebooting from a RouterBOARD firmware upgrade applied moments earlier.
 	// Retry the first connection for a bounded window; a refused login is
-	// final (retrying a wrong password only fills the device's log).
+	// final (retrying a wrong password only fills the device's log), and so
+	// is a dial this instance refuses — the dial policy, a missing TLS pin,
+	// a certificate that is not the pinned one.
 	client, err := ue.dial(dev)
 	for deadline := time.Now().Add(upgradeConnectWindow); err != nil && !routeros.IsLoginRefused(err) &&
-		!errors.Is(err, routeros.ErrTargetNotAllowed) && !errors.Is(err, routeros.ErrPollersOff) &&
-		time.Now().Before(deadline); {
+		!routeros.IsDialRefusal(err) && time.Now().Before(deadline); {
 		publish("downloading", fmt.Sprintf("Waiting for %s to respond...", dev.Identity))
 		time.Sleep(upgradeRetryEvery)
 		client, err = ue.dial(dev)
@@ -213,6 +213,8 @@ func (ue *UpgradeExecutor) upgradeDevice(jobID string, jd queries.UpgradeJobDevi
 	if err := ue.waitForReboot(dev); err != nil {
 		if routeros.IsLoginRefused(err) {
 			publish("failed", LoginRefusedMessage(dev.Identity))
+		} else if routeros.IsDialRefusal(err) {
+			publish("failed", fmt.Sprintf("post-reboot connection refused: %v", err))
 		} else {
 			publish("failed", fmt.Sprintf("reboot timeout: %v", err))
 		}
@@ -260,7 +262,7 @@ func (ue *UpgradeExecutor) waitForReboot(dev *queries.Device) error {
 			_ = client.Close()
 			return nil
 		}
-		if routeros.IsLoginRefused(err) {
+		if routeros.IsLoginRefused(err) || routeros.IsDialRefusal(err) {
 			return err
 		}
 		if !time.Now().Before(deadline) {

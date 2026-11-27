@@ -25,7 +25,7 @@ import (
 func TestOnDemandActionsRefusePausedDevice(t *testing.T) {
 	db := newTestDB(t)
 	fake := routerostest.NewDevice(t)
-	pool := routeros.NewPool(false)
+	pool := routeros.NewPool()
 	for _, d := range []*queries.Device{
 		{ID: "sw", Identity: "sw1", Address: fake.Host, APIPort: fake.Port, Username: "nms", Status: "online"},
 		{ID: "rt", Identity: "rt1", Address: "192.0.2.1", APIPort: 8728, Username: "nms", Status: "online"},

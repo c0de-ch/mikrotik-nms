@@ -29,6 +29,8 @@ import { api, type Device, type DiscoveredDevice, type DeepDiscoveredDevice } fr
 import { deviceStatusBadgeClass, deviceStatusLabel } from "@/lib/status";
 import { DeviceClassBadge, PauseGlyph, PausedBadge } from "@/components/devices/device-load";
 import { AddressProposalsPanel } from "@/components/devices/address-proposals";
+import { TLSFields, TLSPinMissingBadge } from "@/components/devices/device-connection";
+import { isFingerprint, normalizeFingerprint } from "@/lib/device-tls";
 import { useNow } from "@/hooks/use-now";
 import { CLASSES, budgetClass, budgetReason, isPollingPaused, type BudgetClass } from "@/lib/device-load";
 import { toast } from "sonner";
@@ -105,6 +107,18 @@ function deviceSortValue(d: Device, key: DeviceSortKey): string | number | null 
   }
 }
 
+// The Add Device form. A TLS device needs the fingerprint of its certificate
+// before the NMS logs in to it (use_tls + pin).
+const EMPTY_DEVICE_FORM = {
+  address: "",
+  identity: "",
+  username: "admin",
+  password: "",
+  api_port: "8728",
+  use_tls: false,
+  pin: "",
+};
+
 export default function DevicesPage() {
   return (
     <Suspense fallback={null}>
@@ -138,7 +152,7 @@ function DevicesPageInner() {
   const [deepScanning, setDeepScanning] = useState(false);
   const [deepResults, setDeepResults] = useState<DeepDiscoveredDevice[]>([]);
   const [deepError, setDeepError] = useState<string | null>(null);
-  const [form, setForm] = useState({ address: "", identity: "", username: "admin", password: "", api_port: "8728" });
+  const [form, setForm] = useState(EMPTY_DEVICE_FORM);
   const router = useRouter();
 
   const loadDevices = useCallback(() => {
@@ -164,17 +178,23 @@ function DevicesPageInner() {
   const handleAdd = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!token) return;
+    if (form.use_tls && !isFingerprint(form.pin)) {
+      toast.error("Enter the certificate fingerprint: 64 hex digits");
+      return;
+    }
     try {
       await api.devices.create(token, {
         address: form.address,
         identity: form.identity,
         username: form.username,
         password: form.password,
-        api_port: parseInt(form.api_port) || 8728,
+        api_port: parseInt(form.api_port) || (form.use_tls ? 8729 : 8728),
+        use_tls: form.use_tls,
+        ...(form.use_tls ? { pin_cert_sha256: normalizeFingerprint(form.pin) } : {}),
       });
       toast.success("Device added");
       setDialogOpen(false);
-      setForm({ address: "", identity: "", username: "admin", password: "", api_port: "8728" });
+      setForm(EMPTY_DEVICE_FORM);
       loadDevices();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to add device");
@@ -348,7 +368,7 @@ function DevicesPageInner() {
   // Open the Add Device form prefilled from a deep-scan result so the user can
   // enter credentials and enroll it.
   const handleEnrollDeep = (dev: DeepDiscoveredDevice) => {
-    setForm({ address: dev.address, identity: dev.identity || "", username: "admin", password: "", api_port: "8728" });
+    setForm({ ...EMPTY_DEVICE_FORM, address: dev.address, identity: dev.identity || "" });
     setDiscoveryOpen(false);
     setDialogOpen(true);
   };
@@ -679,6 +699,12 @@ function DevicesPageInner() {
                     <Label>API Port</Label>
                     <Input value={form.api_port} onChange={(e) => setForm({ ...form, api_port: e.target.value })} />
                   </div>
+                  <TLSFields
+                    useTLS={form.use_tls}
+                    pin={form.pin}
+                    port={form.api_port}
+                    onChange={({ useTLS, pin, port }) => setForm({ ...form, use_tls: useTLS, pin, api_port: port })}
+                  />
                   <Button type="submit" className="w-full">Add Device</Button>
                 </form>
               </DialogContent>
@@ -746,9 +772,13 @@ function DevicesPageInner() {
           {sortedDevices.map((device) => (
             <TableRow key={device.id} className="cursor-pointer" onClick={() => router.push(`/devices/${device.id}`)}>
               <TableCell>
-                <Badge variant="outline" className={deviceStatusBadgeClass(device.status)}>
-                  {deviceStatusLabel(device.status)}
-                </Badge>
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                  <Badge variant="outline" className={deviceStatusBadgeClass(device.status)}>
+                    {deviceStatusLabel(device.status)}
+                  </Badge>
+                  {/* Reachable, yet not polled: say why. */}
+                  <TLSPinMissingBadge device={device} />
+                </div>
               </TableCell>
               <TableCell className="font-medium">
                 {/* The row opens the device too; the link makes it reachable by keyboard. */}
