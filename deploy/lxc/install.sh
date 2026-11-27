@@ -10,6 +10,10 @@
 #                     [--target-cidrs CIDRS] [--no-tls] [--tls-internal]
 #                     [--skip-deps]
 #
+# --skip-deps (re-deploys) leaves the apt packages, Node.js and Caddy alone.
+# Go is never skipped: /usr/local/go is replaced whenever it is not exactly
+# GO_VERSION, the toolchain backend/go.mod pins.
+#
 # Examples:
 #   # Internal LAN, plain HTTP on the LXC IP
 #   sudo ./install.sh --no-tls
@@ -35,7 +39,12 @@ set -euo pipefail
 
 # ---- defaults ---------------------------------------------------------------
 
-GO_VERSION="1.25.3"
+# The Go the backend is built with: exactly the `toolchain` line of
+# backend/go.mod (checked before anything is installed). Bump them together,
+# with the sha256 of both archives from https://go.dev/dl/?mode=json.
+GO_VERSION="1.27.4"
+GO_SHA256_AMD64="7226736c2339719cda28fbf3a54d71aa63bcefe376e98cef00034268dab24840"
+GO_SHA256_ARM64="3392582988a273a87ab5043ee1b2c9c17a2c3c00580bf9326c47a2e0aaaeac92"
 NODE_MAJOR="22"
 
 INSTALL_PREFIX="/opt/mikrotik-nms"
@@ -65,7 +74,7 @@ require_root() {
 }
 
 usage() {
-    sed -n '2,26p' "$0"
+    sed -n '2,/^$/p' "$0"
     exit "${1:-0}"
 }
 
@@ -181,32 +190,63 @@ fi
 
 # ---- 2. Go ------------------------------------------------------------------
 
+# Not skipped by --skip-deps: every deploy builds with exactly GO_VERSION.
+# The build runs with GOTOOLCHAIN=local, so a Go that cannot build go.mod is
+# an error there, never a toolchain download.
+
+# go_pin prints the toolchain backend/go.mod pins ("go1.27.4"): its toolchain
+# line, else the one its go line implies.
+go_pin() {
+    local gomod="$SOURCE_DIR/backend/go.mod" pin
+    pin="$(awk '$1 == "toolchain" {print $2; exit}' "$gomod")"
+    [[ -n "$pin" ]] || pin="$(awk '$1 == "go" {print "go" $2; exit}' "$gomod")"
+    printf '%s\n' "$pin"
+}
+
+# installed_go prints the version of /usr/local/go ("go1.27.4"), or nothing.
+# GOTOOLCHAIN=local: inside a module, `go version` would otherwise report the
+# toolchain that module asks for — after downloading it.
+installed_go() {
+    [[ -x /usr/local/go/bin/go ]] || return 0
+    GOTOOLCHAIN=local /usr/local/go/bin/go version 2>/dev/null | awk '{print $3}' || true
+}
+
 install_go() {
-    local current=""
-    if command -v /usr/local/go/bin/go &>/dev/null; then
-        current="$(/usr/local/go/bin/go version | awk '{print $3}')"
-    fi
+    local current
+    current="$(installed_go)"
     if [[ "$current" == "go${GO_VERSION}" ]]; then
         log "go ${GO_VERSION} already installed"
         return
     fi
 
-    log "installing go ${GO_VERSION}"
-    local arch
+    log "installing go ${GO_VERSION} (installed: ${current:-none})"
+    local arch sum
     case "$(uname -m)" in
-        x86_64)  arch="amd64" ;;
-        aarch64) arch="arm64" ;;
+        x86_64)  arch="amd64"; sum="$GO_SHA256_AMD64" ;;
+        aarch64) arch="arm64"; sum="$GO_SHA256_ARM64" ;;
         *)       die "unsupported arch: $(uname -m)" ;;
     esac
 
-    local tmp
+    local tmp got
     tmp="$(mktemp -d)"
     curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${arch}.tar.gz" -o "$tmp/go.tgz"
+    got="$(sha256sum "$tmp/go.tgz" | awk '{print $1}')"
+    if [[ "$got" != "$sum" ]]; then
+        rm -rf "$tmp"
+        die "go${GO_VERSION}.linux-${arch}.tar.gz: sha256 $got, expected $sum (/usr/local/go left as it was)"
+    fi
     rm -rf /usr/local/go
     tar -C /usr/local -xzf "$tmp/go.tgz"
     rm -rf "$tmp"
+
+    current="$(installed_go)"
+    [[ "$current" == "go${GO_VERSION}" ]] \
+        || die "/usr/local/go reports '${current:-nothing}' after the install, expected go${GO_VERSION}"
 }
 
+GO_PIN="$(go_pin)"
+[[ "$GO_PIN" == "go${GO_VERSION}" ]] \
+    || die "backend/go.mod pins ${GO_PIN:-no toolchain} but this installer installs go${GO_VERSION}: bump GO_VERSION and the GO_SHA256_* sums with go.mod"
 install_go
 export PATH="/usr/local/go/bin:$PATH"
 
@@ -425,7 +465,7 @@ fi
 log "building backend"
 (
     cd "$SOURCE_DIR/backend"
-    CGO_ENABLED=0 /usr/local/go/bin/go build \
+    GOTOOLCHAIN=local CGO_ENABLED=0 /usr/local/go/bin/go build \
         -trimpath -ldflags="-s -w" \
         -o "$INSTALL_PREFIX/bin/mikrotik-nms" \
         ./cmd/mikrotik-nms
