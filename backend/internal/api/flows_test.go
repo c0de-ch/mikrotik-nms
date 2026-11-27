@@ -118,7 +118,7 @@ func TestFlowExporterCRUD(t *testing.T) {
 	}{
 		{"/flows/exporters/99999", put, 404, "exporter not found"},
 		{"/flows/exporters/abc", put, 400, "invalid exporter id"},
-		{path, map[string]any{"name": "x", "address": "192.168.78.81", "kind": "other", "enabled": true, "sampling_override": 0}, 409, "exporter address already exists"},
+		{path, map[string]any{"name": "x", "address": "192.168.60.81", "kind": "other", "enabled": true, "sampling_override": 0}, 409, "exporter address already exists"},
 		{path, map[string]any{"name": "x", "address": "10.0.0.9", "kind": "other", "sampling_override": 0}, 400, "enabled is required"},
 		{path, map[string]any{"name": "x", "address": "10.0.0.9", "kind": "other", "enabled": true}, 400, "sampling_override is required"},
 	} {
@@ -134,7 +134,7 @@ func TestFlowExporterCRUD(t *testing.T) {
 		Interfaces []flowIfaceJSON `json:"interfaces"`
 	}
 	if code, _ := f.get(t, "/flows/exporters/"+itoa(f.fwExp)+"/interfaces", nil, &ifs); code != 200 || ifs.ExporterID != f.fwExp ||
-		len(ifs.Interfaces) != 2 || ifs.Interfaces[0].Hint != "192.168.78.0/24,192.168.79.0/24" || ifs.Interfaces[0].Source != "learned" ||
+		len(ifs.Interfaces) != 2 || ifs.Interfaces[0].Hint != "192.168.60.0/24,192.168.61.0/24" || ifs.Interfaces[0].Source != "learned" ||
 		ifs.Interfaces[0].LastSeen == nil {
 		t.Fatalf("ifaces = %d %+v", code, ifs)
 	}
@@ -183,7 +183,7 @@ func TestFlowExporterCRUD(t *testing.T) {
 
 func TestFlowPointCRUD(t *testing.T) {
 	f := newFlowFixture(t)
-	valid := map[string]any{"exporter_id": f.fwExp, "name": "switch001 · ether12", "kind": "derived", "if_indexes": []int{7, 7},
+	valid := map[string]any{"exporter_id": f.fwExp, "name": "sw01 · ether12", "kind": "derived", "if_indexes": []int{7, 7},
 		"facing": "down", "port_side": "peer", "device_id": labSW, "iface": "ether12", "exclude_attach": []any{},
 		"note": "hand-made"}
 	with := func(kv ...any) map[string]any {
@@ -223,8 +223,8 @@ func TestFlowPointCRUD(t *testing.T) {
 	if code != http.StatusCreated {
 		t.Fatalf("create: %d %s", code, body)
 	}
-	if v.Kind != "derived" || v.ExporterName != "firewall003" || v.ExporterKind != "opnsense" || !reflect.DeepEqual(v.IfIndexes, []uint32{7}) ||
-		!reflect.DeepEqual(v.IfNames, []string{"if#7"}) || v.DeviceID == nil || *v.DeviceID != labSW || v.DeviceName != "switch001" ||
+	if v.Kind != "derived" || v.ExporterName != "fw03" || v.ExporterKind != "opnsense" || !reflect.DeepEqual(v.IfIndexes, []uint32{7}) ||
+		!reflect.DeepEqual(v.IfNames, []string{"if#7"}) || v.DeviceID == nil || *v.DeviceID != labSW || v.DeviceName != "sw01" ||
 		!v.LocalInternal || !v.Enabled || v.Auto || !v.CoverageCapable || v.Note != "hand-made" || v.ExcludeAttach == nil ||
 		v.SamplingRate != 1 || v.LastData == nil {
 		t.Fatalf("view = %+v", v)
@@ -281,10 +281,10 @@ func TestFlowPointCRUD(t *testing.T) {
 		names = append(names, p.ExporterName+"/"+p.Kind+"/"+p.Name)
 	}
 	want := []string{
-		"firewall003/derived/switch001 · ether1", "firewall003/derived/switch001 · ether12", "firewall003/native/firewall003 · if#1",
-		"switch002-rb5009/derived/WAN (derived copy)", "switch002-rb5009/derived/all routed",
-		"switch002-rb5009/derived/switch001 · sfp-sfpplus2", "switch002-rb5009/native/Starlink",
-		"switch002-rb5009/native/switch002-rb5009 · net28",
+		"fw03/derived/sw01 · ether1", "fw03/derived/sw01 · ether12", "fw03/native/fw03 · if#1",
+		"sw02-rb5009/derived/WAN (derived copy)", "sw02-rb5009/derived/all routed",
+		"sw02-rb5009/derived/sw01 · sfp-sfpplus2", "sw02-rb5009/native/Starlink",
+		"sw02-rb5009/native/sw02-rb5009 · net28",
 	}
 	if !reflect.DeepEqual(names, want) {
 		t.Fatalf("list order =\n%v\nwant\n%v", names, want)
@@ -381,19 +381,19 @@ func TestFlowStatusMerge(t *testing.T) {
 	}
 	if st.Enabled || st.Listen == nil || st.ListenErrors == nil || st.Unknown == nil || st.StartedAt != nil ||
 		st.SuggestedExporters == nil || len(st.SuggestedExporters) != 0 || len(st.Exporters) != 2 ||
-		st.Exporters[0].Name != "firewall003" || st.Exporters[1].Name != "switch002-rb5009" ||
+		st.Exporters[0].Name != "fw03" || st.Exporters[1].Name != "sw02-rb5009" ||
 		st.Exporters[0].State != flow.StateNever || st.Exporters[1].DeviceID == nil {
 		t.Fatalf("nil collector status = %+v", st)
 	}
-	if err := queries.SetSetting(f.db, "opnsense2_url", "https://192.168.78.99:1443/api"); err != nil {
+	if err := queries.SetSetting(f.db, "opnsense2_url", "https://192.168.60.99:1443/api"); err != nil {
 		t.Fatal(err)
 	}
-	if err := queries.SetSetting(f.db, "opnsense_url", "https://firewall003.lan:1443"); err != nil { // not an IP literal
+	if err := queries.SetSetting(f.db, "opnsense_url", "https://fw03.lan:1443"); err != nil { // not an IP literal
 		t.Fatal(err)
 	}
 	st = flowStatusResponse{}
 	f.get(t, "/flows/status", nil, &st)
-	if want := []flowSuggestedExporter{{Address: "192.168.78.99", Name: "192.168.78.99", Kind: "opnsense",
+	if want := []flowSuggestedExporter{{Address: "192.168.60.99", Name: "192.168.60.99", Kind: "opnsense",
 		Reason: "configured as OPNsense (opnsense2_url)"}}; !reflect.DeepEqual(st.SuggestedExporters, want) {
 		t.Fatalf("suggested = %+v", st.SuggestedExporters)
 	}
@@ -409,10 +409,10 @@ func TestFlowStatusMerge(t *testing.T) {
 			{ID: 4242, Name: "deleted", Enabled: true},
 		},
 		Unknown: []flow.UnknownSender{
-			{Address: "192.168.78.99", Protocol: "netflow9", Datagrams: 3},
-			{Address: "192.168.78.201", Protocol: "ipfix", DeviceID: &swID, DeviceName: "switch001"},
+			{Address: "192.168.60.99", Protocol: "netflow9", Datagrams: 3},
+			{Address: "192.168.60.201", Protocol: "ipfix", DeviceID: &swID, DeviceName: "sw01"},
 			{Address: "10.9.9.9", Protocol: "sflow5"},
-			{Address: "192.168.78.81", Protocol: "netflow9"}, // already an exporter
+			{Address: "192.168.60.81", Protocol: "netflow9"}, // already an exporter
 		}}
 	f.s.flows = f.fake
 	if err := queries.UpsertMACLookup(f.db, &queries.MACLookup{MACAddress: "AA:00:00:00:00:99", IPAddress: "10.9.9.9",
@@ -421,15 +421,15 @@ func TestFlowStatusMerge(t *testing.T) {
 	}
 	st = flowStatusResponse{}
 	f.get(t, "/flows/status", nil, &st)
-	if len(st.Exporters) != 2 || st.Exporters[0].ID != f.fwExp || st.Exporters[0].Name != "firewall003" ||
+	if len(st.Exporters) != 2 || st.Exporters[0].ID != f.fwExp || st.Exporters[0].Name != "fw03" ||
 		st.Exporters[0].Templates != 2 || st.Exporters[0].State != flow.StateOK ||
-		!reflect.DeepEqual(st.Exporters[0].NATAddresses, []string{"192.168.28.81", "192.168.111.81"}) ||
+		!reflect.DeepEqual(st.Exporters[0].NATAddresses, []string{"192.168.40.81", "192.168.150.81"}) ||
 		st.Exporters[1].ID != f.rbExp || st.Exporters[1].TemplateState != "n/a" {
 		t.Fatalf("merged exporters = %+v", st.Exporters)
 	}
 	want := []flowSuggestedExporter{
-		{Address: "192.168.78.99", Name: "192.168.78.99", Kind: "opnsense", Reason: "sending NetFlow v9 (unknown sender)"},
-		{Address: "192.168.78.201", Name: "switch001", Kind: "routeros", Reason: "sending IPFIX (unknown sender)"},
+		{Address: "192.168.60.99", Name: "192.168.60.99", Kind: "opnsense", Reason: "sending NetFlow v9 (unknown sender)"},
+		{Address: "192.168.60.201", Name: "sw01", Kind: "routeros", Reason: "sending IPFIX (unknown sender)"},
 		{Address: "10.9.9.9", Name: "probe", Kind: "other", Reason: "sending sFlow (unknown sender)"},
 	}
 	if !reflect.DeepEqual(st.SuggestedExporters, want) {
@@ -519,8 +519,8 @@ func TestFlowPointSuggestionsAPI(t *testing.T) {
 	g := resp.Suggestions[0]
 	if g.Rule != "gateway-host" || !g.Exists || g.Point == nil || g.Point.ExporterID != f.fwExp ||
 		!reflect.DeepEqual(g.Point.IfIndexes, []uint32{1}) || g.Point.DeviceID == nil || *g.Point.DeviceID != labSW ||
-		g.Point.Iface != "ether1" || g.Point.PortSide != "peer" || !g.Point.LocalInternal || g.Point.Name != "switch001 · ether1" ||
-		!strings.HasPrefix(g.Point.Note, "Derived from firewall003 NetFlow on its LAN interface") {
+		g.Point.Iface != "ether1" || g.Point.PortSide != "peer" || !g.Point.LocalInternal || g.Point.Name != "sw01 · ether1" ||
+		!strings.HasPrefix(g.Point.Note, "Derived from fw03 NetFlow on its LAN interface") {
 		t.Fatalf("rule G = %+v %+v", g, g.Point)
 	}
 	excl := []queries.PortRef{{DeviceID: labRB, Iface: "eth3"}}
@@ -528,8 +528,8 @@ func TestFlowPointSuggestionsAPI(t *testing.T) {
 		name, dev, iface, side string
 		exists                 bool
 	}{
-		{"switch001 · sfp-sfpplus2", labSW, "sfp-sfpplus2", "peer", true},
-		{"switch002-rb5009 · sfp-sfpplus1", labRB, "sfp-sfpplus1", "same", false},
+		{"sw01 · sfp-sfpplus2", labSW, "sfp-sfpplus2", "peer", true},
+		{"sw02-rb5009 · sfp-sfpplus1", labRB, "sfp-sfpplus1", "same", false},
 	} {
 		s := resp.Suggestions[1+i]
 		if s.Rule != "trunk" || s.Exists != c.exists || s.Point == nil || s.Point.Name != c.name || *s.Point.DeviceID != c.dev ||

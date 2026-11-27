@@ -18,11 +18,11 @@ func bridgeNames(bs []routeros.BridgeInfo) []string {
 func TestFilterRealBridges(t *testing.T) {
 	bridges := []routeros.BridgeInfo{
 		{Name: "bridge"}, {Name: "internal"}, {Name: "ether1"},
-		{Name: "lo"}, {Name: "wg-owcam"}, {Name: "net28"}, {Name: "veth1"},
+		{Name: "lo"}, {Name: "wg-cam"}, {Name: "net28"}, {Name: "veth1"},
 	}
 	// Names known (by type) NOT to be bridges.
 	nonBridge := map[string]bool{
-		"ether1": true, "lo": true, "wg-owcam": true, "net28": true, "veth1": true,
+		"ether1": true, "lo": true, "wg-cam": true, "net28": true, "veth1": true,
 	}
 	got := bridgeNames(filterRealBridges(bridges, nonBridge))
 	if len(got) != 2 || got[0] != "bridge" || got[1] != "internal" {

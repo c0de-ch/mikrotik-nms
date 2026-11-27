@@ -19,12 +19,12 @@ import (
 func TestFlowSelfClassFromPlanHostRows(t *testing.T) {
 	f := newFlowFixture(t)
 	now := time.Now()
-	wanIP := netip.MustParseAddr("100.114.241.213")
+	wanIP := netip.MustParseAddr("100.101.102.103")
 	if err := queries.ReplaceFlowPrefixes(f.db, []queries.FlowPrefix{
 		{Prefix: netip.MustParsePrefix("100.64.0.0/10"), Class: "transit", DeviceID: labRB, Iface: "eth1-wan", UpdatedAt: now},
 		{Prefix: netip.PrefixFrom(wanIP, 32), Class: "transit", DeviceID: labRB, Iface: "eth1-wan", UpdatedAt: now},
-		{Prefix: netip.MustParsePrefix("192.168.28.0/24"), Class: "internal", DeviceID: labRB, Iface: "net28", UpdatedAt: now},
-		{Prefix: netip.MustParsePrefix("192.168.28.202/32"), Class: "internal", DeviceID: labRB, Iface: "net28", UpdatedAt: now},
+		{Prefix: netip.MustParsePrefix("192.168.40.0/24"), Class: "internal", DeviceID: labRB, Iface: "net28", UpdatedAt: now},
+		{Prefix: netip.MustParsePrefix("192.168.40.202/32"), Class: "internal", DeviceID: labRB, Iface: "net28", UpdatedAt: now},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -41,11 +41,11 @@ func TestFlowSelfClassFromPlanHostRows(t *testing.T) {
 	if c := d.planFor(*wan).Class(wanIP); c != flowview.ClassSelf {
 		t.Errorf("RB5009 WAN address at the RB5009 point: %s, want self", c)
 	}
-	if c := d.planFor(*wan).Class(netip.MustParseAddr("192.168.28.202")); c != flowview.ClassSelf {
+	if c := d.planFor(*wan).Class(netip.MustParseAddr("192.168.40.202")); c != flowview.ClassSelf {
 		t.Errorf("RB5009 net28 gateway at the RB5009 point: %s, want self", c)
 	}
 	if c := d.planFor(*lan).Class(wanIP); c != flowview.ClassExternal {
-		t.Errorf("RB5009 WAN address at the firewall003 point: %s, want external", c)
+		t.Errorf("RB5009 WAN address at the fw03 point: %s, want external", c)
 	}
 }
 
@@ -94,7 +94,7 @@ func TestFlowHourlyPartialHours(t *testing.T) {
 	for h, mins := range []int64{60, 20} {
 		b := h0.Add(time.Duration(h) * time.Hour)
 		if _, err := f.db.Exec(`INSERT INTO flow_1h VALUES (?, ?, 1, 13, ?, ?, 6, 443, ?, 1, 1)`, f.rbExp, b.Unix(),
-			queries.FlowIPBlob(netip.MustParseAddr("1.1.1.1")), queries.FlowIPBlob(netip.MustParseAddr("192.168.28.33")),
+			queries.FlowIPBlob(netip.MustParseAddr("1.1.1.1")), queries.FlowIPBlob(netip.MustParseAddr("192.168.40.33")),
 			mins*1000); err != nil {
 			t.Fatal(err)
 		}
@@ -166,7 +166,7 @@ func TestFlowSetupNeverAdvertisesTheListenAddress(t *testing.T) {
 	}
 }
 
-// Restoring an older backup after firewall003 was deleted and re-created
+// Restoring an older backup after fw03 was deleted and re-created
 // (new id) maps its interfaces and points through the address; rows of
 // exporters that do not exist are skipped instead of failing the restore.
 func TestFlowRestoreRemapsExporterIDs(t *testing.T) {
@@ -176,17 +176,17 @@ func TestFlowRestoreRemapsExporterIDs(t *testing.T) {
 	raw := rec.Body.String()
 
 	db := newTestDB(t)
-	// A different exporter holds the old firewall003 id's slot first, then
-	// firewall003 is re-created with another id.
+	// A different exporter holds the old fw03 id's slot first, then
+	// fw03 is re-created with another id.
 	other, err := queries.CreateFlowExporter(db, &queries.FlowExporter{Name: "other", Address: "10.9.9.9", Kind: "other", Enabled: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	_ = other
-	if _, err := queries.CreateFlowExporter(db, &queries.FlowExporter{Name: "rb-new", Address: "192.168.78.202", Kind: "routeros", Enabled: true}); err != nil {
+	if _, err := queries.CreateFlowExporter(db, &queries.FlowExporter{Name: "rb-new", Address: "192.168.60.202", Kind: "routeros", Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
-	fwNew, err := queries.CreateFlowExporter(db, &queries.FlowExporter{Name: "fw-new", Address: "192.168.78.81", Kind: "opnsense", Enabled: true})
+	fwNew, err := queries.CreateFlowExporter(db, &queries.FlowExporter{Name: "fw-new", Address: "192.168.60.81", Kind: "opnsense", Enabled: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,7 +208,7 @@ func TestFlowRestoreRemapsExporterIDs(t *testing.T) {
 		if p.ExporterID == other {
 			t.Errorf("point %q attached to the unrelated exporter", p.Name)
 		}
-		if strings.HasPrefix(p.Name, "firewall003") && p.ExporterID != fwNew {
+		if strings.HasPrefix(p.Name, "fw03") && p.ExporterID != fwNew {
 			t.Errorf("point %q on exporter %d, want %d", p.Name, p.ExporterID, fwNew)
 		}
 	}

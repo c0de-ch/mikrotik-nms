@@ -4,10 +4,10 @@ import "testing"
 
 func TestActiveLeases(t *testing.T) {
 	leases := []DHCPLease{
-		{Address: "192.168.78.10", Server: "main"},
-		{Address: "192.168.23.100", Server: "openwater-dhcp"},
-		{Address: "192.168.23.101", Server: "openwater-dhcp"},
-		{Address: "192.168.78.11", Server: "main"},
+		{Address: "192.168.60.10", Server: "main"},
+		{Address: "192.168.30.100", Server: "guest-dhcp"},
+		{Address: "192.168.30.101", Server: "guest-dhcp"},
+		{Address: "192.168.60.11", Server: "main"},
 		{Address: "10.0.0.5", Server: ""}, // unknown/empty server — always kept
 	}
 
@@ -19,14 +19,14 @@ func TestActiveLeases(t *testing.T) {
 		t.Fatalf("empty disabled set: want %d leases, got %d", len(leases), len(got))
 	}
 
-	// The disabled openwater-dhcp server's two reservations are dropped; the
+	// The disabled guest-dhcp server's two reservations are dropped; the
 	// enabled "main" server's leases and the empty-server lease stay.
-	got := activeLeases(leases, map[string]bool{"openwater-dhcp": true})
+	got := activeLeases(leases, map[string]bool{"guest-dhcp": true})
 	if len(got) != 3 {
 		t.Fatalf("want 3 leases after dropping disabled server, got %d: %+v", len(got), got)
 	}
 	for _, l := range got {
-		if l.Server == "openwater-dhcp" {
+		if l.Server == "guest-dhcp" {
 			t.Fatalf("a disabled-server lease leaked through: %+v", l)
 		}
 	}

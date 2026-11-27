@@ -78,7 +78,7 @@ export function FlowSankey({
 
   // Every east-west source is named "Local / east-west" by the server and
   // they all sit in the first column, far from the device each one feeds —
-  // name them after that device ("Local → switch001") so they can be told apart.
+  // name them after that device ("Local → sw01") so they can be told apart.
   const chartData = useMemo(() => {
     if (!data) return null;
     const feeds = new Map<number, number>();

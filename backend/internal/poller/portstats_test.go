@@ -164,7 +164,7 @@ func TestPortStatsMinuteBucketMath(t *testing.T) {
 
 func TestPortStatsFlushWritesAndRollsUp(t *testing.T) {
 	db := pollerTestDB(t)
-	mustCreateDevice(t, db, &queries.Device{ID: "d1", Identity: "sw", Address: "192.168.78.10"})
+	mustCreateDevice(t, db, &queries.Device{ID: "d1", Identity: "sw", Address: "192.168.60.10"})
 	c := NewPortStatsCollector(db, nil, nil)
 	const iv = 15 * time.Second
 
@@ -247,7 +247,7 @@ func TestPortStatsConstantRateChartsFlat(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			db := pollerTestDB(t)
-			mustCreateDevice(t, db, &queries.Device{ID: "d1", Identity: "sw", Address: "192.168.78.10"})
+			mustCreateDevice(t, db, &queries.Device{ID: "d1", Identity: "sw", Address: "192.168.60.10"})
 			c := NewPortStatsCollector(db, nil, nil)
 			start := at(10, 0, 0).Add(tc.phase)
 			end := at(11, 0, 0)
@@ -292,7 +292,7 @@ func TestPortStatsConstantRateChartsFlat(t *testing.T) {
 // retention keeps complete).
 func TestPortStatsStartupRollupAfterLongDowntime(t *testing.T) {
 	db := pollerTestDB(t)
-	mustCreateDevice(t, db, &queries.Device{ID: "d1", Identity: "sw", Address: "192.168.78.10"})
+	mustCreateDevice(t, db, &queries.Device{ID: "d1", Identity: "sw", Address: "192.168.60.10"})
 	var rows []queries.PortStatRow
 	for m := 0; m < 50; m++ { // 04:00..04:49
 		rows = append(rows, queries.PortStatRow{DeviceID: "d1", InterfaceName: "ether1", Bucket: at(4, m, 0), RxBytes: 100, Samples: 4})
@@ -318,7 +318,7 @@ func TestPortStatsStartupRollupAfterLongDowntime(t *testing.T) {
 
 	// An empty hourly table re-rolls the last 23 h, never further.
 	db2 := pollerTestDB(t)
-	mustCreateDevice(t, db2, &queries.Device{ID: "d1", Identity: "sw", Address: "192.168.78.10"})
+	mustCreateDevice(t, db2, &queries.Device{ID: "d1", Identity: "sw", Address: "192.168.60.10"})
 	if err := queries.InsertPortStats1m(db2, []queries.PortStatRow{
 		{DeviceID: "d1", InterfaceName: "ether1", Bucket: at(10, 5, 0).Add(-24 * time.Hour), RxBytes: 1, Samples: 1},
 		{DeviceID: "d1", InterfaceName: "ether1", Bucket: at(10, 5, 0).Add(-22 * time.Hour), RxBytes: 1, Samples: 1},
@@ -338,7 +338,7 @@ func TestPortStatsStartupRollupAfterLongDowntime(t *testing.T) {
 // the last rollup, not just the last two.
 func TestPortStatsRuntimeRollupAfterStall(t *testing.T) {
 	db := pollerTestDB(t)
-	mustCreateDevice(t, db, &queries.Device{ID: "d1", Identity: "sw", Address: "192.168.78.10"})
+	mustCreateDevice(t, db, &queries.Device{ID: "d1", Identity: "sw", Address: "192.168.60.10"})
 	c := NewPortStatsCollector(db, nil, nil)
 	c.now = func() time.Time { return at(10, 50, 0) }
 	c.startupRollup() // rolledThrough 10:00
@@ -637,7 +637,7 @@ func TestPortStatsIntervalSettings(t *testing.T) {
 
 func TestSweepPortStatsRetention(t *testing.T) {
 	db := pollerTestDB(t)
-	mustCreateDevice(t, db, &queries.Device{ID: "d1", Identity: "sw", Address: "192.168.78.10"})
+	mustCreateDevice(t, db, &queries.Device{ID: "d1", Identity: "sw", Address: "192.168.60.10"})
 	now := time.Now().UTC().Truncate(time.Minute)
 
 	if err := queries.InsertPortStats1m(db, []queries.PortStatRow{
@@ -709,10 +709,10 @@ func TestSweepPortStatsRetention(t *testing.T) {
 
 func TestPortStatsCycleConcurrentWithInFlightGuard(t *testing.T) {
 	db := pollerTestDB(t)
-	mustCreateDevice(t, db, &queries.Device{ID: "fast", Identity: "fast", Address: "192.168.78.10"})
-	mustCreateDevice(t, db, &queries.Device{ID: "slow", Identity: "slow", Address: "192.168.78.11"})
-	mustCreateDevice(t, db, &queries.Device{ID: "down", Identity: "down", Address: "192.168.78.12", Status: "offline"})
-	mustCreateDevice(t, db, &queries.Device{ID: "nocl", Identity: "nocl", Address: "192.168.78.13"})
+	mustCreateDevice(t, db, &queries.Device{ID: "fast", Identity: "fast", Address: "192.168.60.10"})
+	mustCreateDevice(t, db, &queries.Device{ID: "slow", Identity: "slow", Address: "192.168.60.11"})
+	mustCreateDevice(t, db, &queries.Device{ID: "down", Identity: "down", Address: "192.168.60.12", Status: "offline"})
+	mustCreateDevice(t, db, &queries.Device{ID: "nocl", Identity: "nocl", Address: "192.168.60.13"})
 
 	c := NewPortStatsCollector(db, nil, ws.NewHub())
 	c.phase = noJitter
@@ -816,9 +816,9 @@ func hostsCadence() *stubCadence {
 
 func TestPortStatsCollectHosts(t *testing.T) {
 	db := pollerTestDB(t)
-	mustCreateDevice(t, db, &queries.Device{ID: "sw", Identity: "sw", Address: "192.168.78.10"})
-	mustCreateDevice(t, db, &queries.Device{ID: "bad", Identity: "bad", Address: "192.168.78.11"})
-	mustCreateDevice(t, db, &queries.Device{ID: "off", Identity: "off", Address: "192.168.78.12", Status: "offline"})
+	mustCreateDevice(t, db, &queries.Device{ID: "sw", Identity: "sw", Address: "192.168.60.10"})
+	mustCreateDevice(t, db, &queries.Device{ID: "bad", Identity: "bad", Address: "192.168.60.11"})
+	mustCreateDevice(t, db, &queries.Device{ID: "off", Identity: "off", Address: "192.168.60.12", Status: "offline"})
 
 	c := NewPortStatsCollector(db, nil, nil)
 	clock := &testClock{t: time.Now().UTC().Truncate(time.Second)}
@@ -914,8 +914,8 @@ func TestPortStatsCollectHosts(t *testing.T) {
 // not a whole interval later, and the others are not dumped again.
 func TestPortStatsCollectHostsRetriesDevicesWithoutClient(t *testing.T) {
 	db := pollerTestDB(t)
-	mustCreateDevice(t, db, &queries.Device{ID: "sw", Identity: "sw", Address: "192.168.78.10"})
-	mustCreateDevice(t, db, &queries.Device{ID: "late", Identity: "late", Address: "192.168.78.11"})
+	mustCreateDevice(t, db, &queries.Device{ID: "sw", Identity: "sw", Address: "192.168.60.10"})
+	mustCreateDevice(t, db, &queries.Device{ID: "late", Identity: "late", Address: "192.168.60.11"})
 
 	c := NewPortStatsCollector(db, nil, nil)
 	clock := &testClock{t: time.Now().UTC().Truncate(time.Second)}

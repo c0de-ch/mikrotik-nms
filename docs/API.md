@@ -580,7 +580,7 @@ MAC is learned (fresh FDB) on one of the listed ports.
 |---|---|---|---|
 | GET | `/flows/status` | any | Collector status (below) with each sender's device role, the block list and `suggested_exporters`. Database + collector memory only. |
 | GET | `/flows/setup` | any | Exporter setup hints, gated by the device's role and class (below). Query `device` (optional; without it no command that enables export is shown). `404 device not found`. Database only — never a device call. |
-| GET | `/flows/exporters/{id}/interfaces` | any | `{exporter_id, interfaces: [{if_index, name, type, vlan_id, parent, role, source, hint, first_seen, last_seen}]}`. `source` = `device` (RouterOS `.id` sync), `learned` (seen in flows; `hint` = top ingress source prefixes, e.g. `192.168.78.0/24,192.168.79.0/24`) or `manual`. `404 exporter not found`. |
+| GET | `/flows/exporters/{id}/interfaces` | any | `{exporter_id, interfaces: [{if_index, name, type, vlan_id, parent, role, source, hint, first_seen, last_seen}]}`. `source` = `device` (RouterOS `.id` sync), `learned` (seen in flows; `hint` = top ingress source prefixes, e.g. `192.168.60.0/24,192.168.61.0/24`) or `manual`. `404 exporter not found`. |
 | POST | `/flows/exporters` | admin | Add an exporter. `201` ExporterStatus. `409` with `code: "sender_blocked"` and the reason when the address is blocked — a deleted exporter's tombstone, or the address of a managed device that must not export — unless the body carries `"unblock": true` (audited as `flow_exporter_added_blocked`). |
 | PUT | `/flows/exporters/{id}` | admin | Replace an exporter's configuration. `200` ExporterStatus; `404 exporter not found`; `409 sender_blocked` when the new address is blocked. `enabled: false` only makes the NMS ignore the datagrams — the device keeps exporting. |
 | DELETE | `/flows/exporters/{id}` | admin | Delete an exporter (its interfaces, points and templates cascade; its flow history is purged by the next retention sweep) and **block its address**: the datagrams are dropped before decode, the sender is listed under `blocked_senders` with the reason and is never accepted automatically again. Deleting does not stop the device from exporting. `204`; `404`. Audited (`flow_exporter_deleted`). |
@@ -773,14 +773,14 @@ in one transaction.
 **FlowPointView** (the `point` of every read below):
 
 ```jsonc
-{ "id": 7, "name": "switch001 · ether1", "kind": "derived",            // native | derived
-  "exporter_id": 2, "exporter_name": "firewall003", "exporter_kind": "opnsense",
+{ "id": 7, "name": "sw01 · ether1", "kind": "derived",                   // native | derived
+  "exporter_id": 2, "exporter_name": "fw03", "exporter_kind": "opnsense",
   "exporter_state": "ok", "protocol": "netflow9",
   "if_indexes": [1], "if_names": ["LAN"],                                // name, or "if#N" when unnamed
   "facing": "down", "port_side": "peer",                                 // "" when no managed port
-  "device_id": "0bf4…" | null, "device_name": "switch001" | "", "iface": "ether1" | "",
+  "device_id": "0bf4…" | null, "device_name": "sw01" | "", "iface": "ether1" | "",
   "local_internal": true, "exclude_attach": [ { "device_id": "c7a3…", "iface": "eth3" } ],
-  "note": "Derived from firewall003 NetFlow …", "auto": false, "enabled": true,
+  "note": "Derived from fw03 NetFlow …", "auto": false, "enabled": true,
   "sampling_rate": 1,                                                    // the exporter's last effective 1-in-N
   "coverage_capable": true,                                              // has a managed port
   "last_data": "2026-09-28T16:41:00Z" | null }                           // newest minute with bytes on its interfaces
@@ -789,7 +789,7 @@ in one transaction.
 **Point body** (POST / PUT; also the `point` of a suggestion):
 
 ```json
-{ "exporter_id": 2, "name": "switch001 · ether1", "kind": "derived", "if_indexes": [1], "facing": "down",
+{ "exporter_id": 2, "name": "sw01 · ether1", "kind": "derived", "if_indexes": [1], "facing": "down",
   "port_side": "peer", "device_id": "0bf4…", "iface": "ether1", "local_internal": true,
   "exclude_attach": [], "note": "…", "enabled": true }
 ```
@@ -812,7 +812,7 @@ already exists`.
 **Suggestions** (`GET /flows/points/suggestions`):
 
 - `gateway-host` — a managed switch port whose gateway host is a flow exporter
-  without a device record (e.g. OPNsense on switch001 `ether1`): the exporter's
+  without a device record (e.g. OPNsense on sw01 `ether1`): the exporter's
   LAN interface (`role: lan`, else the learned interface whose `hint` contains
   the exporter's address) as a derived `down`/`peer` view of that port with
   `local_internal: true`. Without a LAN interface yet the suggestion has
@@ -831,11 +831,11 @@ already exists`.
 **Endpoint** and **App** objects:
 
 ```jsonc
-{ "ip": "192.168.28.33", "class": "internal",       // internal | external | self | multicast | vpn
-  "name": "net28-client01", "mac": "BC:24:11:B3:6B:38" | "", "vendor": "",
+{ "ip": "192.168.40.33", "class": "internal",       // internal | external | self | multicast | vpn
+  "name": "net28-client01", "mac": "BC:24:11:00:00:33" | "", "vendor": "",
   "device_id": null,                                // set for a managed device's address
-  "attached": { "device_id": "…", "device_name": "switch001", "iface": "ether12" } | null,
-  "nat_of": "firewall003" | null }                  // the exporter whose nat_addresses contain this IP
+  "attached": { "device_id": "…", "device_name": "sw01", "iface": "ether12" } | null,
+  "nat_of": "fw03" | null }                         // the exporter whose nat_addresses contain this IP
 { "proto": 6, "proto_name": "tcp", "port": 443, "label": "HTTPS" }   // label "" when unknown; 443/udp = "QUIC"
 ```
 
@@ -860,7 +860,7 @@ MAC is attached at (Phase 1 attachment).
 { "point": FlowPointView, "range": "1h", "dir": "download", "group": "pair", "resolution": "1m",
   "from": "…Z", "to": "…Z", "coverage_from": "…Z" | null, "seconds": 3540,
   "total_bytes": 123456789, "total_bps": 278953, "sampling_rate": 1, "overflow": 0,
-  "rows": [ { "rank": 1, "key": "192.168.28.33|1.1.1.1",
+  "rows": [ { "rank": 1, "key": "192.168.40.33|1.1.1.1",
               "src": Endpoint | null, "dst": Endpoint | null, "app": App | null,
               "bytes": 123456, "packets": 100, "flows": 3, "avg_bps": 16460, "share": 0.42 } ],
   "other": { "bytes": 0, "packets": 0, "flows": 0, "avg_bps": 0, "share": 0.0 } }
@@ -902,7 +902,7 @@ answers `ok`, so history stays readable while the collector is off.
 
 **Coverage.** A point with a managed port is compared with that port's counters:
 the counter carrying the point's download is `tx` when `(facing = down) XOR
-(port_side = peer)`, else `rx` (RouterOS `eth1-wan` up/same → rx; switch001
+(port_side = peer)`, else `rx` (RouterOS `eth1-wan` up/same → rx; sw01
 `ether1` down/peer → rx; RouterOS `net28` down/same → tx). Only buckets covered by
 both the exporter and the port-counter collector count; `coverage =
 flow_bytes / counter_bytes` per direction, `null` when the counter bytes are 0 or
@@ -934,9 +934,9 @@ remote`), `resolve`.
   "point": FlowPointView, "sampling_rate": 1, "coverage": 0.96 | null, "total_bps": 123,
   "nodes": [ { "id": "remote:1.1.1.1", "name": "one.one.one.one", "type": "remote", "ip": "1.1.1.1", "class": "external" },
              { "id": "app:6/443", "name": "HTTPS (tcp/443)", "type": "app" },
-             { "id": "point:7", "name": "switch001 · ether1", "type": "point" },
-             { "id": "host:192.168.28.33", "name": "net28-client01", "type": "host", "ip": "192.168.28.33", "class": "internal" },
-             { "id": "port:<dev>:<iface>", "name": "switch001 · ether12", "type": "port", "device_id": "…", "iface": "ether12" },
+             { "id": "point:7", "name": "sw01 · ether1", "type": "point" },
+             { "id": "host:192.168.40.33", "name": "net28-client01", "type": "host", "ip": "192.168.40.33", "class": "internal" },
+             { "id": "port:<dev>:<iface>", "name": "sw01 · ether12", "type": "port", "device_id": "…", "iface": "ether12" },
              { "id": "other:remote", "name": "Other remote (37)", "type": "other" },
              { "id": "other:local", "name": "Other hosts (12)", "type": "other" } ],
   "links": [ { "source": 0, "target": 2, "value": 1000 } ] }

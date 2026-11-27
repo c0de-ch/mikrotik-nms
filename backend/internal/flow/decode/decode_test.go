@@ -45,16 +45,16 @@ func TestRouterOSIPFIXFields(t *testing.T) {
 	if r1.RawBytes != 5_000_000_000 || r1.Bytes != 5_000_000_000 || r1.Packets != 3_500_000 || r1.SamplingRate != 1 {
 		t.Errorf("R1 64-bit counters = %d / %d", r1.Bytes, r1.Packets)
 	}
-	if r1.InIf != 1 || r1.OutIf != 13 || r1.PostNATDst != netip.MustParseAddr("192.168.28.33") || r1.PostNATDstPort != 50514 {
+	if r1.InIf != 1 || r1.OutIf != 13 || r1.PostNATDst != netip.MustParseAddr("192.168.40.33") || r1.PostNATDstPort != 50514 {
 		t.Errorf("R1 ifaces/NAT = %d/%d %v:%d", r1.InIf, r1.OutIf, r1.PostNATDst, r1.PostNATDstPort)
 	}
-	if r2.PostNATSrc != netip.MustParseAddr("100.114.241.213") || r2.PostNATSrcPort != 61000 || r2.InIf != 13 || r2.OutIf != 1 {
+	if r2.PostNATSrc != netip.MustParseAddr("100.101.102.103") || r2.PostNATSrcPort != 61000 || r2.InIf != 13 || r2.OutIf != 1 {
 		t.Errorf("R2 = %+v", r2)
 	}
 	if r4.PostNATDst != netip.IPv4Unspecified() || r4.OutIf != 0 {
 		t.Errorf("R4 post-NAT dst = %v, out %d (want 0.0.0.0, local)", r4.PostNATDst, r4.OutIf)
 	}
-	if r6.SrcAddr != netip.MustParseAddr("2606:4700::1111") || r6.DstAddr != netip.MustParseAddr("2a01:4f8:202:13d1:28::33") ||
+	if r6.SrcAddr != netip.MustParseAddr("2606:4700::1111") || r6.DstAddr != netip.MustParseAddr("2001:db8:100:10:28::33") ||
 		r6.DstPort != 50600 || r6.Bytes != 64_000 {
 		t.Errorf("R6 IPv6 = %+v", r6)
 	}
@@ -175,7 +175,7 @@ func TestV5AndSFlow(t *testing.T) {
 	}
 	// sFlow sequence loss per agent.
 	hdr := pktgen.EthIPv4TCPHeader(1, "10.0.0.1", "10.0.0.2", 1, 2, 100)
-	mustDecode(t, e, pktgen.SFlowSwitch("192.168.78.201", 5, 1, 1, 1, 2, 100, hdr), tExport)
+	mustDecode(t, e, pktgen.SFlowSwitch("192.168.60.201", 5, 1, 1, 1, 2, 100, hdr), tExport)
 	if e.Stats.SeqLost != 3 {
 		t.Fatalf("sflow seq_lost = %d, want 3 (1 -> 5)", e.Stats.SeqLost)
 	}

@@ -17,8 +17,8 @@ import (
 
 var (
 	tLab    = time.Date(2026, 9, 28, 12, 30, 20, 0, time.UTC) // export time of the lab datagrams
-	rosAddr = netip.MustParseAddr("192.168.78.202")
-	opnAddr = netip.MustParseAddr("192.168.78.81")
+	rosAddr = netip.MustParseAddr("192.168.60.202")
+	opnAddr = netip.MustParseAddr("192.168.60.81")
 	lag     = 500 * time.Millisecond
 )
 
@@ -55,7 +55,7 @@ func feed(c *Collector, addr netip.Addr, pkt []byte, at time.Time) {
 
 func rosPackets(export time.Time, seq uint32) (tmpl, data []byte) {
 	sysInit := uint64(export.Add(-72 * time.Hour).UnixMilli())
-	flows := pktgen.LabRouterOS(export, sysInit, true, rosAddr.String(), "192.168.79.216", 2055)
+	flows := pktgen.LabRouterOS(export, sysInit, true, rosAddr.String(), "192.168.61.216", 2055)
 	return pktgen.RouterOSIPFIXTemplates(uint32(export.Unix()), seq, 0, true),
 		pktgen.RouterOSIPFIXData(uint32(export.Unix()), seq, 0, flows...)
 }
@@ -87,8 +87,8 @@ func statusOf(t *testing.T, c *Collector, id int64) ExporterStatus {
 
 func TestCollectorRouterOSNATAndSelfExport(t *testing.T) {
 	db := testDB(t)
-	seedDevice(t, db, "rb", rosAddr.String(), "switch002-rb5009")
-	id := seedExporter(t, db, queries.FlowExporter{Name: "switch002-rb5009", Address: rosAddr.String(), Kind: "routeros", DeviceID: "rb"})
+	seedDevice(t, db, "rb", rosAddr.String(), "sw02-rb5009")
+	id := seedExporter(t, db, queries.FlowExporter{Name: "sw02-rb5009", Address: rosAddr.String(), Kind: "routeros", DeviceID: "rb"})
 	c := newTestCollector(t, db)
 	recv := tLab.Add(lag)
 	c.now = func() time.Time { return recv }
@@ -102,14 +102,14 @@ func TestCollectorRouterOSNATAndSelfExport(t *testing.T) {
 	rows := aggAll(t, db, id)
 	var r1Bytes int64
 	for _, r := range rows {
-		if r.Dst == netip.MustParseAddr("100.114.241.213") {
+		if r.Dst == netip.MustParseAddr("100.101.102.103") {
 			t.Errorf("CGNAT address stored as dst: %+v (NAT inside view)", r)
 		}
 		if r.Proto == 17 && r.Src == rosAddr {
 			t.Errorf("self-export row stored: %+v", r)
 		}
-		if r.InIf == 1 && r.OutIf == 13 && r.Src == netip.MustParseAddr("142.250.203.100") &&
-			r.Dst == netip.MustParseAddr("192.168.28.33") && r.Port == 443 {
+		if r.InIf == 1 && r.OutIf == 13 && r.Src == netip.MustParseAddr("203.0.113.100") &&
+			r.Dst == netip.MustParseAddr("192.168.40.33") && r.Port == 443 {
 			r1Bytes += r.Bytes
 		}
 		if r.InIf == 10 && r.Dst != rosAddr {
@@ -117,7 +117,7 @@ func TestCollectorRouterOSNATAndSelfExport(t *testing.T) {
 		}
 	}
 	if r1Bytes != 5_000_000_000 {
-		t.Fatalf("R1 bytes = %d, want 5e9 (NAT dst 192.168.28.33, exact across minutes)", r1Bytes)
+		t.Fatalf("R1 bytes = %d, want 5e9 (NAT dst 192.168.40.33, exact across minutes)", r1Bytes)
 	}
 	sum, err := queries.FlowMetaSummary(db, queries.Flows1m, id, tLab.Add(-time.Hour), tLab.Add(time.Hour))
 	if err != nil || sum.Buckets != 3 || sum.Bytes != 5_000_159_000 || sum.Records != 5 || sum.Datagrams != 2 {
@@ -149,7 +149,7 @@ func TestCollectorRouterOSNATAndSelfExport(t *testing.T) {
 		t.Fatalf("ifaces touched = %v, want [1 10 13] (0 never a row)", idxs)
 	}
 	points, _ := queries.ListFlowPoints(db)
-	if len(points) != 3 || points[0].Name != "switch002-rb5009 · if#1" || points[0].PortSide != "same" ||
+	if len(points) != 3 || points[0].Name != "sw02-rb5009 · if#1" || points[0].PortSide != "same" ||
 		points[0].DeviceID != "rb" || points[0].Facing != "down" || points[0].LocalInternal {
 		t.Fatalf("native points = %+v", points)
 	}
@@ -171,8 +171,8 @@ func TestCollectorRouterOSNATAndSelfExport(t *testing.T) {
 	for _, p := range points {
 		facing[p.Name] = p.Facing + "/" + p.Iface
 	}
-	want := map[string]string{"switch002-rb5009 · eth1-wan": "up/eth1-wan", "switch002-rb5009 · bridge": "down/bridge",
-		"switch002-rb5009 · net28": "down/net28"}
+	want := map[string]string{"sw02-rb5009 · eth1-wan": "up/eth1-wan", "sw02-rb5009 · bridge": "down/bridge",
+		"sw02-rb5009 · net28": "down/net28"}
 	for name, f := range want {
 		if facing[name] != f {
 			t.Errorf("point %q = %q, want %q (all: %v)", name, facing[name], f, facing)
@@ -208,15 +208,15 @@ func TestCollectorRouterOSNATAndSelfExport(t *testing.T) {
 
 func TestCollectorOPNsenseReplayDupAndHints(t *testing.T) {
 	db := testDB(t)
-	id := seedExporter(t, db, queries.FlowExporter{Name: "firewall003", Address: opnAddr.String(), Kind: "opnsense",
-		NATAddresses: []netip.Addr{netip.MustParseAddr("192.168.28.81")}})
+	id := seedExporter(t, db, queries.FlowExporter{Name: "fw03", Address: opnAddr.String(), Kind: "opnsense",
+		NATAddresses: []netip.Addr{netip.MustParseAddr("192.168.40.81")}})
 	c := newTestCollector(t, db)
 	recv := tLab.Add(lag)
 	c.now = func() time.Time { return recv }
 	c.reconcile(recv)
 
 	up := uint32(500_000_000)
-	flows := pktgen.LabOPNsense(up, opnAddr.String(), "192.168.79.216", 2055)
+	flows := pktgen.LabOPNsense(up, opnAddr.String(), "192.168.61.216", 2055)
 	unix := uint32(tLab.Unix())
 	// Data first (interleaved node counters: seq 10, then 3), then an exact
 	// duplicate of O1 (captured on a second interface), then templates.
@@ -252,7 +252,7 @@ func TestCollectorOPNsenseReplayDupAndHints(t *testing.T) {
 		hints[f.IfIndex] = f.Hint
 	}
 	// bytes descending: O3 (2000 B) before O1 (1480 B)
-	if hints[1] != "2a01:4f8:202:13d1::/64,192.168.78.0/24" || hints[7] != "9.9.9.0/24" {
+	if hints[1] != "2001:db8:100:10::/64,192.168.60.0/24" || hints[7] != "9.9.9.0/24" {
 		t.Fatalf("hints = %v", hints)
 	}
 	points, _ := queries.ListFlowPoints(db)
@@ -261,7 +261,7 @@ func TestCollectorOPNsenseReplayDupAndHints(t *testing.T) {
 		byIdx[p.IfIndexes[0]] = p
 	}
 	lan, wan := byIdx[1], byIdx[7]
-	if lan.Facing != "down" || !lan.LocalInternal || lan.PortSide != "" || lan.DeviceID != "" || lan.Name != "firewall003 · if#1" {
+	if lan.Facing != "down" || !lan.LocalInternal || lan.PortSide != "" || lan.DeviceID != "" || lan.Name != "fw03 · if#1" {
 		t.Fatalf("LAN point = %+v", lan)
 	}
 	if wan.Facing != "up" || !wan.LocalInternal {
@@ -276,14 +276,14 @@ func TestCollectorOPNsenseReplayDupAndHints(t *testing.T) {
 	for _, p := range points {
 		names[p.Name] = p.Facing
 	}
-	if names["firewall003 · LAN"] != "down" || names["firewall003 · if#7"] != "down" {
+	if names["fw03 · LAN"] != "down" || names["fw03 · if#7"] != "down" {
 		t.Fatalf("after naming: %v", names)
 	}
 }
 
 func TestCollectorTemplatePersistenceAcrossRestart(t *testing.T) {
 	db := testDB(t)
-	id := seedExporter(t, db, queries.FlowExporter{Name: "firewall003", Address: opnAddr.String(), Kind: "opnsense"})
+	id := seedExporter(t, db, queries.FlowExporter{Name: "fw03", Address: opnAddr.String(), Kind: "opnsense"})
 	recv := tLab.Add(lag)
 	up := uint32(500_000_000)
 	unix := uint32(tLab.Unix())
@@ -305,7 +305,7 @@ func TestCollectorTemplatePersistenceAcrossRestart(t *testing.T) {
 	if st := statusOf(t, c2, id); st.TemplateState != TemplatePersisted || st.Templates != 2 {
 		t.Fatalf("after restart: %+v", st)
 	}
-	flows := pktgen.LabOPNsense(up+60_000, opnAddr.String(), "192.168.79.216", 2055)
+	flows := pktgen.LabOPNsense(up+60_000, opnAddr.String(), "192.168.61.216", 2055)
 	feed(c2, opnAddr, pktgen.OPNsenseV9Data(unix+60, up+60_000, 7, flows...), recv.Add(time.Minute))
 	st := statusOf(t, c2, id)
 	if st.Counters["flows"] != 3 || st.Counters["template_misses"] != 0 {
@@ -403,7 +403,7 @@ func TestCollectorAutoAcceptOnce(t *testing.T) {
 
 	// Auto-accept off: a device's datagrams are an unknown sender with its id.
 	db2 := testDB(t)
-	seedDevice(t, db2, "rb", rosAddr.String(), "switch002-rb5009")
+	seedDevice(t, db2, "rb", rosAddr.String(), "sw02-rb5009")
 	c2 := newTestCollector(t, db2)
 	c2.reconcile(recv)
 	feed(c2, rosAddr, tmpl, recv)
@@ -411,7 +411,7 @@ func TestCollectorAutoAcceptOnce(t *testing.T) {
 		t.Fatalf("exporter created with auto-accept off: %+v", exps)
 	}
 	unk := c2.Status().Unknown
-	if len(unk) != 1 || unk[0].DeviceID == nil || *unk[0].DeviceID != "rb" || unk[0].DeviceName != "switch002-rb5009" ||
+	if len(unk) != 1 || unk[0].DeviceID == nil || *unk[0].DeviceID != "rb" || unk[0].DeviceName != "sw02-rb5009" ||
 		unk[0].Protocol != "ipfix" {
 		t.Fatalf("unknown senders = %+v", unk)
 	}

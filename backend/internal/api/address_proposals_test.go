@@ -39,7 +39,7 @@ func newProposalFixture(t *testing.T) *proposalFixture {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := queries.UpsertAddressProposal(db, "d1", "192.0.2.56", fake.Host, "04:F4:1C:85:97:B2", time.Now()); err != nil {
+	if _, err := queries.UpsertAddressProposal(db, "d1", "192.0.2.56", fake.Host, "04:F4:1C:00:00:56", time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	ps, err := queries.ListAddressProposals(db, queries.ProposalPending, 0)
@@ -99,7 +99,7 @@ func (f *proposalFixture) auditActions() []string {
 func TestApproveAddressProposal_VerifiesAndCommits(t *testing.T) {
 	f := newProposalFixture(t)
 	f.fake.Reply("/system/resource/print", map[string]string{"board-name": "cAP ax", "version": "7.16"})
-	f.fake.Reply("/interface/print", map[string]string{"name": "ether1", "type": "ether", "mac-address": "04:F4:1C:85:97:B2"})
+	f.fake.Reply("/interface/print", map[string]string{"name": "ether1", "type": "ether", "mac-address": "04:F4:1C:00:00:56"})
 
 	rec, p := f.post("approve")
 	if rec.Code != http.StatusOK || p.Status != queries.ProposalApproved || p.DecidedBy != "admin" || p.DecidedAt == nil {

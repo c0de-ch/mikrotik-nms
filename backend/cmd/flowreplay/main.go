@@ -152,8 +152,8 @@ func (r *replay) garbageDatagrams(now time.Time) {
 	junk[0], junk[1] = 0x45, 0 // never a valid version
 	r.garbage.send(junk)
 	r.garbage.send(pktgen.V5(uint32(now.Unix()), 1_000_000, 30, 1)) // truncated v5
-	hdr := pktgen.EthIPv4TCPHeader(28, "192.168.28.25", "1.1.1.1", 50514, 443, 1500)
-	sf := pktgen.SFlowSwitch("192.168.78.201", 1, 512, 1, 1, 2, 1518, hdr)
+	hdr := pktgen.EthIPv4TCPHeader(28, "192.168.40.25", "1.1.1.1", 50514, 443, 1500)
+	sf := pktgen.SFlowSwitch("192.168.60.201", 1, 512, 1, 1, 2, 1518, hdr)
 	r.garbage.send(sf[:len(sf)/2]) // truncated sFlow
 	r.garbage.send(pktgen.SFlowExpandedHugeCount())
 	r.garbage.send(pktgen.IPFIXZeroFieldTemplateThenData())

@@ -24,12 +24,12 @@ import (
 
 // Lab identities (contract §2).
 const (
-	labRB   = "c7a3774f-9d5e-489a-b7dd-6a8ebb9fc119" // switch002-rb5009
-	labSW   = "0bf4fc44-0dd5-4a7f-9823-41a314e61e4d" // switch001
-	macFW   = "00:03:2D:21:FB:4C"                    // firewall003 LAN NIC
-	macC01  = "BC:24:11:B3:6B:38"                    // net28-client01 (behind switch001 ether12)
-	macPmox = "78:9A:18:00:00:25"                    // ccr2004-pmox05 (RB5009 eth3)
-	macSL   = "74:24:9F:00:00:01"                    // Starlink gateway
+	labRB  = "c7a3774f-9d5e-489a-b7dd-6a8ebb9fc119" // sw02-rb5009
+	labSW  = "0bf4fc44-0dd5-4a7f-9823-41a314e61e4d" // sw01
+	macFW  = "00:03:2D:00:00:81"                    // fw03 LAN NIC
+	macC01 = "BC:24:11:00:00:33"                    // net28-client01 (behind sw01 ether12)
+	macHV  = "78:9A:18:00:00:25"                    // ccr2004-hv05 (RB5009 eth3)
+	macSL  = "74:24:9F:00:00:01"                    // Starlink gateway
 )
 
 // fakeFlows stands in for the flow collector.
@@ -47,8 +47,8 @@ func (f *fakeFlows) RolledThrough() time.Time  { return f.rolled }
 func (f *fakeFlows) Reload()                   { f.reloads.Add(1) }
 
 // flowFixture is the lab of contract §2/§10 in a real DB: the RB5009 (IPFIX
-// exporter with a device) and firewall003 (OPNsense, NetFlow v9, no device),
-// switch001 behind both, the address plan, points #1-#3/#6-#8 and 10 minutes
+// exporter with a device) and fw03 (OPNsense, NetFlow v9, no device),
+// sw01 behind both, the address plan, points #1-#3/#6-#8 and 10 minutes
 // of flow rows ending at end.
 type flowFixture struct {
 	db    *sql.DB
@@ -56,7 +56,7 @@ type flowFixture struct {
 	fake  *fakeFlows
 	end   time.Time // FlushedThrough: minute-aligned end of the 1m windows
 	rbExp int64     // RB5009 exporter id
-	fwExp int64     // firewall003 exporter id
+	fwExp int64     // fw03 exporter id
 	// Points.
 	pWAN, pNet28, pTrunk, pFwLAN, pSwEther1, pWANDerived int64
 }
@@ -74,7 +74,7 @@ func newFlowFixture(t *testing.T) *flowFixture {
 		}
 	}
 	for _, d := range []struct{ id, name, addr string }{
-		{labRB, "switch002-rb5009", "192.168.78.202"}, {labSW, "switch001", "192.168.78.201"}} {
+		{labRB, "sw02-rb5009", "192.168.60.202"}, {labSW, "sw01", "192.168.60.201"}} {
 		must(queries.CreateDevice(db, &queries.Device{ID: d.id, Identity: d.name, Address: d.addr, Username: "admin",
 			APIPort: 8728, Status: "online"}))
 	}
@@ -98,25 +98,25 @@ func newFlowFixture(t *testing.T) *flowFixture {
 	must(queries.ReplaceDeviceUplinks(db, labRB, []queries.DeviceUplink{
 		{DeviceID: labRB, Kind: "default-route", Interface: "eth1-wan", IfaceType: "ether", GatewayIP: "100.64.0.1"}}))
 	must(queries.ReplaceDeviceUplinks(db, labSW, []queries.DeviceUplink{
-		{DeviceID: labSW, Kind: "default-route", Interface: "bridge", IfaceType: "bridge", GatewayIP: "192.168.78.81"}}))
+		{DeviceID: labSW, Kind: "default-route", Interface: "bridge", IfaceType: "bridge", GatewayIP: "192.168.60.81"}}))
 	must(queries.ReplaceGatewayHosts(db, []queries.DeviceUplink{
-		{DeviceID: labSW, Interface: "ether1", IfaceType: "ether", GatewayIP: "192.168.78.81"}}))
+		{DeviceID: labSW, Interface: "ether1", IfaceType: "ether", GatewayIP: "192.168.60.81"}}))
 	now := time.Now()
 	must(queries.UpsertPortHosts(db, labSW, []queries.PortHost{
 		{InterfaceName: "ether1", MACAddress: macFW, VID: 1},
 		{InterfaceName: "ether12", MACAddress: macC01, VID: 28},
-		{InterfaceName: "sfp-sfpplus2", MACAddress: macPmox, VID: 28},
+		{InterfaceName: "sfp-sfpplus2", MACAddress: macHV, VID: 28},
 	}, now))
 	must(queries.UpsertPortHosts(db, labRB, []queries.PortHost{
-		{InterfaceName: "eth3", MACAddress: macPmox, VID: 28},
+		{InterfaceName: "eth3", MACAddress: macHV, VID: 28},
 		{InterfaceName: "sfp-sfpplus1", MACAddress: macC01, VID: 28},
 		{InterfaceName: "sfp-sfpplus1", MACAddress: macFW, VID: 1},
 		{InterfaceName: "eth1-wan", MACAddress: macSL, VID: 0},
 	}, now))
 	for _, m := range []queries.MACLookup{
-		{MACAddress: macFW, IPAddress: "192.168.78.81", HostName: "firewall003.lan", Source: "dhcp"},
-		{MACAddress: macC01, IPAddress: "192.168.28.33", HostName: "net28-client01", Source: "dhcp"},
-		{MACAddress: macPmox, IPAddress: "192.168.28.25", HostName: "ccr2004-pmox05", Source: "arp"},
+		{MACAddress: macFW, IPAddress: "192.168.60.81", HostName: "fw03.lan", Source: "dhcp"},
+		{MACAddress: macC01, IPAddress: "192.168.40.33", HostName: "net28-client01", Source: "dhcp"},
+		{MACAddress: macHV, IPAddress: "192.168.40.25", HostName: "ccr2004-hv05", Source: "arp"},
 		{MACAddress: macSL, IPAddress: "100.64.0.1", Source: "arp"},
 	} {
 		must(queries.UpsertMACLookup(db, &m))
@@ -132,19 +132,19 @@ func newFlowFixture(t *testing.T) *flowFixture {
 	}
 	must(queries.ReplaceFlowPrefixes(db, []queries.FlowPrefix{
 		{Prefix: netip.MustParsePrefix("100.64.0.0/10"), Class: "transit", DeviceID: labRB, Iface: "eth1-wan", UpdatedAt: now},
-		{Prefix: netip.MustParsePrefix("192.168.78.0/23"), Class: "internal", DeviceID: labRB, Iface: "bridge", UpdatedAt: now},
-		{Prefix: netip.MustParsePrefix("192.168.28.0/24"), Class: "internal", DeviceID: labRB, Iface: "net28", UpdatedAt: now},
+		{Prefix: netip.MustParsePrefix("192.168.60.0/23"), Class: "internal", DeviceID: labRB, Iface: "bridge", UpdatedAt: now},
+		{Prefix: netip.MustParsePrefix("192.168.40.0/24"), Class: "internal", DeviceID: labRB, Iface: "net28", UpdatedAt: now},
 		{Prefix: netip.MustParsePrefix("172.16.28.0/28"), Class: "vpn", DeviceID: labRB, Iface: "wg-labnet", UpdatedAt: now},
 	}))
 
 	f := &flowFixture{db: db}
 	var err error
-	f.rbExp, err = queries.CreateFlowExporter(db, &queries.FlowExporter{Name: "switch002-rb5009", Address: "192.168.78.202",
+	f.rbExp, err = queries.CreateFlowExporter(db, &queries.FlowExporter{Name: "sw02-rb5009", Address: "192.168.60.202",
 		Kind: "routeros", DeviceID: labRB, Enabled: true, Auto: true})
 	must(err)
-	f.fwExp, err = queries.CreateFlowExporter(db, &queries.FlowExporter{Name: "firewall003", Address: "192.168.78.81",
-		Kind: "opnsense", Enabled: true, NATAddresses: []netip.Addr{netip.MustParseAddr("192.168.28.81"),
-			netip.MustParseAddr("192.168.111.81")}})
+	f.fwExp, err = queries.CreateFlowExporter(db, &queries.FlowExporter{Name: "fw03", Address: "192.168.60.81",
+		Kind: "opnsense", Enabled: true, NATAddresses: []netip.Addr{netip.MustParseAddr("192.168.40.81"),
+			netip.MustParseAddr("192.168.150.81")}})
 	must(err)
 	must(queries.UpsertDeviceFlowIfaces(db, f.rbExp, []queries.FlowIface{
 		{IfIndex: 1, Name: "eth1-wan", Type: "ether"}, {IfIndex: 3, Name: "eth3", Type: "ether"},
@@ -157,7 +157,7 @@ func newFlowFixture(t *testing.T) *flowFixture {
 	f.end = time.Now().UTC().Truncate(time.Minute)
 	must(queries.TouchFlowIfaces(db, f.rbExp, []queries.FlowIfaceSeen{{IfIndex: 1}, {IfIndex: 10}, {IfIndex: 13}}, f.end))
 	must(queries.TouchFlowIfaces(db, f.fwExp, []queries.FlowIfaceSeen{
-		{IfIndex: 1, Hint: "192.168.78.0/24,192.168.79.0/24"}, {IfIndex: 7}}, f.end))
+		{IfIndex: 1, Hint: "192.168.60.0/24,192.168.61.0/24"}, {IfIndex: 7}}, f.end))
 
 	native := func(exp int64, name string, ifs []uint32, facing, side, dev, iface string, local bool) int64 {
 		t.Helper()
@@ -176,12 +176,12 @@ func newFlowFixture(t *testing.T) *flowFixture {
 		must(err)
 		return id
 	}
-	f.pWAN = native(f.rbExp, "switch002-rb5009 · eth1-wan", []uint32{1}, "up", "same", labRB, "eth1-wan", false)
-	f.pNet28 = native(f.rbExp, "switch002-rb5009 · net28", []uint32{13}, "down", "same", labRB, "net28", false)
-	f.pFwLAN = native(f.fwExp, "firewall003 · if#1", []uint32{1}, "down", "", "", "", true)
-	f.pTrunk = derived(f.rbExp, "switch001 · sfp-sfpplus2", []uint32{10, 13}, "down", "peer", labSW, "sfp-sfpplus2",
+	f.pWAN = native(f.rbExp, "sw02-rb5009 · eth1-wan", []uint32{1}, "up", "same", labRB, "eth1-wan", false)
+	f.pNet28 = native(f.rbExp, "sw02-rb5009 · net28", []uint32{13}, "down", "same", labRB, "net28", false)
+	f.pFwLAN = native(f.fwExp, "fw03 · if#1", []uint32{1}, "down", "", "", "", true)
+	f.pTrunk = derived(f.rbExp, "sw01 · sfp-sfpplus2", []uint32{10, 13}, "down", "peer", labSW, "sfp-sfpplus2",
 		false, []queries.PortRef{{DeviceID: labRB, Iface: "eth3"}})
-	f.pSwEther1 = derived(f.fwExp, "switch001 · ether1", []uint32{1}, "down", "peer", labSW, "ether1", true, nil)
+	f.pSwEther1 = derived(f.fwExp, "sw01 · ether1", []uint32{1}, "down", "peer", labSW, "ether1", true, nil)
 	f.pWANDerived = derived(f.rbExp, "WAN (derived copy)", []uint32{1}, "up", "same", labRB, "eth1-wan", false, nil)
 
 	// Ten minutes of flows per exporter; the per-minute bytes are given
@@ -199,20 +199,20 @@ func newFlowFixture(t *testing.T) *flowFixture {
 			}
 			rows = append(rows, r)
 		}
-		rb(1, 13, "1.1.1.1", "192.168.28.33", 6, 443, 60000)         // download to net28-client01
-		rb(13, 1, "192.168.28.33", "1.1.1.1", 6, 443, 6000)          // its upload
-		rb(13, 1, "192.168.28.81", "9.9.9.9", 6, 853, 3000)          // firewall003 NATed out WAN
+		rb(1, 13, "1.1.1.1", "192.168.40.33", 6, 443, 60000)         // download to net28-client01
+		rb(13, 1, "192.168.40.33", "1.1.1.1", 6, 443, 6000)          // its upload
+		rb(13, 1, "192.168.40.81", "9.9.9.9", 6, 853, 3000)          // fw03 NATed out WAN
 		rb(1, 13, "", "", 0, 0, 500)                                 // folded other (download)
-		rb(13, 10, "192.168.28.25", "192.168.78.201", 6, 8728, 1000) // hairpin pmox05 → switch001
-		rb(10, 0, "192.168.79.216", "192.168.78.202", 6, 8728, 2000) // NMS polling the router
-		rb(1, 13, "2606:4700::1111", "192.168.28.33", 17, 443, 100)  // (odd but harmless) v6 src
+		rb(13, 10, "192.168.40.25", "192.168.60.201", 6, 8728, 1000) // hairpin hv05 → sw01
+		rb(10, 0, "192.168.61.216", "192.168.60.202", 6, 8728, 2000) // NMS polling the router
+		rb(1, 13, "2606:4700::1111", "192.168.40.33", 17, 443, 100)  // (odd but harmless) v6 src
 		fw := func(in, out uint32, src, dst string, proto uint8, port uint16, bytes int64) {
 			rows = append(rows, queries.FlowRow{ExporterID: f.fwExp, Bucket: b, InIf: in, OutIf: out, Src: a(src),
 				Dst: a(dst), Proto: proto, Port: port, Bytes: bytes, Packets: bytes / 1000, Flows: 1})
 		}
-		fw(1, 7, "192.168.78.60", "9.9.9.9", 6, 853, 1480)  // LAN upload
-		fw(7, 1, "9.9.9.9", "192.168.78.60", 6, 853, 64000) // LAN download
-		fw(7, 1, "9.9.9.9", "192.168.111.81", 6, 853, 5000) // WAN-copy duplicate: local not internal → dropped
+		fw(1, 7, "192.168.60.60", "9.9.9.9", 6, 853, 1480)  // LAN upload
+		fw(7, 1, "9.9.9.9", "192.168.60.60", 6, 853, 64000) // LAN download
+		fw(7, 1, "9.9.9.9", "192.168.150.81", 6, 853, 5000) // WAN-copy duplicate: local not internal → dropped
 		meta = append(meta,
 			queries.FlowMeta{ExporterID: f.rbExp, Bucket: b, Datagrams: 10, Records: 7, Bytes: 72600, Sampling: 1},
 			queries.FlowMeta{ExporterID: f.fwExp, Bucket: b, Datagrams: 5, Records: 3, Bytes: 70480, Sampling: 1})

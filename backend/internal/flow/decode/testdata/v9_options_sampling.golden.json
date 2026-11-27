@@ -12,7 +12,7 @@
         "kind": "netflow9",
         "obs_domain": 0,
         "proto": 6,
-        "src": "192.168.78.60",
+        "src": "192.168.60.60",
         "dst": "9.9.9.9",
         "src_port": 53124,
         "dst_port": 853,

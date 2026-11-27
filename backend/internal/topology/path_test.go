@@ -156,9 +156,9 @@ func meshRoutedGW() (PathInput, rates) {
 	in.Uplinks = nil
 	for _, d := range in.Devices {
 		in.Uplinks = append(in.Uplinks, PathUplink{DeviceID: d.ID, Kind: "default-route", Interface: "bridge",
-			IfaceType: "bridge", GatewayIP: "192.168.78.1"})
+			IfaceType: "bridge", GatewayIP: "192.168.60.1"})
 	}
-	in.GatewayLabels = map[string]string{"192.168.78.1": "isp-box"}
+	in.GatewayLabels = map[string]string{"192.168.60.1": "isp-box"}
 	return in, r
 }
 
@@ -1408,21 +1408,21 @@ func TestRoleGraphRoutedGatewayRoots(t *testing.T) {
 			continue
 		}
 		roots++
-		if d.ParentID != "gw:192.168.78.1" || d.ParentIface != "" {
+		if d.ParentID != "gw:192.168.60.1" || d.ParentIface != "" {
 			t.Errorf("root %s parent = %q/%q, want the routed gateway", d.DeviceID, d.ParentID, d.ParentIface)
 		}
 		hops, err := g.Path(d.DeviceID, "", r.fn())
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(hops) != 3 || hops[0].ID != "internet" || hops[1].ID != "gw:192.168.78.1" || hops[1].Label != "isp-box" {
+		if len(hops) != 3 || hops[0].ID != "internet" || hops[1].ID != "gw:192.168.60.1" || hops[1].Label != "isp-box" {
 			t.Fatalf("Path(%s) = %+v", d.DeviceID, hops)
 		}
 		// The routed edge has no port: unmeasured.
 		if h := hops[2]; h.InIface != "" || h.Measured {
 			t.Errorf("root hop behind routed gateway = %+v, want unmeasured without in_iface", h)
 		}
-		if ri := g.Role(d.DeviceID, d.UplinkIface); d.UplinkIface != "" && (ri.Role != RoleUplink || ri.UpstreamNode != "gw:192.168.78.1" || ri.NeighborName != "isp-box") {
+		if ri := g.Role(d.DeviceID, d.UplinkIface); d.UplinkIface != "" && (ri.Role != RoleUplink || ri.UpstreamNode != "gw:192.168.60.1" || ri.NeighborName != "isp-box") {
 			t.Errorf("root uplink role = %+v", ri)
 		}
 	}
@@ -1432,10 +1432,10 @@ func TestRoleGraphRoutedGatewayRoots(t *testing.T) {
 
 	s := g.Sankey(r.fn(), SankeyOptions{})
 	checkSankey(t, "routed", s, 1000)
-	gwIn := sankeyValues(s)["internet>gw:192.168.78.1"]
+	gwIn := sankeyValues(s)["internet>gw:192.168.60.1"]
 	var gwOut int64
 	for k, v := range sankeyValues(s) {
-		if strings.HasPrefix(k, "gw:192.168.78.1>") {
+		if strings.HasPrefix(k, "gw:192.168.60.1>") {
 			gwOut += v
 		}
 	}

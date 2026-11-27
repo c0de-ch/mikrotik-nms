@@ -198,15 +198,15 @@ func TestParseBridgeHost(t *testing.T) {
 	}
 }
 
-// Attribute shapes verified read-only on RouterOS 7.23 (switch001 bonds,
+// Attribute shapes verified read-only on RouterOS 7.23 (sw01 bonds,
 // RB5009 VLANs).
 func TestParseInterfaceRelations(t *testing.T) {
-	got := parseBondSlaves(map[string]string{"name": "bonding3-nas024", "slaves": "ether30,ether31, ether32,ether33", "running": "true"})
+	got := parseBondSlaves(map[string]string{"name": "bonding3-nas02", "slaves": "ether30,ether31, ether32,ether33", "running": "true"})
 	want := []InterfaceRelation{
-		{Iface: "ether30", Parent: "bonding3-nas024", Kind: RelationBond},
-		{Iface: "ether31", Parent: "bonding3-nas024", Kind: RelationBond},
-		{Iface: "ether32", Parent: "bonding3-nas024", Kind: RelationBond},
-		{Iface: "ether33", Parent: "bonding3-nas024", Kind: RelationBond},
+		{Iface: "ether30", Parent: "bonding3-nas02", Kind: RelationBond},
+		{Iface: "ether31", Parent: "bonding3-nas02", Kind: RelationBond},
+		{Iface: "ether32", Parent: "bonding3-nas02", Kind: RelationBond},
+		{Iface: "ether33", Parent: "bonding3-nas02", Kind: RelationBond},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("bond slaves = %+v", got)

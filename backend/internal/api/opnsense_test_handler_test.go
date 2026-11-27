@@ -16,7 +16,7 @@ func TestHandleTestOpnsense(t *testing.T) {
 			return
 		}
 		_, _ = w.Write([]byte(`{"rows":[
-			{"address":"192.168.80.5","hwaddr":"aa:bb:cc:dd:ee:01","hostname":"h","state":0,"type":""}
+			{"address":"192.168.84.5","hwaddr":"aa:bb:cc:dd:ee:01","hostname":"h","state":0,"type":""}
 		]}`))
 	}))
 	defer opn.Close()

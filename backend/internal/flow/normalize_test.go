@@ -12,14 +12,14 @@ func TestNormalizeRules(t *testing.T) {
 	c := newTestCollector(t, nil)
 	ros := &expState{addr: rosAddr}
 	now := tLab
-	base := decode.Flow{Proto: 6, SrcAddr: netip.MustParseAddr("142.250.203.100"), DstAddr: netip.MustParseAddr("100.114.241.213"),
+	base := decode.Flow{Proto: 6, SrcAddr: netip.MustParseAddr("203.0.113.100"), DstAddr: netip.MustParseAddr("100.101.102.103"),
 		SrcPort: 443, DstPort: 50514, InIf: 1, OutIf: 13, Bytes: 100, Packets: 1, SamplingRate: 1, Start: now, End: now}
 
 	var n normCounters
 	f := base
-	f.PostNATDst, f.PostNATDstPort = netip.MustParseAddr("192.168.28.33"), 50515
+	f.PostNATDst, f.PostNATDstPort = netip.MustParseAddr("192.168.40.33"), 50515
 	nf, ok := c.normalize(ros, &f, now, &n)
-	if !ok || keyAddr(nf.key.dst) != netip.MustParseAddr("192.168.28.33") || nf.key.port != 443 || n.natDst != 1 {
+	if !ok || keyAddr(nf.key.dst) != netip.MustParseAddr("192.168.40.33") || nf.key.port != 443 || n.natDst != 1 {
 		t.Fatalf("NAT dst: %+v %+v", nf.key, n)
 	}
 	for _, post := range []netip.Addr{netip.IPv4Unspecified(), {}, base.DstAddr} {
@@ -36,7 +36,7 @@ func TestNormalizeRules(t *testing.T) {
 	// The post-NAT port is used only when non-zero, and never the source.
 	f = base
 	f.SrcPort, f.DstPort, f.PostNATDst, f.PostNATDstPort = 50514, 8443, netip.MustParseAddr("10.0.0.1"), 443
-	f.PostNATSrc = netip.MustParseAddr("100.114.241.213")
+	f.PostNATSrc = netip.MustParseAddr("100.101.102.103")
 	nf, _ = c.normalize(ros, &f, now, &n)
 	if nf.key.port != 443 || keyAddr(nf.key.src) != base.SrcAddr {
 		t.Fatalf("NAT port/src: %+v", nf.key)
@@ -117,13 +117,13 @@ func TestHintTrackerCaps(t *testing.T) {
 		t.Fatal("non-unicast sources or ifIndex 0 learned")
 	}
 	// Hourly generations: the previous hour still counts, the one before not.
-	h.add(5, netip.MustParseAddr("192.168.78.10"), 10, tLab)
-	h.add(5, netip.MustParseAddr("192.168.79.10"), 5, tLab.Add(61*time.Minute))
-	if got := h.hint(5); got != "192.168.78.0/24,192.168.79.0/24" {
+	h.add(5, netip.MustParseAddr("192.168.60.10"), 10, tLab)
+	h.add(5, netip.MustParseAddr("192.168.61.10"), 5, tLab.Add(61*time.Minute))
+	if got := h.hint(5); got != "192.168.60.0/24,192.168.61.0/24" {
 		t.Fatalf("two generations = %q", got)
 	}
-	h.add(5, netip.MustParseAddr("192.168.79.10"), 5, tLab.Add(122*time.Minute))
-	if got := h.hint(5); got != "192.168.79.0/24" {
+	h.add(5, netip.MustParseAddr("192.168.61.10"), 5, tLab.Add(122*time.Minute))
+	if got := h.hint(5); got != "192.168.61.0/24" {
 		t.Fatalf("after two resets = %q", got)
 	}
 }
