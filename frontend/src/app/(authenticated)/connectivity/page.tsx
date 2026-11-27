@@ -38,6 +38,7 @@ import {
 } from "@/lib/api";
 import { useWebSocket } from "@/hooks/use-websocket";
 import { deviceStatusLabel } from "@/lib/status";
+import { budgetClass, canRunProbes } from "@/lib/device-load";
 import { toast } from "sonner";
 
 // ----- status derivation (per wire contract) --------------------------------
@@ -1015,10 +1016,45 @@ export default function ConnectivityPage() {
   // the transient grace window and stay selectable, annotated in the label.
   // The currently-assigned device is always included so an existing test
   // stays editable while its device is down.
+  // Only a strong (C3) device is offered as the source of a download: a
+  // /tool/fetch pegs a switch's CPU for up to two minutes.
   const speedDeviceOptions = useMemo(
-    () => devices.filter((d) => d.status !== "offline" || d.id === speedForm.device_id),
+    () => devices.filter((d) => (canRunProbes(d) && d.status !== "offline") || d.id === speedForm.device_id),
     [devices, speedForm.device_id],
   );
+
+  // Ping sources: the strong devices, plus the one already assigned so that
+  // an existing target on a weaker device stays editable.
+  const probeDeviceOptions = useCallback(
+    (currentId: string) => devices.filter((d) => canRunProbes(d) || d.id === currentId),
+    [devices],
+  );
+  const probeDeviceLabel = (d: Device) =>
+    canRunProbes(d) ? d.identity || d.address : `${d.identity || d.address} (class ${budgetClass(d)} — weak)`;
+  // In the lists: a mark next to a probing device that is not a strong one.
+  const weakSourceMark = (deviceId: string) => {
+    const d = devices.find((x) => x.id === deviceId);
+    if (!d || canRunProbes(d)) return null;
+    return (
+      <span
+        className="ml-1.5 rounded-sm bg-amber-100 px-1 py-px text-[10px] font-medium text-amber-800 dark:bg-amber-500/15 dark:text-amber-300"
+        title={`Polled as a class ${budgetClass(d)} device: every probe is work for its CPU. Move this to a router when you can.`}
+      >
+        {budgetClass(d)}
+      </span>
+    );
+  };
+  // The note under a picker whose current choice is a weaker device.
+  const weakSourceNote = (deviceId: string) => {
+    const d = devices.find((x) => x.id === deviceId);
+    if (!d || canRunProbes(d)) return null;
+    return (
+      <p className="text-xs text-amber-700 dark:text-amber-400">
+        {d.identity || d.address} is polled as a class {budgetClass(d)} device, and every probe is work for its CPU. Move
+        this to a router when you can.
+      </p>
+    );
+  };
 
   const okCount = (list: PingTarget[]) => list.filter((t) => t.enabled && statusOf(t.last_sample) === "ok").length;
   const downNow = targets.filter((t) => t.enabled && statusOf(t.last_sample) === "down").length;
@@ -1042,7 +1078,10 @@ export default function ConnectivityPage() {
 
   // Shared cells: Probing device / Last RTT / Loss / Status / Updated.
   const probingDeviceCell = (t: PingTarget) => (
-    <TableCell className="text-xs">{t.device_name || (t.kind === "client" ? "auto" : "—")}</TableCell>
+    <TableCell className="text-xs">
+      {t.device_name || (t.kind === "client" ? "auto" : "—")}
+      {t.device_id && weakSourceMark(t.device_id)}
+    </TableCell>
   );
   const rttCell = (t: PingTarget) => (
     <TableCell className="text-xs font-mono">{formatMs(t.last_sample?.rtt_avg_ms ?? null)}</TableCell>
@@ -1347,6 +1386,7 @@ export default function ConnectivityPage() {
                     </TableCell>
                     <TableCell className="text-xs">
                       {st.device_name || "—"}
+                      {weakSourceMark(st.device_id)}
                       {st.src_address && (
                         <div className="font-mono text-[10px] text-muted-foreground">src {st.src_address}</div>
                       )}
@@ -1451,13 +1491,16 @@ export default function ConnectivityPage() {
                   required
                 >
                   <option value="">Select device…</option>
-                  {devices.map((d) => (
+                  {probeDeviceOptions(internetForm.device_id).map((d) => (
                     <option key={d.id} value={d.id}>
-                      {d.identity || d.address}
+                      {probeDeviceLabel(d)}
                     </option>
                   ))}
                 </select>
-                <p className="text-xs text-muted-foreground">The RouterOS device that runs /ping.</p>
+                <p className="text-xs text-muted-foreground">
+                  The RouterOS device that runs /ping. Only routers (class C3) are offered: a ping burst every cycle is CPU
+                  work for the device that sends it.
+                </p>
               </div>
               <div className="space-y-3 rounded-md border p-3">
                 <div className="space-y-2">
@@ -1539,12 +1582,13 @@ export default function ConnectivityPage() {
                   onChange={(e) => setWatchForm({ ...watchForm, device_id: e.target.value })}
                 >
                   <option value="">(auto — follow client)</option>
-                  {devices.map((d) => (
+                  {probeDeviceOptions(watchForm.device_id).map((d) => (
                     <option key={d.id} value={d.id}>
-                      {d.identity || d.address}
+                      {probeDeviceLabel(d)}
                     </option>
                   ))}
                 </select>
+                <p className="text-xs text-muted-foreground">Only routers (class C3) can be pinned as the probing device.</p>
               </div>
               <Button type="submit" className="w-full">
                 Watch client
@@ -1592,12 +1636,15 @@ export default function ConnectivityPage() {
                   <option value="">
                     {editTarget?.kind === "client" ? "(auto — follow client)" : "Select device…"}
                   </option>
-                  {devices.map((d) => (
+                  {probeDeviceOptions(editForm.device_id).map((d) => (
                     <option key={d.id} value={d.id}>
-                      {d.identity || d.address}
+                      {probeDeviceLabel(d)}
                     </option>
                   ))}
                 </select>
+                {weakSourceNote(editForm.device_id) ?? (
+                  <p className="text-xs text-muted-foreground">Only routers (class C3) are offered as probing devices.</p>
+                )}
               </div>
               {editTarget?.kind === "internet" && (
                 <div className="space-y-3 rounded-md border p-3">
@@ -1915,11 +1962,16 @@ export default function ConnectivityPage() {
                   {speedDeviceOptions.map((d) => (
                     <option key={d.id} value={d.id}>
                       {d.status === "online"
-                        ? d.identity || d.address
-                        : `${d.identity || d.address} (${deviceStatusLabel(d.status)})`}
+                        ? probeDeviceLabel(d)
+                        : `${probeDeviceLabel(d)} (${deviceStatusLabel(d.status)})`}
                     </option>
                   ))}
                 </select>
+                {weakSourceNote(speedForm.device_id) ?? (
+                  <p className="text-xs text-muted-foreground">
+                    Only routers (class C3) are offered: the download runs on the device and would peg a switch&apos;s CPU.
+                  </p>
+                )}
                 <p className="text-xs text-muted-foreground">The RouterOS device that runs /tool/fetch.</p>
               </div>
               <div className="space-y-2">

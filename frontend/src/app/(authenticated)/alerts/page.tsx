@@ -29,10 +29,43 @@ const RULE_LABELS: Record<string, string> = {
   cpu_high: "High CPU",
   mem_low: "Low memory",
   port_egress_drops: "Port dropping packets",
+  flow_export_on_switch: "Flow export on a device that must not export",
+  flow_export_cpu_high: "CPU up after flow export was accepted",
+  audit_critical: "Critical hygiene finding",
 };
 
 function ruleLabel(rule: string): string {
   return RULE_LABELS[rule] ?? rule;
+}
+
+// A fact that is a list of text lines (the rollback steps, the check
+// commands a rule attaches to its alert).
+function factLines(a: Alert, key: string): string[] {
+  const v = a.facts?.[key];
+  return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+}
+
+// "found at 12:06" for the likely cause: when the diagnose pass finished.
+function diagnosedAt(a: Alert): string {
+  const v = a.facts?.diagnosed_at;
+  const t = typeof v === "string" ? Date.parse(v) : NaN;
+  if (!Number.isFinite(t)) return "";
+  const d = new Date(t);
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
+// The steps a rule attached to its alert, folded away under the summary.
+// open: shown at once (the likely cause is the first thing to read).
+function AlertSteps({ title, lines, open }: { title: string; lines: string[]; open?: boolean }) {
+  if (lines.length === 0) return null;
+  return (
+    <details className="mt-1.5 text-xs" open={open}>
+      <summary className="cursor-pointer text-muted-foreground hover:text-foreground">{title}</summary>
+      <pre className="mt-1 overflow-x-auto rounded-md border bg-muted/40 px-3 py-2 font-mono text-[11px] leading-relaxed whitespace-pre-wrap">
+        {lines.join("\n")}
+      </pre>
+    </details>
+  );
 }
 
 // "12 min", "3 h 05 min", "2 d 4 h" between two instants.
@@ -208,6 +241,24 @@ export default function AlertsPage() {
                           </>
                         )}
                       </div>
+                      {a.confirmed === false && (
+                        <Badge
+                          variant="outline"
+                          className="mt-1 text-muted-foreground"
+                          title="Raised on evidence that can be forged or mistaken; it turns critical only once it is confirmed"
+                        >
+                          unconfirmed
+                        </Badge>
+                      )}
+                      <AlertSteps
+                        open
+                        title={`Likely cause — what the diagnose pass found on the device${diagnosedAt(a) ? ` at ${diagnosedAt(a)}` : ""}`}
+                        lines={factLines(a, "likely_cause")}
+                      />
+                      <AlertSteps title="Findings" lines={factLines(a, "findings")} />
+                      <AlertSteps title="Suggested fix (run it yourself, on the device)" lines={factLines(a, "fix")} />
+                      <AlertSteps title="Rollback steps (run them on the device)" lines={factLines(a, "rollback")} />
+                      {a.confirmed === false && <AlertSteps title="Check by hand (read-only)" lines={factLines(a, "check")} />}
                     </TableCell>
                     <TableCell
                       className="whitespace-nowrap text-sm text-muted-foreground"

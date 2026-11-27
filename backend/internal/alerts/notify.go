@@ -217,7 +217,29 @@ func (n *Notifier) compose(a queries.Alert, event Event) message {
 	if link != "" {
 		lines = append(lines, "Alerts:   "+link)
 	}
-	text := strings.Join(lines, "\r\n") + "\r\n\r\n-- MikroTik NMS (automated message, please do not reply)\r\n"
+	// A firing alert carries what its rule attached for whoever is paged —
+	// the likely cause a diagnose pass found, the hygiene findings and
+	// their fix, the rollback steps — so they have it without opening the
+	// NMS.
+	type section struct {
+		title string
+		lines []string
+	}
+	var sections []section
+	if event == EventFiring {
+		for _, s := range []struct{ title, fact string }{
+			{"Likely cause", FactLikelyCause}, {"Findings", FactFindings}, {"Suggested fix", FactFix}, {"Rollback", "rollback"},
+		} {
+			if l := factLines(p.Facts[s.fact]); len(l) > 0 {
+				sections = append(sections, section{s.title, l})
+			}
+		}
+	}
+	text := strings.Join(lines, "\r\n")
+	for _, s := range sections {
+		text += "\r\n\r\n" + s.title + ":\r\n" + strings.Join(s.lines, "\r\n")
+	}
+	text += "\r\n\r\n-- MikroTik NMS (automated message, please do not reply)\r\n"
 
 	var hb strings.Builder
 	hb.WriteString("<p><strong>" + html.EscapeString(summary) + "</strong></p><table cellpadding=\"3\">")
@@ -231,6 +253,10 @@ func (n *Notifier) compose(a queries.Alert, event Event) message {
 		hb.WriteString("<tr><td>" + html.EscapeString(k) + "</td><td>" + cell + "</td></tr>")
 	}
 	hb.WriteString("</table>")
+	for _, s := range sections {
+		hb.WriteString("<p><strong>" + html.EscapeString(s.title) + "</strong></p><pre>" +
+			html.EscapeString(strings.Join(s.lines, "\n")) + "</pre>")
+	}
 
 	body := webhookBody{
 		Title: title, Message: summary, Text: title, Priority: priority,
@@ -246,6 +272,23 @@ func (n *Notifier) compose(a queries.Alert, event Event) message {
 		body.Alert.ResolvedAt = a.ResolvedAt.UTC().Format(time.RFC3339)
 	}
 	return message{Title: title, Text: text, HTML: hb.String(), Body: body}
+}
+
+// factLines reads a fact that is a list of text lines (stored as a JSON
+// array of strings); anything else is no lines.
+func factLines(v any) []string {
+	var out []string
+	switch list := v.(type) {
+	case []string:
+		out = list
+	case []any:
+		for _, item := range list {
+			if s, ok := item.(string); ok {
+				out = append(out, s)
+			}
+		}
+	}
+	return out
 }
 
 // postWebhook POSTs the notification as JSON. Errors never contain the URL:

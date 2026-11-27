@@ -12,6 +12,7 @@
 package routerostest
 
 import (
+	"bufio"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -21,10 +22,12 @@ import (
 	"crypto/x509/pkix"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"math/big"
 	"net"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -48,6 +51,7 @@ type Device struct {
 	commands     []string
 	args         [][]string
 	replies      map[string][]map[string]string
+	counts       map[string]int
 	traps        map[string]string
 	fatals       map[string]string
 	raws         map[string][]byte
@@ -174,12 +178,87 @@ func (d *Device) accept(tlsCfg *tls.Config) {
 	}
 }
 
+// request is one sentence a client sent: the command word, its attribute
+// words as pairs, and every word after the command as written.
+type request struct {
+	Word  string
+	List  []proto.Pair
+	Words []string
+}
+
+// maxRequestWord bounds a word of a request: nothing a client of this
+// package sends comes near it.
+const maxRequestWord = 1 << 20
+
+// readRequest reads one sentence the way a RouterOS device does: attribute
+// words (=key=value), query words (?key=value, ?#…) and a tag. The client
+// library's own reader only knows the words of a reply and would refuse a
+// query.
+func readRequest(r *bufio.Reader) (*request, error) {
+	req := &request{}
+	for {
+		word, err := readRequestWord(r)
+		if err != nil {
+			return nil, err
+		}
+		switch {
+		case len(word) == 0:
+			return req, nil
+		case req.Word == "":
+			req.Word = word
+			continue
+		case word[0] == '=':
+			key, value, _ := strings.Cut(word[1:], "=")
+			req.List = append(req.List, proto.Pair{Key: key, Value: value})
+		case word[0] == '?', strings.HasPrefix(word, ".tag="):
+		default:
+			return nil, fmt.Errorf("invalid RouterOS sentence word: %q", word)
+		}
+		req.Words = append(req.Words, word)
+	}
+}
+
+func readRequestWord(r *bufio.Reader) (string, error) {
+	first, err := r.ReadByte()
+	if err != nil {
+		return "", err
+	}
+	more, length := 0, int(first)
+	switch {
+	case first&0x80 == 0x00:
+	case first&0xC0 == 0x80:
+		more, length = 1, int(first&^0xC0)
+	case first&0xE0 == 0xC0:
+		more, length = 2, int(first&^0xE0)
+	case first&0xF0 == 0xE0:
+		more, length = 3, int(first&^0xF0)
+	case first&0xF8 == 0xF0:
+		more, length = 4, 0
+	default:
+		return "", fmt.Errorf("reserved RouterOS length byte %#x", first)
+	}
+	for i := 0; i < more; i++ {
+		b, err := r.ReadByte()
+		if err != nil {
+			return "", err
+		}
+		length = length<<8 | int(b)
+	}
+	if length > maxRequestWord {
+		return "", fmt.Errorf("a %d-byte word", length)
+	}
+	word := make([]byte, length)
+	if _, err := io.ReadFull(r, word); err != nil {
+		return "", err
+	}
+	return string(word), nil
+}
+
 func (d *Device) serve(c net.Conn) {
 	defer c.Close()
-	r, w := proto.NewReader(c), proto.NewWriter(c)
+	r, w := bufio.NewReader(c), proto.NewWriter(c)
 	for {
-		r.BeginReply()
-		sen, err := r.ReadSentence()
+		sen, err := readRequest(r)
 		if err != nil {
 			var tlsErr tls.RecordHeaderError
 			if !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) && !errors.As(err, &tlsErr) && !isHandshakeAbort(err) {
@@ -200,6 +279,7 @@ func (d *Device) serve(c net.Conn) {
 		d.mu.Lock()
 		refuse := d.refuseLogins
 		rows := d.replies[sen.Word]
+		count, counted := d.counts[sen.Word]
 		trap, trapped := d.traps[sen.Word]
 		fatal, isFatal := d.fatals[sen.Word]
 		raw, isRaw := d.raws[sen.Word]
@@ -211,8 +291,10 @@ func (d *Device) serve(c net.Conn) {
 			} else {
 				trapped, rows = false, nil
 			}
+			counted = false
 		} else {
-			d.record(sen.Word, sen.List)
+			d.record(sen.Word, sen.Words)
+			counted = counted && hasWord(sen.List, "count-only")
 		}
 		switch {
 		case isRaw:
@@ -236,6 +318,8 @@ func (d *Device) serve(c net.Conn) {
 			if err := w.EndSentence(); err != nil {
 				return
 			}
+		case counted:
+			// =count-only=: no rows, the count in the !done sentence.
 		default:
 			for _, row := range rows {
 				w.BeginSentence()
@@ -250,6 +334,9 @@ func (d *Device) serve(c net.Conn) {
 		}
 		w.BeginSentence()
 		w.WriteWord("!done")
+		if counted && !trapped {
+			w.WriteWord("=ret=" + strconv.Itoa(count))
+		}
 		if err := w.EndSentence(); err != nil {
 			return
 		}
@@ -271,6 +358,29 @@ func (d *Device) SetReply(command string, rows ...map[string]string) {
 		d.replies = make(map[string][]map[string]string)
 	}
 	d.replies[command] = rows
+}
+
+// SetCount makes the device answer command, when it is sent with
+// =count-only=, with that row count in the !done sentence and no rows — as
+// RouterOS does. Sent without =count-only=, the command is answered as
+// before (SetReply's rows).
+func (d *Device) SetCount(command string, n int) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.counts == nil {
+		d.counts = make(map[string]int)
+	}
+	d.counts[command] = n
+}
+
+// hasWord reports an attribute word (=key=…) among a sentence's pairs.
+func hasWord(pairs []proto.Pair, key string) bool {
+	for _, p := range pairs {
+		if p.Key == key {
+			return true
+		}
+	}
+	return false
 }
 
 // SetTrap makes the device answer command with a !trap carrying message.
@@ -370,8 +480,9 @@ func (d *Device) RefuseLogins(refuse bool) {
 	d.mu.Unlock()
 }
 
-// Args returns the argument words of every command received after login,
-// in the order of Commands.
+// Args returns the words that followed each command received after login —
+// attribute words (=key=value) and query words (?key=value) as they were
+// sent — in the order of Commands.
 func (d *Device) Args() [][]string {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -382,13 +493,9 @@ func (d *Device) Args() [][]string {
 	return out
 }
 
-func (d *Device) record(cmd string, pairs []proto.Pair) {
-	words := make([]string, 0, len(pairs))
-	for _, p := range pairs {
-		words = append(words, "="+p.Key+"="+p.Value)
-	}
+func (d *Device) record(cmd string, words []string) {
 	d.mu.Lock()
 	d.commands = append(d.commands, cmd)
-	d.args = append(d.args, words)
+	d.args = append(d.args, append([]string{}, words...))
 	d.mu.Unlock()
 }

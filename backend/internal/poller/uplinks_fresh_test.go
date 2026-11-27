@@ -44,7 +44,7 @@ func TestFreshUplinksPerDeviceWindow(t *testing.T) {
 	}
 	// MIKROTIK_NMS_TOPOLOGY_INTERVAL=10m: the fast router is read every
 	// 10 min too, and keeps its rows for 30.
-	if got := fresh(NewCadence(db, &config.Config{TopologyInterval: 10 * time.Minute})); len(got) != 3 {
+	if got := fresh(NewCadence(db, &config.Config{TopologyInterval: 10 * time.Minute, EnvLocked: map[string]bool{"topology_interval": true}})); len(got) != 3 {
 		t.Errorf("fresh uplinks with a 10 min floor = %v, want all three", got)
 	}
 	// Without a schedule: the fleet-wide one (the old fixed window).

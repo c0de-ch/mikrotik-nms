@@ -54,6 +54,15 @@ type Device struct {
 	// Polling is the live schedule the API attaches to a single device
 	// (GET /devices/{id}); never stored, nil elsewhere.
 	Polling *DevicePolling `json:"polling,omitempty"`
+
+	// Role is what the stored facts say the device does in the network
+	// (devclass.Role: router | weak-router | switch | ap-cpe | unknown),
+	// RoleReason why, and FlowExportEligible whether flow export may be set
+	// up on it. Attached by the API to GET /devices and /devices/{id}
+	// (topology.DeviceRoles, flowguard.Judge); never stored.
+	Role               string `json:"role,omitempty"`
+	RoleReason         string `json:"role_reason,omitempty"`
+	FlowExportEligible bool   `json:"flow_export_eligible,omitempty"`
 }
 
 // DevicePolling is how the pollers currently treat a device: the class and

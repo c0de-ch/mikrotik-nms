@@ -94,6 +94,9 @@ func (s *Server) handleCreateSpeedTest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "src_address must be a valid IP address")
 		return
 	}
+	if !s.checkProbeSource(w, t.DeviceID) {
+		return
+	}
 
 	if err := queries.CreateSpeedTest(s.db, t); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create speed test")
@@ -132,7 +135,11 @@ func (s *Server) handleUpdateSpeedTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	movedTo := ""
 	if req.DeviceID != nil {
+		if id := strings.TrimSpace(*req.DeviceID); id != t.DeviceID {
+			movedTo = id
+		}
 		t.DeviceID = strings.TrimSpace(*req.DeviceID)
 	}
 	if req.URL != nil {
@@ -157,6 +164,10 @@ func (s *Server) handleUpdateSpeedTest(w http.ResponseWriter, r *http.Request) {
 	}
 	if t.SrcAddress != "" && net.ParseIP(t.SrcAddress) == nil {
 		writeError(w, http.StatusBadRequest, "src_address must be a valid IP address")
+		return
+	}
+	// Moving the test to another device is choosing a probe source again.
+	if movedTo != "" && !s.checkProbeSource(w, movedTo) {
 		return
 	}
 

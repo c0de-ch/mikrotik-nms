@@ -62,8 +62,14 @@ type Observation struct {
 	Severity string
 	// Summary is the one-line, human-readable statement of the condition.
 	Summary string
-	// Facts are rule-specific details stored with the alert.
+	// Facts are rule-specific details stored with the alert. A "rollback"
+	// fact (a list of text lines) is appended to the mail of a firing alert.
 	Facts map[string]any
+	// Unconfirmed marks a condition raised on evidence that can be forged
+	// or mistaken (a UDP source address, a log line): it is stored with the
+	// alert (confirmed = false) and such an observation must never be
+	// critical — the rule raises the severity once it has confirmed it.
+	Unconfirmed bool
 	// Hold says the rule cannot tell whether the condition holds — the
 	// device was not measured, or the measurements disagree — which is
 	// neither "firing" nor "healthy": an open alert stays exactly as it is
@@ -71,6 +77,11 @@ type Observation struct {
 	// a DeviceID, every alert of the rule for that device. Severity and
 	// Summary are not needed.
 	Hold bool
+	// KeepOnly marks a condition that only keeps an alert that is already
+	// open: it is touched like any other, but no alert is opened for it. A
+	// rule uses it for what extends an episode without being one — once the
+	// alert has resolved, the same condition is not news.
+	KeepOnly bool
 }
 
 // Rule looks at the stored state and reports every condition that holds
@@ -256,18 +267,45 @@ func (e *Engine) Tick() error {
 			errs = append(errs, err)
 			continue
 		}
-		// It got worse: announce it again now rather than at the next
-		// four-hourly reminder (an acknowledged alert stays quiet).
-		if a.State == queries.AlertFiring && SeverityRank(o.Severity) > SeverityRank(a.Severity) {
+		if a.Confirmed == o.Unconfirmed {
+			if err := queries.SetAlertConfirmed(e.db, a.ID, !o.Unconfirmed); err != nil {
+				errs = append(errs, err)
+			}
+		}
+		// A severity the alert reaches for the first time is news: it fires
+		// again and is notified in this tick, even when the lower severity
+		// had been delivered or acknowledged (a warning someone acknowledged
+		// as "maybe" that is now a confirmed critical must reach them). One
+		// it has been at before (its peak) is not — an alert swinging
+		// between warning and critical does not fire at every swing, and an
+		// acknowledgement given since stays, whether or not any notification
+		// could be delivered.
+		if SeverityRank(o.Severity) > SeverityRank(a.Severity) && SeverityRank(o.Severity) > SeverityRank(a.PeakSeverity) {
+			if err := queries.EscalateAlert(e.db, a.ID, o.Severity); err != nil {
+				errs = append(errs, err)
+			} else {
+				changed = true
+			}
+		}
+		// The likely cause of an alert arrives minutes after it was
+		// announced (the diagnose pass spaces its reads out). A firing alert
+		// is then announced once more, with the cause; an acknowledged one is
+		// not — its cause shows on the page.
+		if a.State == queries.AlertFiring && a.LastNotifiedAt != nil && newLikelyCause(a.Payload, o) {
 			if err := queries.RenotifyAlert(e.db, a.ID); err != nil {
 				errs = append(errs, err)
+			} else {
+				changed = true
 			}
 		}
 	}
 	for k, o := range seen {
+		if o.KeepOnly {
+			continue // it keeps an open alert; there is none
+		}
 		if _, err := queries.InsertAlert(e.db, &queries.Alert{
 			Rule: k.rule, Key: k.key, DeviceID: o.DeviceID, Severity: o.Severity,
-			FirstAt: now, LastAt: now, Confirmed: true, Payload: encodePayload(o),
+			FirstAt: now, LastAt: now, Confirmed: !o.Unconfirmed, Payload: encodePayload(o),
 		}); err != nil {
 			errs = append(errs, err)
 			continue
@@ -284,6 +322,17 @@ func (e *Engine) Tick() error {
 		e.OnChange()
 	}
 	return errors.Join(errs...)
+}
+
+// newLikelyCause reports an observation that carries the findings of a
+// diagnose pass the alert's stored payload does not have yet.
+func newLikelyCause(stored string, o Observation) bool {
+	at, _ := o.Facts[FactDiagnosedAt].(string)
+	if at == "" {
+		return false
+	}
+	prev, _ := ParsePayload(stored).Facts[FactDiagnosedAt].(string)
+	return prev != at
 }
 
 // notify sends what is due: a firing alert that was never delivered or was

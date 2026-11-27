@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/mikrotik-nms/backend/internal/database/queries"
+	"github.com/mikrotik-nms/backend/internal/devclass"
 )
 
 // Builder constructs a deduplicated link topology from raw neighbor data.
@@ -301,7 +302,7 @@ func (b *Builder) buildGraph(devices []queries.Device) (*Graph, error) {
 			Data: Node{
 				ID:         d.ID,
 				Label:      deviceLabel(d),
-				Type:       inferDeviceType(d.Board),
+				Type:       inferDeviceType(d.Board, d.Architecture),
 				Status:     d.Status,
 				Model:      d.Board,
 				ROSVersion: d.ROSVersion,
@@ -559,27 +560,21 @@ func deviceLabel(d queries.Device) string {
 	return d.Address
 }
 
-func inferDeviceType(board string) string {
-	if board == "" {
-		return "unknown"
+// inferDeviceType is the map's node type: what kind of hardware the board is
+// (devclass.BoardFamilyOf). A board the table does not know is "unknown" —
+// it used to be drawn as a router, which is the one guess that must not be
+// made by default. (What a device does in the network is its role,
+// DeviceRoles; this is only the icon and the filter.)
+func inferDeviceType(board, arch string) string {
+	switch devclass.BoardFamilyOf(board, arch) {
+	case devclass.FamilyRouter:
+		return "router"
+	case devclass.FamilySwitch:
+		return "switch"
+	case devclass.FamilyAP:
+		return "ap"
 	}
-	b := strings.ToUpper(board)
-	for _, prefix := range []string{"CCR", "RB4011", "RB5009", "HEX", "RB"} {
-		if strings.HasPrefix(b, prefix) {
-			return "router"
-		}
-	}
-	for _, prefix := range []string{"CSS", "CRS"} {
-		if strings.HasPrefix(b, prefix) {
-			return "switch"
-		}
-	}
-	for _, prefix := range []string{"CAP", "WAP", "HAP", "AUDIENCE"} {
-		if strings.HasPrefix(b, prefix) {
-			return "ap"
-		}
-	}
-	return "router"
+	return "unknown"
 }
 
 func isWirelessType(ifaceType string) bool {

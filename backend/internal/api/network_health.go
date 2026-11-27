@@ -17,6 +17,14 @@ type networkHealthResponse struct {
 	Bridges    []bridgeWithPorts        `json:"bridges"`
 	Events     []enrichedLoopEvent      `json:"events"`
 	PortStates []enrichedInterfaceState `json:"port_states"`
+	// Findings are every device's hygiene findings (the audit and the
+	// diagnose pass), most severe first; never nil.
+	Findings []enrichedFinding `json:"findings"`
+}
+
+type enrichedFinding struct {
+	queries.DeviceFinding
+	DeviceName string `json:"device_name"`
 }
 
 type enrichedInterfaceState struct {
@@ -84,10 +92,21 @@ func (s *Server) handleNetworkHealth(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	findings, err := queries.ListAuditFindings(s.db)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list hygiene findings")
+		return
+	}
+	enrichedFindings := make([]enrichedFinding, 0, len(findings))
+	for _, f := range findings {
+		enrichedFindings = append(enrichedFindings, enrichedFinding{DeviceFinding: f, DeviceName: deviceNames[f.DeviceID]})
+	}
+
 	writeJSON(w, http.StatusOK, networkHealthResponse{
 		Bridges:    enrichedBridges,
 		Events:     enrichedEvents,
 		PortStates: enrichedPorts,
+		Findings:   enrichedFindings,
 	})
 }
 

@@ -346,6 +346,20 @@ func (r *LoadRecorder) LatestCPU() map[string]CPUReading {
 	return out
 }
 
+// CPUOf returns deviceID's latest quiet-window CPU sample; ok is false while
+// there is none (also on a nil recorder).
+func (r *LoadRecorder) CPUOf(deviceID string) (CPUReading, bool) {
+	if r == nil {
+		return CPUReading{}, false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if d := r.devs[deviceID]; d != nil && d.hasLatest {
+		return d.latest, true
+	}
+	return CPUReading{}, false
+}
+
 // FlushMinutes implements CoverageSink: the minutes before through are
 // final, and every managed device gets its row for each of them — covered
 // when coverage says a Tier 0 interval spans part of the minute, otherwise an

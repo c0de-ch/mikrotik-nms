@@ -28,6 +28,10 @@ type Manager struct {
 	cfg        *config.Config
 	cancel     context.CancelFunc
 	lastVacuum time.Time
+	// floors caches the fleet floors (settings, or the environment) for the
+	// loops that ask outside a CadenceSource: the map rebuild and the
+	// network-health maintenance.
+	floors *floors
 
 	// portStats is built in NewManager (not Start) because main reads it via
 	// PortStats() right after launching Start asynchronously.
@@ -53,6 +57,10 @@ type Manager struct {
 	// feeds it. Both only do anything once Start runs with polling on.
 	load *LoadRecorder
 	cpu  *CPUSampler
+	// audit runs the hygiene audit (Tier 7), the diagnose pass and the
+	// passes an admin asks for. Built in NewManager because main hands it to
+	// the API; its loop only runs with polling on.
+	audit *Auditor
 	// inventory schedules Tier 6 (the info refresh) per device, topoClock
 	// the topology loop's neighbor and route reads; classes holds the class
 	// probe's pending changes (hysteresis).
@@ -91,6 +99,15 @@ func (m *Manager) clock() time.Time {
 	return time.Now()
 }
 
+// floorOf is the fleet floor of tier: from the cache NewManager builds, or
+// read directly by a Manager that was put together without it (tests).
+func (m *Manager) floorOf(tier devclass.Tier, now time.Time) time.Duration {
+	if m.floors != nil {
+		return m.floors.of(tier, now)
+	}
+	return settingFloors(m.db, m.cfg)[tier]
+}
+
 func NewManager(db *sql.DB, pool *routeros.Pool, hub *ws.Hub, cfg *config.Config) *Manager {
 	flowCfg := flow.Config{Listen: cfg.FlowListen, CaptureDir: cfg.FlowCaptureDir}
 	if !cfg.PollersEnabled() {
@@ -98,6 +115,9 @@ func NewManager(db *sql.DB, pool *routeros.Pool, hub *ws.Hub, cfg *config.Config
 		// even when a listen address is configured.
 		flowCfg.Listen = nil
 	}
+	// Once per database: bring the settings that used to do nothing to
+	// what has been in force, before any loop reads them.
+	AdoptIntervalSettings(db, cfg)
 	m := &Manager{
 		db:        db,
 		pool:      pool,
@@ -106,6 +126,7 @@ func NewManager(db *sql.DB, pool *routeros.Pool, hub *ws.Hub, cfg *config.Config
 		portStats: NewPortStatsCollector(db, pool, hub),
 		flows:     flow.New(db, pool, hub, flowCfg),
 		cadence:   NewCadence(db, cfg),
+		floors:    newFloors(db, cfg),
 		inventory: newTierClock(Schedule()),
 		topoClock: newTierClock(Schedule()),
 		classes:   newClassGate(),
@@ -131,7 +152,21 @@ func NewManager(db *sql.DB, pool *routeros.Pool, hub *ws.Hub, cfg *config.Config
 	m.portStats.UseCoverageSink(m.load)
 	m.cpu = NewCPUSampler(db, pool, hub, m.load, m.portStats)
 	m.cpu.UseCadence(m.cadence)
+	// The hygiene audit and the diagnose pass: they read the device's CPU
+	// samples, interface snapshot and capabilities from the collectors
+	// above, and take the flow collector's "exporter accepted" as the start
+	// of a CPU watch (G6).
+	m.audit = NewAuditor(db, pool, m.load, m.portStats, m.caps)
+	m.audit.UseCadence(m.cadence)
+	m.audit.UseCollectorPort(flow.ListenPort(flowCfg.Listen))
+	m.flows.UseAcceptHook(m.audit.NoteExporterAccepted)
 	return m
+}
+
+// Audit returns the hygiene auditor (non-nil right after NewManager) behind
+// the device page's "Audit now" and "Diagnose now".
+func (m *Manager) Audit() *Auditor {
+	return m.audit
 }
 
 // LatestCPU returns every device's latest quiet-window CPU sample with its
@@ -220,6 +255,9 @@ func (m *Manager) Start() {
 	go clientDisc.Run(ctx)
 
 	netHealth := NewNetworkHealthPoller(m.db, m.pool, m.hub, m.cfg.NetworkHealthInterval)
+	// Both loops ask on every wake-up and per device: the floors' own
+	// cache answers (one settings read per floorTTL).
+	netHealth.UseFloor(func() time.Duration { return m.floorOf(devclass.TierBridgePorts, time.Now()) })
 	netHealth.UseLogReader(logs)
 	netHealth.UseInterfaceSnapshots(m.portStats)
 	netHealth.UseCadence(m.cadence)
@@ -230,6 +268,9 @@ func (m *Manager) Start() {
 
 	speedTests := NewSpeedTestPoller(m.db, m.hub, defaultSpeedTestInterval)
 	go speedTests.Run(ctx)
+
+	// The hygiene audit (every 6 h per device) and the diagnose pass.
+	go m.audit.Run(ctx)
 
 	// Alerting reads what the loops above store — it never contacts a
 	// device — and only runs here, on an instance that polls: on a copy of a
@@ -611,7 +652,7 @@ func (m *Manager) pollTopology(ctx context.Context) {
 		}
 	}
 
-	if !m.lastBuild.IsZero() && now.Sub(m.lastBuild) < m.cfg.TopologyInterval {
+	if !m.lastBuild.IsZero() && now.Sub(m.lastBuild) < m.floorOf(devclass.TierNeighbors, now) {
 		return
 	}
 	m.lastBuild = now
@@ -946,7 +987,10 @@ func (m *Manager) retentionLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			cutoff := time.Now().AddDate(0, 0, -m.cfg.RetentionDays)
+			// Read every cycle: the retention_days setting, or the env
+			// variable when one is set.
+			days := RetentionDays(m.db, m.cfg)
+			cutoff := time.Now().AddDate(0, 0, -days)
 			if n, err := queries.DeleteOldTrafficSamples(m.db, cutoff); err != nil {
 				log.Printf("poller retention: traffic: %v", err)
 			} else if n > 0 {
@@ -955,7 +999,7 @@ func (m *Manager) retentionLoop(ctx context.Context) {
 
 			m.sweepNeighbors(time.Now())
 
-			wifiCutoff := time.Now().AddDate(0, 0, -m.cfg.RetentionDays)
+			wifiCutoff := time.Now().AddDate(0, 0, -days)
 			if n, err := queries.DeleteOldWifiHistory(m.db, wifiCutoff); err != nil {
 				log.Printf("poller retention: wifi history: %v", err)
 			} else if n > 0 {
@@ -989,7 +1033,7 @@ func (m *Manager) retentionLoop(ctx context.Context) {
 			// Speed samples (~4 rows/day) and traceroute runs are sparse series
 			// and the UI offers a 30d trend, so keep them at least 90 days
 			// regardless of the general retention setting.
-			speedDays := m.cfg.RetentionDays
+			speedDays := days
 			if speedDays < 90 {
 				speedDays = 90
 			}
@@ -1023,6 +1067,7 @@ func (m *Manager) retentionLoop(ctx context.Context) {
 
 			sweepPortStats(m.db, time.Now())
 			sweepDeviceLoad(m.db, time.Now())
+			sweepAudit(m.db, time.Now())
 
 			flow.Sweep(m.db, time.Now())
 

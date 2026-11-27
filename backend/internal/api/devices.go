@@ -51,13 +51,25 @@ const pinRequired = "the certificate fingerprint (SHA-256) is required for API-T
 	"the NMS does not log in to a TLS device it cannot identify"
 
 func (s *Server) handleListDevices(w http.ResponseWriter, r *http.Request) {
-	devices, err := queries.ListDevices(s.db)
+	// Every device carries its role (router, weak-router, switch, ap-cpe,
+	// unknown) with the reason, derived from stored facts only.
+	roles, devices, err := s.deviceRoles(time.Now())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list devices")
-		return
+		// The roles need the uplinks, the interface list and the bridge
+		// ports as well; the list itself only the devices. A device list
+		// without roles is better than no device list.
+		log.Printf("api: device roles: %v (listing devices without roles)", err)
+		roles = nil
+		if devices, err = queries.ListDevices(s.db); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to list devices")
+			return
+		}
 	}
 	if devices == nil {
 		devices = []queries.Device{}
+	}
+	for i := range devices {
+		attachRole(&devices[i], roles[devices[i].ID])
 	}
 	writeJSON(w, http.StatusOK, devices)
 }
@@ -72,6 +84,13 @@ func (s *Server) handleGetDevice(w http.ResponseWriter, r *http.Request) {
 		}
 		writeError(w, http.StatusInternalServerError, "failed to get device")
 		return
+	}
+	// The role is a nicety here: a failure to derive it must not hide the
+	// device.
+	if roles, _, err := s.deviceRoles(time.Now()); err == nil {
+		if role, ok := roles[device.ID]; ok {
+			attachRole(device, role)
+		}
 	}
 	writeJSON(w, http.StatusOK, withPolling(device))
 }

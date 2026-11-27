@@ -205,6 +205,11 @@ func (r cpuHigh) Evaluate(now time.Time) ([]Observation, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", RuleCPUHigh, err)
 	}
+	// What the diagnose pass found on the device while its CPU was high.
+	causes, err := likelyCauses(r.db, RuleCPUHigh, now)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", RuleCPUHigh, err)
+	}
 	var out []Observation
 	for _, d := range devices {
 		w := windows[d.ID]
@@ -235,6 +240,9 @@ func (r cpuHigh) Evaluate(now time.Time) ([]Observation, error) {
 			continue // measured, and below the threshold throughout
 		default:
 			o = hold(d.ID)
+		}
+		if !o.Hold {
+			causes[d.ID].attach(o.Facts)
 		}
 		out = append(out, o)
 	}

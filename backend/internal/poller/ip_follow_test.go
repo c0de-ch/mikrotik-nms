@@ -8,22 +8,11 @@ import (
 	"time"
 
 	"github.com/mikrotik-nms/backend/internal/config"
-	"github.com/mikrotik-nms/backend/internal/database"
 	"github.com/mikrotik-nms/backend/internal/database/queries"
 	"github.com/mikrotik-nms/backend/internal/routeros"
 	"github.com/mikrotik-nms/backend/internal/routeros/routerostest"
 	"github.com/mikrotik-nms/backend/internal/ws"
 )
-
-func pollerTestDB(t *testing.T) *sql.DB {
-	t.Helper()
-	db, err := database.Open(t.TempDir() + "/test.db")
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
-	return db
-}
 
 // --- pure matcher: planMoves ---
 

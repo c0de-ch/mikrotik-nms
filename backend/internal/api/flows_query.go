@@ -161,19 +161,29 @@ type flowPortResponse struct {
 
 func emptyPortDir() flowPortDir { return flowPortDir{Rows: []flowRowJSON{}} }
 
-// kindRank orders native before derived for the port-detail point choice.
-func kindRank(kind string) int {
-	if kind == "native" {
-		return 0
+// pointRank orders the points that cover a port for the port-detail choice:
+// a native point first (what the exporter itself measured on that port),
+// then derived views — except that a native point of an exporter sitting on
+// a device that is not a router ranks last. Such a device (a switch, an
+// access point, one of unknown role) sees only what its CPU handles, so the
+// view an admin derived for the port from a router beside it is the better
+// one. nonRouter reports that case for a point's exporter.
+func pointRank(p queries.FlowPoint, nonRouter func(exporterID int64) bool) int {
+	switch {
+	case p.Kind != "native":
+		return 1
+	case nonRouter(p.ExporterID):
+		return 2
 	}
-	return 1
+	return 0
 }
 
 // handleFlowPort backs the port-detail "Top conversations" card. Query:
 // device, iface (required), range, limit (1..50, default 10), point
 // (optional: one of the points covering this port). The point is the
 // enabled point whose managed port is (device, iface): native first, then
-// derived, then lowest id; the others are listed as alternatives.
+// derived, then a native point of a non-router exporter (pointRank), then
+// lowest id; the others are listed as alternatives.
 func (s *Server) handleFlowPort(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	rng, ok := parseFlowRange(q.Get("range"))
@@ -206,9 +216,27 @@ func (s *Server) handleFlowPort(w http.ResponseWriter, r *http.Request) {
 			match = append(match, p)
 		}
 	}
-	slices.SortFunc(match, func(a, b queries.FlowPoint) int {
-		return cmp.Or(cmp.Compare(kindRank(a.Kind), kindRank(b.Kind)), cmp.Compare(a.ID, b.ID))
-	})
+	if len(match) > 1 {
+		// Only a choice between points needs the exporters' roles.
+		guard, err := s.loadFlowGuard(time.Now())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to read device roles")
+			return
+		}
+		exporters, err := queries.ListFlowExporters(s.db)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to list exporters")
+			return
+		}
+		nonRouter := map[int64]bool{}
+		for _, e := range exporters {
+			nonRouter[e.ID] = guard.nonRouterExporter(e)
+		}
+		rank := func(p queries.FlowPoint) int { return pointRank(p, func(id int64) bool { return nonRouter[id] }) }
+		slices.SortFunc(match, func(a, b queries.FlowPoint) int {
+			return cmp.Or(cmp.Compare(rank(a), rank(b)), cmp.Compare(a.ID, b.ID))
+		})
+	}
 	chosen := 0
 	if want != 0 {
 		chosen = slices.IndexFunc(match, func(p queries.FlowPoint) bool { return p.ID == want })

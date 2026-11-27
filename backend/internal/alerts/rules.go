@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/mikrotik-nms/backend/internal/database/queries"
+	"github.com/mikrotik-nms/backend/internal/flowguard"
 )
 
 // Rule names.
@@ -13,16 +14,20 @@ const (
 	RuleDeviceUnreachable = "device_unreachable"
 	RuleParallelAPIPoller = "parallel_api_poller"
 	RuleTLSPinMismatch    = "tls_pin_mismatch"
+	// RuleFlowExportOnSwitch: see flow_export.go.
+	RuleFlowExportOnSwitch = flowguard.FindingExportOnSwitch
 )
 
 // RuleNames lists the rules this build evaluates.
 func RuleNames() []string {
-	return []string{RuleDeviceUnreachable, RuleParallelAPIPoller, RuleTLSPinMismatch, RuleCPUHigh, RuleMemLow, RulePortEgressDrops}
+	return []string{RuleDeviceUnreachable, RuleParallelAPIPoller, RuleTLSPinMismatch, RuleCPUHigh, RuleMemLow, RulePortEgressDrops,
+		RuleFlowExportOnSwitch, RuleAuditCritical, RuleFlowExportCPUHigh}
 }
 
 // DefaultRules are the rules evaluated on a polling instance.
 func DefaultRules(db *sql.DB) []Rule {
-	return []Rule{deviceUnreachable{db}, parallelAPIPoller{db}, tlsPinMismatch{db}, cpuHigh{db}, memLow{db}, portEgressDrops{db}}
+	return []Rule{deviceUnreachable{db}, parallelAPIPoller{db}, tlsPinMismatch{db}, cpuHigh{db}, memLow{db}, portEgressDrops{db},
+		flowExportOnSwitch{db}, auditCritical{db}, flowExportCPUHigh{db}}
 }
 
 func deviceLabel(d queries.Device) string {
@@ -62,13 +67,20 @@ func (r deviceUnreachable) Evaluate(now time.Time) ([]Observation, error) {
 	return out, nil
 }
 
-// parallelPollerCurrent is how recent a parallel_api_poller finding must be
-// to count: the login watch re-confirms a foreign session at most once an
-// hour, so a finding stays current for two confirmations and a margin.
+// parallelPollerCurrent is how recent a parallel_api_poller finding of the
+// login watch must be to count: it re-confirms a foreign session at most
+// once an hour, so a finding stays current for two confirmations and a
+// margin.
 const parallelPollerCurrent = 2*time.Hour + 15*time.Minute
 
-// parallelAPIPoller fires while the login watch keeps seeing API logins on
-// a device from an address that is not this NMS (device_findings).
+// parallelAPIPoller fires while something other than this NMS uses a
+// device's API (device_findings): while the login watch keeps seeing its
+// logins, and — whatever the age of the sighting — while the hygiene audit
+// holds the finding. The audit reads the open sessions every six hours; a
+// session it saw stands until a pass reads them again and no longer sees it
+// (a client that stays logged in for days writes one login line, and would
+// otherwise drop out of the alert two hours after each audit and come back
+// with the next).
 type parallelAPIPoller struct{ db *sql.DB }
 
 func (parallelAPIPoller) Name() string { return RuleParallelAPIPoller }

@@ -18,6 +18,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/mikrotik-nms/backend/internal/auth"
 	"github.com/mikrotik-nms/backend/internal/database/queries"
+	"github.com/mikrotik-nms/backend/internal/devclass"
 	"github.com/mikrotik-nms/backend/internal/flow"
 )
 
@@ -77,6 +78,11 @@ func newFlowFixture(t *testing.T) *flowFixture {
 		must(queries.CreateDevice(db, &queries.Device{ID: d.id, Identity: d.name, Address: d.addr, Username: "admin",
 			APIPort: 8728, Status: "online"}))
 	}
+	// The first device is a strong router with an internet egress of its
+	// own (the default route below): a router-role exporter. The second has
+	// no board read yet, so its role is unknown.
+	must(queries.UpdateDeviceInfo(db, labRB, "MikroTik", "RB5009UG+S+", "7.23.1 (stable)", "7.23.1", "arm64"))
+	must(queries.SetDeviceClass(db, labRB, devclass.C3, devclass.ResourceFacts{}, time.Now()))
 	for dev, specs := range map[string][]string{
 		labRB: {"eth1-wan:ether", "eth3:ether", "sfp-sfpplus1:ether", "bridge:bridge", "management:vlan", "net28:vlan", "wg-labnet:wg"},
 		labSW: {"ether1:ether", "ether12:ether", "sfp-sfpplus2:ether", "bridge:bridge"},

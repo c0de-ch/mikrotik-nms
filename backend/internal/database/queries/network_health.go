@@ -35,17 +35,22 @@ type BridgePortStatus struct {
 	DesignatedBridge string `json:"designated_bridge"` // designated-bridge-id
 	// Fields a device may not report: nil (NULL, JSON null) means unknown,
 	// which detectors must not read as 0 or false.
-	TopologyChanges *int      `json:"topology_changes"`
-	Forwarding      *bool     `json:"forwarding"`
-	Learning        *bool     `json:"learning"`
-	Inactive        *bool     `json:"inactive"`
-	Disabled        *bool     `json:"disabled"`
-	HWOffload       *bool     `json:"hw_offload"`
-	HWOffloadGroup  string    `json:"hw_offload_group"`
-	PVID            *int      `json:"pvid"`
-	PortState       string    `json:"port_state"`  // raw RouterOS status: in-bridge | inactive
-	EdgeConfig      string    `json:"edge_config"` // configured edge: auto | yes | no | yes-discover | no-discover
-	LastPolled      time.Time `json:"last_polled"`
+	TopologyChanges *int   `json:"topology_changes"`
+	Forwarding      *bool  `json:"forwarding"`
+	Learning        *bool  `json:"learning"`
+	Inactive        *bool  `json:"inactive"`
+	Disabled        *bool  `json:"disabled"`
+	HWOffload       *bool  `json:"hw_offload"`
+	HWOffloadGroup  string `json:"hw_offload_group"`
+	// HW is the configured hw=yes (hardware offload requested), next to
+	// HWOffload (the switch chip really forwards the port); Horizon the
+	// port's split horizon ("" or "none" = none).
+	HW         *bool     `json:"hw"`
+	Horizon    string    `json:"horizon"`
+	PVID       *int      `json:"pvid"`
+	PortState  string    `json:"port_state"`  // raw RouterOS status: in-bridge | inactive
+	EdgeConfig string    `json:"edge_config"` // configured edge: auto | yes | no | yes-discover | no-discover
+	LastPolled time.Time `json:"last_polled"`
 }
 
 type LoopEvent struct {
@@ -104,8 +109,8 @@ func UpsertBridgePortStatus(db *sql.DB, p *BridgePortStatus) error {
 		`INSERT INTO bridge_port_status (id, device_id, bridge_name, port_interface, role, status,
 		   edge, point_to_point, path_cost, designated_bridge,
 		   topology_changes, forwarding, learning, inactive, disabled, hw_offload, hw_offload_group,
-		   pvid, port_state, edge_config, last_polled)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		   pvid, port_state, edge_config, hw, horizon, last_polled)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
 		 ON CONFLICT(device_id, bridge_name, port_interface) DO UPDATE SET
 		   role=excluded.role,
 		   status=excluded.status,
@@ -123,12 +128,14 @@ func UpsertBridgePortStatus(db *sql.DB, p *BridgePortStatus) error {
 		   pvid=excluded.pvid,
 		   port_state=excluded.port_state,
 		   edge_config=excluded.edge_config,
+		   hw=excluded.hw,
+		   horizon=excluded.horizon,
 		   last_polled=CURRENT_TIMESTAMP`,
 		p.ID, p.DeviceID, p.BridgeName, p.PortInterface, p.Role, p.Status,
 		edge, p2p, p.PathCost, p.DesignatedBridge,
 		nullInt(p.TopologyChanges), nullBool(p.Forwarding), nullBool(p.Learning), nullBool(p.Inactive),
 		nullBool(p.Disabled), nullBool(p.HWOffload), p.HWOffloadGroup,
-		nullInt(p.PVID), p.PortState, p.EdgeConfig,
+		nullInt(p.PVID), p.PortState, p.EdgeConfig, nullBool(p.HW), p.Horizon,
 	)
 	return err
 }
@@ -161,13 +168,23 @@ func ListBridgeStatus(db *sql.DB) ([]BridgeStatus, error) {
 }
 
 func ListBridgePortStatus(db *sql.DB) ([]BridgePortStatus, error) {
+	return listBridgePortStatus(db, ``)
+}
+
+// ListBridgePortStatusByDevice returns one device's bridge ports, by bridge
+// and interface.
+func ListBridgePortStatusByDevice(db *sql.DB, deviceID string) ([]BridgePortStatus, error) {
+	return listBridgePortStatus(db, `WHERE device_id = ?`, deviceID)
+}
+
+func listBridgePortStatus(db *sql.DB, where string, args ...any) ([]BridgePortStatus, error) {
 	rows, err := db.Query(
 		`SELECT id, device_id, bridge_name, port_interface, role, status,
 		   edge, point_to_point, path_cost, designated_bridge,
 		   topology_changes, forwarding, learning, inactive, disabled, hw_offload,
 		   COALESCE(hw_offload_group, ''), pvid, COALESCE(port_state, ''), COALESCE(edge_config, ''),
-		   last_polled
-		 FROM bridge_port_status ORDER BY device_id, bridge_name, port_interface`,
+		   hw, COALESCE(horizon, ''), last_polled
+		 FROM bridge_port_status `+where+` ORDER BY device_id, bridge_name, port_interface`, args...,
 	)
 	if err != nil {
 		return nil, err
@@ -179,12 +196,12 @@ func ListBridgePortStatus(db *sql.DB) ([]BridgePortStatus, error) {
 		var p BridgePortStatus
 		var edge, p2p int
 		var tcn, pvid sql.NullInt64
-		var fwd, lrn, inactive, disabled, hw sql.NullInt64
+		var fwd, lrn, inactive, disabled, hwOffload, hw sql.NullInt64
 		if err := rows.Scan(&p.ID, &p.DeviceID, &p.BridgeName, &p.PortInterface, &p.Role, &p.Status,
 			&edge, &p2p, &p.PathCost, &p.DesignatedBridge,
-			&tcn, &fwd, &lrn, &inactive, &disabled, &hw,
+			&tcn, &fwd, &lrn, &inactive, &disabled, &hwOffload,
 			&p.HWOffloadGroup, &pvid, &p.PortState, &p.EdgeConfig,
-			&p.LastPolled); err != nil {
+			&hw, &p.Horizon, &p.LastPolled); err != nil {
 			return nil, err
 		}
 		p.Edge = edge == 1
@@ -195,7 +212,8 @@ func ListBridgePortStatus(db *sql.DB) ([]BridgePortStatus, error) {
 		p.Learning = boolPtr(lrn)
 		p.Inactive = boolPtr(inactive)
 		p.Disabled = boolPtr(disabled)
-		p.HWOffload = boolPtr(hw)
+		p.HWOffload = boolPtr(hwOffload)
+		p.HW = boolPtr(hw)
 		out = append(out, p)
 	}
 	return out, rows.Err()

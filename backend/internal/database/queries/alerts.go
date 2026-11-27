@@ -29,12 +29,16 @@ type Alert struct {
 	AckedBy        string     `json:"acked_by,omitempty"`
 	AckedAt        *time.Time `json:"acked_at,omitempty"`
 	Confirmed      bool       `json:"confirmed"`
+	// PeakSeverity is the highest severity the alert has reached while open
+	// ("" on a row from before the column existed).
+	PeakSeverity string `json:"-"`
 	// Payload is the rule's JSON object ({"summary": …, …}).
 	Payload string `json:"-"`
 }
 
 const alertColumns = `id, rule, key, COALESCE(device_id, ''), severity, state, first_at, last_at,
-	last_notified_at, resolved_at, COALESCE(acked_by, ''), acked_at, confirmed, payload`
+	last_notified_at, resolved_at, COALESCE(acked_by, ''), acked_at, confirmed, payload,
+	COALESCE(peak_severity, '')`
 
 func unixPtr(v sql.NullInt64) *time.Time {
 	if !v.Valid {
@@ -49,7 +53,7 @@ func scanAlert(row rowScanner) (Alert, error) {
 	var first, last int64
 	var notified, resolved, acked sql.NullInt64
 	if err := row.Scan(&a.ID, &a.Rule, &a.Key, &a.DeviceID, &a.Severity, &a.State, &first, &last,
-		&notified, &resolved, &a.AckedBy, &acked, &a.Confirmed, &a.Payload); err != nil {
+		&notified, &resolved, &a.AckedBy, &acked, &a.Confirmed, &a.Payload, &a.PeakSeverity); err != nil {
 		return a, err
 	}
 	a.FirstAt, a.LastAt = time.Unix(first, 0).UTC(), time.Unix(last, 0).UTC()
@@ -98,9 +102,9 @@ func GetAlert(db *sql.DB, id int64) (Alert, error) {
 // InsertAlert opens an alert in state firing and returns its id. The unique
 // index on open (rule, key) makes a second open alert for the same key fail.
 func InsertAlert(db *sql.DB, a *Alert) (int64, error) {
-	res, err := db.Exec(`INSERT INTO alerts (rule, key, device_id, severity, state, first_at, last_at, confirmed, payload)
-		VALUES (?, ?, NULLIF(?, ''), ?, 'firing', ?, ?, ?, ?)`,
-		a.Rule, a.Key, a.DeviceID, a.Severity, a.FirstAt.Unix(), a.LastAt.Unix(), a.Confirmed, a.Payload)
+	res, err := db.Exec(`INSERT INTO alerts (rule, key, device_id, severity, peak_severity, state, first_at, last_at, confirmed, payload)
+		VALUES (?, ?, NULLIF(?, ''), ?, ?, 'firing', ?, ?, ?, ?)`,
+		a.Rule, a.Key, a.DeviceID, a.Severity, a.Severity, a.FirstAt.Unix(), a.LastAt.Unix(), a.Confirmed, a.Payload)
 	if err != nil {
 		return 0, err
 	}
@@ -114,6 +118,35 @@ func TouchAlert(db *sql.DB, id int64, severity, payload string, at time.Time) er
 	return err
 }
 
+// SetAlertConfirmed records whether an open alert rests on confirmed
+// evidence (confirmed = 0: raised on something that can be forged).
+func SetAlertConfirmed(db *sql.DB, id int64, confirmed bool) error {
+	_, err := db.Exec(`UPDATE alerts SET confirmed = ? WHERE id = ? AND state <> 'resolved'`, confirmed, id)
+	return err
+}
+
+// EscalateAlert makes an open alert fire again because it reached severity
+// for the first time: an acknowledgement of the lower severity is dropped,
+// the alert counts as not notified yet (the next notification pass delivers
+// it), and severity becomes its peak — recorded here, not when a
+// notification goes out, so that it also holds where nothing is delivered.
+func EscalateAlert(db *sql.DB, id int64, severity string) error {
+	_, err := db.Exec(`UPDATE alerts SET state = 'firing', acked_by = NULL, acked_at = NULL, last_notified_at = NULL, peak_severity = ?
+		WHERE id = ? AND state <> 'resolved'`, severity, id)
+	return err
+}
+
+// RenotifyAlert makes a firing alert that was already announced due for its
+// next notification now instead of at the four-hourly reminder: the rule has
+// learned something worth sending (the likely cause). It stays "notified" —
+// its resolution is still announced — and an acknowledged alert is left
+// alone.
+func RenotifyAlert(db *sql.DB, id int64) error {
+	_, err := db.Exec(`UPDATE alerts SET last_notified_at = 0
+		WHERE id = ? AND state = 'firing' AND last_notified_at IS NOT NULL`, id)
+	return err
+}
+
 // ResolveAlert closes an open alert.
 func ResolveAlert(db *sql.DB, id int64, at time.Time) error {
 	_, err := db.Exec(`UPDATE alerts SET state = 'resolved', resolved_at = ? WHERE id = ? AND state <> 'resolved'`, at.Unix(), id)
@@ -123,13 +156,6 @@ func ResolveAlert(db *sql.DB, id int64, at time.Time) error {
 // MarkAlertNotified records a delivered notification.
 func MarkAlertNotified(db *sql.DB, id int64, at time.Time) error {
 	_, err := db.Exec(`UPDATE alerts SET last_notified_at = ? WHERE id = ?`, at.Unix(), id)
-	return err
-}
-
-// RenotifyAlert makes a firing alert due for notification again at once (its
-// severity rose). An acknowledged or resolved alert is left alone.
-func RenotifyAlert(db *sql.DB, id int64) error {
-	_, err := db.Exec(`UPDATE alerts SET last_notified_at = NULL WHERE id = ? AND state = 'firing'`, id)
 	return err
 }
 
@@ -303,13 +329,16 @@ func DeleteNotificationChannel(db *sql.DB, id int64) error {
 	return err
 }
 
-// ListCurrentDeviceFindings returns the findings of a kind last seen since
-// the cutoff, across all devices.
+// ListCurrentDeviceFindings returns the findings of a kind that are current,
+// across all devices: last seen since the cutoff, or held by the hygiene
+// audit (FindingSourceAudit) — a pass saw the condition and none has seen it
+// gone since, however long ago that was. Only a kind the audit shares
+// (parallel_api_poller) ever has held rows.
 func ListCurrentDeviceFindings(db *sql.DB, kind string, since time.Time) ([]DeviceFinding, error) {
 	rows, err := db.Query(
-		`SELECT id, device_id, kind, severity, detail, first_seen, last_seen, count
-		 FROM device_findings WHERE kind = ? AND last_seen >= ?
-		 ORDER BY device_id, detail`, kind, since.UTC())
+		`SELECT id, device_id, kind, severity, detail, first_seen, last_seen, count, COALESCE(source, '')
+		 FROM device_findings WHERE kind = ? AND (last_seen >= ? OR source = ?)
+		 ORDER BY device_id, detail`, kind, since.UTC(), FindingSourceAudit)
 	if err != nil {
 		return nil, err
 	}
@@ -317,7 +346,7 @@ func ListCurrentDeviceFindings(db *sql.DB, kind string, since time.Time) ([]Devi
 	out := make([]DeviceFinding, 0, 4)
 	for rows.Next() {
 		var f DeviceFinding
-		if err := rows.Scan(&f.ID, &f.DeviceID, &f.Kind, &f.Severity, &f.Detail, &f.FirstSeen, &f.LastSeen, &f.Count); err != nil {
+		if err := rows.Scan(&f.ID, &f.DeviceID, &f.Kind, &f.Severity, &f.Detail, &f.FirstSeen, &f.LastSeen, &f.Count, &f.Source); err != nil {
 			return nil, err
 		}
 		out = append(out, f)

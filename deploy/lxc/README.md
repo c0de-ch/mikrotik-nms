@@ -254,9 +254,10 @@ What the LXC needs:
   `proxmox-create.env`, or `pct set <vmid> --net0 …,hwaddr=<same MAC>,ip=…/24,gw=…`
   on an existing one — keep the `hwaddr` so the MAC doesn't change).
 - **Source IPs intact.** The collector identifies each exporter by its UDP
-  source address (a managed RouterOS device whose export source equals its
-  NMS address is accepted automatically; others are added under
-  Traffic → Flows). Nothing on the path may SNAT the exports.
+  source address (exporters are added under Traffic → Flows; nothing is
+  accepted automatically unless "Accept routers automatically" is switched
+  on in Settings, and then only managed routers). Nothing on the path may
+  SNAT the exports.
 - **Disk.** At the default retention (1-minute detail for 3 days, hourly for
   90 days) flows add roughly 150 MB for a few exporters, about 500 MB worst
   case; the daily `VACUUM` needs free space about the size of the DB. Lower

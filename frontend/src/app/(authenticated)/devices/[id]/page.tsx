@@ -19,10 +19,12 @@ import { useAuth } from "@/context/auth";
 import { api, type Device, type DeviceInterface, type Neighbor } from "@/lib/api";
 import { shortFingerprint } from "@/lib/device-tls";
 import { deviceStatusBadgeClass, deviceStatusLabel } from "@/lib/status";
+import { roleLabel } from "@/lib/device-role";
 import { useWebSocket } from "@/hooks/use-websocket";
 import { EditConnectionDialog, TLSPinMissingBadge, TLSPinMissingNotice } from "@/components/devices/device-connection";
 import { DeviceLoadBadges } from "@/components/devices/device-load";
 import { FindingsCard } from "@/components/devices/findings-card";
+import { useDeviceHygiene } from "@/components/devices/hygiene";
 import { LoadCard } from "@/components/devices/load-card";
 import { DeviceLoadTab } from "@/components/devices/load-tab";
 import { PollingCard } from "@/components/devices/polling-card";
@@ -40,6 +42,9 @@ export default function DeviceDetailPage() {
   const [neighbors, setNeighbors] = useState<Neighbor[]>([]);
   // Bumped after an edit of the connection: the device is read again at once.
   const [reload, setReload] = useState(0);
+  // The hygiene audit's view of the device (database only), shared by the
+  // Findings section and the load tab.
+  const { hygiene, error: hygieneError, reload: reloadHygiene } = useDeviceHygiene(token, id);
 
   useEffect(() => {
     if (!token || !id) return;
@@ -128,6 +133,15 @@ export default function DeviceDetailPage() {
               </span>
             ) : null}
           </p>
+          {device.role && (
+            <p
+              className="mt-0.5 text-xs text-muted-foreground"
+              title="What the stored facts say this device does in the network. Flow export is only set up on, and accepted from, routers."
+            >
+              <span className="mr-1.5 rounded-full border px-1.5 text-[10px] font-medium text-foreground">{roleLabel(device.role)}</span>
+              {device.role_reason}
+            </p>
+          )}
         </div>
         {token && user?.role === "admin" && (
           <EditConnectionDialog device={device} token={token} onSaved={() => setReload((n) => n + 1)} />
@@ -155,7 +169,16 @@ export default function DeviceDetailPage() {
         </div>
       </div>
 
-      {token && <FindingsCard deviceId={device.id} token={token} />}
+      {token && (
+        <FindingsCard
+          device={device}
+          token={token}
+          isAdmin={user?.role === "admin"}
+          hygiene={hygiene}
+          hygieneError={hygieneError}
+          onPassStarted={reloadHygiene}
+        />
+      )}
 
       {/* The load tab comes first: it continues the two cards above — the
           device's CPU over time next to what the NMS sent it. */}
@@ -166,7 +189,7 @@ export default function DeviceDetailPage() {
           <TabsTrigger value="neighbors">Neighbors ({neighbors.length})</TabsTrigger>
         </TabsList>
 
-        <TabsContent value="load">{token && <DeviceLoadTab device={device} token={token} />}</TabsContent>
+        <TabsContent value="load">{token && <DeviceLoadTab device={device} token={token} hygiene={hygiene} />}</TabsContent>
 
         <TabsContent value="interfaces">
           <Table>

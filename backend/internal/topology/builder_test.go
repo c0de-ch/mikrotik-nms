@@ -11,40 +11,46 @@ import (
 
 func TestInferDeviceType(t *testing.T) {
 	tests := []struct {
-		board string
-		want  string
+		board, arch string
+		want        string
 	}{
 		// Routers
-		{"CCR2004-1G-12S+2XS", "router"},
-		{"CCR1036-12G-4S", "router"},
-		{"RB4011iGS+5HacQ2HnD", "router"},
-		{"RB5009UG+S+IN", "router"},
-		{"hEX S", "router"},
-		{"RB750Gr3", "router"},
+		{"CCR2004-1G-12S+2XS", "arm64", "router"},
+		{"CCR1036-12G-4S", "tile", "router"},
+		{"RB4011iGS+5HacQ2HnD", "arm", "router"},
+		{"RB5009UG+S+IN", "arm64", "router"},
+		{"hEX S", "mmips", "router"},
+		{"RB750Gr3", "mmips", "router"},
+		{"L009UiGS-RM", "arm", "router"},
+		{"PowerBox Pro", "mipsbe", "router"},
+		{"CHR", "x86_64", "router"},
+		{"A PC mainboard", "x86_64", "router"}, // x86 is router (PC) hardware whatever it is called
 
 		// Switches
-		{"CSS610-8G-2S+IN", "switch"},
-		{"CRS326-24G-2S+RM", "switch"},
-		{"CRS328-24P-4S+RM", "switch"},
+		{"CSS610-8G-2S+IN", "", "switch"},
+		{"CRS326-24G-2S+RM", "arm", "switch"},
+		{"CRS328-24P-4S+RM", "arm", "switch"},
+		{"netPower 16P", "arm", "switch"},
 
-		// Access points
-		{"cAP ac", "ap"},
-		{"wAP ac", "ap"},
-		{"hAP ac3", "ap"},
-		{"Audience", "ap"},
+		// Access points and CPEs
+		{"cAP ac", "arm", "ap"},
+		{"wAP ac", "arm", "ap"},
+		{"hAP ac3", "arm", "ap"},
+		{"Audience", "arm", "ap"},
+		{"LHG 5", "mipsbe", "ap"},
 
 		// Empty board -> unknown
-		{"", "unknown"},
+		{"", "", "unknown"},
 
-		// Unrecognized board -> default router
-		{"SomeOtherBoard", "router"},
+		// An unrecognised board is unknown, not a router by default.
+		{"SomeOtherBoard", "arm64", "unknown"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.board, func(t *testing.T) {
-			got := inferDeviceType(tt.board)
+			got := inferDeviceType(tt.board, tt.arch)
 			if got != tt.want {
-				t.Errorf("inferDeviceType(%q) = %q, want %q", tt.board, got, tt.want)
+				t.Errorf("inferDeviceType(%q, %q) = %q, want %q", tt.board, tt.arch, got, tt.want)
 			}
 		})
 	}
@@ -84,7 +90,7 @@ func TestIsWirelessType(t *testing.T) {
 // duplicates the default route (skipped) and a standalone tunnel.
 func buildFixtureDB(t *testing.T) *sql.DB {
 	t.Helper()
-	db, err := database.Open(t.TempDir() + "/topology.db")
+	db, err := database.OpenFresh(t.TempDir() + "/topology.db")
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}

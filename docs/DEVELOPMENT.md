@@ -443,10 +443,22 @@ func TestInferDeviceType(t *testing.T) {
 }
 ```
 
-Tests that need a database use a temp file via `t.TempDir()` and the real
-`database.Open` so migrations run (see `db_test.go`). There is currently no Go
-test for the API/handlers layer, and the frontend has no test runner — `npm run
-lint` is the frontend gate.
+Tests that need a database call `dbtest.Open(t)` (`internal/database/dbtest`):
+a fresh, fully migrated SQLite file per test, opened through the real
+`database.Open`. The migrations run once per test binary and every test gets
+a copy — running them per test costs over a second each under the race
+detector, which CI uses. (`db_test.go` and the migration tests still migrate
+for themselves: the migrations are what they test.) The frontend has no test
+runner — `npm run lint` is the frontend gate.
+
+Tests that need a device use `routeros/routerostest`: a fake RouterOS API
+endpoint on loopback that accepts a login, records every command with its
+words (attribute and query words alike) and answers with scripted rows, a
+count for `=count-only=`, or a trap. The hygiene audit's device
+personalities (`internal/hygiene/hygienetest`: a clean access point, a clean
+48-port switch) script such a fake, and are also run through the real read
+catalogue and rules without any socket. Time is always a fake clock — never
+a sleep.
 
 ## 8. Git workflow
 

@@ -106,6 +106,7 @@ type BridgePortInfo struct {
 	Disabled          bool
 	Dynamic           bool
 	HW                bool   // hw=yes: hardware offload requested
+	HWReported        bool   // the print carried hw at all
 	HWOffload         bool   // hw-offload=true: the switch chip forwards this port
 	HWOffloadReported bool   // the print carried hw-offload at all
 	HWOffloadGroup    string // switch chip group, e.g. "switch1"
@@ -315,6 +316,7 @@ func parseBridgePortRow(m map[string]string) (BridgePortInfo, bool) {
 	if v, ok := m["hw-offload"]; ok {
 		p.HWOffload, p.HWOffloadReported = rosBool(v), true
 	}
+	_, p.HWReported = m["hw"]
 	applyPortRuntime(&p, m)
 	switch {
 	case p.Status != "":

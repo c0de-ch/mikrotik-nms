@@ -252,6 +252,17 @@ export const api = {
     // failures, …), most recently seen first.
     findings: (token: string, id: string, limit = 50) =>
       apiFetch<DeviceFinding[]>(`/devices/${id}/findings?limit=${limit}`, { token }),
+    // The hygiene audit and the diagnose pass: the device's hygiene findings
+    // with their fix, the last passes and when the next audit runs. From the
+    // database — reading it costs the device nothing.
+    hygiene: (token: string, id: string) => apiFetch<DeviceHygiene>(`/devices/${id}/hygiene`, { token }),
+    // Admin: start a pass now. One of each kind per device and hour (429),
+    // refused while the device is paused, has no API session or already
+    // runs a pass (409), and while polling is off (503).
+    auditNow: (token: string, id: string) =>
+      apiFetch<HygienePass>(`/devices/${id}/hygiene/audit`, { method: "POST", token }),
+    diagnoseNow: (token: string, id: string) =>
+      apiFetch<HygienePass>(`/devices/${id}/hygiene/diagnose`, { method: "POST", token }),
     // IP auto-follow proposals: a managed device seen by MNDP/CDP at a new
     // address. Pending only unless status is given ("all" or one status).
     addressProposals: (token: string, status?: AddressProposalStatus | "all") =>
@@ -391,8 +402,12 @@ export const api = {
       apiFetch<FlowExporterStatus>("/flows/exporters", { method: "POST", token, body: JSON.stringify(body) }),
     updateExporter: (token: string, id: number, body: FlowExporterBody) =>
       apiFetch<FlowExporterStatus>(`/flows/exporters/${id}`, { method: "PUT", token, body: JSON.stringify(body) }),
+    // Deleting leaves the address blocked (see FlowBlockedSender).
     deleteExporter: (token: string, id: number) =>
       apiFetch<void>(`/flows/exporters/${id}`, { method: "DELETE", token }),
+    // Removes a block: the sender is an unknown sender again.
+    unblockSender: (token: string, address: string) =>
+      apiFetch<void>(`/flows/blocked?address=${encodeURIComponent(address)}`, { method: "DELETE", token }),
     updateIface: (token: string, exporterId: number, ifIndex: number, body: { name: string; role: FlowIfaceRole }) =>
       apiFetch<FlowIface>(`/flows/exporters/${exporterId}/interfaces/${ifIndex}`, {
         method: "PUT",
@@ -725,7 +740,15 @@ export interface Device {
   // How the pollers treat the device right now — GET /devices/{id} and the
   // polling-control responses only.
   polling?: DevicePolling;
+  // What the stored facts say the device does in the network, with the
+  // reason (GET /devices and /devices/{id}), and whether flow export may be
+  // set up on it (only routers; never a C1 device).
+  role?: DeviceRole;
+  role_reason?: string;
+  flow_export_eligible?: boolean;
 }
+
+export type DeviceRole = "router" | "weak-router" | "switch" | "ap-cpe" | "unknown";
 
 // next_runs maps a scheduled read (counters, neighbors, bridge_ports, …) to
 // when it runs next; empty while the device is paused or offline.
@@ -761,15 +784,92 @@ export interface DeviceAuditEntry {
 // NMS), login_failure, or tls_pin_mismatch (a TLS session refused because
 // the device presented another certificate than the pinned one; detail is
 // the fingerprint it presented); others may follow.
+// One step of a finding's suggested fix. Advice for an operator: the NMS
+// never applies it.
+export interface FindingFix {
+  text: string;
+  // RouterOS commands for the device's terminal, shown apart from the text.
+  commands?: string[];
+  // The commands only print (a check, not a change).
+  read_only?: boolean;
+  // The step interrupts traffic: plan a maintenance window.
+  window?: boolean;
+}
+
+export type FindingSeverity = "info" | "warn" | "critical";
+
 export interface DeviceFinding {
   id: number;
   device_id: string;
   kind: string;
-  severity: "info" | "warn" | "critical";
+  severity: FindingSeverity;
   detail: string;
   first_seen: string;
   last_seen: string;
   count: number;
+  // Set on the findings of the hygiene audit (source "audit"): a title, a
+  // plain explanation and the suggested fix.
+  title?: string;
+  explanation?: string;
+  fix?: FindingFix[];
+  source?: string;
+}
+
+// A hygiene finding in a fleet-wide list (GET /network-health).
+export interface HygieneFinding extends DeviceFinding {
+  device_name: string;
+}
+
+export type HygienePassKind = "audit" | "diagnose";
+
+// One pass of the hygiene audit or of the diagnose pass.
+export interface HygienePass {
+  id: number;
+  device_id: string;
+  kind: HygienePassKind;
+  // scheduled | admin | the alert rule that asked for a diagnose pass
+  reason: string;
+  requested_by?: string;
+  started_at: string;
+  // The zero time ("0001-…") while the pass runs.
+  finished_at: string;
+  // partial: a read failed, or the pass ended early — what was read was
+  // judged. aborted: nothing was.
+  status: "running" | "complete" | "partial" | "aborted";
+  reads: number;
+  failed_reads: number;
+  // Why a pass ended early, which reads failed, or what it left unchecked.
+  detail?: string;
+  // What this pass found.
+  found: { kind: string; severity: FindingSeverity; title: string; detail: string }[];
+  // Only for a pass that judged the device and made no finding: what it saw
+  // of the usual device-side causes of a high CPU, as the rest of a sentence
+  // that begins with the pass ("found none of …: no graphing, …", "found that
+  // traffic-flow is enabled — … — and nothing else: …").
+  summary?: string;
+}
+
+export interface HygienePassState {
+  last: HygienePass | null;
+  // When the next scheduled audit runs (audits only; absent while none is
+  // scheduled: paused, offline, polling off).
+  next_run?: string;
+  // When an admin may next ask for this pass; null = now.
+  available_at: string | null;
+}
+
+// GET /devices/{id}/hygiene
+export interface DeviceHygiene {
+  pollers: "local" | "off";
+  // The kind of pass in progress on the device ("" = none).
+  running: "" | HygienePassKind;
+  audit: HygienePassState;
+  diagnose: HygienePassState;
+  // Which stored configuration snapshot is current (the snapshot itself is
+  // not returned).
+  snapshot: { taken_at: string; hash: string; ros_version: string } | null;
+  // The device's hygiene findings, most severe first.
+  findings: DeviceFinding[];
 }
 
 export type AddressProposalStatus =
@@ -1268,6 +1368,8 @@ export interface FlowGlobalStats {
   unknown_datagrams: number;
   rejected: number;
   rate_limited: number;
+  // From blocked senders, dropped before decode.
+  blocked?: number;
   queue_dropped: number;
   kernel_dropped: number;
   writer_dropped: number;
@@ -1313,6 +1415,12 @@ export interface FlowExporterStatus {
   last_error: string;
   last_error_at: string | null;
   interfaces_seen: number;
+  // The role of the managed device at the exporter's address ("" = not a
+  // managed device), and — when that device must not export flows (switch,
+  // access point, CPE, C1) — why. The exporter keeps working either way.
+  device_role?: DeviceRole | "";
+  device_role_reason?: string;
+  export_warning?: string;
 }
 
 export interface FlowUnknownSender {
@@ -1323,6 +1431,30 @@ export interface FlowUnknownSender {
   protocol: FlowProtocol;
   device_id: string | null;
   device_name: string;
+  device_role?: DeviceRole | "";
+  device_role_reason?: string;
+}
+
+// A sender whose datagrams are dropped before decode: a deleted exporter
+// ("deleted") or a managed device that must not export ("auto"). It stays
+// blocked until an admin unblocks it or adds it with unblock.
+export interface FlowBlockedSender {
+  address: string;
+  name: string;
+  kind: FlowExporterKind;
+  reason: string;
+  source: "deleted" | "auto";
+  device_id: string;
+  device_name: string;
+  device_role: DeviceRole | "";
+  device_role_reason: string;
+  // The device at this address must still not export: its next datagram
+  // would block it again, so removing the block alone does nothing.
+  still_never: boolean;
+  created_by: string;
+  created_at: string | null;
+  last_seen: string | null;
+  datagrams: number;
 }
 
 export interface FlowSuggestedExporter {
@@ -1343,16 +1475,45 @@ export interface FlowStatus {
   global: FlowGlobalStats;
   exporters: FlowExporterStatus[];
   unknown_senders: FlowUnknownSender[];
+  blocked_senders?: FlowBlockedSender[];
+  // "" = nothing is accepted automatically; "router" = routers only.
+  auto_accept_classes?: "" | "router";
   // REST only (the "flows.status" WS payload omits it).
   suggested_exporters?: FlowSuggestedExporter[];
+}
+
+// One numbered step of the rollback. The one risky step carries a warning.
+export interface FlowRollbackStep {
+  text: string;
+  commands: string[];
+  warning?: string;
+  optional?: boolean;
 }
 
 export interface FlowSetup {
   enabled: boolean;
   port: number;
+  // The admin-approved collector address ("Flow advertise address" in
+  // Settings); "" with source "unknown" while it is not set. Never guessed.
   advertise_address: string;
-  advertise_source: "setting" | "auto" | "unknown";
-  routeros: { device_id: string | null; apply: string[]; rollback: string[] };
+  advertise_source: "setting" | "unknown";
+  // The chosen device: the class it is budgeted as, its role and why, and
+  // whether the commands that enable export are shown. Empty without one.
+  class: DeviceClass | "";
+  role: DeviceRole | "";
+  role_reason: string;
+  eligible: boolean;
+  warnings: string[];
+  advice: string[];
+  routeros: {
+    device_id: string | null;
+    // Read-only: does the device export?
+    check: string[];
+    // Empty unless the device is eligible.
+    apply: string[];
+    interfaces_note: string;
+    rollback: { fixed: boolean; note: string; steps: FlowRollbackStep[] };
+  };
   opnsense: {
     destination: string;
     version: string;
@@ -1557,6 +1718,10 @@ export interface FlowExporterBody {
   enabled: boolean;
   sampling_override: number;
   nat_addresses: string[];
+  // POST only: add the exporter although its address is blocked (a deleted
+  // exporter, or a device that must not export). Without it the server
+  // answers 409 with code "sender_blocked" and the reason.
+  unblock?: boolean;
 }
 
 // One physical port of a device with its rate from the port-counter snapshot.
@@ -1769,6 +1934,9 @@ export interface NetworkHealth {
   bridges: BridgeWithPorts[];
   events: LoopEvent[];
   port_states: InterfaceState[];
+  // Every device's hygiene findings (the audit and the diagnose pass), most
+  // severe first.
+  findings: HygieneFinding[];
 }
 
 export interface BridgeVLAN {
@@ -1979,7 +2147,13 @@ export interface Alert {
   acked_by?: string;
   acked_at?: string;
   summary: string;
+  // Rule-specific details. Lists of text lines: "rollback" and "check" (flow
+  // export), "likely_cause" (what the diagnose pass found, with
+  // "diagnosed_at"), "findings" and "fix" (audit_critical).
   facts?: Record<string, unknown>;
+  // false = raised on evidence that can be forged or mistaken (a UDP source
+  // address); such an alert is never critical until it is confirmed.
+  confirmed?: boolean;
   runbook_url: string;
   // A silence in force keeps this alert from being notified.
   silenced: boolean;

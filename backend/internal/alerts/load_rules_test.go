@@ -70,9 +70,12 @@ func TestHoldNeitherOpensNorResolves(t *testing.T) {
 	}
 }
 
-// An alert that gets worse is announced again at once, not at the next
-// four-hourly reminder; one that is acknowledged stays quiet.
-func TestEscalationIsNotifiedAgain(t *testing.T) {
+// An alert that reaches a severity for the first time is announced again at
+// once — not at the next four-hourly reminder, and through an
+// acknowledgement given for the lower severity. A severity it was already
+// announced at is not news: an alert swinging between warning and critical
+// does not notify at every swing, and an acknowledgement given since stays.
+func TestEscalationNotifiesOncePerSeverity(t *testing.T) {
 	rule := &fakeRule{name: "r", obs: []Observation{{Key: "d1", Severity: SeverityWarning, Summary: "warm"}}}
 	e, d, now := newTestEngine(t, rule)
 	mustTick(t, e)
@@ -80,13 +83,20 @@ func TestEscalationIsNotifiedAgain(t *testing.T) {
 		t.Fatalf("first: %v", got)
 	}
 
+	// Acknowledged as a warning, then critical for the first time: the
+	// acknowledgement was not for this.
+	open := openAlerts(t, e)
+	if err := queries.AckAlert(e.db, open[0].ID, "operator", *now); err != nil {
+		t.Fatal(err)
+	}
 	rule.obs = []Observation{{Key: "d1", Severity: SeverityCritical, Summary: "hot"}}
 	*now = now.Add(time.Minute)
 	mustTick(t, e)
 	if got := d.take(); !sameSet(got, []string{"firing r/d1"}) {
-		t.Fatalf("escalation sent %v, want the alert again", got)
+		t.Fatalf("first escalation sent %v, want the alert again", got)
 	}
-	if open := openAlerts(t, e); len(open) != 1 || open[0].Severity != SeverityCritical || open[0].LastNotifiedAt == nil {
+	open = openAlerts(t, e)
+	if len(open) != 1 || open[0].Severity != SeverityCritical || open[0].State != queries.AlertFiring || open[0].PeakSeverity != SeverityCritical {
 		t.Fatalf("after the escalation: %+v", open)
 	}
 
@@ -98,8 +108,8 @@ func TestEscalationIsNotifiedAgain(t *testing.T) {
 		t.Fatalf("a de-escalation notified: %v", got)
 	}
 
-	// Acknowledged, then worse again: the operator already knows.
-	open := openAlerts(t, e)
+	// Acknowledged, then critical again: it was announced as critical
+	// before, the operator knows, and the acknowledgement stays.
 	if err := queries.AckAlert(e.db, open[0].ID, "operator", *now); err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +117,72 @@ func TestEscalationIsNotifiedAgain(t *testing.T) {
 	*now = now.Add(time.Minute)
 	mustTick(t, e)
 	if got := d.take(); len(got) != 0 {
-		t.Fatalf("an acknowledged alert was re-notified on escalation: %v", got)
+		t.Fatalf("a second swing to critical notified again: %v", got)
+	}
+	if open = openAlerts(t, e); len(open) != 1 || open[0].State != queries.AlertAcked || open[0].Severity != SeverityCritical {
+		t.Fatalf("after the second swing: %+v, want it still acknowledged, shown as critical", open)
+	}
+
+	// Unacknowledged it would still get its four-hourly reminder; an
+	// unacknowledged swing does not add one.
+	rule2 := &fakeRule{name: "s", obs: []Observation{{Key: "d2", Severity: SeverityWarning, Summary: "warm"}}}
+	e2, d2, now2 := newTestEngine(t, rule2)
+	mustTick(t, e2)
+	d2.take()
+	for i, sev := range []string{SeverityCritical, SeverityWarning, SeverityCritical, SeverityWarning, SeverityCritical} {
+		rule2.obs = []Observation{{Key: "d2", Severity: sev, Summary: "swing"}}
+		*now2 = now2.Add(time.Minute)
+		mustTick(t, e2)
+		got := d2.take()
+		if i == 0 && !sameSet(got, []string{"firing s/d2"}) {
+			t.Fatalf("first escalation of an unacknowledged alert sent %v", got)
+		}
+		if i > 0 && len(got) != 0 {
+			t.Fatalf("swing %d notified: %v", i, got)
+		}
+	}
+}
+
+// The same holds where nothing is ever delivered — no channel configured, a
+// silence in force, a relay that is down: an acknowledgement given after the
+// alert had been critical survives the next swing to critical. (The rule
+// must not hang on a notification having gone out.)
+func TestEscalationKeepsAnAckWithoutAnyDelivery(t *testing.T) {
+	rule := &fakeRule{name: "r", obs: []Observation{{Key: "d1", Severity: SeverityWarning, Summary: "warm"}}}
+	e, d, now := newTestEngine(t, rule)
+	d.delivered = 0 // nowhere to send anything
+	mustTick(t, e)
+
+	step := func(sev string) queries.Alert {
+		t.Helper()
+		rule.obs = []Observation{{Key: "d1", Severity: sev, Summary: sev}}
+		*now = now.Add(time.Minute)
+		mustTick(t, e)
+		open := openAlerts(t, e)
+		if len(open) != 1 {
+			t.Fatalf("open alerts = %+v", open)
+		}
+		return open[0]
+	}
+	ack := func(a queries.Alert) {
+		t.Helper()
+		if err := queries.AckAlert(e.db, a.ID, "operator", *now); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Critical for the first time: an acknowledgement of the warning goes.
+	ack(openAlerts(t, e)[0])
+	if a := step(SeverityCritical); a.State != queries.AlertFiring {
+		t.Fatalf("first time critical: state %q, want firing again", a.State)
+	}
+	// Acknowledged as critical; it eases and comes back, twice.
+	ack(openAlerts(t, e)[0])
+	for i := range 2 {
+		step(SeverityWarning)
+		if a := step(SeverityCritical); a.State != queries.AlertAcked {
+			t.Fatalf("swing %d back to critical: state %q — the acknowledgement was dropped although the operator had seen it critical", i+1, a.State)
+		}
 	}
 }
 

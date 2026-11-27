@@ -15,7 +15,7 @@ import (
 // target ("tgt").
 func stalenessDB(t *testing.T) *sql.DB {
 	t.Helper()
-	db, err := database.Open(t.TempDir() + "/stale.db")
+	db, err := database.OpenFresh(t.TempDir() + "/stale.db")
 	if err != nil {
 		t.Fatal(err)
 	}

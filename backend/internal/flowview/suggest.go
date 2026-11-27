@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/mikrotik-nms/backend/internal/database/queries"
+	"github.com/mikrotik-nms/backend/internal/devclass"
 	"github.com/mikrotik-nms/backend/internal/topology"
 )
 
@@ -36,6 +37,10 @@ type SuggestInput struct {
 	// IfaceTypes maps "<device id>\x00<iface>" to the interface type
 	// (interfaces table ∪ live snapshot).
 	IfaceTypes map[string]string
+	// Roles maps a device id to its role (topology.DeviceRoles). Rule T
+	// only applies to exporters whose device is a router or weak router: a
+	// device missing here gets no trunk views.
+	Roles map[string]devclass.Role
 }
 
 // Suggestion is one derived view the admin can add with one click. Point is
@@ -147,8 +152,11 @@ func existsKey(exporterID int64, deviceID, iface string) string {
 // Suggest computes the derived-view suggestions (contract §6.5): rule G
 // (a managed switch port whose only device is a flow-exporting gateway
 // without a device record, e.g. OPNsense) and rule T (a RouterOS exporter's
-// bridge trunk to another managed device). Output order: rule G by exporter
-// name, then rule T by exporter name and port.
+// bridge trunk to another managed device). Rule T rests on the exporter
+// routing what crosses the trunk, so it only applies to exporters whose
+// device has a router role (in.Roles): the records of a switch or an access
+// point that exports anyway say nothing about a trunk. Output order: rule G
+// by exporter name, then rule T by exporter name and port.
 func Suggest(in SuggestInput) []Suggestion {
 	s := &suggester{in: in, devNames: map[string]string{}, ifaces: map[int64][]queries.FlowIface{},
 		existing: map[string]bool{}}
@@ -184,7 +192,7 @@ func Suggest(in SuggestInput) []Suggestion {
 		}
 	}
 	for _, e := range exps {
-		if e.DeviceID != "" {
+		if e.DeviceID != "" && in.Roles[e.DeviceID].RoutesTraffic() {
 			out = append(out, s.trunk(e)...)
 		}
 	}
