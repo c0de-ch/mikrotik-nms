@@ -53,16 +53,32 @@ type planBudget struct {
 // comment) plus a small margin. A loop that starts printing a table on every
 // cycle is far outside it — the registration prints of the connectivity
 // poller, fixed in fa697a4, were up to six more commands a minute on every
-// device. Raising a number is a decision about that class of device, to be
-// made in review; none may be above its class's ceiling (devclass.BudgetOf),
-// and the two C1 devices are within two commands of it in their busiest
-// minute.
+// device — and so is a change that makes a device's reads fall together
+// again: before the start-up spread the two C1 devices got 16 commands in
+// their busiest minute. Raising a number is a decision about that class of
+// device, to be made in review; none may be above its class's ceiling
+// (devclass.BudgetOf). Every device's busiest minute is that of its hygiene
+// audit.
 var planBudgets = map[string]planBudget{
-	"sw48":  {perMinute: 5, oneMinute: 18},  // C1 switch, 48 ports:    4.3 a minute today, 16 in its busiest
-	"ap-ac": {perMinute: 5, oneMinute: 18},  // C1 access point:        4.4 a minute today, 16 in its busiest
-	"sw24":  {perMinute: 8, oneMinute: 28},  // C2 switch, 24 ports:    6.9 a minute today, 25 in its busiest
-	"ap-ax": {perMinute: 14, oneMinute: 28}, // C3 access point:       12.8 a minute today, 26 in its busiest
-	"rtr":   {perMinute: 16, oneMinute: 30}, // C3 router, two probes: 14.3 a minute today, 25 in its busiest
+	"sw48":  {perMinute: 5, oneMinute: 11},  // C1 switch, 48 ports:    4.25 a minute today,  9 in its busiest
+	"ap-ac": {perMinute: 5, oneMinute: 10},  // C1 access point:        4.18 a minute today,  8 in its busiest
+	"sw24":  {perMinute: 8, oneMinute: 20},  // C2 switch, 24 ports:    6.78 a minute today, 17 in its busiest
+	"ap-ax": {perMinute: 13, oneMinute: 23}, // C3 access point:       12.15 a minute today, 20 in its busiest
+	"rtr":   {perMinute: 15, oneMinute: 30}, // C3 router, two probes: 13.73 a minute today, 28 in its busiest
+}
+
+// planBusiestCeilings bound the busiest minute after start-up by what each
+// device was planned for, not by what it is sent today: the plan's budget
+// for a 48-port C1 switch — on average at most 6 commands a minute, at most
+// 12 in any minute — and for the others their class's commands a minute
+// (devclass.BudgetOf). planBudgets is the tighter, today-plus-margin check;
+// this one says how far a review may let a device go.
+var planBusiestCeilings = map[string]int{
+	"sw48":  12,                                            // the plan for a CRS354: 9 today (16 before the start-up spread)
+	"ap-ac": devclass.BudgetOf(devclass.C1).CommandsPerMin, // 12: 8 today
+	"sw24":  devclass.BudgetOf(devclass.C2).CommandsPerMin, // 30: 17 today
+	"ap-ax": devclass.BudgetOf(devclass.C3).CommandsPerMin, // 120: 20 today
+	"rtr":   devclass.BudgetOf(devclass.C3).CommandsPerMin, // 120: 28 today
 }
 
 // printsWithoutProplist are the prints the loops send whole today: neither a
@@ -472,6 +488,20 @@ func TestCallPlans(t *testing.T) {
 		if s.busiest > budget.oneMinute {
 			t.Errorf("%s (class %s) is sent %d commands in minute %d. Its budget for one minute, once the %d minutes of start-up are over, is %d.\n%s",
 				d.id, d.p.Class, s.busiest, s.busiestAt, planStartupMinutes, budget.oneMinute, minuteLines(calls, s.busiestAt))
+		}
+		// The busiest minute after start-up within what the device was
+		// planned for — whatever the margin above says.
+		ceiling, ok := planBusiestCeilings[d.id]
+		if !ok {
+			t.Fatalf("%s has no ceiling in planBusiestCeilings", d.id)
+		}
+		if s.busiest > ceiling {
+			t.Errorf("%s (class %s) is sent %d commands in minute %d, its busiest after start-up; it was planned for at most %d in any minute.\n%s",
+				d.id, d.p.Class, s.busiest, s.busiestAt, ceiling, minuteLines(calls, s.busiestAt))
+		}
+		if ceiling > devclass.BudgetOf(d.p.Class).CommandsPerMin {
+			t.Errorf("the busiest-minute ceiling of %s (%d) is above its class %s's %d commands a minute",
+				d.id, ceiling, d.p.Class, devclass.BudgetOf(d.p.Class).CommandsPerMin)
 		}
 		// No budget here may be above what the class was sized for (design
 		// §4.4): its sustained rate on average, rate plus burst in a minute.
