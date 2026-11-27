@@ -9,7 +9,7 @@ frontend, REST + WebSocket). For deployment and feature docs see the
 
 | Tool | Version | Notes |
 |------|---------|-------|
-| Go | 1.25+ | matches `go 1.25.0` in [`backend/go.mod`](../backend/go.mod) |
+| Go | 1.27.4+ | [`backend/go.mod`](../backend/go.mod): `go 1.26.0` + `toolchain go1.27.4` — an older `go` (1.21+) fetches go1.27.4 by itself; CI, the image and the installers build with exactly 1.27.4 |
 | Node.js | 22+ | for the Next.js 16 / React 19 frontend |
 | npm | bundled with Node | `npm ci` for reproducible installs |
 | make | any | thin wrapper over the `go`/`npm` commands |
@@ -35,7 +35,7 @@ mikrotik-c0de/
 ├── Makefile                       # build / dev / test / lint targets
 ├── scripts/dev.sh                 # run backend + frontend concurrently
 ├── backend/
-│   ├── go.mod                     # Go 1.25, chi, goose, modernc sqlite
+│   ├── go.mod                     # Go 1.26 (toolchain 1.27.4), chi, goose, modernc sqlite
 │   └── cmd/
 │   │   ├── mikrotik-nms/main.go   # entrypoint: config → DB → ws hub → poller → http
 │   │   └── deploy-agent/          # HMAC webhook deploy daemon

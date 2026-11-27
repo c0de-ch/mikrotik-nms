@@ -30,7 +30,7 @@ The backend owns all state in a single SQLite file. There is **no external datab
 | Production Docker | A container runtime that can pull from `ghcr.io` |
 | Kubernetes | A cluster with a default `StorageClass` (for the PVC) and an ingress controller (manifests assume the NGINX ingress) |
 | LXC / bare-metal | Debian 13 (trixie) container or VM, run as root. The installer pulls Go, Node.js, and Caddy automatically |
-| Development | Go 1.25+, Node.js 22+ |
+| Development | Go 1.27.4+ (the toolchain `backend/go.mod` pins; an older `go` fetches it), Node.js 22+ |
 
 Network: the backend must be able to reach your RouterOS devices on the API port (`8728` plaintext, `8729` TLS). MNDP discovery uses UDP `5678`. The optional **flow collector** works the other way round: routers and firewalls send NetFlow / IPFIX / sFlow to the backend on UDP `2055` (`MIKROTIK_NMS_FLOW_LISTEN`, off by default). The backend binds that port itself — HTTP reverse proxies (Caddy, an ingress) cannot carry UDP — and identifies each exporter by its **source IP**, so nothing between exporter and backend may SNAT it. Device-side setup is in [FLOW-EXPORT.md](FLOW-EXPORT.md).
 
@@ -163,7 +163,7 @@ Both services run as the unprivileged `mikrotik-nms` user under a strict systemd
 
 If neither `--hostname` nor `--public-url` is given, the installer falls back to the LXC's primary IPv4 over plain HTTP.
 
-The installer is **idempotent** — re-run it after `git pull` to rebuild and restart. Skip the apt phase with `--skip-deps`. Operations:
+The installer is **idempotent** — re-run it after `git pull` to rebuild and restart. `--skip-deps` skips the apt packages, Node.js and Caddy; Go is still replaced whenever `/usr/local/go` is not the version `backend/go.mod` pins (sha256-checked), and the backend builds with `GOTOOLCHAIN=local`, so it never downloads a toolchain. Operations:
 
 ```bash
 systemctl status mikrotik-nms-backend mikrotik-nms-frontend caddy

@@ -25,8 +25,12 @@ Both paths end with `install.sh` running inside the LXC.
 | `/etc/systemd/system/mikrotik-nms-*.service` | Systemd units                     |
 | `/etc/caddy/Caddyfile`                | Reverse proxy config                     |
 
-System-wide deps installed: Go (from upstream tarball), Node.js (NodeSource),
-Caddy (official apt repo), build-essential, sqlite3.
+System-wide deps installed: Go (the upstream tarball of the toolchain
+`backend/go.mod` pins, sha256-checked), Node.js (NodeSource), Caddy (official
+apt repo), build-essential, sqlite3. `--skip-deps` skips all but Go: a re-run
+replaces `/usr/local/go` whenever it is another version, and the backend
+builds with `GOTOOLCHAIN=local` (an unsuitable Go fails the build instead of
+downloading a toolchain).
 
 ---
 
@@ -196,7 +200,8 @@ cd /opt/src/mikrotik-nms
 # Force a specific public URL (e.g. behind another reverse proxy)
 ./deploy/lxc/install.sh --no-tls --public-url http://192.0.2.50
 
-# Skip apt installs (when re-running after editing env or rebuilding)
+# Skip apt, Node.js and Caddy (when re-running after editing env or rebuilding;
+# Go is still brought to the pinned version)
 ./deploy/lxc/install.sh --skip-deps
 ```
 
