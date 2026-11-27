@@ -7,10 +7,10 @@
 # A change in this file is a change in what a device of this kind is sent.
 # Rewrite it with: go test ./internal/poller -run TestCallPlan -update
 
-commands in the hour     263
-  average per minute     4.38
+commands in the hour     251
+  average per minute     4.18
   most in one minute     13 (minute 0)
-  most after start-up    8 (minute 19; start-up is minutes 0-1)
+  most after start-up    8 (minute 20; start-up is minutes 0-1)
 reply rows in the hour   660
 liveness dials           120 (a TCP connect to the API port, no command)
 
@@ -28,11 +28,8 @@ count  every        rows/call  command
    12  5 min                1  /ip/route/print ?dst-address=0.0.0.0/0
    12  5 min                6  /log/print [4 fields]
     6  11 min               1  /system/resource/print [1 field]
-    4  15 min               0  /interface/bonding/print [2 fields]
     4  15 min              14  /interface/bridge/host/print ?local=false [10 fields]
     4  15 min               1  /interface/bridge/vlan/print
-    4  15 min               0  /interface/pppoe-client/print [2 fields]
-    4  15 min               0  /interface/vlan/print [3 fields]
     2  30 min               1  /ip/arp/print
     1  once                 0  /caps-man/interface/print =count-only=
     1  once                 0  /interface/bridge/print =count-only=
@@ -57,11 +54,11 @@ count  every        rows/call  command
 
 ## Commands per minute
 
-minutes  0- 9:  13   5   4   4   5   6   5   4   2   2
-minutes 10-19:   5   5   4   2   2   5   6   4   4   8
+minutes  0- 9:  13   5   4   4   2   6   5   4   2   2
+minutes 10-19:   5   5   4   2   2   5   6   4   4   5
 minutes 20-29:   8   8   7   2   2   5   5   5   2   2
-minutes 30-39:   6   5   4   4   5   5   5   4   3   2
-minutes 40-49:   5   5   4   2   2   5   5   4   5   5
+minutes 30-39:   6   5   4   4   2   5   5   4   3   2
+minutes 40-49:   5   5   4   2   2   5   5   4   5   2
 minutes 50-59:   5   5   4   2   2   5   5   4   3   2
 
 ## The first 10 minutes
@@ -96,12 +93,9 @@ minute 3: 4 commands
     1× /interface/print [21 fields]
     1× /interface/bridge/vlan/print
     1× /interface/bridge/host/print ?local=false [10 fields]
-minute 4: 5 commands
+minute 4: 2 commands
     1× /system/resource/print [3 fields]
     1× /interface/print [21 fields]
-    1× /interface/bonding/print [2 fields]
-    1× /interface/vlan/print [3 fields]
-    1× /interface/pppoe-client/print [2 fields]
 minute 5: 6 commands
     1× /system/resource/print [3 fields]
     1× /interface/print [21 fields]

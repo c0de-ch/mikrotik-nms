@@ -7,8 +7,8 @@
 # A change in this file is a change in what a device of this kind is sent.
 # Rewrite it with: go test ./internal/poller -run TestCallPlan -update
 
-commands in the hour     860
-  average per minute     14.33
+commands in the hour     824
+  average per minute     13.73
   most in one minute     28 (minute 17)
   most after start-up    28 (minute 17; start-up is minutes 0-1)
 reply rows in the hour   4614
@@ -26,12 +26,9 @@ count  every        rows/call  command
    30  2 min                1  /interface/bridge/print [7 fields]
    30  2 min                1  /ip/neighbor/print
    30  2 min                5  /log/print [4 fields]
-   12  5 min                0  /interface/bonding/print [2 fields]
    12  5 min               15  /interface/bridge/host/print ?local=false [10 fields]
    12  5 min                4  /interface/bridge/vlan/print
    12  5 min                9  /interface/ethernet/print [16 fields]
-   12  5 min                0  /interface/pppoe-client/print [2 fields]
-   12  5 min                0  /interface/vlan/print [3 fields]
     6  10 min 15 s          1  /system/resource/print [1 field]
     4  15 min               7  /ip/arp/print
     4  15 min               6  /ip/dhcp-server/lease/print
@@ -60,12 +57,12 @@ count  every        rows/call  command
 
 ## Commands per minute
 
-minutes  0- 9:  22  14  12  18  12  15  11  15  15  14
-minutes 10-19:  12  14  12  18  12  18  11  28  15  14
-minutes 20-29:  12  14  12  18  12  15  11  15  15  14
-minutes 30-39:  15  14  12  18  11  16  11  15  15  14
-minutes 40-49:  12  14  12  18  11  19  11  15  15  14
-minutes 50-59:  12  14  12  18  11  16  11  15  15  14
+minutes  0- 9:  22  14  12  15  12  15  11  15  12  14
+minutes 10-19:  12  14  12  15  12  18  11  28  12  14
+minutes 20-29:  12  14  12  15  12  15  11  15  12  14
+minutes 30-39:  15  14  12  15  11  16  11  15  12  14
+minutes 40-49:  12  14  12  15  11  19  11  15  12  14
+minutes 50-59:  12  14  12  15  11  16  11  15  12  14
 
 ## The first 10 minutes
 
@@ -102,11 +99,8 @@ minute 2: 12 commands
     1× /log/print [4 fields]
     1× /ip/route/print ?dst-address=0.0.0.0/0
     1× /interface/bridge/vlan/print
-minute 3: 18 commands
+minute 3: 15 commands
     1× /interface/bridge/host/print ?local=false [10 fields]
-    1× /interface/bonding/print [2 fields]
-    1× /interface/vlan/print [3 fields]
-    1× /interface/pppoe-client/print [2 fields]
     1× /system/resource/print [3 fields]
     1× /ip/neighbor/print
     4× /interface/print [21 fields]
@@ -148,11 +142,8 @@ minute 7: 15 commands
     1× /interface/bridge/monitor =numbers= =once= [9 fields]
     1× /ip/route/print ?dst-address=0.0.0.0/0
     1× /interface/bridge/vlan/print
-minute 8: 15 commands
+minute 8: 12 commands
     1× /interface/bridge/host/print ?local=false [10 fields]
-    1× /interface/bonding/print [2 fields]
-    1× /interface/vlan/print [3 fields]
-    1× /interface/pppoe-client/print [2 fields]
     1× /system/resource/print [3 fields]
     4× /interface/print [21 fields]
     4× /ping =address= =count= =interval=

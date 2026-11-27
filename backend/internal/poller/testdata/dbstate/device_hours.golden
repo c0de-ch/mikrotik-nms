@@ -13,8 +13,8 @@
 #   REAL values with three decimals, strings quoted, NULL as NULL
 #   rows ordered by the primary key (device_id, bucket)
 
-device_id="ap-ac" bucket=+00:00:00 covered_s=3590 cpu_avg=14.068 cpu_max=44 cpu_p95=41 mem_free_min=51445760 nms_cmds=263 nms_cost_ms=0 ros_version="7.25 (stable)"
-device_id="ap-ax" bucket=+00:00:00 covered_s=3590 cpu_avg=6.525 cpu_max=9 cpu_p95=9 mem_free_min=130088960 nms_cmds=765 nms_cost_ms=0 ros_version="7.20.4 (stable)"
-device_id="rtr" bucket=+00:00:00 covered_s=3590 cpu_avg=5.525 cpu_max=8 cpu_p95=8 mem_free_min=845217792 nms_cmds=860 nms_cost_ms=0 ros_version="7.25 (stable)"
-device_id="sw24" bucket=+00:00:00 covered_s=3590 cpu_avg=8.475 cpu_max=11 cpu_p95=11 mem_free_min=440467456 nms_cmds=415 nms_cost_ms=0 ros_version="7.25 (stable)"
-device_id="sw48" bucket=+00:00:00 covered_s=3590 cpu_avg=17.034 cpu_max=46 cpu_p95=44 mem_free_min=20512768 nms_cmds=259 nms_cost_ms=0 ros_version="7.24.5 (stable)"
+device_id="ap-ac" bucket=+00:00:00 covered_s=3590 cpu_avg=14.068 cpu_max=44 cpu_p95=41 mem_free_min=51445760 nms_cmds=251 nms_cost_ms=0 ros_version="7.25 (stable)"
+device_id="ap-ax" bucket=+00:00:00 covered_s=3590 cpu_avg=6.525 cpu_max=9 cpu_p95=9 mem_free_min=130088960 nms_cmds=729 nms_cost_ms=0 ros_version="7.20.4 (stable)"
+device_id="rtr" bucket=+00:00:00 covered_s=3590 cpu_avg=5.525 cpu_max=8 cpu_p95=8 mem_free_min=845217792 nms_cmds=824 nms_cost_ms=0 ros_version="7.25 (stable)"
+device_id="sw24" bucket=+00:00:00 covered_s=3590 cpu_avg=8.475 cpu_max=11 cpu_p95=11 mem_free_min=440467456 nms_cmds=407 nms_cost_ms=0 ros_version="7.25 (stable)"
+device_id="sw48" bucket=+00:00:00 covered_s=3590 cpu_avg=17.034 cpu_max=46 cpu_p95=44 mem_free_min=20512768 nms_cmds=255 nms_cost_ms=0 ros_version="7.24.5 (stable)"

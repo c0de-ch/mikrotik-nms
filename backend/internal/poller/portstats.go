@@ -232,7 +232,7 @@ type PortStatsCollector struct {
 	fetchStats     func(deviceID string) ([]routeros.InterfaceStats, error)
 	fetchEthernet  func(deviceID string) ([]routeros.EthernetStats, error)
 	fetchHosts     func(deviceID string) ([]routeros.BridgeHost, error)
-	fetchRelations func(deviceID string) ([]routeros.InterfaceRelation, error)
+	fetchRelations func(deviceID string) (routeros.RelationRead, error)
 	now            func() time.Time
 
 	// tierInterval decides how often a tier runs on a device; 0 = not at
@@ -320,14 +320,30 @@ func NewPortStatsCollector(db *sql.DB, pool *routeros.Pool, hub *ws.Hub) *PortSt
 		}
 		return routeros.GetBridgeHosts(run)
 	}
-	c.fetchRelations = func(id string) ([]routeros.InterfaceRelation, error) {
+	c.fetchRelations = func(id string) (routeros.RelationRead, error) {
 		run, err := c.deviceRunner(id)
 		if err != nil {
-			return nil, err
+			return routeros.RelationRead{}, err
 		}
-		return routeros.GetInterfaceRelations(run)
+		return routeros.GetInterfaceRelations(run, c.relationMenus(id))
 	}
 	return c
+}
+
+// relationMenus is which stacking menus deviceID's Tier 3c read prints: with
+// a fresh Tier 0 interface snapshot, only those the device has an interface
+// for (a bond, a vlan, a pppoe-out); without one — or with an empty one,
+// which never wipes a device — all of them.
+func (c *PortStatsCollector) relationMenus(deviceID string) routeros.RelationMenus {
+	rows, _, ok := c.DeviceSnapshot(deviceID)
+	if !ok || len(rows) == 0 {
+		return routeros.AllRelationMenus
+	}
+	types := make([]string, len(rows))
+	for i, r := range rows {
+		types[i] = r.Type
+	}
+	return routeros.RelationMenusOf(types...)
 }
 
 // poolRunner is the production device link: the pooled client, or nil while
@@ -1417,9 +1433,13 @@ func (c *PortStatsCollector) collectDeviceHosts(dev queries.Device) (err error) 
 
 // collectDeviceRelations replaces one device's interface_relations with a
 // fresh read, and keeps its VLAN rows in memory for the flow ifIndex sync
-// (DeviceVLANs). On a failed read the previous rows stay: stacking rarely
-// changes, and a partial answer must not drop a bond's members. It returns
-// errNoClient when the device had no pooled connection.
+// (DeviceVLANs). The read prints only the menus the device has an interface
+// for (relationMenus): a device without a VLAN interface has "no VLANs", not
+// an unknown. On a failed read the previous rows stay: stacking rarely
+// changes, and a partial answer must not drop a bond's members. A menu the
+// device refuses (a !trap) keeps that kind's previous rows — and, for the
+// VLAN menu, the VLAN rows in memory — while the kinds it did settle are
+// replaced. It returns errNoClient when the device had no pooled connection.
 func (c *PortStatsCollector) collectDeviceRelations(dev queries.Device) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -1430,19 +1450,25 @@ func (c *PortStatsCollector) collectDeviceRelations(dev queries.Device) (err err
 			err = errors.New("panic reading interface stacking")
 		}
 	}()
-	rels, err := c.fetchRelations(dev.ID)
+	read, err := c.fetchRelations(dev.ID)
 	if err != nil {
 		if !errors.Is(err, errNoClient) {
 			c.logThrottled("relations:"+dev.ID, "poller portstats: interface stacking for %s: %v", dev.Identity, err)
 		}
 		return err
 	}
-	c.storeVLANs(dev.ID, rels, c.now().UTC())
-	rows := make([]queries.InterfaceRelation, 0, len(rels))
-	for _, r := range rels {
+	if len(read.Refused) > 0 {
+		c.logThrottled("relations-refused:"+dev.ID, "poller portstats: interface stacking for %s: the device refused the %s menus; their previous rows stay",
+			dev.Identity, strings.Join(read.Refused, ", "))
+	}
+	if read.Settled(routeros.RelationVLAN) {
+		c.storeVLANs(dev.ID, read.Relations, c.now().UTC())
+	}
+	rows := make([]queries.InterfaceRelation, 0, len(read.Relations))
+	for _, r := range read.Relations {
 		rows = append(rows, queries.InterfaceRelation{InterfaceName: r.Iface, Kind: r.Kind, Parent: r.Parent})
 	}
-	if err := queries.ReplaceInterfaceRelations(c.db, dev.ID, rows); err != nil {
+	if err := queries.ReplaceInterfaceRelations(c.db, dev.ID, rows, read.Refused...); err != nil {
 		log.Printf("poller portstats: store interface stacking for %s: %v", dev.Identity, err)
 	}
 	return nil

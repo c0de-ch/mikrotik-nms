@@ -3,6 +3,7 @@ package poller
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -381,6 +382,214 @@ func TestCountCommandPerMinute(t *testing.T) {
 	count(at(12, 9, 0), 1) // after a gap the old counts are gone
 	if got := commands(at(12, 9, 59)); got != 0 {
 		t.Errorf("first minute after a gap = %d, want 0", got)
+	}
+}
+
+// stackingRunner scripts a device whose /interface/print lists one interface
+// of each of types, and whose stacking menus all have a row: what a read
+// gets is what it asked for.
+func stackingRunner(types ...string) *fakeRunner {
+	rows := make([]map[string]string, 0, len(types))
+	for i, typ := range types {
+		rows = append(rows, map[string]string{".id": "*" + strconv.FormatInt(int64(i+1), 16), "name": typ + strconv.Itoa(i+1), "type": typ,
+			"running": "true", "disabled": "false", "rx-byte": "0", "tx-byte": "0"})
+	}
+	return &fakeRunner{byCmd: map[string]fakeReply{
+		"/interface/print":              rep(rows...),
+		"/interface/ethernet/print":     rep(),
+		"/interface/bonding/print":      rep(map[string]string{"name": "bond1", "slaves": "ether1,ether2"}),
+		"/interface/vlan/print":         rep(map[string]string{"name": "vlan-mgmt", "interface": "bridge", "vlan-id": "99"}),
+		"/interface/pppoe-client/print": rep(map[string]string{"name": "pppoe-out1", "interface": "ether9"}),
+	}}
+}
+
+// stackingCalls are the stacking prints among calls.
+func stackingCalls(calls []string) []string {
+	var out []string
+	for _, c := range calls {
+		for _, menu := range []string{"/interface/bonding/print", "/interface/vlan/print", "/interface/pppoe-client/print"} {
+			if strings.HasPrefix(c, menu) {
+				out = append(out, menu)
+			}
+		}
+	}
+	return out
+}
+
+// The stacking read (Tier 3c) prints only the menus the device has an
+// interface for, going by its fresh Tier 0 snapshot: no bonding print without
+// a bond, no VLAN print without a vlan, no PPPoE-client print without a
+// pppoe-out. A device without VLAN interfaces then has "no VLANs" for the
+// flow ifIndex sync, not an unknown. Without a fresh snapshot every menu is
+// printed, as before.
+func TestPortStatsStackingReadsOnlyTheMenusTheDeviceHas(t *testing.T) {
+	run := stackingRunner("ether", "ether", "bridge", "vlan")
+	c, clock := newTestPortStats(t, run)
+	dev := queries.Device{ID: "sw", Identity: "sw"}
+	relations := func() []queries.InterfaceRelation {
+		t.Helper()
+		rels, err := queries.ListInterfaceRelations(c.db)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return rels
+	}
+
+	// No Tier 0 read yet: every menu.
+	if err := c.collectDeviceRelations(dev); err != nil {
+		t.Fatal(err)
+	}
+	if got := stackingCalls(run.calls); len(got) != 3 {
+		t.Fatalf("without a snapshot: stacking prints %q, want all three", got)
+	}
+	if got := relations(); len(got) != 4 {
+		t.Fatalf("without a snapshot: relations %+v, want the bond's two members, the VLAN and the PPPoE client", got)
+	}
+
+	// A fresh snapshot with a VLAN interface and nothing else stacked: the
+	// VLAN print alone, and the rows of the kinds it has none of are gone.
+	c.cycle(context.Background(), 15*time.Second)
+	run.calls = nil
+	if err := c.collectDeviceRelations(dev); err != nil {
+		t.Fatal(err)
+	}
+	if got := stackingCalls(run.calls); len(got) != 1 || got[0] != "/interface/vlan/print" {
+		t.Fatalf("with a vlan interface: stacking prints %q, want the VLAN print alone", got)
+	}
+	if got := relations(); len(got) != 1 || got[0] != (queries.InterfaceRelation{DeviceID: "sw", InterfaceName: "vlan-mgmt", Kind: "vlan", Parent: "bridge"}) {
+		t.Errorf("with a vlan interface: relations %+v, want the VLAN row alone", got)
+	}
+	if vlans, at, ok := c.DeviceVLANs("sw"); !ok || !at.Equal(clock.now()) || len(vlans) != 1 || vlans[0].VLANID != 99 {
+		t.Errorf("with a vlan interface: VLAN rows %+v at %v (%v)", vlans, at, ok)
+	}
+
+	// The VLAN interface removed: no stacking print at all, and no VLANs —
+	// known, not unknown.
+	run.byCmd["/interface/print"] = stackingRunner("ether", "ether", "bridge").byCmd["/interface/print"]
+	clock.set(clock.now().Add(15 * time.Second))
+	c.cycle(context.Background(), 15*time.Second)
+	run.calls = nil
+	if err := c.collectDeviceRelations(dev); err != nil {
+		t.Fatal(err)
+	}
+	if got := stackingCalls(run.calls); len(got) != 0 {
+		t.Errorf("nothing stacked: stacking prints %q, want none", got)
+	}
+	if got := relations(); len(got) != 0 {
+		t.Errorf("nothing stacked: relations %+v, want none", got)
+	}
+	if vlans, at, ok := c.DeviceVLANs("sw"); !ok || !at.Equal(clock.now()) || vlans == nil || len(vlans) != 0 {
+		t.Errorf("nothing stacked: VLAN rows %#v at %v (%v), want an empty list read now", vlans, at, ok)
+	}
+
+	// Each of bond, pppoe-out brings its own print back.
+	run.byCmd["/interface/print"] = stackingRunner("ether", "ether", "bond", "pppoe-out").byCmd["/interface/print"]
+	clock.set(clock.now().Add(15 * time.Second))
+	c.cycle(context.Background(), 15*time.Second)
+	run.calls = nil
+	if err := c.collectDeviceRelations(dev); err != nil {
+		t.Fatal(err)
+	}
+	if got := stackingCalls(run.calls); len(got) != 2 || got[0] != "/interface/bonding/print" || got[1] != "/interface/pppoe-client/print" {
+		t.Errorf("a bond and a PPPoE client: stacking prints %q, want the bonding and PPPoE-client prints", got)
+	}
+
+	// An interface print that came back empty says nothing: every menu, as
+	// an empty print never wipes a device.
+	run.byCmd["/interface/print"] = rep()
+	clock.set(clock.now().Add(15 * time.Second))
+	c.cycle(context.Background(), 15*time.Second)
+	run.calls = nil
+	if err := c.collectDeviceRelations(dev); err != nil {
+		t.Fatal(err)
+	}
+	if got := stackingCalls(run.calls); len(got) != 3 {
+		t.Errorf("with an empty snapshot: stacking prints %q, want all three", got)
+	}
+
+	// A fresh snapshot with nothing stacked, then gone stale (no Tier 0 read
+	// for 3 intervals): every menu again.
+	run.byCmd["/interface/print"] = stackingRunner("ether").byCmd["/interface/print"]
+	clock.set(clock.now().Add(15 * time.Second))
+	c.cycle(context.Background(), 15*time.Second)
+	run.calls = nil
+	if err := c.collectDeviceRelations(dev); err != nil {
+		t.Fatal(err)
+	}
+	if got := stackingCalls(run.calls); len(got) != 0 {
+		t.Errorf("an ether port alone: stacking prints %q, want none", got)
+	}
+	clock.set(clock.now().Add(time.Minute))
+	run.calls = nil
+	if err := c.collectDeviceRelations(dev); err != nil {
+		t.Fatal(err)
+	}
+	if got := stackingCalls(run.calls); len(got) != 3 {
+		t.Errorf("with a stale snapshot: stacking prints %q, want all three", got)
+	}
+}
+
+// A stacking menu the device refuses (a !trap) keeps what was known of its
+// kind — the stored rows, and for the VLAN menu the VLAN rows the flow
+// ifIndex sync reads — while the menus it did answer replace theirs. A read
+// that gets no answer changes nothing.
+func TestPortStatsStackingMenuRefusedKeepsItsKind(t *testing.T) {
+	run := stackingRunner() // no snapshot: every menu is printed
+	c, _ := newTestPortStats(t, run)
+	dev := queries.Device{ID: "sw", Identity: "sw"}
+	if err := c.collectDeviceRelations(dev); err != nil {
+		t.Fatal(err)
+	}
+	stored := func() map[string]int {
+		t.Helper()
+		rels, err := queries.ListInterfaceRelations(c.db)
+		if err != nil {
+			t.Fatal(err)
+		}
+		kinds := map[string]int{}
+		for _, r := range rels {
+			kinds[r.Kind+" "+r.InterfaceName+"<"+r.Parent]++
+		}
+		return kinds
+	}
+	before := stored()
+	if len(before) != 4 {
+		t.Fatalf("first read stored %v", before)
+	}
+
+	// The bonding menu refused, the PPPoE client moved to another carrier.
+	run.byCmd["/interface/bonding/print"] = fakeReply{err: trapErr("not enough permissions (9)")}
+	run.byCmd["/interface/pppoe-client/print"] = rep(map[string]string{"name": "pppoe-out1", "interface": "vlan-wan"})
+	if err := c.collectDeviceRelations(dev); err != nil {
+		t.Fatalf("a refused menu fails the read: %v", err)
+	}
+	if got := stored(); got["bond ether1<bond1"] != 1 || got["bond ether2<bond1"] != 1 ||
+		got["pppoe pppoe-out1<vlan-wan"] != 1 || got["pppoe pppoe-out1<ether9"] != 0 || got["vlan vlan-mgmt<bridge"] != 1 {
+		t.Errorf("bonding refused: stored %v, want the bond rows kept and the PPPoE client moved", got)
+	}
+
+	// The VLAN menu refused: the VLAN rows in memory and in the table stay.
+	_, vlansAt, _ := c.DeviceVLANs("sw")
+	run.byCmd["/interface/bonding/print"] = rep()
+	run.byCmd["/interface/vlan/print"] = fakeReply{err: trapErr("not enough permissions (9)")}
+	if err := c.collectDeviceRelations(dev); err != nil {
+		t.Fatal(err)
+	}
+	if vlans, at, ok := c.DeviceVLANs("sw"); !ok || !at.Equal(vlansAt) || len(vlans) != 1 || vlans[0].Name != "vlan-mgmt" {
+		t.Errorf("VLAN menu refused: VLAN rows %+v at %v (%v), want the previous read's", vlans, at, ok)
+	}
+	if got := stored(); got["vlan vlan-mgmt<bridge"] != 1 || got["bond ether1<bond1"] != 0 {
+		t.Errorf("VLAN menu refused: stored %v, want the VLAN row kept and the bond gone", got)
+	}
+
+	// No answer: nothing changes.
+	run.byCmd["/interface/vlan/print"] = fakeReply{err: errors.New("i/o timeout")}
+	keep := stored()
+	if err := c.collectDeviceRelations(dev); err == nil {
+		t.Fatal("a read without an answer succeeded")
+	}
+	if got := stored(); len(got) != len(keep) {
+		t.Errorf("after a failed read: stored %v, want %v", got, keep)
 	}
 }
 

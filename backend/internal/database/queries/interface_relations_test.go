@@ -38,6 +38,22 @@ func TestInterfaceRelationsReplaceAndList(t *testing.T) {
 		t.Fatalf("relations =\n %+v\nwant\n %+v", got, want)
 	}
 
+	// A dump that did not read a kind keeps the device's rows of it and
+	// replaces the others.
+	must(ReplaceInterfaceRelations(db, "1", []InterfaceRelation{{InterfaceName: "vlan11", Kind: "vlan", Parent: "bridge"}}, "bond", "pppoe"))
+	got, err = ListInterfaceRelations(db)
+	must(err)
+	want = []InterfaceRelation{
+		{DeviceID: "1", InterfaceName: "ether1", Kind: "bond", Parent: "bond1"},
+		{DeviceID: "1", InterfaceName: "ether2", Kind: "bond", Parent: "bond1"},
+		{DeviceID: "1", InterfaceName: "pppoe-out1", Kind: "pppoe", Parent: "ether9"},
+		{DeviceID: "1", InterfaceName: "vlan11", Kind: "vlan", Parent: "bridge"},
+		{DeviceID: "2", InterfaceName: "vlan20", Kind: "vlan", Parent: "ether1"},
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("after a dump keeping bond and pppoe =\n %+v\nwant\n %+v", got, want)
+	}
+
 	// A new dump replaces the device's rows wholesale; others are untouched.
 	must(ReplaceInterfaceRelations(db, "1", nil))
 	got, err = ListInterfaceRelations(db)
