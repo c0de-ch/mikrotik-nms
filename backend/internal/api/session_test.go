@@ -31,7 +31,7 @@ func newSessionFixture(t *testing.T) *sessionFixture {
 		t.Fatal(err)
 	}
 	cfg := &config.Config{JWTSecret: sessSecret, AllowedOrigins: []string{"http://x"}}
-	return &sessionFixture{t: t, db: db, h: NewRouter(db, nil, cfg, nil, nil, nil, nil, nil, nil)}
+	return &sessionFixture{t: t, db: db, h: NewRouter(db, nil, cfg, nil, nil, nil, nil, nil, nil, nil)}
 }
 
 func (f *sessionFixture) do(method, path, bearer string, body any) *httptest.ResponseRecorder {

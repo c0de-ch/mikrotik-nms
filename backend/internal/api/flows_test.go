@@ -315,7 +315,7 @@ func TestFlowPointCRUD(t *testing.T) {
 func TestFlowRoutesAuth(t *testing.T) {
 	f := newFlowFixture(t)
 	const secret = "flow-test-secret-flow-test-secret"
-	h := NewRouter(f.db, nil, &config.Config{JWTSecret: secret, AllowedOrigins: []string{"http://x"}}, nil, nil, nil, nil, nil, nil)
+	h := NewRouter(f.db, nil, &config.Config{JWTSecret: secret, AllowedOrigins: []string{"http://x"}}, nil, nil, nil, nil, nil, nil, nil)
 	token := func(role string) string {
 		// The token must belong to a real user: RequireAuth checks it
 		// against the user's current token version and role.
