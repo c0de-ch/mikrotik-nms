@@ -908,6 +908,46 @@ func TestAuditScheduleSurvivesARestart(t *testing.T) {
 	}
 }
 
+// An audit one of whose reads failed is run again an hour later. A restart
+// in that hour must not turn the hour into six: the retry is scheduled from
+// the stored pass, like the regular audit.
+func TestPartialAuditIsRetriedAfterAnHourAcrossARestart(t *testing.T) {
+	h := newAuditHarness(t)
+	clean := hygienetest.Load(t, "switch48_clean")
+	now := h.clock.now()
+	for id, last := range map[string]struct {
+		ago    time.Duration
+		status string
+	}{
+		"partial":      {20 * time.Minute, queries.AuditPartial},  // its retry is 40 minutes away
+		"partial-long": {3 * time.Hour, queries.AuditPartial},     // its retry is overdue
+		"complete":     {20 * time.Minute, queries.AuditComplete}, // five hours forty to go
+	} {
+		h.add(id, clean)
+		// An earlier, whole audit: the newest pass decides, not this one.
+		first, _ := queries.InsertAuditRun(h.db, &queries.AuditRun{DeviceID: id, Kind: queries.AuditKindAudit, Reason: PassScheduled, StartedAt: now.Add(-9 * time.Hour)})
+		_ = queries.FinishAuditRun(h.db, &queries.AuditRun{ID: first, FinishedAt: now.Add(-9 * time.Hour), Status: queries.AuditComplete, Reads: 19})
+		runID, _ := queries.InsertAuditRun(h.db, &queries.AuditRun{DeviceID: id, Kind: queries.AuditKindAudit, Reason: PassScheduled, StartedAt: now.Add(-last.ago - 6*time.Minute)})
+		_ = queries.FinishAuditRun(h.db, &queries.AuditRun{ID: runID, FinishedAt: now.Add(-last.ago), Status: last.status, Reads: 19, FailedReads: 1})
+	}
+
+	h.run(time.Second) // the first tick after the restart
+	if next, _ := h.nextAudit("partial"); !next.Equal(now.Add(40 * time.Minute)) {
+		t.Errorf("partial audit 20 min ago: next audit %v, want an hour after it (%v)", next, now.Add(40*time.Minute))
+	}
+	if next, _ := h.nextAudit("partial-long"); !next.Equal(now.Add(auditStartupDelay)) {
+		t.Errorf("partial audit 3 h ago: next audit %v, want right after the start-up delay", next)
+	}
+	if next, _ := h.nextAudit("complete"); !next.Equal(now.Add(5*time.Hour + 40*time.Minute)) {
+		t.Errorf("complete audit 20 min ago: next audit %v, want six hours after it", next)
+	}
+	h.run(time.Hour)
+	if h.count("partial") != 19 || h.count("partial-long") != 19 || h.count("complete") != 0 {
+		t.Errorf("an hour after the restart: partial %d, partial-long %d, complete %d commands; want the two retries only",
+			h.count("partial"), h.count("partial-long"), h.count("complete"))
+	}
+}
+
 // ---- the diagnose pass ------------------------------------------------------------
 
 func openAlert(t *testing.T, db *sql.DB, rule, device, severity string, confirmed bool, at time.Time) int64 {

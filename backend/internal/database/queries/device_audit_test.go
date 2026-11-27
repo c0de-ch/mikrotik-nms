@@ -231,11 +231,16 @@ func TestAuditRuns(t *testing.T) {
 		t.Fatalf("latest diagnose runs = %+v, %v", latest, err)
 	}
 
-	// When each device last finished an audit (complete or partial): the
-	// schedule is seeded from it after a restart.
-	times, err := ListLastAuditTimes(db)
-	if err != nil || len(times) != 1 || !times["d1"].Equal(t1.Add(6*time.Minute)) {
-		t.Fatalf("last audit times = %v, %v", times, err)
+	// Each device's newest audit that judged something, and whether it was
+	// whole: the schedule is seeded from it after a restart.
+	last, err := ListLastAudits(db)
+	if err != nil || len(last) != 1 || !last["d1"].FinishedAt.Equal(t1.Add(6*time.Minute)) || last["d1"].Partial {
+		t.Fatalf("last audits = %+v, %v", last, err)
+	}
+	part, _ := InsertAuditRun(db, &AuditRun{DeviceID: "d1", Kind: AuditKindAudit, Reason: "scheduled", StartedAt: t1.Add(6 * time.Hour)})
+	_ = FinishAuditRun(db, &AuditRun{ID: part, FinishedAt: t1.Add(6*time.Hour + 6*time.Minute), Status: AuditPartial, Reads: 19, FailedReads: 1})
+	if last, _ = ListLastAudits(db); !last["d1"].FinishedAt.Equal(t1.Add(6*time.Hour+6*time.Minute)) || !last["d1"].Partial {
+		t.Fatalf("after a partial audit: %+v", last)
 	}
 
 	// The newest stored runtime of a device, whatever the kind of pass.

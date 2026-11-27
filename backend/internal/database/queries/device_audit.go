@@ -194,24 +194,36 @@ func ListLatestDiagnoseRuns(db *sql.DB) (map[string]AuditRun, error) {
 	return out, rows.Err()
 }
 
-// ListLastAuditTimes returns when each device last finished an audit that
-// judged something.
-func ListLastAuditTimes(db *sql.DB) (map[string]time.Time, error) {
-	rows, err := db.Query(`SELECT device_id, MAX(finished_at) FROM device_audit_runs
-		WHERE kind = ? AND status IN (?, ?) GROUP BY device_id`, AuditKindAudit, AuditComplete, AuditPartial)
+// LastAudit is how a device's newest audit that judged something ended.
+type LastAudit struct {
+	FinishedAt time.Time
+	// Partial: a read failed, or the audit ended early. Such an audit is run
+	// again an hour later, not six.
+	Partial bool
+}
+
+// ListLastAudits returns each device's newest audit that judged something
+// (complete or partial): what the schedule continues from after a restart.
+func ListLastAudits(db *sql.DB) (map[string]LastAudit, error) {
+	rows, err := db.Query(`SELECT r.device_id, r.finished_at, r.status FROM device_audit_runs r
+		WHERE r.kind = ?1 AND r.status IN (?2, ?3) AND NOT EXISTS (
+			SELECT 1 FROM device_audit_runs n
+			WHERE n.device_id = r.device_id AND n.kind = ?1 AND n.status IN (?2, ?3)
+			  AND (n.finished_at > r.finished_at OR (n.finished_at = r.finished_at AND n.id > r.id)))`,
+		AuditKindAudit, AuditComplete, AuditPartial)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	out := map[string]time.Time{}
+	out := map[string]LastAudit{}
 	for rows.Next() {
-		var id string
+		var id, status string
 		var at int64
-		if err := rows.Scan(&id, &at); err != nil {
+		if err := rows.Scan(&id, &at, &status); err != nil {
 			return nil, err
 		}
 		if at > 0 {
-			out[id] = time.Unix(at, 0).UTC()
+			out[id] = LastAudit{FinishedAt: time.Unix(at, 0).UTC(), Partial: status == AuditPartial}
 		}
 	}
 	return out, rows.Err()

@@ -223,10 +223,10 @@ type Auditor struct {
 	accepted chan acceptedExporter // the flow collector's accept hook
 
 	mu        sync.Mutex
-	started   time.Time            // zero until the first tick
-	passes    map[string]*pass     // device → the pass in progress
-	seeded    map[string]bool      // devices whose audit schedule was set up
-	lastAudit map[string]time.Time // when each device last finished an audit (from the database, at start)
+	started   time.Time                    // zero until the first tick
+	passes    map[string]*pass             // device → the pass in progress
+	seeded    map[string]bool              // devices whose audit schedule was set up
+	lastAudit map[string]queries.LastAudit // each device's newest audit that judged something (from the database, at start)
 	triggers  map[string]queries.Alert
 	scannedAt time.Time
 	lastLog   map[string]time.Time
@@ -247,7 +247,7 @@ func NewAuditor(db *sql.DB, pool *routeros.Pool, load *LoadRecorder, portStats *
 		accepted:       make(chan acceptedExporter, 32),
 		passes:         make(map[string]*pass),
 		seeded:         make(map[string]bool),
-		lastAudit:      make(map[string]time.Time),
+		lastAudit:      make(map[string]queries.LastAudit),
 		lastLog:        make(map[string]time.Time),
 	}
 	a.runner = func(id string) routeros.Runner { return poolRunner(pool, id) }
@@ -340,7 +340,7 @@ func (a *Auditor) begun(now time.Time) {
 	} else if n > 0 {
 		log.Printf("poller audit: %d pass(es) were cut off by the restart", n)
 	}
-	last, err := queries.ListLastAuditTimes(a.db)
+	last, err := queries.ListLastAudits(a.db)
 	if err != nil {
 		log.Printf("poller audit: read the last audits: %v", err)
 		return
@@ -467,9 +467,10 @@ func (a *Auditor) tickDevice(dev queries.Device, trigger *queries.Alert, now tim
 }
 
 // seed sets a device's first audit of this process: six hours after its last
-// one when the database remembers it, and never before the start-up delay
-// plus the device's share of the spread — a restart must not audit the whole
-// fleet at once, nor each device again.
+// one when the database remembers it — one hour when that one was partial,
+// the retry it would have had without the restart — and never before the
+// start-up delay plus the device's share of the spread: a restart must not
+// audit the whole fleet at once, nor each device again.
 func (a *Auditor) seed(dev queries.Device, interval time.Duration) {
 	a.mu.Lock()
 	if a.seeded[dev.ID] {
@@ -483,7 +484,11 @@ func (a *Auditor) seed(dev queries.Device, interval time.Duration) {
 
 	at := started.Add(auditStartupDelay + a.spread(dev.ID))
 	if known {
-		if next := devclass.NextRun(last, interval, a.clock.phase(dev.ID)); next.After(at) {
+		next := devclass.NextRun(last.FinishedAt, interval, a.clock.phase(dev.ID))
+		if last.Partial {
+			next = last.FinishedAt.Add(auditPartialRetry)
+		}
+		if next.After(at) {
 			at = next
 		}
 	}
@@ -851,7 +856,7 @@ func (a *Auditor) finish(p *pass, dev queries.Device, detail string, abort bool,
 	switch run.Status {
 	case queries.AuditComplete:
 		a.mu.Lock()
-		a.lastAudit[dev.ID] = now
+		a.lastAudit[dev.ID] = queries.LastAudit{FinishedAt: now}
 		a.mu.Unlock()
 		a.clock.ran(dev.ID, devclass.TierAudit, a.cadence.Interval(dev, devclass.TierAudit, now), now)
 	case queries.AuditPartial:
