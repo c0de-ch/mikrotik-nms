@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, type ComponentProps } from "react";
 import cytoscape from "cytoscape";
 import cola from "cytoscape-cola";
 import CytoscapeComponent from "react-cytoscapejs";
-import type { TopologyNode } from "@/lib/api";
+import type { MapPosition, TopologyNode } from "@/lib/api";
 import { buildStylesheet, edgeVisual, nodeBg, fmtBps, BRAND, SYNTH, SYNTH_TYPES } from "./graph-style";
 
 // Register the cola force-layout once (guard against HMR double-registration).
@@ -21,6 +21,8 @@ if (!colaRegistered) {
 export interface EdgeTraffic {
   rx: number;
   tx: number;
+  // No port measures the edge itself: the label says "≈".
+  estimated?: boolean;
 }
 
 export interface CanvasApi {
@@ -47,14 +49,34 @@ interface Props {
   onSelect: (id: string | null) => void;
   registerApi?: (api: CanvasApi) => void;
   dark: boolean;
+  // The saved layout (null until it has loaded: nothing is placed before).
+  // A node with a saved position is put there; the others are laid out
+  // around them.
+  savedPositions: Record<string, MapPosition> | null;
+  // Called with every node's position after the user moved one (drag) or
+  // re-arranged the map (layout buttons); absent = nothing is saved.
+  onPositionsChanged?: (positions: Record<string, MapPosition>) => void;
+  // Bumped to forget the saved layout and lay the whole map out afresh.
+  resetToken?: number;
 }
 
-export default function TopologyCanvas({ nodes, edges, statusById, trafficById, matchIds, layoutName = "force", onSelect, registerApi, dark }: Props) {
+export default function TopologyCanvas({ nodes, edges, statusById, trafficById, matchIds, layoutName = "force", onSelect, registerApi, dark, savedPositions, onPositionsChanged, resetToken = 0 }: Props) {
   const cyRef = useRef<cytoscape.Core | null>(null);
   const onSelectRef = useRef(onSelect);
   useEffect(() => {
     onSelectRef.current = onSelect;
   }, [onSelect]);
+  const onChangedRef = useRef(onPositionsChanged);
+  useEffect(() => {
+    onChangedRef.current = onPositionsChanged;
+  }, [onPositionsChanged]);
+  const savedRef = useRef(savedPositions);
+  useEffect(() => {
+    savedRef.current = savedPositions;
+  }, [savedPositions]);
+  // Nodes that already have their place on the canvas (saved, laid out, or
+  // dragged): a topology change never moves them, it only places new ones.
+  const placed = useRef<Set<string>>(new Set());
 
   // Structural elements — only change when the node/edge SET changes, so live
   // health/traffic patches (below) never trigger a layout reshuffle.
@@ -88,7 +110,26 @@ export default function TopologyCanvas({ nodes, edges, statusById, trafficById, 
   useEffect(() => {
     layoutRef.current = layoutName;
   }, [layoutName]);
-  const runLayout = (cy: cytoscape.Core) => {
+  const emitPositions = (cy: cytoscape.Core) => {
+    const cb = onChangedRef.current;
+    if (!cb) return;
+    const out: Record<string, MapPosition> = {};
+    cy.nodes().forEach((n) => {
+      const p = n.position();
+      out[n.id()] = { x: Math.round(p.x * 10) / 10, y: Math.round(p.y * 10) / 10 };
+    });
+    cb(out);
+  };
+  // Lays the whole map out with the selected layout; after() runs once the
+  // layout has settled.
+  const runLayout = (cy: cytoscape.Core, after?: () => void) => {
+    const go = (l: cytoscape.Layouts) => {
+      l.one("layoutstop", () => {
+        cy.nodes().forEach((n) => { placed.current.add(n.id()); });
+        after?.();
+      });
+      l.run();
+    };
     if (layoutRef.current === "hierarchy") {
       // Top-down tree from the Internet (or the best-connected node).
       let rootID = "internet";
@@ -97,14 +138,14 @@ export default function TopologyCanvas({ nodes, edges, statusById, trafficById, 
         if (!best || best.empty()) return;
         rootID = best.id();
       }
-      cy.layout({
+      go(cy.layout({
         name: "breadthfirst", roots: [rootID], directed: false, spacingFactor: 1.1,
         animate: true, fit: true, padding: 44,
-      }).run();
+      }));
       return;
     }
     try {
-      cy.layout({
+      go(cy.layout({
         name: "cola",
         animate: true,
         maxSimulationTime: 1800,
@@ -113,25 +154,98 @@ export default function TopologyCanvas({ nodes, edges, statusById, trafficById, 
         fit: true,
         padding: 44,
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      } as any).run();
+      } as any));
     } catch {
-      cy.layout({ name: "cose", animate: true, fit: true, padding: 44 }).run();
+      go(cy.layout({ name: "cose", animate: true, fit: true, padding: 44 }));
     }
   };
 
+  // Places what has no place yet: saved nodes go to their saved position,
+  // nodes already on the canvas stay where they are, and new ones are laid
+  // out around them (the placed nodes locked meanwhile). With nothing placed
+  // at all it is the full layout.
+  const placeNew = (cy: cytoscape.Core, fit: boolean) => {
+    const saved = savedRef.current ?? {};
+    const present = new Set(cy.nodes().map((n) => n.id()));
+    for (const id of [...placed.current]) if (!present.has(id)) placed.current.delete(id);
+    const known = cy.nodes().filter((n) => placed.current.has(n.id()) || saved[n.id()] !== undefined);
+    if (known.empty()) {
+      runLayout(cy);
+      return;
+    }
+    cy.batch(() => {
+      known.forEach((n) => {
+        if (placed.current.has(n.id())) return;
+        const p = saved[n.id()];
+        n.position({ x: p.x, y: p.y });
+        placed.current.add(n.id());
+      });
+    });
+    const fresh = cy.nodes().difference(known);
+    if (fresh.empty()) {
+      if (fit) cy.fit(undefined, 44);
+      return;
+    }
+    // Start each new node next to its placed neighbours, so the layout only
+    // has to settle it locally.
+    cy.batch(() => {
+      fresh.forEach((n) => {
+        const nb = n.neighborhood("node").filter((m) => known.contains(m));
+        const c = nb.empty() ? cy.extent() : nb.boundingBox({});
+        const cx = (c.x1 + c.x2) / 2, cy0 = (c.y1 + c.y2) / 2;
+        n.position({ x: cx + (Math.random() - 0.5) * 80, y: cy0 + (Math.random() - 0.5) * 80 });
+      });
+    });
+    known.lock();
+    const l = cy.layout({
+      name: "cola", animate: true, maxSimulationTime: 1200, nodeSpacing: 26, edgeLength: 140, fit, padding: 44,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+    l.one("layoutstop", () => {
+      known.unlock();
+      fresh.forEach((n) => { placed.current.add(n.id()); });
+    });
+    l.run();
+  };
+
+  // First placement once the saved layout has loaded, then on every change
+  // of the node/edge set (new nodes only).
+  const initialised = useRef(false);
   useEffect(() => {
     const cy = cyRef.current;
-    if (!cy) return;
+    if (!cy || savedPositions === null) return;
+    if (!initialised.current) {
+      initialised.current = true;
+      lastSig.current = sig;
+      placeNew(cy, true);
+      return;
+    }
     if (lastSig.current === sig) return;
     lastSig.current = sig;
-    runLayout(cy);
-  }, [sig]);
+    placeNew(cy, false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sig, savedPositions]);
 
-  // Re-run the layout when the user switches layout mode.
+  // Re-arrange the whole map when the user picks a layout (not on mount):
+  // that arrangement is the new layout, saved like a drag.
+  const prevLayout = useRef(layoutName);
   useEffect(() => {
+    if (prevLayout.current === layoutName) return;
+    prevLayout.current = layoutName;
     const cy = cyRef.current;
-    if (cy) runLayout(cy);
+    if (cy) runLayout(cy, () => emitPositions(cy));
   }, [layoutName]);
+
+  // Reset: forget every place and lay the map out afresh (not saved).
+  const prevReset = useRef(resetToken);
+  useEffect(() => {
+    if (prevReset.current === resetToken) return;
+    prevReset.current = resetToken;
+    const cy = cyRef.current;
+    if (!cy) return;
+    placed.current.clear();
+    runLayout(cy);
+  }, [resetToken]);
 
   // Live node status → colour (device nodes only; synthetic keep their hue).
   useEffect(() => {
@@ -170,7 +284,7 @@ export default function TopologyCanvas({ nodes, edges, statusById, trafficById, 
         e.data("width", v.width);
         e.data("color", v.color);
         e.removeData("idle");
-        if (v.total >= 2e6) e.data("thruLabel", fmtBps(v.total));
+        if (v.total >= 2e6) e.data("thruLabel", (t.estimated ? "≈ " : "") + fmtBps(v.total));
         else e.removeData("thruLabel");
         if (v.active) e.addClass("active");
         else e.removeClass("active");
@@ -250,13 +364,26 @@ export default function TopologyCanvas({ nodes, edges, statusById, trafficById, 
       cy={(cy: cytoscape.Core) => {
         if (cyRef.current === cy) return;
         cyRef.current = cy;
+        // A new instance (React's StrictMode remounts the component and the
+        // wrapper builds a fresh one) has nothing placed yet.
+        placed.current = new Set();
+        initialised.current = false;
         cy.on("tap", "node", (evt) => onSelectRef.current(evt.target.id()));
         cy.on("tap", (evt) => {
           if (evt.target === cy) onSelectRef.current(null);
         });
-        // Initial layout once the instance exists.
-        lastSig.current = sig;
-        runLayout(cy);
+        // A node the user let go of keeps its place; the whole arrangement
+        // is reported so it can be saved.
+        cy.on("dragfree", "node", (evt) => {
+          placed.current.add(evt.target.id());
+          emitPositions(cy);
+        });
+        // The first placement waits for the saved layout (effect above).
+        if (savedRef.current !== null && !initialised.current) {
+          initialised.current = true;
+          lastSig.current = sig;
+          placeNew(cy, true);
+        }
       }}
     />
   );

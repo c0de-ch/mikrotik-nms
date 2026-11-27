@@ -226,6 +226,8 @@ func NewRouter(db *sql.DB, hub *ws.Hub, cfg *config.Config, pool *routeros.Pool,
 
 			// Topology
 			r.Get("/topology", s.handleGetTopology)
+			// The map's saved layout: read by every user, saved by admins.
+			s.mountMapRoutes(r)
 
 			// Traffic
 			s.mountTrafficRoutes(r)
