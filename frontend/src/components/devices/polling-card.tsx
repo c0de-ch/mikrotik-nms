@@ -74,6 +74,10 @@ function auditVerb(action: string): string {
       return "approved an address change that was refused";
     case "address_move_dismissed":
       return "dismissed an address change";
+    case "audit_requested":
+      return "started a hygiene audit";
+    case "diagnose_requested":
+      return "started a diagnose pass";
     default:
       return action.replaceAll("_", " ");
   }

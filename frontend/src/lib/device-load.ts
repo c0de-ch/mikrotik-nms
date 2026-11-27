@@ -228,6 +228,7 @@ export const TIER_LABELS: Record<string, string> = {
   dhcp_leases: "DHCP leases",
   wifi_registrations: "Wi-Fi registrations",
   inventory: "Inventory and firmware",
+  audit: "Hygiene audit",
 };
 
 export function tierLabel(tier: string): string {

@@ -252,6 +252,17 @@ export const api = {
     // failures, …), most recently seen first.
     findings: (token: string, id: string, limit = 50) =>
       apiFetch<DeviceFinding[]>(`/devices/${id}/findings?limit=${limit}`, { token }),
+    // The hygiene audit and the diagnose pass: the device's hygiene findings
+    // with their fix, the last passes and when the next audit runs. From the
+    // database — reading it costs the device nothing.
+    hygiene: (token: string, id: string) => apiFetch<DeviceHygiene>(`/devices/${id}/hygiene`, { token }),
+    // Admin: start a pass now. One of each kind per device and hour (429),
+    // refused while the device is paused, has no API session or already
+    // runs a pass (409), and while polling is off (503).
+    auditNow: (token: string, id: string) =>
+      apiFetch<HygienePass>(`/devices/${id}/hygiene/audit`, { method: "POST", token }),
+    diagnoseNow: (token: string, id: string) =>
+      apiFetch<HygienePass>(`/devices/${id}/hygiene/diagnose`, { method: "POST", token }),
     // IP auto-follow proposals: a managed device seen by MNDP/CDP at a new
     // address. Pending only unless status is given ("all" or one status).
     addressProposals: (token: string, status?: AddressProposalStatus | "all") =>
@@ -773,15 +784,85 @@ export interface DeviceAuditEntry {
 // NMS), login_failure, or tls_pin_mismatch (a TLS session refused because
 // the device presented another certificate than the pinned one; detail is
 // the fingerprint it presented); others may follow.
+// One step of a finding's suggested fix. Advice for an operator: the NMS
+// never applies it.
+export interface FindingFix {
+  text: string;
+  // RouterOS commands for the device's terminal, shown apart from the text.
+  commands?: string[];
+  // The commands only print (a check, not a change).
+  read_only?: boolean;
+  // The step interrupts traffic: plan a maintenance window.
+  window?: boolean;
+}
+
+export type FindingSeverity = "info" | "warn" | "critical";
+
 export interface DeviceFinding {
   id: number;
   device_id: string;
   kind: string;
-  severity: "info" | "warn" | "critical";
+  severity: FindingSeverity;
   detail: string;
   first_seen: string;
   last_seen: string;
   count: number;
+  // Set on the findings of the hygiene audit (source "audit"): a title, a
+  // plain explanation and the suggested fix.
+  title?: string;
+  explanation?: string;
+  fix?: FindingFix[];
+  source?: string;
+}
+
+// A hygiene finding in a fleet-wide list (GET /network-health).
+export interface HygieneFinding extends DeviceFinding {
+  device_name: string;
+}
+
+export type HygienePassKind = "audit" | "diagnose";
+
+// One pass of the hygiene audit or of the diagnose pass.
+export interface HygienePass {
+  id: number;
+  device_id: string;
+  kind: HygienePassKind;
+  // scheduled | admin | the alert rule that asked for a diagnose pass
+  reason: string;
+  requested_by?: string;
+  started_at: string;
+  // The zero time ("0001-…") while the pass runs.
+  finished_at: string;
+  // partial: a read failed — what was read was judged. aborted: nothing was.
+  status: "running" | "complete" | "partial" | "aborted";
+  reads: number;
+  failed_reads: number;
+  detail?: string;
+  // What this pass found.
+  found: { kind: string; severity: FindingSeverity; title: string; detail: string }[];
+}
+
+export interface HygienePassState {
+  last: HygienePass | null;
+  // When the next scheduled audit runs (audits only; absent while none is
+  // scheduled: paused, offline, polling off).
+  next_run?: string;
+  // When an admin may next ask for this pass; null = now.
+  available_at: string | null;
+}
+
+// GET /devices/{id}/hygiene
+export interface DeviceHygiene {
+  pollers: "local" | "off";
+  // The kind of pass in progress on the device ("" = none).
+  running: "" | HygienePassKind;
+  audit: HygienePassState;
+  diagnose: HygienePassState;
+  // Which stored configuration snapshot is current (the snapshot itself is
+  // not returned).
+  snapshot: { taken_at: string; hash: string; ros_version: string } | null;
+  // The device's hygiene findings, most severe first.
+  findings: DeviceFinding[];
 }
 
 export type AddressProposalStatus =
@@ -1843,6 +1924,9 @@ export interface NetworkHealth {
   bridges: BridgeWithPorts[];
   events: LoopEvent[];
   port_states: InterfaceState[];
+  // Every device's hygiene findings (the audit and the diagnose pass), most
+  // severe first.
+  findings: HygieneFinding[];
 }
 
 export interface BridgeVLAN {
@@ -2053,7 +2137,9 @@ export interface Alert {
   acked_by?: string;
   acked_at?: string;
   summary: string;
-  // Rule-specific details. "rollback" / "check" are lists of text lines.
+  // Rule-specific details. Lists of text lines: "rollback" and "check" (flow
+  // export), "likely_cause" (what the diagnose pass found, with
+  // "diagnosed_at"), "findings" and "fix" (audit_critical).
   facts?: Record<string, unknown>;
   // false = raised on evidence that can be forged or mistaken (a UDP source
   // address); such an alert is never critical until it is confirmed.

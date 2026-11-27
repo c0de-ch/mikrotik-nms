@@ -16,12 +16,20 @@ import {
 import { Cpu } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { PauseGlyph } from "@/components/devices/device-load";
+import { SeverityPill, passEndedAt, passReason, passSummary } from "@/components/devices/hygiene";
 import { usePolledFetch } from "@/components/traffic/hooks";
 import { fmtDateTime, fmtTick, fmtTooltipTime } from "@/components/traffic/lib";
 import { EmptyState, Notice } from "@/components/traffic/notice";
 import { Segmented } from "@/components/traffic/segmented";
 import { useNow } from "@/hooks/use-now";
-import { api, type Device, type DeviceLoadPoint, type DeviceLoadRange, type DeviceLoadResponse } from "@/lib/api";
+import {
+  api,
+  type Device,
+  type DeviceHygiene,
+  type DeviceLoadPoint,
+  type DeviceLoadRange,
+  type DeviceLoadResponse,
+} from "@/lib/api";
 import { isPollingPaused } from "@/lib/device-load";
 import { cn } from "@/lib/utils";
 
@@ -286,7 +294,69 @@ function postVerdict(post: number | null, quiet: number | null, unit: string): R
   return `within 5 points of the ${base}`;
 }
 
-export function DeviceLoadTab({ device, token }: { device: Device; token: string }) {
+// What on the device itself costs CPU: the other half of "is it us?". The
+// chart above shows what the NMS sent; this lists what the hygiene audit and
+// the diagnose pass found configured on the device — graphing, a mirror to
+// the CPU, flow export. The explanations and fixes are in the Findings
+// section; here the findings stand next to the CPU line they explain.
+function DeviceSideCauses({ hygiene, now }: { hygiene: DeviceHygiene | null; now: number }) {
+  if (!hygiene) return null;
+  const diagnose = hygiene.diagnose.last;
+  const diagnosed = diagnose && passEndedAt(diagnose) !== null && diagnose.status !== "aborted" ? diagnose : null;
+  const audit = hygiene.audit.last;
+  const audited = !!audit && audit.status !== "running" && audit.status !== "aborted";
+  return (
+    <section aria-label="Device-side causes" className="border-t pt-4">
+      <PanelTitle hint="what the hygiene audit and the diagnose pass found on the device">Device-side causes</PanelTitle>
+      <div className="mt-2 space-y-3">
+        {hygiene.running === "diagnose" && (
+          <Notice kind="loading">A diagnose pass is reading the device, one command at a time. Its result appears here.</Notice>
+        )}
+        {diagnosed && (
+          <p className="text-xs text-muted-foreground">
+            <span className="font-medium text-foreground">Diagnose pass, {passSummary(diagnosed, now)}</span>
+            {` (${passReason(diagnosed)}): `}
+            {diagnosed.found.length === 0
+              ? "none of the usual device-side causes — no graphing, traffic-flow, running sniffer, mirror or switch rule to the CPU, unsuitable bond mode, SNMP or other API client."
+              : `found ${diagnosed.found.map((f) => f.title || f.kind.replaceAll("_", " ")).join("; ")}.`}
+          </p>
+        )}
+        {hygiene.findings.length > 0 ? (
+          <>
+            <ul className="divide-y rounded-md border">
+              {hygiene.findings.map((f) => (
+                <li key={f.id} className="grid gap-x-3 gap-y-0.5 px-3 py-2 sm:grid-cols-[4.75rem_1fr] sm:items-baseline">
+                  <SeverityPill severity={f.severity} />
+                  <span className="min-w-0">
+                    <span className="block text-sm">{f.title || f.kind.replaceAll("_", " ")}</span>
+                    <span className="block break-words text-xs text-muted-foreground">{f.detail}</span>
+                  </span>
+                </li>
+              ))}
+            </ul>
+            <p className="text-xs text-muted-foreground">
+              Why each matters and how to fix it:{" "}
+              <a href="#findings" className="underline underline-offset-2 hover:text-foreground">
+                Findings
+              </a>
+              .
+            </p>
+          </>
+        ) : (
+          <p className="text-xs text-muted-foreground">
+            {audited
+              ? "The hygiene audit has found nothing configured on this device that costs CPU or is unsafe."
+              : hygiene.pollers === "off"
+                ? "Not audited: polling is off on this instance."
+                : "Not audited yet: the first audit runs once the device is reachable and its CPU is calm."}
+          </p>
+        )}
+      </div>
+    </section>
+  );
+}
+
+export function DeviceLoadTab({ device, token, hygiene }: { device: Device; token: string; hygiene: DeviceHygiene | null }) {
   const [range, setRange] = useState<DeviceLoadRange>("6h");
   const now = useNow(60_000);
   const paused = isPollingPaused(device, now);
@@ -656,6 +726,8 @@ export function DeviceLoadTab({ device, token }: { device: Device; token: string
         ) : (
           noTelemetry && <EmptyState icon={Cpu}>Nothing recorded for this device in the last {range}.</EmptyState>
         )}
+
+        <DeviceSideCauses hygiene={hygiene} now={now} />
       </CardContent>
     </Card>
   );
