@@ -47,7 +47,7 @@ func cpuPoints(t *testing.T, reader *sdkmetric.ManualReader) map[string]metricda
 // three minutes, with the time it was taken: an old value re-exported every
 // cycle draws a flat line that looks measured ("constant 100 %").
 func TestCPUGaugeExportsOnlyFreshSamples(t *testing.T) {
-	db, err := database.Open(t.TempDir() + "/test.db")
+	db, err := database.OpenFresh(t.TempDir() + "/test.db")
 	if err != nil {
 		t.Fatal(err)
 	}

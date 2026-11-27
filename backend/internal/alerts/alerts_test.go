@@ -26,7 +26,7 @@ func TestMain(m *testing.M) {
 
 func testDB(t *testing.T) *sql.DB {
 	t.Helper()
-	db, err := database.Open(t.TempDir() + "/test.db")
+	db, err := database.OpenFresh(t.TempDir() + "/test.db")
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}

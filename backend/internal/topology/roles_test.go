@@ -95,7 +95,7 @@ func TestDeviceRolesBudgetFollowsOverrideAndProfile(t *testing.T) {
 // LoadDeviceRoles reads everything from the database and drops stale routes:
 // a router whose default route was last seen long ago is not a router now.
 func TestLoadDeviceRoles(t *testing.T) {
-	db, err := database.Open(filepath.Join(t.TempDir(), "roles.db"))
+	db, err := database.OpenFresh(filepath.Join(t.TempDir(), "roles.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

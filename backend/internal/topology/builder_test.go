@@ -90,7 +90,7 @@ func TestIsWirelessType(t *testing.T) {
 // duplicates the default route (skipped) and a standalone tunnel.
 func buildFixtureDB(t *testing.T) *sql.DB {
 	t.Helper()
-	db, err := database.Open(t.TempDir() + "/topology.db")
+	db, err := database.OpenFresh(t.TempDir() + "/topology.db")
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
