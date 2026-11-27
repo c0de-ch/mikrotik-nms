@@ -47,12 +47,12 @@ func TestDirectionsTruthTable(t *testing.T) {
 func labPlan(self ...string) *Plan {
 	rows := []queries.FlowPrefix{
 		{Prefix: pfx("100.64.0.0/10"), Class: "transit", DeviceID: "rb", Iface: "eth1-wan"},
-		{Prefix: pfx("192.168.78.0/23"), Class: "internal", DeviceID: "rb", Iface: "bridge"},
-		{Prefix: pfx("192.168.28.0/24"), Class: "internal", DeviceID: "rb", Iface: "net28"},
+		{Prefix: pfx("192.168.60.0/23"), Class: "internal", DeviceID: "rb", Iface: "bridge"},
+		{Prefix: pfx("192.168.40.0/24"), Class: "internal", DeviceID: "rb", Iface: "net28"},
 		{Prefix: pfx("172.16.28.0/28"), Class: "vpn", DeviceID: "rb", Iface: "wg-labnet"},
-		{Prefix: pfx("2a01:4f8:202:13d1:28::/80"), Class: "internal", DeviceID: "rb", Iface: "net28"},
+		{Prefix: pfx("2001:db8:100:10:28::/80"), Class: "internal", DeviceID: "rb", Iface: "net28"},
 	}
-	known := map[netip.Addr]bool{ip("100.64.0.1"): true, ip("192.168.28.33"): true, ip("10.99.0.5"): true}
+	known := map[netip.Addr]bool{ip("100.64.0.1"): true, ip("192.168.40.33"): true, ip("10.99.0.5"): true}
 	s := map[netip.Addr]bool{}
 	for _, a := range self {
 		s[ip(a)] = true
@@ -61,27 +61,27 @@ func labPlan(self ...string) *Plan {
 }
 
 func TestPlanClassLab(t *testing.T) {
-	pl := labPlan("192.168.78.202")
+	pl := labPlan("192.168.60.202")
 	for addr, want := range map[string]string{
-		"100.64.0.1":                       ClassExternal, // plan (transit) beats known host
-		"100.114.241.213":                  ClassExternal,
-		"192.168.28.33":                    ClassInternal,
-		"1.1.1.1":                          ClassExternal,
-		"192.168.78.202":                   ClassSelf,
-		"172.16.28.2":                      ClassVPN,
-		"10.99.0.5":                        ClassInternal, // known host outside the plan
-		"10.99.0.6":                        ClassExternal, // RFC 1918 is not a blanket rule
-		"224.0.0.251":                      ClassMulticast,
-		"ff02::fb":                         ClassMulticast,
-		"255.255.255.255":                  ClassMulticast,
-		"192.168.79.255":                   ClassMulticast, // broadcast of the internal /23
-		"192.168.28.255":                   ClassMulticast,
-		"100.127.255.255":                  ClassExternal, // broadcast of a transit prefix is not special
-		"2a01:4f8:202:13d1:28::33":         ClassInternal,
-		"2606:4700::1111":                  ClassExternal,
-		"::ffff:192.168.28.33":             ClassInternal, // v4-mapped is unmapped
-		"::ffff:192.168.78.202":            ClassSelf,
-		"2a01:4f8:202:13d1:28:ffff:ffff:1": ClassInternal,
+		"100.64.0.1":                     ClassExternal, // plan (transit) beats known host
+		"100.101.102.103":                ClassExternal,
+		"192.168.40.33":                  ClassInternal,
+		"1.1.1.1":                        ClassExternal,
+		"192.168.60.202":                 ClassSelf,
+		"172.16.28.2":                    ClassVPN,
+		"10.99.0.5":                      ClassInternal, // known host outside the plan
+		"10.99.0.6":                      ClassExternal, // RFC 1918 is not a blanket rule
+		"224.0.0.251":                    ClassMulticast,
+		"ff02::fb":                       ClassMulticast,
+		"255.255.255.255":                ClassMulticast,
+		"192.168.61.255":                 ClassMulticast, // broadcast of the internal /23
+		"192.168.40.255":                 ClassMulticast,
+		"100.127.255.255":                ClassExternal, // broadcast of a transit prefix is not special
+		"2001:db8:100:10:28::33":         ClassInternal,
+		"2606:4700::1111":                ClassExternal,
+		"::ffff:192.168.40.33":           ClassInternal, // v4-mapped is unmapped
+		"::ffff:192.168.60.202":          ClassSelf,
+		"2001:db8:100:10:28:ffff:ffff:1": ClassInternal,
 	} {
 		if got := pl.Class(ip(addr)); got != want {
 			t.Errorf("Class(%s) = %s, want %s", addr, got, want)
@@ -90,7 +90,7 @@ func TestPlanClassLab(t *testing.T) {
 	if got := pl.Class(netip.Addr{}); got != ClassExternal {
 		t.Errorf("invalid addr = %s", got)
 	}
-	if got := (*Plan)(nil).Class(ip("192.168.28.33")); got != ClassExternal {
+	if got := (*Plan)(nil).Class(ip("192.168.40.33")); got != ClassExternal {
 		t.Errorf("nil plan = %s", got)
 	}
 	if got := (*Plan)(nil).Class(ip("224.0.0.1")); got != ClassMulticast {
@@ -101,19 +101,19 @@ func TestPlanClassLab(t *testing.T) {
 func TestPlanClassOrder(t *testing.T) {
 	rows := []queries.FlowPrefix{
 		{Prefix: pfx("192.168.0.0/16"), Class: "internal"},
-		{Prefix: pfx("192.168.23.0/24"), Class: "transit"}, // more specific wins
+		{Prefix: pfx("192.168.30.0/24"), Class: "transit"}, // more specific wins
 	}
-	internal := ParsePrefixList("192.168.23.7, 100.64.9.0/24")
-	external := ParsePrefixList("192.168.50.0/24,192.168.23.7/32,junk")
-	known := map[netip.Addr]bool{ip("192.168.23.9"): true}
+	internal := ParsePrefixList("192.168.30.7, 100.64.9.0/24")
+	external := ParsePrefixList("192.168.50.0/24,192.168.30.7/32,junk")
+	known := map[netip.Addr]bool{ip("192.168.30.9"): true}
 	self := map[netip.Addr]bool{ip("192.168.50.1"): true}
 	pl := NewPlan(rows, internal, external, known, self)
 	for addr, want := range map[string]string{
 		"192.168.50.1": ClassSelf,     // self beats the external setting
 		"192.168.50.2": ClassExternal, // external setting beats the internal plan row
-		"192.168.23.7": ClassExternal, // external setting beats the internal setting
+		"192.168.30.7": ClassExternal, // external setting beats the internal setting
 		"100.64.9.1":   ClassInternal, // internal setting beats nothing-in-plan
-		"192.168.23.9": ClassExternal, // most specific plan row (transit) beats known host
+		"192.168.30.9": ClassExternal, // most specific plan row (transit) beats known host
 		"192.168.1.1":  ClassInternal,
 	} {
 		if got := pl.Class(ip(addr)); got != want {
@@ -154,17 +154,17 @@ func agg(in, out uint32, src, dst string, proto uint8, port uint16, bytes int64)
 
 func TestSelectFiltersAndOther(t *testing.T) {
 	rows := []queries.FlowAgg{
-		agg(7, 1, "9.9.9.9", "192.168.78.60", 6, 853, 1000),      // download to an internal host
-		agg(1, 7, "192.168.78.60", "9.9.9.9", 6, 853, 200),       // upload
-		agg(7, 1, "9.9.9.9", "192.168.78.81", 6, 853, 300),       // local = the exporter itself (self)
-		agg(7, 1, "9.9.9.9", "192.168.28.25", 6, 443, 400),       // local excluded by ExcludeIPs
+		agg(7, 1, "9.9.9.9", "192.168.60.60", 6, 853, 1000),      // download to an internal host
+		agg(1, 7, "192.168.60.60", "9.9.9.9", 6, 853, 200),       // upload
+		agg(7, 1, "9.9.9.9", "192.168.60.81", 6, 853, 300),       // local = the exporter itself (self)
+		agg(7, 1, "9.9.9.9", "192.168.40.25", 6, 443, 400),       // local excluded by ExcludeIPs
 		agg(7, 1, "", "", 0, 0, 50),                              // folded other: never filtered
-		agg(7, 3, "9.9.9.9", "192.168.78.60", 6, 853, 99999),     // neither direction
-		agg(7, 1, "8.8.8.8", "::ffff:192.168.78.61", 17, 53, 10), // v4-mapped local
+		agg(7, 3, "9.9.9.9", "192.168.60.60", 6, 853, 99999),     // neither direction
+		agg(7, 1, "8.8.8.8", "::ffff:192.168.60.61", 17, 53, 10), // v4-mapped local
 	}
-	pl := labPlan("192.168.78.81")
+	pl := labPlan("192.168.60.81")
 	p := Point{FlowPoint: queries.FlowPoint{IfIndexes: []uint32{1}, Facing: "down", LocalInternal: true},
-		ExcludeIPs: map[netip.Addr]bool{ip("192.168.28.25"): true}}
+		ExcludeIPs: map[netip.Addr]bool{ip("192.168.40.25"): true}}
 
 	down := Select(rows, p, Download, pl)
 	var got []int64
@@ -182,7 +182,7 @@ func TestSelectFiltersAndOther(t *testing.T) {
 	}
 
 	up := Select(rows, p, Upload, pl)
-	if len(up) != 1 || up[0].Bytes != 200 || up[0].Local != ip("192.168.78.60") || up[0].Remote != ip("9.9.9.9") {
+	if len(up) != 1 || up[0].Bytes != 200 || up[0].Local != ip("192.168.60.60") || up[0].Remote != ip("9.9.9.9") {
 		t.Fatalf("upload = %+v", up)
 	}
 
@@ -205,11 +205,11 @@ func dirRows() []DirRow {
 			Bytes: bytes, Packets: 1, Flows: 1}
 	}
 	return []DirRow{
-		mk("1.1.1.1", "192.168.28.33", 6, 443, 500),
-		mk("1.1.1.1", "192.168.28.33", 17, 443, 300),
-		mk("1.1.1.1", "192.168.28.25", 6, 443, 200),
-		mk("8.8.8.8", "192.168.28.33", 17, 53, 100),
-		mk("9.9.9.9", "192.168.28.25", 6, 853, 100),
+		mk("1.1.1.1", "192.168.40.33", 6, 443, 500),
+		mk("1.1.1.1", "192.168.40.33", 17, 443, 300),
+		mk("1.1.1.1", "192.168.40.25", 6, 443, 200),
+		mk("8.8.8.8", "192.168.40.33", 17, 53, 100),
+		mk("9.9.9.9", "192.168.40.25", 6, 853, 100),
 		{Other: true, Bytes: 40, Packets: 2, Flows: 3},
 	}
 }
@@ -225,11 +225,11 @@ func TestGroupAllGroupings(t *testing.T) {
 	}{
 		{by: "src", keys: []string{"1.1.1.1", "8.8.8.8"}, bytes: []int64{1000, 100}, otherB: 140,
 			firstSet: func(g GroupRow) bool { return g.Src == ip("1.1.1.1") && !g.Dst.IsValid() && g.Port == 0 }},
-		{by: "dst", keys: []string{"192.168.28.33", "192.168.28.25"}, bytes: []int64{900, 300}, otherB: 40,
-			firstSet: func(g GroupRow) bool { return g.Dst == ip("192.168.28.33") && !g.Src.IsValid() }},
-		{by: "pair", keys: []string{"1.1.1.1|192.168.28.33", "1.1.1.1|192.168.28.25"}, bytes: []int64{800, 200}, otherB: 240,
+		{by: "dst", keys: []string{"192.168.40.33", "192.168.40.25"}, bytes: []int64{900, 300}, otherB: 40,
+			firstSet: func(g GroupRow) bool { return g.Dst == ip("192.168.40.33") && !g.Src.IsValid() }},
+		{by: "pair", keys: []string{"1.1.1.1|192.168.40.33", "1.1.1.1|192.168.40.25"}, bytes: []int64{800, 200}, otherB: 240,
 			firstSet: func(g GroupRow) bool { return g.Src.IsValid() && g.Dst.IsValid() && g.Proto == 0 }},
-		{by: "conv", keys: []string{"1.1.1.1|192.168.28.33|6/443", "1.1.1.1|192.168.28.33|17/443"}, bytes: []int64{500, 300}, otherB: 440,
+		{by: "conv", keys: []string{"1.1.1.1|192.168.40.33|6/443", "1.1.1.1|192.168.40.33|17/443"}, bytes: []int64{500, 300}, otherB: 440,
 			firstSet: func(g GroupRow) bool { return g.Src.IsValid() && g.Dst.IsValid() && g.Proto == 6 && g.Port == 443 }},
 		{by: "app", keys: []string{"6/443", "17/443"}, bytes: []int64{700, 300}, otherB: 240,
 			firstSet: func(g GroupRow) bool { return !g.Src.IsValid() && !g.Dst.IsValid() && g.Proto == 6 && g.Port == 443 }},
@@ -279,9 +279,9 @@ func TestCounterBytesLab(t *testing.T) {
 		downIsTx           bool
 	}{
 		{"RB5009 eth1-wan", "up", "same", false},
-		{"switch001 ether1", "down", "peer", false},
+		{"sw01 ether1", "down", "peer", false},
 		{"RB5009 net28", "down", "same", true},
-		{"switch001 sfp-sfpplus2", "down", "peer", false},
+		{"sw01 sfp-sfpplus2", "down", "peer", false},
 		{"far end of an up point", "up", "peer", true},
 	} {
 		if got := CounterDownIsTx(c.facing, c.side); got != c.downIsTx {
@@ -311,8 +311,8 @@ func labSuggestInput() SuggestInput {
 	now := time.Now().UTC()
 	return SuggestInput{
 		Exporters: []queries.FlowExporter{
-			{ID: 1, Name: "switch002-rb5009", Address: "192.168.78.202", Kind: "routeros", DeviceID: rbID, Enabled: true},
-			{ID: 2, Name: "firewall003", Address: "192.168.78.81", Kind: "opnsense", Enabled: true},
+			{ID: 1, Name: "sw02-rb5009", Address: "192.168.60.202", Kind: "routeros", DeviceID: rbID, Enabled: true},
+			{ID: 2, Name: "fw03", Address: "192.168.60.81", Kind: "opnsense", Enabled: true},
 		},
 		Ifaces: []queries.FlowIface{
 			{ExporterID: 1, IfIndex: 1, Name: "eth1-wan", Type: "ether", Source: "device"},
@@ -323,29 +323,29 @@ func labSuggestInput() SuggestInput {
 			{ExporterID: 1, IfIndex: 13, Name: "net28", Type: "vlan", VLANID: 28, Parent: "bridge", Source: "device"},
 			{ExporterID: 1, IfIndex: 15, Name: "wg-labnet", Type: "wg", Source: "device"},
 			{ExporterID: 1, IfIndex: 787, Name: "net88", Type: "vlan", VLANID: 88, Parent: "bridge", Source: "device"},
-			{ExporterID: 2, IfIndex: 1, Source: "learned", Hint: "192.168.78.0/24,192.168.79.0/24", LastSeen: now},
+			{ExporterID: 2, IfIndex: 1, Source: "learned", Hint: "192.168.60.0/24,192.168.61.0/24", LastSeen: now},
 			{ExporterID: 2, IfIndex: 7, Source: "learned", Hint: "", LastSeen: now},
 		},
 		Uplinks: []queries.DeviceUplink{
 			{DeviceID: rbID, Kind: "default-route", Interface: "eth1-wan", IfaceType: "ether", GatewayIP: "100.64.0.1"},
-			{DeviceID: swID, Kind: "gateway-host", Interface: "ether1", IfaceType: "ether", GatewayIP: "192.168.78.81"},
+			{DeviceID: swID, Kind: "gateway-host", Interface: "ether1", IfaceType: "ether", GatewayIP: "192.168.60.81"},
 		},
 		VLANs: []queries.BridgeVLAN{
 			{DeviceID: rbID, BridgeName: "bridge", VLANIDs: "1", CurrentUntagged: "bridge,sfp-sfpplus1"},
 			{DeviceID: rbID, BridgeName: "bridge", VLANIDs: "28", CurrentTagged: "sfp-sfpplus1", CurrentUntagged: "eth3"},
 			{DeviceID: rbID, BridgeName: "bridge", VLANIDs: "6,28", CurrentTagged: "bridge"},
 			{DeviceID: rbID, BridgeName: "bridge", VLANIDs: "88"},
-			// switch001's own table must not leak into the RB5009 trunk.
+			// sw01's own table must not leak into the RB5009 trunk.
 			{DeviceID: swID, BridgeName: "bridge", VLANIDs: "28", CurrentTagged: "sfp-sfpplus2", CurrentUntagged: "ether12"},
 		},
 		Hosts: []queries.PortHost{
-			{DeviceID: swID, InterfaceName: "ether1", MACAddress: "00:03:2d:21:fb:4c"},
+			{DeviceID: swID, InterfaceName: "ether1", MACAddress: "00:03:2d:00:00:81"},
 			{DeviceID: rbID, InterfaceName: "eth3", MACAddress: "78:9A:18:00:00:25"},
 		},
-		MACByIP: map[netip.Addr]string{ip("192.168.78.81"): "00:03:2D:21:FB:4C"},
+		MACByIP: map[netip.Addr]string{ip("192.168.60.81"): "00:03:2D:00:00:81"},
 		Devices: []queries.Device{
-			{ID: rbID, Identity: "switch002-rb5009", Address: "192.168.78.202"},
-			{ID: swID, Identity: "switch001", Address: "192.168.78.201"},
+			{ID: rbID, Identity: "sw02-rb5009", Address: "192.168.60.202"},
+			{ID: swID, Identity: "sw01", Address: "192.168.60.201"},
 		},
 		Adjacent: []Adjacency{
 			{DevA: rbID, IfA: "sfp-sfpplus1", DevB: swID, IfB: "sfp-sfpplus2"},
@@ -403,20 +403,20 @@ func TestSuggestLab(t *testing.T) {
 	if g.Rule != RuleGatewayHost || g.Exists || g.Point == nil {
 		t.Fatalf("rule G = %+v", g)
 	}
-	wantG := queries.FlowPoint{ExporterID: 2, Name: "switch001 · ether1", Kind: "derived", IfIndexes: []uint32{1},
+	wantG := queries.FlowPoint{ExporterID: 2, Name: "sw01 · ether1", Kind: "derived", IfIndexes: []uint32{1},
 		Facing: "down", PortSide: "peer", DeviceID: swID, Iface: "ether1", LocalInternal: true,
 		ExcludeAttach: []queries.PortRef{}, Enabled: true,
-		Note: "Derived from firewall003 NetFlow on its LAN interface: switch001 cannot export flows, and firewall003 is the only device on this port, so this is the port's IP traffic. Non-IP frames (ARP, LLDP, STP) are not included."}
+		Note: "Derived from fw03 NetFlow on its LAN interface: sw01 cannot export flows, and fw03 is the only device on this port, so this is the port's IP traffic. Non-IP frames (ARP, LLDP, STP) are not included."}
 	if !reflect.DeepEqual(*g.Point, wantG) {
 		t.Fatalf("rule G point =\n%+v\nwant\n%+v", *g.Point, wantG)
 	}
 
-	noteT := "Derived from switch002-rb5009 IPFIX on bridge, net28: routed and router-terminated traffic crossing this trunk. L2-switched VLAN traffic that switch002-rb5009 does not route is invisible; hosts on switch002-rb5009 eth3 are excluded."
+	noteT := "Derived from sw02-rb5009 IPFIX on bridge, net28: routed and router-terminated traffic crossing this trunk. L2-switched VLAN traffic that sw02-rb5009 does not route is invisible; hosts on sw02-rb5009 eth3 are excluded."
 	excl := []queries.PortRef{{DeviceID: rbID, Iface: "eth3"}}
 	for i, want := range []queries.FlowPoint{
-		{ExporterID: 1, Name: "switch001 · sfp-sfpplus2", Kind: "derived", IfIndexes: []uint32{10, 13}, Facing: "down",
+		{ExporterID: 1, Name: "sw01 · sfp-sfpplus2", Kind: "derived", IfIndexes: []uint32{10, 13}, Facing: "down",
 			PortSide: "peer", DeviceID: swID, Iface: "sfp-sfpplus2", ExcludeAttach: excl, Note: noteT, Enabled: true},
-		{ExporterID: 1, Name: "switch002-rb5009 · sfp-sfpplus1", Kind: "derived", IfIndexes: []uint32{10, 13}, Facing: "down",
+		{ExporterID: 1, Name: "sw02-rb5009 · sfp-sfpplus1", Kind: "derived", IfIndexes: []uint32{10, 13}, Facing: "down",
 			PortSide: "same", DeviceID: rbID, Iface: "sfp-sfpplus1", ExcludeAttach: excl, Note: noteT, Enabled: true},
 	} {
 		s := got[1+i]
@@ -434,7 +434,7 @@ func TestSuggestLab(t *testing.T) {
 	if got[0].Point.IfIndexes[0] != 4 {
 		t.Errorf("role=lan not preferred: %v", got[0].Point.IfIndexes)
 	}
-	if want := wantG.Note + " Note: the port also carries 1 other MAC(s); the view shows only traffic to or from firewall003."; got[0].Point.Note != want {
+	if want := wantG.Note + " Note: the port also carries 1 other MAC(s); the view shows only traffic to or from fw03."; got[0].Point.Note != want {
 		t.Errorf("note with other MAC = %q", got[0].Point.Note)
 	}
 	if !got[1].Exists || got[2].Exists || got[0].Exists {
@@ -445,7 +445,7 @@ func TestSuggestLab(t *testing.T) {
 	in = labSuggestInput()
 	in.Ifaces = in.Ifaces[:8]
 	got = Suggest(in)
-	if got[0].Rule != RuleGatewayHost || got[0].Point != nil || got[0].Reason != "waiting for first flows from firewall003" {
+	if got[0].Rule != RuleGatewayHost || got[0].Point != nil || got[0].Reason != "waiting for first flows from fw03" {
 		t.Fatalf("waiting = %+v", got[0])
 	}
 
@@ -526,10 +526,10 @@ func TestBuildSankey(t *testing.T) {
 	rows := dirRows()
 	attach := func(a netip.Addr) (string, string, string, bool) {
 		switch a {
-		case ip("192.168.28.33"):
-			return swID, "ether12", "switch001", true
-		case ip("192.168.28.25"):
-			return rbID, "eth3", "switch002-rb5009", true
+		case ip("192.168.40.33"):
+			return swID, "ether12", "sw01", true
+		case ip("192.168.40.25"):
+			return rbID, "eth3", "sw02-rb5009", true
 		}
 		return "", "", "", false
 	}
@@ -542,7 +542,7 @@ func TestBuildSankey(t *testing.T) {
 		}
 		return "", ClassExternal
 	}
-	opt := SankeyOptions{Dir: Download, PointID: 7, PointName: "switch001 · ether1", Seconds: 8, MaxRemote: 2, MaxLocal: 1}
+	opt := SankeyOptions{Dir: Download, PointID: 7, PointName: "sw01 · ether1", Seconds: 8, MaxRemote: 2, MaxLocal: 1}
 	nodes, links := BuildSankey(rows, opt, names, attach)
 	checkDAG(t, nodes, links)
 	want := map[string]int64{
@@ -550,9 +550,9 @@ func TestBuildSankey(t *testing.T) {
 		"remote:1.1.1.1>point:7":                       1000,
 		"remote:8.8.8.8>point:7":                       100,
 		"other:remote>point:7":                         140, // 9.9.9.9 + folded 40
-		"point:7>host:192.168.28.33":                   900,
+		"point:7>host:192.168.40.33":                   900,
 		"point:7>other:local":                          340, // .25 + folded 40
-		"host:192.168.28.33>port:" + swID + ":ether12": 900,
+		"host:192.168.40.33>port:" + swID + ":ether12": 900,
 	}
 	if got := edgeMap(nodes, links, false); !reflect.DeepEqual(got, want) {
 		t.Fatalf("download edges = %v\nwant %v", got, want)
@@ -564,16 +564,16 @@ func TestBuildSankey(t *testing.T) {
 	if n := byID["remote:1.1.1.1"]; n.Name != "one.one.one.one" || n.Type != NodeRemote || n.IP != "1.1.1.1" || n.Class != ClassExternal {
 		t.Errorf("remote node = %+v", n)
 	}
-	if n := byID["host:192.168.28.33"]; n.Name != "192.168.28.33" || n.Type != NodeHost || n.Class != ClassInternal {
+	if n := byID["host:192.168.40.33"]; n.Name != "192.168.40.33" || n.Type != NodeHost || n.Class != ClassInternal {
 		t.Errorf("host node = %+v", n)
 	}
-	if n := byID["port:"+swID+":ether12"]; n.Name != "switch001 · ether12" || n.DeviceID != swID || n.Iface != "ether12" {
+	if n := byID["port:"+swID+":ether12"]; n.Name != "sw01 · ether12" || n.DeviceID != swID || n.Iface != "ether12" {
 		t.Errorf("port node = %+v", n)
 	}
 	if byID["other:remote"].Name != "Other remote (1)" || byID["other:local"].Name != "Other hosts (1)" {
 		t.Errorf("other names = %q %q", byID["other:remote"].Name, byID["other:local"].Name)
 	}
-	if byID["point:7"].Name != "switch001 · ether1" || byID["point:7"].Type != NodePoint {
+	if byID["point:7"].Name != "sw01 · ether1" || byID["point:7"].Type != NodePoint {
 		t.Errorf("point node = %+v", byID["point:7"])
 	}
 
@@ -635,18 +635,18 @@ func TestAppName(t *testing.T) {
 func TestLANIPv6AndHostRows(t *testing.T) {
 	a, p := netip.MustParseAddr, netip.MustParsePrefix
 	pl := NewPlan([]queries.FlowPrefix{
-		{Prefix: p("192.168.78.0/23"), Class: "internal"},
-		{Prefix: p("2a01:4f8:202:13d1::/64"), Class: "internal"},
-		{Prefix: p("2a01:4f8:202:13d1:78::2019/128"), Class: "internal"},
+		{Prefix: p("192.168.60.0/23"), Class: "internal"},
+		{Prefix: p("2001:db8:100:10::/64"), Class: "internal"},
+		{Prefix: p("2001:db8:100:10:78::2019/128"), Class: "internal"},
 		{Prefix: p("100.64.0.0/10"), Class: "transit"},
-		{Prefix: p("100.114.241.213/32"), Class: "transit"},
+		{Prefix: p("100.101.102.103/32"), Class: "transit"},
 	}, nil, nil, nil, nil)
 	for ip, want := range map[string]string{
-		"2a01:4f8:202:13d1:78::60":   ClassInternal,
-		"2a01:4f8:202:13d1:78::2019": ClassInternal,
-		"100.114.241.213":            ClassExternal,
-		"100.64.0.1":                 ClassExternal,
-		"2620:fe::fe":                ClassExternal,
+		"2001:db8:100:10:78::60":   ClassInternal,
+		"2001:db8:100:10:78::2019": ClassInternal,
+		"100.101.102.103":          ClassExternal,
+		"100.64.0.1":               ClassExternal,
+		"2620:fe::fe":              ClassExternal,
 	} {
 		if got := pl.Class(a(ip)); got != want {
 			t.Errorf("Class(%s) = %s, want %s", ip, got, want)
@@ -654,8 +654,8 @@ func TestLANIPv6AndHostRows(t *testing.T) {
 	}
 	pt := Point{FlowPoint: queries.FlowPoint{IfIndexes: []uint32{1}, Facing: FacingDown, LocalInternal: true}}
 	rows := []queries.FlowAgg{
-		{InIf: 1, OutIf: 7, Src: a("192.168.78.60"), Dst: a("9.9.9.9"), Bytes: 1000},
-		{InIf: 1, OutIf: 7, Src: a("2a01:4f8:202:13d1:78::60"), Dst: a("2620:fe::fe"), Bytes: 2000},
+		{InIf: 1, OutIf: 7, Src: a("192.168.60.60"), Dst: a("9.9.9.9"), Bytes: 1000},
+		{InIf: 1, OutIf: 7, Src: a("2001:db8:100:10:78::60"), Dst: a("2620:fe::fe"), Bytes: 2000},
 	}
 	if got := Totals(Select(rows, pt, Upload, pl)); got != 3000 {
 		t.Fatalf("upload kept %d bytes, want 3000", got)

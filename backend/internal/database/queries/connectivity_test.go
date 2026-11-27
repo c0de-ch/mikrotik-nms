@@ -17,8 +17,8 @@ func TestPingTargetCRUDRoundtrip(t *testing.T) {
 		ID:         uuid.NewString(),
 		Kind:       "client",
 		Address:    "192.168.1.50",
-		MACAddress: "80:6D:97:5C:C7:C9",
-		Label:      "taneda-cadabi-t4",
+		MACAddress: "80:6D:97:00:00:01",
+		Label:      "laptop01",
 		Enabled:    true,
 	}
 	if err := CreatePingTarget(db, target); err != nil {
@@ -29,7 +29,7 @@ func TestPingTargetCRUDRoundtrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetPingTarget: %v", err)
 	}
-	if got.Kind != "client" || got.MACAddress != "80:6D:97:5C:C7:C9" || !got.Enabled {
+	if got.Kind != "client" || got.MACAddress != "80:6D:97:00:00:01" || !got.Enabled {
 		t.Errorf("roundtrip mismatch: %+v", got)
 	}
 	if got.CreatedAt.IsZero() {
@@ -96,7 +96,7 @@ func TestPingTargetSrcFieldsRoundtrip(t *testing.T) {
 		t.Errorf("src fields roundtrip mismatch: %+v", got)
 	}
 
-	got.SrcAddress = "2a01:db8::1"
+	got.SrcAddress = "2001:db8::1"
 	got.SrcInterface = ""
 	if err := UpdatePingTarget(db, got); err != nil {
 		t.Fatalf("UpdatePingTarget: %v", err)
@@ -105,7 +105,7 @@ func TestPingTargetSrcFieldsRoundtrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetPingTarget after update: %v", err)
 	}
-	if again.SrcAddress != "2a01:db8::1" || again.SrcInterface != "" {
+	if again.SrcAddress != "2001:db8::1" || again.SrcInterface != "" {
 		t.Errorf("src fields update not persisted: %+v", again)
 	}
 }
@@ -182,7 +182,7 @@ func TestClientSignalSamplesRoundtrip(t *testing.T) {
 
 	sig := -62
 	s := &ClientSignalSample{
-		MACAddress: "80:6D:97:5C:C7:C9",
+		MACAddress: "80:6D:97:00:00:01",
 		APName:     "ap-office",
 		SSID:       "main",
 		Band:       "5ghz-ac",
@@ -194,7 +194,7 @@ func TestClientSignalSamplesRoundtrip(t *testing.T) {
 		t.Fatalf("InsertClientSignalSample: %v", err)
 	}
 
-	got, err := GetClientSignalSamples(db, "80:6D:97:5C:C7:C9", time.Now().Add(-time.Hour), time.Now().Add(time.Hour), 10)
+	got, err := GetClientSignalSamples(db, "80:6D:97:00:00:01", time.Now().Add(-time.Hour), time.Now().Add(time.Hour), 10)
 	if err != nil {
 		t.Fatalf("GetClientSignalSamples: %v", err)
 	}
@@ -396,7 +396,7 @@ func TestTracerouteRunRoundtrip(t *testing.T) {
 func TestResolveClientProbe(t *testing.T) {
 	db := testDB(t)
 
-	mac := "80:6D:97:5C:C7:C9"
+	mac := "80:6D:97:00:00:01"
 	target := &PingTarget{ID: uuid.NewString(), Kind: "client", MACAddress: mac, Enabled: true}
 
 	// No mac_lookup entry at all.
@@ -405,10 +405,10 @@ func TestResolveClientProbe(t *testing.T) {
 	}
 
 	// Known MAC but no IP.
-	if err := UpsertMACLookup(db, &MACLookup{MACAddress: mac, HostName: "taneda-cadabi-t4", Source: "arp"}); err != nil {
+	if err := UpsertMACLookup(db, &MACLookup{MACAddress: mac, HostName: "laptop01", Source: "arp"}); err != nil {
 		t.Fatalf("UpsertMACLookup: %v", err)
 	}
-	if _, _, host, reason := ResolveClientProbe(db, target); reason == "" || host != "taneda-cadabi-t4" {
+	if _, _, host, reason := ResolveClientProbe(db, target); reason == "" || host != "laptop01" {
 		t.Errorf("no-IP case: host=%q reason=%q", host, reason)
 	}
 

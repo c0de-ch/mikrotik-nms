@@ -9,8 +9,8 @@ import (
 // DeviceAddress is one address configured on a device, annotated with the
 // VLAN id when its interface is an /interface/vlan.
 type DeviceAddress struct {
-	Address   string `json:"address"`   // as configured, e.g. 192.168.28.26/24
-	IP        string `json:"ip"`        // host part, e.g. 192.168.28.26
+	Address   string `json:"address"`   // as configured, e.g. 192.168.88.1/24
+	IP        string `json:"ip"`        // host part, e.g. 192.168.88.1
 	Interface string `json:"interface"` // e.g. net28, bridge
 	VlanID    string `json:"vlan_id"`   // e.g. "28" when the interface is a VLAN, else ""
 	Family    string `json:"family"`    // "ip" | "ipv6"

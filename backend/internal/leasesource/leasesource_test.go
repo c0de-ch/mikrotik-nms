@@ -41,7 +41,7 @@ func opnsenseServer(t *testing.T) *httptest.Server {
 			return
 		}
 		_, _ = w.Write([]byte(`{"rows":[
-			{"address":"192.168.78.107","hwaddr":"b8:37:4a:f0:aa:6a","hostname":"kim-ipadpro11m1","state":0,"type":""}
+			{"address":"192.168.60.107","hwaddr":"b8:37:4a:00:01:07","hostname":"tablet01","state":0,"type":""}
 		]}`))
 	}))
 }
@@ -69,7 +69,7 @@ func TestFromSettings_UnionAndNormalisation(t *testing.T) {
 	// MAC uppercased, hostname + origin carried through.
 	want := map[string]Lease{
 		"AA:BB:CC:DD:EE:01": {MAC: "AA:BB:CC:DD:EE:01", IP: "10.0.0.5", Hostname: "kea-host", Origin: "kea"},
-		"B8:37:4A:F0:AA:6A": {MAC: "B8:37:4A:F0:AA:6A", IP: "192.168.78.107", Hostname: "kim-ipadpro11m1", Origin: "opnsense"},
+		"B8:37:4A:00:01:07": {MAC: "B8:37:4A:00:01:07", IP: "192.168.60.107", Hostname: "tablet01", Origin: "opnsense"},
 	}
 	for _, l := range leases {
 		w, ok := want[l.MAC]
@@ -117,7 +117,7 @@ func TestFromSettings_SecondaryOpnsense(t *testing.T) {
 			return
 		}
 		_, _ = w.Write([]byte(`{"rows":[
-			{"address":"192.168.80.50","hwaddr":"cc:dd:ee:ff:00:11","hostname":"glaris-host","state":0,"type":""}
+			{"address":"192.168.84.50","hwaddr":"cc:dd:ee:ff:00:11","hostname":"site2-host","state":0,"type":""}
 		]}`))
 	}))
 	defer opn2.Close()
@@ -136,10 +136,10 @@ func TestFromSettings_SecondaryOpnsense(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("want leases from both OPNsense instances, got %d: %+v", len(got), got)
 	}
-	if l := got["B8:37:4A:F0:AA:6A"]; l.Origin != "opnsense" {
+	if l := got["B8:37:4A:00:01:07"]; l.Origin != "opnsense" {
 		t.Errorf("primary origin = %q, want opnsense (%+v)", l.Origin, l)
 	}
-	if l := got["CC:DD:EE:FF:00:11"]; l.Origin != "opnsense2" || l.IP != "192.168.80.50" {
+	if l := got["CC:DD:EE:FF:00:11"]; l.Origin != "opnsense2" || l.IP != "192.168.84.50" {
 		t.Errorf("secondary lease wrong: %+v", l)
 	}
 }
