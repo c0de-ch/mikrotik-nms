@@ -155,6 +155,52 @@ func TestCPUHighCarriesTheLikelyCause(t *testing.T) {
 	}
 }
 
+// The cause belongs to the alert it answered. An alert that stays open for
+// hours keeps it: no second pass is started for an alert that has its answer,
+// and the payload is rewritten at every evaluation.
+func TestOpenAlertKeepsItsLikelyCause(t *testing.T) {
+	db := testDB(t)
+	graphing := `[{"kind":"graphing_enabled","severity":"critical","title":"Graphing is enabled on a weak device","detail":"interface rule interface=all"}]`
+	open := func(id string, at time.Time) {
+		t.Helper()
+		if _, err := queries.InsertAlert(db, &queries.Alert{Rule: RuleCPUHigh, Key: id, DeviceID: id, Severity: SeverityWarning,
+			FirstAt: at, LastAt: at, Confirmed: true, Payload: `{"summary":"busy"}`}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, id := range []string{"long", "earlier"} {
+		addDevice(t, db, id, devclass.C1, 64<<20)
+		cpuMinutes(t, db, id, repeat(90, 5)...)
+	}
+	// "long": pegged for five hours; the pass ran in the first minutes.
+	opened := ruleNow.Add(-5 * time.Hour)
+	open("long", opened)
+	diagnoseRun(t, db, "long", opened.Add(6*time.Minute), queries.AuditComplete, 11, 0, graphing)
+	// "earlier": a pass of the same age, from an episode that is over; its
+	// alert of today opened ten minutes ago and has no answer yet.
+	diagnoseRun(t, db, "earlier", opened.Add(6*time.Minute), queries.AuditComplete, 11, 0, graphing)
+	open("earlier", ruleNow.Add(-10*time.Minute))
+
+	obs, err := cpuHigh{db}.Evaluate(ruleNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]Observation{}
+	for _, o := range firing(obs) {
+		got[o.Key] = o
+	}
+	cause := factStrings(t, got["long"], "likely_cause")
+	if len(cause) != 1 || !strings.HasPrefix(cause[0], "[critical] Graphing is enabled on a weak device") {
+		t.Errorf("an alert open for five hours lost its likely cause: %q", cause)
+	}
+	if at, _ := got["long"].Facts["diagnosed_at"].(string); at != opened.Add(6*time.Minute).UTC().Format(time.RFC3339) {
+		t.Errorf("diagnosed_at = %v, want the time of the pass that answered the alert", got["long"].Facts["diagnosed_at"])
+	}
+	if _, ok := got["earlier"].Facts["likely_cause"]; ok || got["earlier"].Summary == "" {
+		t.Errorf("a pass from before the alert opened, hours ago, was passed off as its cause: %+v", got["earlier"].Facts)
+	}
+}
+
 // When the cause arrives — minutes after the alert was announced — the
 // alert is announced once more, with it. Never again for the same pass, and
 // not through an acknowledgement.

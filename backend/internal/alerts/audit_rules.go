@@ -118,9 +118,10 @@ func (r auditCritical) Evaluate(time.Time) ([]Observation, error) {
 // ---- the likely cause ---------------------------------------------------------------
 
 // likelyCauseWindow is how old a diagnose pass may be to be shown as the
-// cause of an open alert. A device gets at most one pass an hour, so the
-// pass of the current episode is younger than this, and one from yesterday
-// is not passed off as today's.
+// cause of an alert it did not answer — one that ran shortly before the
+// alert opened (a device gets at most one pass an hour, so a new episode
+// within the hour has no pass of its own yet). One from yesterday is not
+// passed off as today's.
 const likelyCauseWindow = 2 * time.Hour
 
 // diagnosed is what a diagnose pass contributes to an alert.
@@ -156,16 +157,45 @@ func findingRank(severity string) int {
 	return 2
 }
 
-// likelyCauses reads every device's newest diagnose pass of the last
-// likelyCauseWindow and words what it found. A pass that found nothing is
-// worded too: "not on the device" is an answer.
-func likelyCauses(db *sql.DB, now time.Time) (map[string]diagnosed, error) {
-	runs, err := queries.ListLatestDiagnoseRuns(db, now.Add(-likelyCauseWindow))
+// likelyCauses words, per device, what its newest diagnose pass found — for
+// the alerts of rule. The pass counts when it belongs to the episode:
+//
+//   - it started at or after the device's open alert of this rule opened —
+//     the pass that answered the alert (the auditor applies the same test
+//     before it starts one). It stays the alert's cause however long the
+//     alert stays open: no second pass is started for an alert that has its
+//     answer, and the payload is rewritten at every evaluation;
+//   - or it finished within likelyCauseWindow.
+//
+// A pass that found nothing is worded too: "not on the device" is an answer.
+func likelyCauses(db *sql.DB, rule string, now time.Time) (map[string]diagnosed, error) {
+	runs, err := queries.ListLatestDiagnoseRuns(db)
 	if err != nil {
 		return nil, err
 	}
+	if len(runs) == 0 {
+		return map[string]diagnosed{}, nil
+	}
+	open, err := queries.ListOpenAlerts(db)
+	if err != nil {
+		return nil, err
+	}
+	opened := map[string]time.Time{} // device → when its open alert of this rule opened
+	for _, a := range open {
+		if a.Rule != rule || a.DeviceID == "" {
+			continue
+		}
+		if at, ok := opened[a.DeviceID]; !ok || a.FirstAt.Before(at) {
+			opened[a.DeviceID] = a.FirstAt
+		}
+	}
 	out := make(map[string]diagnosed, len(runs))
 	for id, run := range runs {
+		since, isOpen := opened[id]
+		answers := isOpen && !run.StartedAt.Before(since)
+		if !answers && run.FinishedAt.Before(now.Add(-likelyCauseWindow)) {
+			continue
+		}
 		var found []runFinding
 		_ = json.Unmarshal([]byte(run.Findings), &found)
 		sort.SliceStable(found, func(i, j int) bool { return findingRank(found[i].Severity) < findingRank(found[j].Severity) })
@@ -250,7 +280,7 @@ func (r flowExportCPUHigh) Evaluate(now time.Time) ([]Observation, error) {
 	for _, d := range devices {
 		byID[d.ID] = d
 	}
-	causes, err := likelyCauses(r.db, now)
+	causes, err := likelyCauses(r.db, RuleFlowExportCPUHigh, now)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", RuleFlowExportCPUHigh, err)
 	}

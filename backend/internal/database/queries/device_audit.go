@@ -163,12 +163,16 @@ func LatestFinishedAuditRun(db *sql.DB, deviceID, kind string) (*AuditRun, error
 }
 
 // ListLatestDiagnoseRuns returns, per device, its newest diagnose pass that
-// finished at or after since and judged something (complete or partial): the
-// "likely cause" the alert rules attach.
-func ListLatestDiagnoseRuns(db *sql.DB, since time.Time) (map[string]AuditRun, error) {
-	rows, err := db.Query(`SELECT `+auditRunColumns+` FROM device_audit_runs
-		WHERE kind = ? AND status IN (?, ?) AND finished_at >= ? ORDER BY finished_at, id`,
-		AuditKindDiagnose, AuditComplete, AuditPartial, since.Unix())
+// judged something (complete or partial), however old: the alert rules pick
+// the "likely cause" from it — the pass that answered an alert is its cause
+// for as long as the alert stays open.
+func ListLatestDiagnoseRuns(db *sql.DB) (map[string]AuditRun, error) {
+	rows, err := db.Query(`SELECT `+auditRunColumns+` FROM device_audit_runs r
+		WHERE r.kind = ?1 AND r.status IN (?2, ?3) AND NOT EXISTS (
+			SELECT 1 FROM device_audit_runs n
+			WHERE n.device_id = r.device_id AND n.kind = ?1 AND n.status IN (?2, ?3)
+			  AND (n.finished_at > r.finished_at OR (n.finished_at = r.finished_at AND n.id > r.id)))`,
+		AuditKindDiagnose, AuditComplete, AuditPartial)
 	if err != nil {
 		return nil, err
 	}
@@ -179,7 +183,7 @@ func ListLatestDiagnoseRuns(db *sql.DB, since time.Time) (map[string]AuditRun, e
 		if err != nil {
 			return nil, err
 		}
-		out[r.DeviceID] = r // ordered: the newest wins
+		out[r.DeviceID] = r
 	}
 	return out, rows.Err()
 }

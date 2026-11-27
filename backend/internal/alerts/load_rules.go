@@ -206,7 +206,7 @@ func (r cpuHigh) Evaluate(now time.Time) ([]Observation, error) {
 		return nil, fmt.Errorf("%s: %w", RuleCPUHigh, err)
 	}
 	// What the diagnose pass found on the device while its CPU was high.
-	causes, err := likelyCauses(r.db, now)
+	causes, err := likelyCauses(r.db, RuleCPUHigh, now)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", RuleCPUHigh, err)
 	}

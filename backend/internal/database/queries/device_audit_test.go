@@ -163,13 +163,18 @@ func TestAuditRuns(t *testing.T) {
 		Detail: "1 read failed", Findings: `[]`}); err != nil {
 		t.Fatal(err)
 	}
-	// An older diagnose pass of d2 and one that is too old to count.
+	// An older diagnose pass of d2, and a newer one that judged nothing.
 	old, _ := InsertAuditRun(db, &AuditRun{DeviceID: "d2", Kind: AuditKindDiagnose, Reason: "admin", StartedAt: t1.Add(-10 * time.Hour)})
 	_ = FinishAuditRun(db, &AuditRun{ID: old, FinishedAt: t1.Add(-10 * time.Hour), Status: AuditComplete, Findings: `[]`})
+	cut, _ := InsertAuditRun(db, &AuditRun{DeviceID: "d2", Kind: AuditKindDiagnose, Reason: "admin", StartedAt: t1.Add(3 * time.Hour)})
+	_ = FinishAuditRun(db, &AuditRun{ID: cut, FinishedAt: t1.Add(3 * time.Hour), Status: AuditAborted, Findings: `[]`})
 
-	latest, err := ListLatestDiagnoseRuns(db, t1)
-	if err != nil || len(latest) != 1 || latest["d2"].AlertID != 42 || latest["d2"].Status != AuditPartial {
-		t.Fatalf("latest diagnose runs since t1 = %+v, %v", latest, err)
+	// Each device's newest diagnose pass that judged something, however old
+	// (d1 has had none).
+	latest, err := ListLatestDiagnoseRuns(db)
+	if err != nil || len(latest) != 1 || latest["d2"].AlertID != 42 || latest["d2"].Status != AuditPartial ||
+		!latest["d2"].StartedAt.Equal(t1.Add(time.Hour)) {
+		t.Fatalf("latest diagnose runs = %+v, %v", latest, err)
 	}
 
 	// When each device last finished an audit (complete or partial): the

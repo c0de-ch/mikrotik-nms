@@ -66,7 +66,7 @@ func (r flowExportOnSwitch) Evaluate(now time.Time) ([]Observation, error) {
 	advertise, _ := queries.GetSetting(r.db, "flow_advertise_address")
 	// The diagnose pass that a confirmed export starts; without it (a read
 	// error) the alert still fires.
-	causes, _ := likelyCauses(r.db, now)
+	causes, _ := likelyCauses(r.db, RuleFlowExportOnSwitch, now)
 
 	var out []Observation
 	for i := range devices {
