@@ -1,6 +1,6 @@
 # DB state after the fleet's hour: table client_history, 43 rows.
 #
-# Written by: ClientDiscoveryPoller.store → queries.InsertClientHistory
+# Written by: ClientDiscoveryPoller.store → ingest.Sink.Emit → ingest.ApplyClientSeen → queries.InsertClientHistory
 # The hour:   the call-plan fleet of 5 fake devices (callplan_harness_test.go), every scheduled loop,
 #             one simulated hour and a minute from 2026-01-05 12:00 UTC; the devices' counters, CPU,
 #             memory and uptime move with the clock (callplan_motion_test.go)
@@ -12,7 +12,7 @@
 #   recorded_at: SQLite's CURRENT_TIMESTAMP (wall clock) → <sqlite-now>; stored as TEXT "2006-01-02 15:04:05" (as CURRENT_TIMESTAMP writes it)
 #   REAL values with three decimals, strings quoted, NULL as NULL
 #   rows ordered by all their columns as shown
-#   left out: id, an AUTOINCREMENT id in no deterministic order — ClientDiscoveryPoller.store inserts a pass's clients in the order of a Go map, which is random
+#   left out: id, an AUTOINCREMENT id in no deterministic order — ClientDiscoveryPoller.store emits a pass's clients in the order of a Go map, which is random, and the sink applies them in that order
 
 mac_address="02:00:5E:00:53:01" ip_address="192.0.2.1" host_name="" source="arp" device_name="ap-ac" recorded_at=<sqlite-now>
 mac_address="02:00:5E:00:53:01" ip_address="192.0.2.1" host_name="" source="arp" device_name="ap-ac" recorded_at=<sqlite-now>

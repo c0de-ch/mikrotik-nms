@@ -12,7 +12,7 @@
 bridge_port_status          99 rows  NetworkHealthPoller.readBridges → queries.UpsertBridgePortStatus (stale rows: NetworkHealthPoller.maintain → queries.DeleteStaleBridgeRows)
 bridge_status                5 rows  NetworkHealthPoller.readBridges → queries.UpsertBridgeStatus (stale rows: NetworkHealthPoller.maintain → queries.DeleteStaleBridgeRows)
 bridge_vlans                13 rows  NetworkHealthPoller.readVLANs → queries.UpsertBridgeVLAN (stale rows: NetworkHealthPoller.maintain → queries.DeleteStaleBridgeVLANs)
-client_history              43 rows  ClientDiscoveryPoller.store → queries.InsertClientHistory
+client_history              43 rows  ClientDiscoveryPoller.store → ingest.Sink.Emit → ingest.ApplyClientSeen → queries.InsertClientHistory
 client_signal_samples      122 rows  ConnectivityPoller.collectSignals → queries.InsertClientSignalSample
 device_audit                 5 rows  Auditor.storeSnapshot → queries.InsertDeviceAudit
 device_audit_runs            5 rows  Auditor.begin → queries.InsertAuditRun
@@ -30,7 +30,7 @@ interface_relations          6 rows  PortStatsCollector.collectDeviceRelations (
 interface_state            109 rows  NetworkHealthPoller.monitorPorts → queries.UpsertInterfaceState (stale rows: NetworkHealthPoller.maintain → queries.DeleteStaleInterfaceStates)
 interfaces                 113 rows  PortStatsCollector.syncInventory (Tier 0) → queries.SyncInterfaces
 links                        4 rows  Manager.pollTopology → topology.Builder.Build → queries.UpsertLink (MarkStaleLinksDown, DeleteOldLinks)
-mac_lookup                   9 rows  ClientDiscoveryPoller.store → queries.UpsertMACLookup
+mac_lookup                   9 rows  ClientDiscoveryPoller.store → ingest.Sink.Emit → ingest.ApplyClientSeen → queries.UpsertMACLookup
                                      WifiTracker.poll → queries.UpsertMACLookup
 neighbors                    8 rows  Manager.collectNeighbors (Tier 3d) → queries.UpsertNeighbor (stale rows: Manager.sweepNeighbors)
 ping_samples               244 rows  ConnectivityPoller.persistAndPublish → queries.InsertPingSample

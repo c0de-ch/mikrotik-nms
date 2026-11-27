@@ -1,6 +1,6 @@
 # DB state after the fleet's hour: table mac_lookup, 9 rows.
 #
-# Written by: ClientDiscoveryPoller.store → queries.UpsertMACLookup
+# Written by: ClientDiscoveryPoller.store → ingest.Sink.Emit → ingest.ApplyClientSeen → queries.UpsertMACLookup
 #             WifiTracker.poll → queries.UpsertMACLookup
 # The hour:   the call-plan fleet of 5 fake devices (callplan_harness_test.go), every scheduled loop,
 #             one simulated hour and a minute from 2026-01-05 12:00 UTC; the devices' counters, CPU,
