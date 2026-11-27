@@ -50,6 +50,9 @@ type Device struct {
 	logins       int
 	commands     []string
 	args         [][]string
+	exchanges    []Exchange
+	clock        func() time.Time
+	unknownTrap  string
 	replies      map[string][]map[string]string
 	counts       map[string]int
 	traps        map[string]string
@@ -57,6 +60,70 @@ type Device struct {
 	raws         map[string][]byte
 	hooks        map[string]func()
 	refuseLogins bool
+}
+
+// Exchange is one command the device received after login, and how it
+// answered: the record a test reads to say what a device was sent, when, and
+// what that cost it in reply rows.
+type Exchange struct {
+	// At is the device's clock (UseClock) when the command arrived; the zero
+	// time for a device without one.
+	At time.Time
+	// Command is the command word, Words every word after it as sent
+	// (=key=value attribute words, ?key=value query words).
+	Command string
+	Words   []string
+	// Rows is the number of !re sentences of the answer (0 for a count-only
+	// answer, a trap, a !fatal and raw bytes).
+	Rows int
+	// Trap is the message of the !trap the command was answered with, ""
+	// when it was not refused.
+	Trap string
+	// Scripted is false for a command the test gave the device no answer
+	// for: it got the empty !done, or the trap of SetUnknownTrap.
+	Scripted bool
+}
+
+// UseClock makes the device stamp every Exchange with now() — a test's
+// simulated clock, so the record is on the same time line as the code under
+// test. now is called on the device's connection goroutines.
+func (d *Device) UseClock(now func() time.Time) {
+	d.mu.Lock()
+	d.clock = now
+	d.mu.Unlock()
+}
+
+// SetUnknownTrap makes the device answer every command it has no scripted
+// answer for with a !trap carrying message — "no such command prefix" is what
+// RouterOS says for a menu it does not have — instead of an empty !done.
+func (d *Device) SetUnknownTrap(message string) {
+	d.mu.Lock()
+	d.unknownTrap = message
+	d.mu.Unlock()
+}
+
+// LastExchangeAt is the clock time of the newest command the device received
+// (the zero time before the first, and for a device without a clock).
+func (d *Device) LastExchangeAt() time.Time {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if len(d.exchanges) == 0 {
+		return time.Time{}
+	}
+	return d.exchanges[len(d.exchanges)-1].At
+}
+
+// Exchanges returns every command received after login with its answer, in
+// the order the device received them.
+func (d *Device) Exchanges() []Exchange {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	out := make([]Exchange, len(d.exchanges))
+	for i, e := range d.exchanges {
+		e.Words = append([]string(nil), e.Words...)
+		out[i] = e
+	}
+	return out
 }
 
 // Reply scripts the rows (one !re sentence each, attribute → value) that
@@ -81,18 +148,37 @@ func NewTLSDevice(t testing.TB) *Device {
 	return d
 }
 
+// NewDeviceOn starts a fake device on the given loopback address instead of
+// 127.0.0.1 — for a test that stores several devices, whose addresses must
+// differ. Every address of 127.0.0.0/8 is local on Linux; where the platform
+// has only 127.0.0.1 the listen fails, and the error is returned for the
+// test to skip on.
+func NewDeviceOn(t testing.TB, host string) (*Device, error) {
+	t.Helper()
+	return startOn(t, host, nil)
+}
+
 func start(t testing.TB, tlsCfg *tls.Config) *Device {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	d, err := startOn(t, "127.0.0.1", tlsCfg)
 	if err != nil {
-		t.Fatalf("routerostest: listen: %v", err)
+		t.Fatalf("routerostest: %v", err)
+	}
+	return d
+}
+
+func startOn(t testing.TB, host string, tlsCfg *tls.Config) (*Device, error) {
+	t.Helper()
+	ln, err := net.Listen("tcp", net.JoinHostPort(host, "0"))
+	if err != nil {
+		return nil, fmt.Errorf("listen: %w", err)
 	}
 	host, port, _ := net.SplitHostPort(ln.Addr().String())
 	d := &Device{ln: ln, Host: host}
 	d.Port, _ = strconv.Atoi(port)
 	t.Cleanup(func() { _ = ln.Close() })
 	go d.accept(tlsCfg)
-	return d
+	return d, nil
 }
 
 // selfSigned makes the certificate of a TLS device and its fingerprint: the
@@ -263,7 +349,7 @@ func (d *Device) serve(c net.Conn) {
 			var tlsErr tls.RecordHeaderError
 			if !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) && !errors.As(err, &tlsErr) && !isHandshakeAbort(err) {
 				// Bytes that do not even parse are traffic too.
-				d.record("<unparsed: "+err.Error()+">", nil)
+				d.record(Exchange{Command: "<unparsed: " + err.Error() + ">"})
 			}
 			return
 		}
@@ -278,11 +364,12 @@ func (d *Device) serve(c net.Conn) {
 		}
 		d.mu.Lock()
 		refuse := d.refuseLogins
-		rows := d.replies[sen.Word]
+		rows, hasRows := d.replies[sen.Word]
 		count, counted := d.counts[sen.Word]
 		trap, trapped := d.traps[sen.Word]
 		fatal, isFatal := d.fatals[sen.Word]
 		raw, isRaw := d.raws[sen.Word]
+		unknownTrap := d.unknownTrap
 		d.mu.Unlock()
 		if sen.Word == "/login" {
 			isFatal, isRaw = false, false
@@ -293,8 +380,20 @@ func (d *Device) serve(c net.Conn) {
 			}
 			counted = false
 		} else {
-			d.record(sen.Word, sen.Words)
+			scripted := hasRows || counted || trapped || isFatal || isRaw
+			if !scripted && unknownTrap != "" {
+				trap, trapped = unknownTrap, true
+			}
 			counted = counted && hasWord(sen.List, "count-only")
+			ex := Exchange{Command: sen.Word, Words: sen.Words, Scripted: scripted}
+			switch {
+			case isRaw, isFatal, counted:
+			case trapped:
+				ex.Trap = trap
+			default:
+				ex.Rows = len(rows)
+			}
+			d.record(ex)
 		}
 		switch {
 		case isRaw:
@@ -493,9 +592,17 @@ func (d *Device) Args() [][]string {
 	return out
 }
 
-func (d *Device) record(cmd string, words []string) {
+func (d *Device) record(ex Exchange) {
 	d.mu.Lock()
-	d.commands = append(d.commands, cmd)
-	d.args = append(d.args, append([]string{}, words...))
+	clock := d.clock
+	d.mu.Unlock()
+	if clock != nil {
+		ex.At = clock() // outside the lock: the clock is the test's
+	}
+	ex.Words = append([]string{}, ex.Words...)
+	d.mu.Lock()
+	d.commands = append(d.commands, ex.Command)
+	d.args = append(d.args, ex.Words)
+	d.exchanges = append(d.exchanges, ex)
 	d.mu.Unlock()
 }
