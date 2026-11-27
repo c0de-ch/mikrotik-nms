@@ -51,8 +51,8 @@ func bridgeDevice() *fakeRunner {
 }
 
 // The network-health poller runs each device's bridge (2a–2c), VLAN (3a) and
-// log reads on its class cadence — C3: 2 / 5 / 2 min, C1: 5 / 15 / 5 min —
-// and never on a paused device.
+// log reads on its class cadence — C3: 2 / 5 / 2 min, C1: 5 / 15 / 5 min, one
+// read per slot of each grid — and never on a paused device.
 func TestNetworkHealthPerClassCadenceAndPause(t *testing.T) {
 	db := pollerTestDB(t)
 	classFleet(t, db, map[string]devclass.Class{"r3": devclass.C3, "s1": devclass.C1, "held": devclass.C3}, "held")
@@ -77,10 +77,17 @@ func TestNetworkHealthPerClassCadenceAndPause(t *testing.T) {
 		{time.Minute, [3]int{1, 1, 1}, [3]int{1, 1, 1}},
 		{2 * time.Minute, [3]int{2, 1, 2}, [3]int{1, 1, 1}},
 		{5 * time.Minute, [3]int{3, 2, 3}, [3]int{2, 1, 2}},
-		{15 * time.Minute, [3]int{4, 3, 4}, [3]int{3, 2, 3}},
+		{15 * time.Minute, [3]int{8, 4, 8}, [3]int{4, 2, 4}},
 	} {
-		clock.set(at(12, 0, 0).Add(st.at))
-		n.poll(context.Background())
+		// The loop looks every pollerTick, so every slot up to the step is
+		// taken once.
+		for clock.now().Before(at(12, 0, 0).Add(st.at)) {
+			clock.set(clock.now().Add(pollerTick))
+			n.poll(context.Background())
+		}
+		if st.at == 0 {
+			n.poll(context.Background())
+		}
 		if got := reads("r3"); got != st.r3 {
 			t.Errorf("+%v: C3 bridge/vlan/log reads = %v, want %v", st.at, got, st.r3)
 		}

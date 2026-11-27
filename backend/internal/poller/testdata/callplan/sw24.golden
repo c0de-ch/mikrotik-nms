@@ -58,12 +58,12 @@ count  every        rows/call  command
 
 ## Commands per minute
 
-minutes  0- 9:  13   7   6   8   6   8   4   9   4   8
-minutes 10-19:  17  10   6   8   5   8   4   9   4   8
-minutes 20-29:   5   7   6   8   4   9   4   9   4   7
-minutes 30-39:   6   7   6   8   5   9   4   9   4   7
-minutes 40-49:   5   7   6   8   4   9   4   9   4   8
-minutes 50-59:   5   7   6   8   4   9   4   9   4   7
+minutes  0- 9:  13   8   5   9   5   8   5   8   4   8
+minutes 10-19:  17  11   5   8   5   8   5   8   5   7
+minutes 20-29:   5   8   5   8   5   8   5   8   4   7
+minutes 30-39:   6   8   5   9   5   8   5   8   4   7
+minutes 40-49:   5   8   5   8   5   8   5   8   5   7
+minutes 50-59:   5   8   5   8   5   8   5   8   4   7
 
 ## The first 10 minutes
 
@@ -80,20 +80,20 @@ minute 0: 13 commands
     1× /ip/dhcp-server/print =count-only=
     1× /interface/bridge/print =count-only=
     1× /log/print [4 fields]
-minute 1: 7 commands
+minute 1: 8 commands
     1× /system/resource/print [3 fields]
     1× /ip/neighbor/print
     2× /interface/print [21 fields]
     1× /interface/bridge/print [7 fields]
     1× /interface/bridge/port/print [22 fields]
     1× /interface/bridge/monitor =numbers= =once= [9 fields]
-minute 2: 6 commands
-    1× /system/resource/print [3 fields]
     1× /ip/route/print ?dst-address=0.0.0.0/0
+minute 2: 5 commands
+    1× /system/resource/print [3 fields]
     2× /interface/print [21 fields]
     1× /log/print [4 fields]
     1× /interface/bridge/vlan/print
-minute 3: 8 commands
+minute 3: 9 commands
     1× /system/resource/print [3 fields]
     1× /ip/neighbor/print
     2× /interface/print [21 fields]
@@ -101,11 +101,11 @@ minute 3: 8 commands
     1× /interface/bridge/port/print [22 fields]
     1× /interface/bridge/monitor =numbers= =once= [9 fields]
     1× /interface/bridge/host/print ?local=false [10 fields]
-minute 4: 6 commands
+    1× /interface/vlan/print [3 fields]
+minute 4: 5 commands
     1× /system/resource/print [3 fields]
     2× /interface/print [21 fields]
     1× /log/print [4 fields]
-    1× /interface/vlan/print [3 fields]
     1× /system/resource/print [1 field]
 minute 5: 8 commands
     1× /system/resource/print [3 fields]
@@ -115,14 +115,14 @@ minute 5: 8 commands
     1× /interface/bridge/print [7 fields]
     1× /interface/bridge/port/print [22 fields]
     1× /interface/bridge/monitor =numbers= =once= [9 fields]
-minute 6: 4 commands
+minute 6: 5 commands
     1× /system/resource/print [3 fields]
     2× /interface/print [21 fields]
     1× /log/print [4 fields]
-minute 7: 9 commands
+    1× /ip/route/print ?dst-address=0.0.0.0/0
+minute 7: 8 commands
     1× /system/resource/print [3 fields]
     1× /ip/neighbor/print
-    1× /ip/route/print ?dst-address=0.0.0.0/0
     2× /interface/print [21 fields]
     1× /interface/bridge/print [7 fields]
     1× /interface/bridge/port/print [22 fields]

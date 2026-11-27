@@ -1,6 +1,7 @@
 package devclass
 
 import (
+	"slices"
 	"testing"
 	"time"
 )
@@ -241,19 +242,19 @@ func TestFirstRunDelay(t *testing.T) {
 		t.Errorf("an unknown tier waits %v", got)
 	}
 
-	// On a C1 device the first reads come one group a minute; on a strong
-	// device the same leads fold into the first half-interval.
+	// On a C1 device the first reads come in three groups 100 s apart; on a
+	// strong device the same leads fold into the first half-interval.
 	for _, tt := range []struct {
 		c    Class
 		tier Tier
 		want time.Duration
 	}{
-		{C1, TierBridgePorts, time.Minute},
-		{C1, TierNeighbors, 2 * time.Minute},
-		{C1, TierRoutes, 2 * time.Minute},
-		{C1, TierBridgeHosts, 3 * time.Minute},
-		{C1, TierBridgeVLAN, 3 * time.Minute},
-		{C1, TierRelations, 4 * time.Minute},
+		{C1, TierBridgePorts, 100 * time.Second},
+		{C1, TierNeighbors, 100 * time.Second},
+		{C1, TierRoutes, 100 * time.Second},
+		{C1, TierBridgeHosts, 200 * time.Second},
+		{C1, TierBridgeVLAN, 200 * time.Second},
+		{C1, TierRelations, 200 * time.Second},
 		{C1, TierCPUPost, 4 * time.Minute},
 		{C3, TierRoutes, 30 * time.Second},       // every minute: half of it
 		{C3, TierNeighbors, time.Minute},         // every 2 min
@@ -267,30 +268,43 @@ func TestFirstRunDelay(t *testing.T) {
 	}
 }
 
-// The point of the leads: on the C1 plan, the 5-minute reads start in three
-// different minutes of the five-minute cycle, and none of the 15-minute reads
-// or the post-poll sample starts in one of those — so, every later read
-// counting from the end of the one before, they do not fall together.
+// The point of the leads: on the C1 plan every read that is not read at once
+// or on a slot of its own falls into one of three groups whose places in the
+// five-minute cycle are at least 100 s apart — at least 90 s stretched by any
+// device's jitter, more than a minute plus the half-minute over which the
+// loops first look at a device — and every grid's period is a whole number
+// of five-minute cycles, so the groups keep their places for good.
 func TestFirstRunLeadsSpreadTheC1Plan(t *testing.T) {
-	minuteOf := func(tier Tier) int {
-		return int(FirstRunDelay(tier, Cadence(C1, tier)) / time.Minute)
-	}
-	fiveMinute := map[int][]Tier{} // minute of the five-minute cycle → the 5-minute tiers starting in it
+	const cycle = 5 * time.Minute
+	places := map[time.Duration][]Tier{} // place in the cycle → the tiers starting there
 	for _, tier := range Tiers() {
-		if Cadence(C1, tier) == 5*time.Minute {
-			m := minuteOf(tier) % 5
-			fiveMinute[m] = append(fiveMinute[m], tier)
+		iv := Cadence(C1, tier)
+		if iv <= 0 || tier == TierCounters || tier == TierCPU || tier == TierCPUPost || tier == TierAudit {
+			continue // every minute, on its own slot, or its own spread
 		}
-	}
-	if len(fiveMinute) < 3 {
-		t.Errorf("the C1 5-minute reads start in %d minutes of five: %v", len(fiveMinute), fiveMinute)
-	}
-	for _, tier := range []Tier{TierBridgeHosts, TierBridgeVLAN, TierRelations, TierCPUPost} {
-		if iv := Cadence(C1, tier); iv%(5*time.Minute) != 0 {
+		if iv%cycle != 0 {
 			t.Fatalf("%s runs every %v on C1, not a multiple of 5 min: rethink the leads", tier, iv)
 		}
-		if others := fiveMinute[minuteOf(tier)%5]; len(others) > 0 {
-			t.Errorf("%s starts in minute %d, with the 5-minute reads %v", tier, minuteOf(tier), others)
+		p := FirstRunDelay(tier, iv) % cycle
+		places[p] = append(places[p], tier)
+	}
+	if len(places) != 3 {
+		t.Fatalf("the C1 reads start in %d places of the cycle, want 3: %v", len(places), places)
+	}
+	var at []time.Duration
+	for p := range places {
+		at = append(at, p)
+	}
+	slices.Sort(at)
+	for i, p := range at {
+		next := cycle
+		if i+1 < len(at) {
+			next = at[i+1]
+		} else {
+			next += at[0]
+		}
+		if gap := Scale(next-p, 0); gap < 90*time.Second { // phase 0: −10 %
+			t.Errorf("groups %v and the next start %v apart on the fastest device, want ≥ 90 s", places[p], gap)
 		}
 	}
 }
@@ -304,5 +318,34 @@ func TestBudgets(t *testing.T) {
 	}
 	if BudgetOf(C0Unknown) != BudgetOf(C1) || BudgetOf("x") != BudgetOf(C1) {
 		t.Fatal("unprobed and invalid classes get the C1 budget")
+	}
+}
+
+// A device's periods keep the ratio of its intervals exactly, whatever its
+// jitter, so its grids never slide against each other; the fleet spreads
+// within ±10 %. SlotAfter finds the first slot at or after a time.
+func TestPeriodAndSlotAfter(t *testing.T) {
+	for _, phase := range []uint64{0, 1, 999, 1000, 1717, 2000, Phase("sw")} {
+		five, fifteen, hour := Period(5*time.Minute, phase), Period(15*time.Minute, phase), Period(time.Hour, phase)
+		if fifteen != 3*five || hour != 12*five {
+			t.Errorf("phase %d: periods %v / %v / %v not 1:3:12", phase, five, fifteen, hour)
+		}
+		if five < 270*time.Second || five > 330*time.Second {
+			t.Errorf("phase %d: period %v outside ±10 %%", phase, five)
+		}
+	}
+	if Period(0, 5) != 0 {
+		t.Error("a tier that does not run has a period")
+	}
+	anchor := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	for _, tt := range []struct {
+		t    time.Duration
+		want time.Duration
+	}{
+		{-time.Hour, 0}, {0, 0}, {time.Nanosecond, 5 * time.Minute}, {5 * time.Minute, 5 * time.Minute}, {11 * time.Minute, 15 * time.Minute},
+	} {
+		if got := SlotAfter(anchor, 5*time.Minute, anchor.Add(tt.t)); !got.Equal(anchor.Add(tt.want)) {
+			t.Errorf("SlotAfter(+%v) = +%v, want +%v", tt.t, got.Sub(anchor), tt.want)
+		}
 	}
 }

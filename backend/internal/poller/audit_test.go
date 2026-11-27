@@ -324,8 +324,9 @@ var graphingRule = map[string]string{".id": "*1", "interface": "all", "allow-add
 
 // A weak device gets one audit command every 20 seconds at most, a capable
 // one every 2; every command carries a proplist (or asks for a count); the
-// next audit is six hours after the end of this one, and is published in
-// the device's schedule.
+// next audit is six hours after the start of this one — on the device's
+// audit grid, whatever the pass took — and is published in the device's
+// schedule.
 func TestAuditIsPacedByClassAndRunsEverySixHours(t *testing.T) {
 	h := newAuditHarness(t)
 	h.add("sw", hygienetest.Load(t, "switch48_clean")) // class C1
@@ -369,12 +370,13 @@ func TestAuditIsPacedByClassAndRunsEverySixHours(t *testing.T) {
 		}
 	}
 
-	// Six hours after its end — not before — the next one.
-	end := sw[len(sw)-1].at
-	if next, ok := h.nextAudit("sw"); !ok || !next.Equal(end.Add(6*time.Hour)) {
-		t.Fatalf("next audit = %v, %v; want %v", next, ok, end.Add(6*time.Hour))
+	// Six hours after its slot — not before, and not six hours after its end
+	// (the grid does not move by what a pass takes) — the next one.
+	slot := at(18, 2, 0)
+	if next, ok := h.nextAudit("sw"); !ok || !next.Equal(slot) {
+		t.Fatalf("next audit = %v, %v; want %v", next, ok, slot)
 	}
-	h.clock.set(end.Add(6*time.Hour - 10*time.Second))
+	h.clock.set(slot.Add(-10 * time.Second))
 	h.run(5 * time.Second)
 	if h.count("sw") != 19 {
 		t.Fatalf("an audit started before the six hours were over (%d commands)", h.count("sw"))
@@ -850,9 +852,8 @@ func TestAuditWithAReadTheRouterOSRefuses(t *testing.T) {
 	if !ok || u.Detail != "refused by this RouterOS version: /system/device-mode" {
 		t.Fatalf("findings = %+v", h.findings("sw"))
 	}
-	end := h.commands("sw")[18].at
-	if next, ok := h.nextAudit("sw"); !ok || !next.Equal(end.Add(6*time.Hour)) {
-		t.Fatalf("next audit = %v, %v; want six hours later (%v), not an hourly retry", next, ok, end.Add(6*time.Hour))
+	if next, ok := h.nextAudit("sw"); !ok || !next.Equal(at(18, 2, 0)) {
+		t.Fatalf("next audit = %v, %v; want six hours after its slot (18:02), not an hourly retry", next, ok)
 	}
 	// The next audit finds the same and stores nothing new.
 	h.idle(5*time.Hour + 50*time.Minute)
@@ -1158,16 +1159,18 @@ func TestAdminPasses(t *testing.T) {
 	if h.count("r") != 28 {
 		t.Fatalf("after the hour the open alert gets its pass: %d commands, want 28", h.count("r"))
 	}
-	// A later request is fine again — and moves the scheduled audit: the
-	// next one is six hours after it.
+	// A later request is fine again — and counts as the device's audit: the
+	// scheduled one stays on its grid (six hours after the first audit's
+	// end, which seeded it) and comes at least half a period after it.
 	h.setCPU("r", 20)
 	if _, err := h.a.Request("r", queries.AuditKindAudit, "alice"); err != nil {
 		t.Fatalf("an audit after the hour: %v", err)
 	}
 	h.run(2 * time.Minute)
 	end := h.commands("r")[h.count("r")-1].at
-	if next, ok := h.nextAudit("r"); !ok || !next.Equal(end.Add(6*time.Hour)) {
-		t.Fatalf("next scheduled audit = %v, %v; want six hours after the admin's (%v)", next, ok, end.Add(6*time.Hour))
+	slot := h.commands("r")[11].at.Add(6 * time.Hour)
+	if next, ok := h.nextAudit("r"); !ok || !next.Equal(slot) || next.Sub(end) < 3*time.Hour {
+		t.Fatalf("next scheduled audit = %v, %v; want its slot %v, at least three hours after the admin's (%v)", next, ok, slot, end)
 	}
 
 	// Refusals that name their reason.

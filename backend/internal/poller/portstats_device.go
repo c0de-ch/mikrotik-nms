@@ -52,6 +52,10 @@ type deviceState struct {
 	vlansAt time.Time
 	// When each tier is due next; zero = at the next wake-up.
 	nextStats, nextEthernet time.Time
+	// ethAnchor anchors Tier 4a's slot grid: the first cycle that planned the
+	// read (zero = none yet). Tier 0 runs every counter interval and is not
+	// arranged around anything; it counts from the end of its last read.
+	ethAnchor time.Time
 	// What the interfaces table last received, by name; invAt is when every
 	// row was last written. nil = nothing written since startup.
 	inv   map[string]inventoryRow

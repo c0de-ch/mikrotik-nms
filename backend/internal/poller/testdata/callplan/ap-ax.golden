@@ -30,7 +30,7 @@ count  every        rows/call  command
    12  5 min               14  /interface/bridge/host/print ?local=false [10 fields]
    12  5 min                1  /interface/bridge/vlan/print
    12  5 min                2  /interface/ethernet/print [16 fields]
-    6  10 min 15 s          1  /system/resource/print [1 field]
+    6  10 min               1  /system/resource/print [1 field]
     4  15 min               1  /ip/arp/print
     4  15 min               0  /ip/dhcp-server/lease/print
     1  once              trap  /caps-man/interface/print =count-only=
@@ -59,9 +59,9 @@ count  every        rows/call  command
 minutes  0- 9:  19  13  10  14  10  14   9  14  10  13
 minutes 10-19:  15  20  10  14  10  16   9  14  10  13
 minutes 20-29:  10  13  10  14  10  14   9  14  10  13
-minutes 30-39:  12  13  10  14   9  15   9  14  10  13
-minutes 40-49:  10  13  10  14   9  17   9  14  10  13
-minutes 50-59:  10  13  10  14   9  15   9  14  10  13
+minutes 30-39:  12  13  10  14  10  14   9  14  10  13
+minutes 40-49:  10  13  10  14  10  16   9  14  10  13
+minutes 50-59:  10  13  10  14  10  14   9  14  10  13
 
 ## The first 10 minutes
 

@@ -29,7 +29,7 @@ count  every        rows/call  command
    12  5 min               15  /interface/bridge/host/print ?local=false [10 fields]
    12  5 min                4  /interface/bridge/vlan/print
    12  5 min                9  /interface/ethernet/print [16 fields]
-    6  10 min 15 s          1  /system/resource/print [1 field]
+    6  10 min               1  /system/resource/print [1 field]
     4  15 min               7  /ip/arp/print
     4  15 min               6  /ip/dhcp-server/lease/print
     4  15 min               1  /ip/dhcp-server/print
@@ -60,9 +60,9 @@ count  every        rows/call  command
 minutes  0- 9:  22  14  12  15  12  15  11  15  12  14
 minutes 10-19:  12  14  12  15  12  18  11  28  12  14
 minutes 20-29:  12  14  12  15  12  15  11  15  12  14
-minutes 30-39:  15  14  12  15  11  16  11  15  12  14
-minutes 40-49:  12  14  12  15  11  19  11  15  12  14
-minutes 50-59:  12  14  12  15  11  16  11  15  12  14
+minutes 30-39:  15  14  12  15  12  15  11  15  12  14
+minutes 40-49:  12  14  12  15  12  18  11  15  12  14
+minutes 50-59:  12  14  12  15  12  15  11  15  12  14
 
 ## The first 10 minutes
 

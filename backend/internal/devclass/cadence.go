@@ -220,20 +220,86 @@ func NextRun(end time.Time, interval time.Duration, phase uint64) time.Time {
 	if interval <= 0 {
 		return end
 	}
+	return end.Add(Scale(interval, phase))
+}
+
+// Scale stretches d by a device's jitter factor: d shifted by up to ±10 %,
+// the shift a pure function of phase — the factor NextRun applies to an
+// interval. Every duration of one device's schedule scaled by it keeps its
+// ratio to the others: a device runs its whole plan a little slower or faster
+// than the next one, never out of step with itself.
+func Scale(d time.Duration, phase uint64) time.Duration {
 	step := int64(phase%jitterSteps) - (jitterSteps-1)/2 // -1000 … +1000
-	jitter := time.Duration(int64(interval) / 10000 * step)
-	return end.Add(interval + jitter)
+	return d + time.Duration(int64(d)/10000*step)
+}
+
+// Period is the period of a device's reads at interval: the interval
+// stretched by the device's jitter factor (Scale). The same factor for every
+// tier of a device keeps their periods in the ratio of their intervals — a
+// C1 device's 15-minute reads come round exactly once every third of its
+// 5-minute ones — while a fleet of devices spreads out. 0 for a non-positive
+// interval.
+func Period(interval time.Duration, phase uint64) time.Duration {
+	if interval <= 0 {
+		return 0
+	}
+	return Scale(interval, phase)
+}
+
+// SlotAfter returns the first slot of the grid anchor + k·period (k ≥ 0) at
+// or after t — anchor itself while t is not after it. A non-positive period
+// has the one slot anchor.
+func SlotAfter(anchor time.Time, period time.Duration, t time.Time) time.Time {
+	if period <= 0 || !t.After(anchor) {
+		return anchor
+	}
+	k := (t.Sub(anchor) + period - 1) / period
+	return anchor.Add(k * period)
+}
+
+// CatchesUpAtOnce reports whether tier t, once it has missed its slot — the
+// device was paused, offline or without a session — is read as soon as it can
+// be, rather than at the next slot of its grid (up to a period later). Either
+// the rows it keeps are judged current by their age — links and egress for
+// three neighbor and route reads of the device, its FDB rows for three dumps
+// and at least 15 min, the ethernet facts (loop-protect) for one Tier 4a
+// period — and a paused device's rows, held during the pause, are judged by
+// that age again once it ends: a reader that waited for its slot would find
+// them stale and the map would drop links, egress and gateway attachments
+// that are there; or the tier is the hygiene audit, which has its own pacing
+// (one read at a time, spaced by class) and would otherwise leave the
+// device's findings unjudged for up to another six hours. The other tiers'
+// rows are not judged by an age a pause carries over (the network-health
+// prunes give every tier a whole window after a pause; the wifi reads expire
+// by their own count, never while paused; logs and stacking are read whenever
+// they come), so they rejoin their grid at its next slot. Tier 0 is not on a
+// grid: it counts from the end of its last read and is always read at once.
+func CatchesUpAtOnce(t Tier) bool {
+	switch t {
+	case TierCounters, TierEthernet, TierNeighbors, TierRoutes, TierBridgeHosts, TierAudit:
+		return true
+	}
+	return false
 }
 
 // firstRunLeads is how long each tier's first read waits after a loop first
-// sees the device: one group of reads a minute. Every later read counts from
-// the end of the one before (NextRun, the same jitter for every tier of a
-// device), so the groups keep the minutes they start in — on a C1 device the
-// 5-minute reads fall into three different minutes of five and the
-// 15-minute ones and the post-poll CPU sample into the two others, where
-// reads that all started at once would fall together for good (on a CRS354:
-// 16 commands in one minute, against a budget of 12). A tier not listed is
-// read at once:
+// sees the device. The first read anchors the tier's slot grid (the tier
+// clock's: anchor + k·Period), so the leads are the arrangement of a device's
+// reads for as long as the process runs. On the C1 plan they make three
+// groups 100 s apart in the five-minute cycle — the reads at once (logs,
+// Tier 4a, wifi, every 30 and 60 minutes ARP and the inventory), at 100 s the
+// bridge ports, neighbors and routes, at 190 s the 15-minute FDB dump, bridge
+// VLANs and stacking — and the next cycle's first group 110 s after the last.
+// Stretched by a device's jitter (Scale, ±10 %) the gaps stay at least 90 s:
+// with the 25 s over which the loops first look at a device (5 to 30 s after
+// start-up) and a tick's lateness, the last read of one group is still more
+// than a minute before the first of the next, so no calendar minute holds
+// reads of two groups — groups a minute apart would share one in every
+// cycle, and reads that all started at once fall
+// together for good (on a CRS354: 16 commands in one minute, against a
+// budget of 12). The post-poll CPU sample (one command every 10 minutes)
+// starts at 4 minutes, between the third group and the next cycle's first.
+// A tier not listed is read at once:
 //
 //   - Tier 0 (port counters) and the CPU sample, which has a slot of its own
 //     every minute (SlotAt);
@@ -246,12 +312,12 @@ func NextRun(end time.Time, interval time.Duration, phase uint64) time.Time {
 //     facts need before its first pass) and the client tables (ARP, DHCP
 //     leases), which a client watch finds its client's address in.
 var firstRunLeads = [tierCount]time.Duration{
-	TierBridgePorts: 1 * time.Minute,
-	TierNeighbors:   2 * time.Minute,
-	TierRoutes:      2 * time.Minute,
-	TierBridgeHosts: 3 * time.Minute,
-	TierBridgeVLAN:  3 * time.Minute,
-	TierRelations:   4 * time.Minute,
+	TierBridgePorts: 100 * time.Second,
+	TierNeighbors:   100 * time.Second,
+	TierRoutes:      100 * time.Second,
+	TierBridgeHosts: 200 * time.Second,
+	TierBridgeVLAN:  200 * time.Second,
+	TierRelations:   200 * time.Second,
 	TierCPUPost:     4 * time.Minute,
 }
 

@@ -470,7 +470,10 @@ func (a *Auditor) tickDevice(dev queries.Device, trigger *queries.Alert, now tim
 // one when the database remembers it — one hour when that one was partial,
 // the retry it would have had without the restart — and never before the
 // start-up delay plus the device's share of the spread: a restart must not
-// audit the whole fleet at once, nor each device again.
+// audit the whole fleet at once, nor each device again. The first audit
+// anchors the device's audit grid: every later one is due a period of six
+// hours (stretched by the device's jitter) after it, whenever the passes in
+// between ended.
 func (a *Auditor) seed(dev queries.Device, interval time.Duration) {
 	a.mu.Lock()
 	if a.seeded[dev.ID] {
@@ -492,7 +495,7 @@ func (a *Auditor) seed(dev queries.Device, interval time.Duration) {
 			at = next
 		}
 	}
-	a.clock.retryAt(dev.ID, devclass.TierAudit, at)
+	a.clock.anchorAt(dev.ID, devclass.TierAudit, at)
 }
 
 // budget reports whether a pass of kind may start on the device at now, and
