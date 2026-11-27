@@ -19,7 +19,13 @@ type Facts struct {
 	Class devclass.Class
 	Role  devclass.Role
 	// RoleReason is the role classifier's sentence, for the explanations.
-	RoleReason   string
+	RoleReason string
+	// RoleMissing: the role could not be told — the lookup failed, or the
+	// route facts it rests on are too old to count. Role is then
+	// devclass.RoleUnknown for want of facts, not because of what the device
+	// is, and every rule that depends on the role judges nothing: what was
+	// found before stays, nothing new is raised.
+	RoleMissing  bool
 	Board        string
 	Architecture string
 	Version      string // RouterOS version

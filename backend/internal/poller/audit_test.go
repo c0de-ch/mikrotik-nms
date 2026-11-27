@@ -18,6 +18,7 @@ import (
 	"github.com/mikrotik-nms/backend/internal/hygiene"
 	"github.com/mikrotik-nms/backend/internal/hygiene/hygienetest"
 	"github.com/mikrotik-nms/backend/internal/routeros"
+	"github.com/mikrotik-nms/backend/internal/topology"
 	"github.com/mikrotik-nms/backend/internal/ws"
 )
 
@@ -1120,6 +1121,115 @@ func TestAuditFactsComeFromWhatTheNMSAlreadyKnows(t *testing.T) {
 	h.a.ifaces = func(string) (DeviceIfaces, bool) { return DeviceIfaces{}, false }
 	if f := h.a.facts(*dev, h.clock.now()); f.InterfacesKnown || f.EthernetKnown || f.BridgePortsKnown || len(f.Ports) != 0 {
 		t.Fatalf("facts without a snapshot: %+v", f)
+	}
+}
+
+// The role decides what several rules mean. When it cannot be looked up, a
+// pass must not judge them as if the device had none: a switch's critical
+// finding would be downgraded or removed — and its alert resolved — by one
+// failed query, and raised again by the next audit.
+func TestPassWithoutARoleLeavesWhatDependsOnIt(t *testing.T) {
+	h := newAuditHarness(t)
+	clean := hygienetest.Load(t, "switch48_clean")
+	firewalled := clean.With("/interface/bridge/settings/print", map[string]string{"use-ip-firewall": "true",
+		"use-ip-firewall-for-vlan": "false", "allow-fast-path": "true", "bridge-fast-path-active": "false",
+		"bridge-fast-path-packets": "0", "bridge-fast-forward-packets": "0"}).
+		With("/tool/graphing/interface/print", graphingRule)
+	h.add("sw", firewalled)
+	snapshots := func() int { return countRows(t, h.db, `SELECT COUNT(*) FROM device_audit WHERE device_id = 'sw'`) }
+
+	h.run(15 * time.Minute)
+	got := h.findings("sw")
+	if f := got[hygiene.KindBridgeIPFirewall]; f.Severity != "critical" || f.Count != 1 {
+		t.Fatalf("on a switch, bridged traffic through the IP firewall = %+v, want critical", f)
+	}
+	if _, ok := got[hygiene.KindDeviceMode]; !ok || snapshots() != 1 {
+		t.Fatalf("first audit: findings %v, %d snapshots", got, snapshots())
+	}
+	first := h.count("sw")
+
+	// Six hours later the roles cannot be read.
+	h.a.roles = func(time.Time) (map[string]topology.DeviceRole, error) { return nil, errors.New("database is locked") }
+	h.idle(5*time.Hour + 50*time.Minute)
+	h.run(20 * time.Minute)
+	if h.count("sw") == first {
+		t.Fatal("no second audit ran")
+	}
+	got = h.findings("sw")
+	if f := got[hygiene.KindBridgeIPFirewall]; f.Severity != "critical" || f.Count != 1 {
+		t.Errorf("without the role, the switch's finding = %+v, want it left as it was (critical, seen once)", f)
+	}
+	if _, ok := got[hygiene.KindDeviceMode]; !ok {
+		t.Error("without the role, the device-mode finding of the switch was removed")
+	}
+	// What does not depend on the role is judged as always.
+	if g := got[hygiene.KindGraphing]; g.Count != 2 || g.Severity != "critical" {
+		t.Errorf("graphing (judged by class, not by role) = %+v, want it seen a second time", g)
+	}
+	// The audit says what it did not check, and its answers are not stored
+	// as the device's configuration: the reads only a switch gets were not
+	// sent.
+	r := h.lastRun("sw", queries.AuditKindAudit)
+	if r.Status != queries.AuditComplete || !strings.Contains(r.Detail, "role") || r.Hash != "" {
+		t.Errorf("the audit without a role = %+v, want it to say so and store no snapshot", r)
+	}
+	if snapshots() != 1 {
+		t.Errorf("%d snapshots, want the first audit's only", snapshots())
+	}
+
+	// With the role back, the next audit judges everything again: the
+	// firewall setting was fixed meanwhile, and its finding goes.
+	h.a.roles = nil
+	h.change("sw", clean.With("/tool/graphing/interface/print", graphingRule))
+	h.idle(5*time.Hour + 50*time.Minute)
+	h.run(20 * time.Minute)
+	if _, still := h.findings("sw")[hygiene.KindBridgeIPFirewall]; still {
+		t.Error("with the role known again, the fixed setting's finding stayed")
+	}
+}
+
+// An access point is one because its default route points at a router. When
+// the stored routes are too old to count — the NMS was down, the device too
+// busy to answer — the classifier says "unknown" for want of facts: the
+// findings that rest on the role stay. When a fresh read finds no such route,
+// the role is unknown for real, and they go.
+func TestPassOnStaleRouteFactsLeavesWhatDependsOnTheRole(t *testing.T) {
+	h := newAuditHarness(t)
+	h.add("ap", hygienetest.Load(t, "ap_clean").
+		With("/ip/traffic-flow/print", map[string]string{"enabled": "true", "interfaces": "all", "cache-entries": "4k", "active-flow-timeout": "30m"}).
+		With("/ip/traffic-flow/target/print", map[string]string{"dst-address": "198.51.100.7", "port": "2055", "version": "9", "disabled": "false"}))
+	h.run(15 * time.Minute)
+	if f := h.findings("ap")[hygiene.KindTrafficFlow]; f.Severity != "critical" || f.Count != 1 {
+		t.Fatalf("traffic-flow on an access point = %+v, want critical", f)
+	}
+
+	// Its routes were last read an hour ago.
+	stale := h.clock.now().Add(-time.Hour).UTC().Format("2006-01-02 15:04:05")
+	if _, err := h.db.Exec(`UPDATE device_uplinks SET last_seen = ? WHERE device_id = 'ap'`, stale); err != nil {
+		t.Fatal(err)
+	}
+	dev, _ := queries.GetDevice(h.db, "ap")
+	if f := h.a.facts(*dev, h.clock.now()); !f.RoleMissing || f.Role != devclass.RoleUnknown {
+		t.Fatalf("stale routes: role %q, missing %v (%s); want unknown for want of facts", f.Role, f.RoleMissing, f.RoleReason)
+	}
+	h.idle(5*time.Hour + 50*time.Minute)
+	h.run(20 * time.Minute)
+	if f := h.findings("ap")[hygiene.KindTrafficFlow]; f.Severity != "critical" || f.Count != 1 {
+		t.Errorf("on stale route facts the finding = %+v, want it left as it was", f)
+	}
+
+	// A fresh read finds no default route at all: this is no access point
+	// any more, as far as anyone can tell.
+	if err := queries.ReplaceDeviceUplinks(h.db, "ap", nil); err != nil {
+		t.Fatal(err)
+	}
+	if f := h.a.facts(*dev, h.clock.now()); f.RoleMissing || f.Role != devclass.RoleUnknown {
+		t.Fatalf("no route: role %q, missing %v; want unknown, and known to be", f.Role, f.RoleMissing)
+	}
+	h.idle(5*time.Hour + 50*time.Minute)
+	h.run(20 * time.Minute)
+	if _, still := h.findings("ap")[hygiene.KindTrafficFlow]; still {
+		t.Error("the finding of a device whose role really changed stayed")
 	}
 }
 

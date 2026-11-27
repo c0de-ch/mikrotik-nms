@@ -23,6 +23,11 @@ type rule struct {
 	// reading); nil = none. A rule that is not ready judges nothing: its
 	// kinds are not evaluated and what was found before stays.
 	ready func(s Sections, f Facts) bool
+	// byRole: the judgement depends on the device's role — the rule applies
+	// to one role only, or means something else on a switch. While the role
+	// is not known (Facts.RoleMissing) the rule judges nothing: "no role"
+	// is not "not a switch".
+	byRole bool
 	// wholeAudit: the rule reports on the audit itself, so it needs all of
 	// it — every read of the audit's plan answered or deliberately not sent.
 	// An audit that stopped early, or one of whose reads got no answer,
@@ -34,25 +39,29 @@ type rule struct {
 var rules = []rule{
 	{kinds: []string{KindGraphing}, eval: graphing,
 		needs: []string{SecGraphingInterface, SecGraphingResource, SecGraphingQueue}},
+	// On C1 hardware traffic-flow is critical whatever the device does; on
+	// anything else the role says whether it may export.
 	{kinds: []string{KindTrafficFlow, KindTrafficFlowTarget}, eval: trafficFlow,
-		needs: []string{SecTrafficFlow, SecTrafficFlowTargets}},
+		needs: []string{SecTrafficFlow, SecTrafficFlowTargets},
+		ready: func(_ Sections, f Facts) bool { return !f.RoleMissing || f.weak() }},
 	{kinds: []string{KindSNMPWeak}, needs: []string{SecSNMP}, eval: snmpOnWeakDevice},
 	{kinds: []string{KindSNMPOpen, KindSNMPWrite}, needs: []string{SecSNMP, SecSNMPCommunities}, eval: snmpCommunities},
-	{kinds: []string{KindBridgeIPFirewall}, needs: []string{SecBridgeSettings}, eval: bridgeIPFirewall},
-	{kinds: []string{KindCPUForwarding}, needs: []string{SecBridgeSettings}, ready: cpuForwardingReady, eval: cpuForwarding},
-	{kinds: []string{KindBondNotOffloaded}, needs: []string{SecBonding}, eval: bondModes},
-	{kinds: []string{KindPortNotOffloaded, KindBridgeHorizon, KindMultipleBridges}, ready: bridgePortsReady, eval: offload},
+	{kinds: []string{KindBridgeIPFirewall}, needs: []string{SecBridgeSettings}, byRole: true, eval: bridgeIPFirewall},
+	{kinds: []string{KindCPUForwarding}, needs: []string{SecBridgeSettings}, byRole: true, ready: cpuForwardingReady, eval: cpuForwarding},
+	{kinds: []string{KindBondNotOffloaded}, needs: []string{SecBonding}, byRole: true, eval: bondModes},
+	{kinds: []string{KindPortNotOffloaded, KindBridgeHorizon, KindMultipleBridges}, byRole: true, ready: bridgePortsReady, eval: offload},
 	{kinds: []string{KindMirrorToCPU}, needs: []string{SecSwitches}, eval: mirrorToCPU},
 	{kinds: []string{KindSwitchRulesToCPU}, needs: []string{SecSwitches, SecSwitchRules}, eval: switchRulesToCPU},
-	{kinds: []string{KindFlowControl, KindLoopProtectTrunk}, ready: ethernetReady, eval: portSettings},
-	{kinds: []string{KindSwitchFilterRules}, needs: []string{SecFirewallForward, SecBridgeFilter}, eval: switchFilterRules},
+	{kinds: []string{KindFlowControl}, byRole: true, ready: ethernetReady, eval: flowControl},
+	{kinds: []string{KindLoopProtectTrunk}, ready: ethernetReady, eval: loopProtectOnTrunks},
+	{kinds: []string{KindSwitchFilterRules}, needs: []string{SecFirewallForward, SecBridgeFilter}, byRole: true, eval: switchFilterRules},
 	{kinds: []string{KindDebugLogging}, needs: []string{SecLogging, SecLoggingActions}, eval: debugLogging},
 	{kinds: []string{KindFastScheduler}, needs: []string{SecScheduler}, eval: fastSchedulers},
 	{kinds: []string{KindSnifferRunning}, needs: []string{SecSniffer}, eval: snifferRunning},
-	{kinds: []string{KindCPUServices}, eval: cpuServices,
+	{kinds: []string{KindCPUServices}, byRole: true, eval: cpuServices,
 		needs: []string{SecDNS, SecDHCPServers, SecCAPsMAN, SecCAPsMANLegacy}},
 	{kinds: []string{KindNMSAccount}, needs: []string{SecSessions, SecUserGroups}, ready: nmsGroupKnown, eval: nmsAccount},
-	{kinds: []string{KindDeviceMode}, needs: []string{SecDeviceMode}, eval: deviceMode},
+	{kinds: []string{KindDeviceMode}, needs: []string{SecDeviceMode}, byRole: true, eval: deviceMode},
 	{kinds: []string{KindParallelAPIPoller}, needs: []string{SecSessions}, eval: foreignSessions,
 		ready: func(_ Sections, f Facts) bool { return len(f.NMSAddresses) > 0 }},
 	{kinds: []string{KindUnreadable}, wholeAudit: true, eval: unreadable},
@@ -64,7 +73,7 @@ func Evaluate(mode Mode, s Sections, f Facts) Result {
 	var res Result
 	whole := mode == ModeAudit && s.answered(Plan(ModeAudit))
 	for _, r := range rules {
-		if (r.wholeAudit && !whole) || !s.known(r.needs...) || (r.ready != nil && !r.ready(s, f)) {
+		if (r.wholeAudit && !whole) || (r.byRole && f.RoleMissing) || !s.known(r.needs...) || (r.ready != nil && !r.ready(s, f)) {
 			continue
 		}
 		for _, k := range r.kinds {
@@ -742,67 +751,75 @@ func ethernetReady(_ Sections, f Facts) bool { return f.InterfacesKnown && f.Eth
 // speak even when none of them is a link between switches.
 const manyFlowControlPorts = 4
 
-// portSettings: 802.3x flow control on many ports or on links between
-// switches (on a switch), and loop-protect on a link between managed
-// devices. Neither finding carries a command: the ports are not end-device
-// ports.
-func portSettings(_ Sections, f Facts) []Finding {
-	var flow, flowTrunks, loop []string
+// flowControl: 802.3x flow control on many ports or on links between
+// switches, on a switch. The finding carries no command: the ports are not
+// end-device ports.
+func flowControl(_ Sections, f Facts) []Finding {
+	if f.Role != devclass.RoleSwitch {
+		return nil
+	}
+	var flow, flowTrunks []string
 	for _, p := range f.Ports {
-		if p.Type != "ether" {
+		if p.Type != "ether" || !(flowControlOn(p.RxFlowControl) || flowControlOn(p.TxFlowControl)) {
 			continue
 		}
-		if flowControlOn(p.RxFlowControl) || flowControlOn(p.TxFlowControl) {
-			flow = append(flow, p.Name)
-			if p.Trunk {
-				flowTrunks = append(flowTrunks, p.Name)
-			}
+		flow = append(flow, p.Name)
+		if p.Trunk {
+			flowTrunks = append(flowTrunks, p.Name)
 		}
-		if p.Trunk && strings.EqualFold(strings.TrimSpace(p.LoopProtect), "on") {
-			loop = append(loop, p.Name)
-		}
+	}
+	if len(flowTrunks) == 0 && len(flow) <= manyFlowControlPorts {
+		return nil
 	}
 	sort.Strings(flow)
 	sort.Strings(flowTrunks)
-	sort.Strings(loop)
+	detail := "on " + plural(len(flow), "port", "ports") + ": " + listed(flow, 12)
+	if len(flowTrunks) > 0 {
+		detail += "; links between switches: " + listed(flowTrunks, 12)
+	}
+	return []Finding{{
+		Kind: KindFlowControl, Severity: Warn,
+		Title:  "802.3x flow control is enabled",
+		Detail: detail,
+		Explanation: "With flow control a slow receiver pauses the whole port — and on a link between switches " +
+			"everything behind it. One stalled device can then hold up traffic that has nothing to do with it. " +
+			"It is off by default for that reason.",
+		Fix: []FixStep{{
+			Text: "Switch flow control off on those ports (rx-flow-control=off tx-flow-control=off), the links " +
+				"between switches first. Changing it can re-initialise the switch chip: every port drops for a " +
+				"few seconds.",
+			Window: true,
+		}},
+	}}
+}
 
-	var out []Finding
-	if f.Role == devclass.RoleSwitch && (len(flowTrunks) > 0 || len(flow) > manyFlowControlPorts) {
-		detail := "on " + plural(len(flow), "port", "ports") + ": " + listed(flow, 12)
-		if len(flowTrunks) > 0 {
-			detail += "; links between switches: " + listed(flowTrunks, 12)
+// loopProtectOnTrunks: loop-protect on a link between managed devices,
+// whatever the device is. No command either: a trunk is not an end-device
+// port.
+func loopProtectOnTrunks(_ Sections, f Facts) []Finding {
+	var loop []string
+	for _, p := range f.Ports {
+		if p.Type == "ether" && p.Trunk && strings.EqualFold(strings.TrimSpace(p.LoopProtect), "on") {
+			loop = append(loop, p.Name)
 		}
-		out = append(out, Finding{
-			Kind: KindFlowControl, Severity: Warn,
-			Title:  "802.3x flow control is enabled",
-			Detail: detail,
-			Explanation: "With flow control a slow receiver pauses the whole port — and on a link between switches " +
-				"everything behind it. One stalled device can then hold up traffic that has nothing to do with it. " +
-				"It is off by default for that reason.",
-			Fix: []FixStep{{
-				Text: "Switch flow control off on those ports (rx-flow-control=off tx-flow-control=off), the links " +
-					"between switches first. Changing it can re-initialise the switch chip: every port drops for a " +
-					"few seconds.",
-				Window: true,
-			}},
-		})
 	}
-	if len(loop) > 0 {
-		out = append(out, Finding{
-			Kind: KindLoopProtectTrunk, Severity: Warn,
-			Title:  "Loop-protect on a link between switches",
-			Detail: listed(loop, 12),
-			Explanation: "Loop-protect disables a port when its own probe frame comes back. On a link to another " +
-				"managed device that takes the link — and everything behind it — down. Spanning tree protects links " +
-				"between switches; loop-protect belongs on end-device ports only.",
-			Fix: []FixStep{{
-				Text: "Set loop-protect back to default on those ports. On CRS3xx switches changing loop-protect " +
-					"re-initialises the switch chip: every port drops for about 4 seconds.",
-				Window: true,
-			}},
-		})
+	if len(loop) == 0 {
+		return nil
 	}
-	return out
+	sort.Strings(loop)
+	return []Finding{{
+		Kind: KindLoopProtectTrunk, Severity: Warn,
+		Title:  "Loop-protect on a link between switches",
+		Detail: listed(loop, 12),
+		Explanation: "Loop-protect disables a port when its own probe frame comes back. On a link to another " +
+			"managed device that takes the link — and everything behind it — down. Spanning tree protects links " +
+			"between switches; loop-protect belongs on end-device ports only.",
+		Fix: []FixStep{{
+			Text: "Set loop-protect back to default on those ports. On CRS3xx switches changing loop-protect " +
+				"re-initialises the switch chip: every port drops for about 4 seconds.",
+			Window: true,
+		}},
+	}}
 }
 
 func flowControlOn(v string) bool {

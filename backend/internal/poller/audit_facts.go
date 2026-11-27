@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/mikrotik-nms/backend/internal/database/queries"
+	"github.com/mikrotik-nms/backend/internal/devclass"
 	"github.com/mikrotik-nms/backend/internal/hygiene"
 	"github.com/mikrotik-nms/backend/internal/topology"
 )
@@ -25,11 +26,7 @@ func (a *Auditor) facts(dev queries.Device, now time.Time) hygiene.Facts {
 	}
 	name := nonempty(dev.Identity, dev.Address)
 
-	if roles, _, err := topology.LoadDeviceRoles(a.db, UplinkAge(a.cadence), now); err != nil {
-		log.Printf("poller audit: role of %s: %v", name, err)
-	} else if r, ok := roles[dev.ID]; ok {
-		f.Role, f.RoleReason = r.Role, r.Reason
-	}
+	f.Role, f.RoleReason, f.RoleMissing = a.roleOf(dev, now)
 	if a.self != nil {
 		f.NMSAddresses = a.self(&dev, now)
 	}
@@ -115,4 +112,74 @@ func (a *Auditor) trunkPorts(deviceID string) map[string]bool {
 		}
 	}
 	return out
+}
+
+// roleOf is the device's role for a pass, and whether it is missing: the
+// lookup failed, or the classifier answered "unknown" while every route row
+// the device has is too old to count. Such a device is unknown for want of
+// facts — after a restart, or while it is too busy to answer its route read
+// — and the rules that depend on the role must leave its findings alone. A
+// device without any route row is unknown for what it is (a read that finds
+// no default route leaves none), and is judged as that: the findings of a
+// device whose role really changed do not stay for ever.
+func (a *Auditor) roleOf(dev queries.Device, now time.Time) (role devclass.Role, reason string, missing bool) {
+	name := nonempty(dev.Identity, dev.Address)
+	roles, err := a.loadRoles(now)
+	if err != nil {
+		log.Printf("poller audit: role of %s: %v", name, err)
+		return devclass.RoleUnknown, "the role could not be read from the database", true
+	}
+	r, ok := roles[dev.ID]
+	if !ok {
+		return devclass.RoleUnknown, "the device was not among the classified devices", true
+	}
+	if r.Role != devclass.RoleUnknown {
+		return r.Role, r.Reason, false
+	}
+	stale, err := a.routeFactsStale(dev.ID, now)
+	if err != nil {
+		log.Printf("poller audit: routes of %s: %v", name, err)
+		return devclass.RoleUnknown, "the device's routes could not be read from the database", true
+	}
+	if stale {
+		return devclass.RoleUnknown, "the device's routes have not been read recently, so its role cannot be told right now", true
+	}
+	return r.Role, r.Reason, false
+}
+
+// routeFactsStale reports a device that has default-route or VPN rows in
+// device_uplinks, none of them current: its last successful route read is
+// too long ago (the rule the flow address plan applies, flow.staleUplinks).
+func (a *Auditor) routeFactsStale(deviceID string, now time.Time) (bool, error) {
+	own := func(u queries.DeviceUplink) bool {
+		return u.DeviceID == deviceID && (u.Kind == "default-route" || u.Kind == "vpn")
+	}
+	fresh, err := queries.ListFreshDeviceUplinks(a.db, UplinkAge(a.cadence), now)
+	if err != nil {
+		return false, err
+	}
+	for _, u := range fresh {
+		if own(u) {
+			return false, nil
+		}
+	}
+	all, err := queries.ListDeviceUplinks(a.db, 365*24*time.Hour)
+	if err != nil {
+		return false, err
+	}
+	for _, u := range all {
+		if own(u) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// loadRoles classifies the devices from the stored facts (a.roles in tests).
+func (a *Auditor) loadRoles(now time.Time) (map[string]topology.DeviceRole, error) {
+	if a.roles != nil {
+		return a.roles(now)
+	}
+	roles, _, err := topology.LoadDeviceRoles(a.db, UplinkAge(a.cadence), now)
+	return roles, err
 }

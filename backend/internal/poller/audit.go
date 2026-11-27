@@ -18,6 +18,7 @@ import (
 	"github.com/mikrotik-nms/backend/internal/devclass"
 	"github.com/mikrotik-nms/backend/internal/hygiene"
 	"github.com/mikrotik-nms/backend/internal/routeros"
+	"github.com/mikrotik-nms/backend/internal/topology"
 )
 
 // The hygiene audit and the diagnose pass (design §2.7, §9.6; Appendix B
@@ -204,8 +205,10 @@ type Auditor struct {
 	// device's latest quiet-window CPU sample, its interface snapshot and
 	// port rates, its capabilities, the addresses the NMS's sessions to it
 	// come from, how a read is run (a goroutine; tests run it inline), the
-	// startup spread, and the polling fence.
+	// startup spread, the polling fence, and the role lookup (nil = from
+	// the database).
 	now            func() time.Time
+	roles          func(now time.Time) (map[string]topology.DeviceRole, error)
 	runner         func(deviceID string) routeros.Runner
 	cpu            func(deviceID string) (CPUReading, bool)
 	ifaces         func(deviceID string) (DeviceIfaces, bool)
@@ -759,8 +762,20 @@ func (a *Auditor) finish(p *pass, dev queries.Device, detail string, abort bool,
 		if run.Detail == "" && failed > 0 {
 			run.Detail = fmt.Sprintf("%d of %d reads failed (%s)", failed, reads, strings.Join(sections.Failed(), ", "))
 		}
+		if facts.RoleMissing {
+			// The pass says what it left alone.
+			note := "the checks that depend on the device's role were not made: " + facts.RoleReason
+			if run.Detail != "" {
+				note = run.Detail + "; " + note
+			}
+			run.Detail = note
+		}
+		// The snapshot is the device's configuration as a whole audit read
+		// it. Without the role, the reads only a switch or an access point
+		// gets were not sent: what was read is judged, and is not stored as
+		// the whole (the hash would move, and move back with the next audit).
 		changed := false
-		if p.req.kind == queries.AuditKindAudit && run.Status == queries.AuditComplete {
+		if p.req.kind == queries.AuditKindAudit && run.Status == queries.AuditComplete && !facts.RoleMissing {
 			run.Hash, changed = a.storeSnapshot(dev, sections, run.Findings, now)
 		}
 		worst := res.Worst()

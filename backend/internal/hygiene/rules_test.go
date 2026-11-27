@@ -742,6 +742,58 @@ func TestReadTheRouterOSVersionRefuses(t *testing.T) {
 	}
 }
 
+// Several rules mean something else on a switch than on a router, and some
+// apply to one role only. When the pass could not learn the device's role,
+// those rules judge nothing — they must not read "no role" as "not a switch"
+// and report the switch's findings gone. What does not depend on the role is
+// judged as always.
+func TestRulesThatDependOnTheRoleJudgeNothingWithoutIt(t *testing.T) {
+	byRole := []string{KindBridgeIPFirewall, KindCPUForwarding, KindBondNotOffloaded, KindPortNotOffloaded, KindBridgeHorizon,
+		KindMultipleBridges, KindFlowControl, KindSwitchFilterRules, KindCPUServices, KindDeviceMode}
+	whatever := []string{KindGraphing, KindSnifferRunning, KindMirrorToCPU, KindSwitchRulesToCPU, KindSNMPOpen, KindSNMPWrite,
+		KindSNMPWeak, KindDebugLogging, KindFastScheduler, KindNMSAccount, KindLoopProtectTrunk}
+
+	s, known := everythingWrong(weakSwitch())
+	all := Evaluate(ModeAudit, s, known)
+	for _, k := range append(append([]string{}, byRole...), whatever...) {
+		if !contains(all.Evaluated, k) {
+			t.Fatalf("with the role known, %s is not evaluated", k)
+		}
+	}
+
+	missing := known
+	missing.Role, missing.RoleMissing = devclass.RoleUnknown, true
+	res := Evaluate(ModeAudit, s, missing)
+	for _, k := range byRole {
+		if contains(res.Evaluated, k) {
+			t.Errorf("%s counts as evaluated although the device's role is not known", k)
+		}
+		for _, f := range res.Findings {
+			if f.Kind == k {
+				t.Errorf("%s was reported (%s) although the device's role is not known", k, f.Severity)
+			}
+		}
+	}
+	for _, k := range whatever {
+		if !contains(res.Evaluated, k) {
+			t.Errorf("%s does not depend on the role and was not evaluated", k)
+		}
+	}
+
+	// Traffic-flow: on C1 hardware it is critical whatever the device does,
+	// so the role is not needed; on anything else it is the role that says
+	// whether the device may export.
+	if f := find(t, res, KindTrafficFlow); f.Severity != Critical {
+		t.Errorf("traffic-flow on a C1 device without a role: %+v", f)
+	}
+	capable := missing
+	capable.Class = devclass.C3
+	res = Evaluate(ModeAudit, s, capable)
+	if contains(res.Evaluated, KindTrafficFlow) || contains(res.Evaluated, KindTrafficFlowTarget) {
+		t.Errorf("traffic-flow counts as evaluated on a C3 device whose role is not known: %v", res.Evaluated)
+	}
+}
+
 // "The NMS may not read this menu" is a statement about the whole audit. An
 // audit that stopped early, or one of whose reads got no answer, cannot make
 // it: the menu that was refused last time may be among the reads it did not
