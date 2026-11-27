@@ -1132,22 +1132,37 @@ func foreignSessions(s Sections, f Facts) []Finding {
 	return out
 }
 
-// unreadable: menus the NMS account may not read. That part of the audit
+// unreadable: menus the NMS account may not read, and reads the device's
+// RouterOS version refused with an error of its own. That part of the audit
 // did not happen — which is a finding, never "clean".
 func unreadable(s Sections, _ Facts) []Finding {
-	denied := s.Denied()
-	if len(denied) == 0 {
+	denied, refused := s.Denied(), s.Unsupported()
+	if len(denied)+len(refused) == 0 {
 		return nil
 	}
-	return []Finding{{
-		Kind: KindUnreadable, Severity: Info,
-		Title:  "The NMS account may not read part of the configuration",
-		Detail: strings.Join(denied, ", "),
-		Explanation: "The device refused these reads with \"not enough permissions\". The audit could not check " +
-			"what is configured there — that is not the same as nothing being wrong.",
-		Fix: []FixStep{{Text: "Give the group of the NMS account the read policy for these menus, or accept that " +
-			"they are not audited."}},
-	}}
+	fnd := Finding{Kind: KindUnreadable, Severity: Info}
+	var detail, why []string
+	if len(denied) > 0 {
+		fnd.Title = "The NMS account may not read part of the configuration"
+		detail = append(detail, strings.Join(denied, ", "))
+		why = append(why, "The device refused "+plural(len(denied), "read", "reads")+" with \"not enough permissions\".")
+		fnd.Fix = append(fnd.Fix, FixStep{Text: "Give the group of the NMS account the read policy for these menus, " +
+			"or accept that they are not audited."})
+	}
+	if len(refused) > 0 {
+		if fnd.Title == "" {
+			fnd.Title = "The device's RouterOS refused part of the audit"
+		}
+		detail = append(detail, "refused by this RouterOS version: "+strings.Join(refused, ", "))
+		why = append(why, "The device answered "+plural(len(refused), "read", "reads")+" with an error of its own: "+
+			"this RouterOS version does not take the read the way the NMS sends it.")
+		fnd.Fix = append(fnd.Fix, FixStep{Text: "A read the RouterOS version refuses is for the NMS to fix, not for " +
+			"the device: report the menu and the RouterOS version."})
+	}
+	fnd.Detail = strings.Join(detail, "; ")
+	fnd.Explanation = strings.Join(why, " ") + " The audit could not check what is configured there — that is not " +
+		"the same as nothing being wrong."
+	return []Finding{fnd}
 }
 
 // ---- small helpers ------------------------------------------------------------------------

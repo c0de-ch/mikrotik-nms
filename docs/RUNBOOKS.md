@@ -365,7 +365,10 @@ What to do:
    device's configuration says.)
 4. **"The NMS account may not read part of the configuration"** next to it
    means some menus were refused: what is configured there was not checked.
-   Give the NMS account's group the `read` policy for them.
+   Give the NMS account's group the `read` policy for them. "Refused by this
+   RouterOS version" in the same finding is different: the device does not
+   take that read as the NMS sends it — nothing to change on the device;
+   report the menu and the RouterOS version.
 
 Warnings and informational findings (an open SNMP community, 802.3x flow
 control on trunks, debug logging to a remote server, a scheduler that runs

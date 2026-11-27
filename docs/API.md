@@ -250,9 +250,13 @@ with `Retry-After` within an hour of the device's last pass of that kind
 (whoever started it); `503` while polling is off on this instance.
 
 A finding stays until a pass reads the device again and no longer finds the
-setting; a pass that could not read a menu (`not enough permissions`, a
-failed read) leaves the findings behind that menu alone and reports the
-refusal as its own finding (`audit_unreadable`). Finding kinds:
+setting. A pass that could not read a menu leaves the findings behind that
+menu alone: a menu the device does not have is simply empty; `not enough
+permissions`, and any other error the device itself answers a read with
+(this RouterOS version does not take it), are reported as a finding of their
+own (`audit_unreadable`) and do not make the pass partial; a read that got
+no answer (a timeout, a lost session) does — the audit is then run again an
+hour later. Finding kinds:
 `graphing_enabled`, `traffic_flow_enabled`, `traffic_flow_foreign_target`,
 `snmp_open`, `snmp_write_access`, `snmp_on_weak_device`,
 `bridge_ip_firewall`, `bridge_cpu_forwarding`, `bond_not_offloaded`,

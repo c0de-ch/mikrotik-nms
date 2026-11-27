@@ -708,6 +708,40 @@ func TestFailedReadEvaluatesNothingBehindIt(t *testing.T) {
 	}
 }
 
+// A read the device itself refuses with an error — a property or a query
+// this RouterOS version does not have — is not a failure to try again and
+// not "nothing found": it is reported, the kinds behind it are left alone,
+// and the rest of the audit is whole (the snapshot is stored, with the
+// refusal in it).
+func TestReadTheRouterOSVersionRefuses(t *testing.T) {
+	refused := Section{State: routeros.ConfigUnsupported, Error: "unknown parameter"}
+	s := with(with(cleanAudit(), SecDeviceMode, refused), SecUserGroups, deniedSec)
+	res := Evaluate(ModeAudit, s, weakSwitch())
+	wantKinds(t, res, KindUnreadable+":"+Info)
+	f := find(t, res, KindUnreadable)
+	if f.Detail != "/user/group; refused by this RouterOS version: /system/device-mode" {
+		t.Fatalf("detail = %q", f.Detail)
+	}
+	if !strings.Contains(f.Explanation, "not enough permissions") || !strings.Contains(f.Explanation, "does not take") {
+		t.Fatalf("explanation = %q", f.Explanation)
+	}
+	if contains(res.Evaluated, KindDeviceMode) || contains(res.Evaluated, KindNMSAccount) {
+		t.Fatal("a kind behind a refused read counts as evaluated")
+	}
+	if got := s.Failed(); len(got) != 0 {
+		t.Fatalf("a refused read counts as failed: %v", got)
+	}
+	snap, complete := SnapshotOf(s)
+	if !complete || snap.Sections[SecDeviceMode].State != routeros.ConfigUnsupported {
+		t.Fatalf("snapshot: complete=%v device_mode=%+v", complete, snap.Sections[SecDeviceMode])
+	}
+	// Only the refusal by the device: the finding says so.
+	only := Evaluate(ModeAudit, with(cleanAudit(), SecDeviceMode, refused), weakSwitch())
+	if f := find(t, only, KindUnreadable); f.Detail != "refused by this RouterOS version: /system/device-mode" {
+		t.Fatalf("detail = %q", f.Detail)
+	}
+}
+
 // The diagnose pass reads less; it judges what it read and leaves the rest
 // of the device's findings alone.
 func TestDiagnoseEvaluatesOnlyWhatItRead(t *testing.T) {

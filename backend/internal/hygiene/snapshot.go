@@ -22,7 +22,8 @@ type Section struct {
 	Rows  []map[string]string  `json:"rows,omitempty"`
 	// Count is the row count of a count-only read.
 	Count *int `json:"count,omitempty"`
-	// Error says why a read failed. It is not part of the snapshot.
+	// Error says why a read failed or was refused. It is not part of the
+	// snapshot.
 	Error string `json:"-"`
 }
 
@@ -70,7 +71,7 @@ func (s Sections) count(key string) int {
 
 // known reports that a section says what the device has there: it was read,
 // the menu does not exist, or the read was deliberately not sent. A section
-// that is missing, denied or failed says nothing.
+// that is missing, denied, refused by the device or failed says nothing.
 func (s Sections) known(keys ...string) bool {
 	for _, key := range keys {
 		sec, ok := s[key]
@@ -101,8 +102,25 @@ func (s Sections) Denied() []string {
 	return out
 }
 
-// Failed lists the sections whose read failed (a transport error, a
-// timeout, an unexpected trap), sorted.
+// Unsupported lists the commands the device itself refused with an error
+// that is neither "no such command" nor a missing permission: this RouterOS
+// does not take the read as it is sent. Sorted.
+func (s Sections) Unsupported() []string {
+	var out []string
+	for key, sec := range s {
+		if sec.State != routeros.ConfigUnsupported {
+			continue
+		}
+		if r, ok := readOf(key); ok {
+			out = append(out, strings.TrimSuffix(r.Command, "/print"))
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// Failed lists the sections whose read got no answer (a transport error, a
+// timeout), sorted.
 func (s Sections) Failed() []string {
 	var out []string
 	for key, sec := range s {

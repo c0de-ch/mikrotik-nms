@@ -689,6 +689,39 @@ func TestAuditWithAFailedReadIsPartial(t *testing.T) {
 	}
 }
 
+// A read the device's RouterOS answers with an error of its own — it will
+// answer the same next time — does not make the audit partial and is not
+// retried every hour: the audit is whole without it, runs again in six
+// hours, and says what it could not read.
+func TestAuditWithAReadTheRouterOSRefuses(t *testing.T) {
+	h := newAuditHarness(t)
+	h.add("sw", hygienetest.Load(t, "switch48_clean").
+		WithReply("/system/device-mode/print", hygienetest.Reply{Trap: "unknown parameter .proplist"}))
+
+	h.run(15 * time.Minute)
+	r := h.lastRun("sw", queries.AuditKindAudit)
+	if r.Status != queries.AuditComplete || r.FailedReads != 0 || r.Reads != 19 {
+		t.Fatalf("run = %+v", r)
+	}
+	if n := countRows(t, h.db, `SELECT COUNT(*) FROM device_audit WHERE device_id = 'sw'`); n != 1 {
+		t.Fatalf("%d snapshots, want the audit's", n)
+	}
+	u, ok := h.findings("sw")[hygiene.KindUnreadable]
+	if !ok || u.Detail != "refused by this RouterOS version: /system/device-mode" {
+		t.Fatalf("findings = %+v", h.findings("sw"))
+	}
+	end := h.commands("sw")[18].at
+	if next, ok := h.nextAudit("sw"); !ok || !next.Equal(end.Add(6*time.Hour)) {
+		t.Fatalf("next audit = %v, %v; want six hours later (%v), not an hourly retry", next, ok, end.Add(6*time.Hour))
+	}
+	// The next audit finds the same and stores nothing new.
+	h.idle(5*time.Hour + 50*time.Minute)
+	h.run(20 * time.Minute)
+	if n := countRows(t, h.db, `SELECT COUNT(*) FROM device_audit WHERE device_id = 'sw'`); n != 1 {
+		t.Fatalf("%d snapshots after an unchanged second audit", n)
+	}
+}
+
 // A restart neither audits the whole fleet at once nor each device again:
 // the schedule continues from the audits the database remembers, and a pass
 // the restart cut off is closed.

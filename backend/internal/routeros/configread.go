@@ -43,8 +43,14 @@ const (
 	// ConfigDenied: "not enough permissions" — the menu is there and the
 	// NMS account may not read it. Never the same as "nothing found".
 	ConfigDenied ConfigState = "denied"
-	// ConfigFailed: anything else (a transport error, a timeout, another
-	// trap). It says nothing about the device's configuration.
+	// ConfigUnsupported: the device answered the read with another trap —
+	// it knows the menu and will not take this print (a property or a query
+	// this RouterOS version does not have). Asking again gets the same
+	// answer; it says nothing about what is configured there.
+	ConfigUnsupported ConfigState = "unsupported"
+	// ConfigFailed: the read did not get an answer (a transport error, a
+	// timeout, a reply that makes no sense). It says nothing about the
+	// device's configuration, and is worth another try.
 	ConfigFailed ConfigState = "failed"
 )
 
@@ -56,7 +62,7 @@ type ConfigReply struct {
 	Rows []map[string]string
 	// Count is the row count of a CountOnly read.
 	Count int
-	// Err is set when State is ConfigFailed.
+	// Err is set when State is ConfigFailed or ConfigUnsupported.
 	Err error
 }
 
@@ -130,6 +136,8 @@ func ReadConfig(run Runner, r ConfigRead) ConfigReply {
 		return ConfigReply{State: ConfigAbsent}
 	case IsPermissionDenied(err):
 		return ConfigReply{State: ConfigDenied}
+	case isTrap(err) && !IsSessionFatal(err): // a !trap; a !fatal ended the session and is a failure
+		return ConfigReply{State: ConfigUnsupported, Err: err}
 	default:
 		return ConfigReply{State: ConfigFailed, Err: err}
 	}

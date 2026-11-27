@@ -52,17 +52,17 @@ func TestReadConfigTellsAbsentDeniedAndFailedApart(t *testing.T) {
 		command string
 		want    ConfigState
 	}{
-		{"/interface/wifi/capsman/print", ConfigAbsent}, // no such command: the menu is not there
-		{"/user/group/print", ConfigDenied},             // the account may not read it — never "clean"
-		{"/tool/sniffer/print", ConfigFailed},           // a transport failure says nothing
-		{"/system/device-mode/print", ConfigFailed},     // any other trap is a failure, not "absent"
+		{"/interface/wifi/capsman/print", ConfigAbsent},  // no such command: the menu is not there
+		{"/user/group/print", ConfigDenied},              // the account may not read it — never "clean"
+		{"/tool/sniffer/print", ConfigFailed},            // a transport failure says nothing
+		{"/system/device-mode/print", ConfigUnsupported}, // any other trap: this RouterOS does not take the read
 	} {
 		got := ReadConfig(f, ConfigRead{Command: c.command, Fields: []string{"enabled"}})
 		if got.State != c.want {
 			t.Errorf("%s: state = %s, want %s (err %v)", c.command, got.State, c.want, got.Err)
 		}
-		if c.want == ConfigFailed && got.Err == nil {
-			t.Errorf("%s: a failed read must carry its error", c.command)
+		if (c.want == ConfigFailed || c.want == ConfigUnsupported) && got.Err == nil {
+			t.Errorf("%s: a read that did not go through must carry its error", c.command)
 		}
 		if len(got.Rows) != 0 {
 			t.Errorf("%s: rows from a read that did not succeed: %v", c.command, got.Rows)
