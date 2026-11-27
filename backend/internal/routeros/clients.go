@@ -3,8 +3,6 @@ package routeros
 import (
 	"fmt"
 	"strconv"
-
-	ros "github.com/go-routeros/routeros/v3"
 )
 
 // ARPEntry represents an entry from /ip/arp.
@@ -162,26 +160,6 @@ func GetRegistrations(run Runner, menu string) ([]WifiRegistration, error) {
 		return getLocalWirelessRegistrations(run)
 	}
 	return nil, fmt.Errorf("unknown registration menu %q", menu)
-}
-
-// GetCAPsMANRegistrations gets wireless clients without knowing which menus
-// the device has: it tries wifi, then legacy CAPsMAN, then local wireless,
-// and a missing package costs a trap per attempt. On-demand callers only
-// (the Clients page); the pollers read the menus the capability probe found.
-func GetCAPsMANRegistrations(client *ros.Client) ([]WifiRegistration, error) {
-	run := ClientRunner{Client: client}
-	// Try RouterOS v7 wifi first
-	regs, err := getWifiRegistrations(run)
-	if err == nil && len(regs) > 0 {
-		return regs, nil
-	}
-	// Fallback to legacy CAPsMAN
-	regs, err = getLegacyCAPsMANRegistrations(run)
-	if err == nil {
-		return regs, nil
-	}
-	// Fallback to local wireless registration-table
-	return getLocalWirelessRegistrations(run)
 }
 
 func getWifiRegistrations(run Runner) ([]WifiRegistration, error) {
