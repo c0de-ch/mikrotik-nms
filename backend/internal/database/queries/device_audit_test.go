@@ -224,8 +224,53 @@ func TestFlowExportWatches(t *testing.T) {
 	if err != nil || len(ws) != 1 || ws[0].ExporterID != 4 || !ws[0].AcceptedAt.Equal(t1.Add(time.Hour)) || ws[0].Baseline != nil {
 		t.Fatalf("watches = %+v, %v", ws, err)
 	}
+	// Ending a watch names the accept it belongs to: one that was started
+	// again since is left alone.
+	if err := EndFlowExportWatch(db, "r1", t1); err != nil {
+		t.Fatal(err)
+	}
+	if ws, _ := ListFlowExportWatches(db); len(ws) != 1 {
+		t.Fatalf("ending the earlier accept removed the watch that was started again: %+v", ws)
+	}
+	if err := EndFlowExportWatch(db, "r1", t1.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if ws, _ := ListFlowExportWatches(db); len(ws) != 0 {
+		t.Fatalf("watches after its end = %+v", ws)
+	}
+
+	_ = StartFlowExportWatch(db, &FlowExportWatch{DeviceID: "r1", ExporterID: 4, Address: "192.0.2.1", AcceptedAt: t1.Add(time.Hour)})
 	if n, err := DeleteOldFlowExportWatches(db, t1.Add(2*time.Hour)); err != nil || n != 1 {
 		t.Fatalf("deleted %d, %v", n, err)
+	}
+}
+
+// A removed exporter takes its CPU watch with it — whichever way it is
+// removed: nothing is exported to the NMS any more, so there is no "after
+// its flow export was accepted" left to watch.
+func TestRemovingAnExporterEndsItsWatch(t *testing.T) {
+	db := auditTestDevices(t, "r1", "r2", "r3")
+	t1 := time.Date(2026, 3, 2, 12, 0, 0, 0, time.UTC)
+	ids := map[string]int64{}
+	for i, dev := range []string{"r1", "r2", "r3"} {
+		id, err := CreateFlowExporter(db, &FlowExporter{Name: dev, Address: "192.0.2." + string(rune('1'+i)), Kind: "routeros", DeviceID: dev, Enabled: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids[dev] = id
+		if err := StartFlowExportWatch(db, &FlowExportWatch{DeviceID: dev, ExporterID: id, Address: "192.0.2." + string(rune('1'+i)), AcceptedAt: t1}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := DeleteFlowExporter(db, ids["r1"]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := DeleteFlowExporterBlocking(db, ids["r2"], "removed", "admin", t1.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	ws, err := ListFlowExportWatches(db)
+	if err != nil || len(ws) != 1 || ws[0].DeviceID != "r3" {
+		t.Fatalf("watches after two exporters were removed = %+v, %v; want the third device's only", ws, err)
 	}
 }
 

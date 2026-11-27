@@ -1284,6 +1284,51 @@ func TestFlowExportWatchStartsWhenAnExporterIsAccepted(t *testing.T) {
 	}
 }
 
+// A watch has nothing left to say once its half hour is over and no
+// flow_export_cpu_high alert is open for the device — it never fired, or it
+// has resolved. Its row goes then. While the watch runs, and while its alert
+// is still open, it stays.
+func TestFlowExportWatchRowEndsWithTheWatch(t *testing.T) {
+	h := newAuditHarness(t)
+	now := h.clock.now()
+	for id, accepted := range map[string]time.Time{
+		"running":  now.Add(-10 * time.Minute),
+		"over":     now.Add(-2 * time.Hour),
+		"alerting": now.Add(-2 * time.Hour),
+	} {
+		h.add(id, hygienetest.Load(t, "ap_clean"))
+		if err := queries.StartFlowExportWatch(h.db, &queries.FlowExportWatch{DeviceID: id, ExporterID: 1, Address: "192.0.2.9", AcceptedAt: accepted}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	alertID := openAlert(t, h.db, alerts.RuleFlowExportCPUHigh, "alerting", alerts.SeverityWarning, true, now.Add(-100*time.Minute))
+	watched := func() map[string]bool {
+		t.Helper()
+		ws, err := queries.ListFlowExportWatches(h.db)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := map[string]bool{}
+		for _, w := range ws {
+			out[w.DeviceID] = true
+		}
+		return out
+	}
+
+	h.run(time.Minute)
+	if got := watched(); got["over"] || !got["running"] || !got["alerting"] {
+		t.Fatalf("watches = %v, want the one that is over gone, the running one and the one whose alert is open kept", got)
+	}
+	// The alert resolves: its watch is over too.
+	if err := queries.ResolveAlert(h.db, alertID, h.clock.now()); err != nil {
+		t.Fatal(err)
+	}
+	h.run(time.Minute)
+	if got := watched(); got["alerting"] || !got["running"] {
+		t.Fatalf("after the alert resolved: watches = %v, want only the running one", got)
+	}
+}
+
 // With polling off nothing audits: the manager does not run the loop, the
 // flow collector accepts nothing, and a request is refused before any
 // device is looked at.

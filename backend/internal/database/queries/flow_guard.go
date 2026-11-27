@@ -132,9 +132,10 @@ func AddFlowSenderDrops(db *sql.DB, address string, datagrams int64, lastSeen ti
 }
 
 // DeleteFlowExporterBlocking deletes an exporter (its interfaces, points and
-// templates cascade, its fact rows are left for DeleteOrphanFlows) and leaves
-// a tombstone for its address in the same transaction: the sender stays
-// blocked until an admin unblocks or re-adds it. ErrFlowNotFound.
+// templates cascade, its fact rows are left for DeleteOrphanFlows; the CPU
+// watch that began when it was accepted ends) and leaves a tombstone for its
+// address in the same transaction: the sender stays blocked until an admin
+// unblocks or re-adds it. ErrFlowNotFound.
 func DeleteFlowExporterBlocking(db *sql.DB, id int64, reason, by string, now time.Time) (*FlowSenderPolicy, error) {
 	tx, err := db.Begin()
 	if err != nil {
@@ -149,6 +150,9 @@ func DeleteFlowExporterBlocking(db *sql.DB, id int64, reason, by string, now tim
 		return nil, err
 	}
 	if _, err := tx.Exec(`DELETE FROM flow_exporters WHERE id = ?`, id); err != nil {
+		return nil, err
+	}
+	if _, err := tx.Exec(deleteWatchOfExporter, id); err != nil {
 		return nil, err
 	}
 	// A stale row for this address (it could not be seen while the exporter

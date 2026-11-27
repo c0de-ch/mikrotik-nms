@@ -902,6 +902,8 @@ func (a *Auditor) diagnoseTriggers(devices []queries.Device, now time.Time) map[
 	open, err := queries.ListOpenAlerts(a.db)
 	if err != nil {
 		log.Printf("poller audit: list the open alerts: %v", err)
+	} else {
+		a.endWatches(open, now)
 	}
 	known := deviceIDs(devices)
 	for _, al := range open { // oldest first
@@ -927,6 +929,34 @@ func (a *Auditor) diagnoseTriggers(devices []queries.Device, now time.Time) map[
 	a.triggers = out
 	a.mu.Unlock()
 	return out
+}
+
+// endWatches removes the CPU watches that are over: the half hour after the
+// accept has passed (alerts.FlowExportWatchRunning) and no
+// flow_export_cpu_high alert is open for the device — it never fired, or it
+// has resolved. From then on the rule could only keep an open alert, and
+// there is none: the row has nothing left to say. open are the open alerts.
+// (A removed exporter takes its watch with it at once: queries.DeleteFlowExporter.)
+func (a *Auditor) endWatches(open []queries.Alert, now time.Time) {
+	watches, err := queries.ListFlowExportWatches(a.db)
+	if err != nil || len(watches) == 0 {
+		return
+	}
+	alerting := map[string]bool{}
+	for _, al := range open {
+		if al.Rule == alerts.RuleFlowExportCPUHigh {
+			alerting[al.DeviceID] = true
+		}
+	}
+	for _, w := range watches {
+		if alerts.FlowExportWatchRunning(w.AcceptedAt, now) || alerting[w.DeviceID] {
+			continue
+		}
+		// By the accept it belongs to: a watch started again meanwhile stays.
+		if err := queries.EndFlowExportWatch(a.db, w.DeviceID, w.AcceptedAt); err != nil {
+			log.Printf("poller audit: end the flow-export watch of %s: %v", w.Address, err)
+		}
+	}
 }
 
 // startWatches turns the exporters the flow collector accepted since the

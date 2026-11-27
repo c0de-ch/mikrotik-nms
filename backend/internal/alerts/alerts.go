@@ -77,6 +77,11 @@ type Observation struct {
 	// a DeviceID, every alert of the rule for that device. Severity and
 	// Summary are not needed.
 	Hold bool
+	// KeepOnly marks a condition that only keeps an alert that is already
+	// open: it is touched like any other, but no alert is opened for it. A
+	// rule uses it for what extends an episode without being one — once the
+	// alert has resolved, the same condition is not news.
+	KeepOnly bool
 }
 
 // Rule looks at the stored state and reports every condition that holds
@@ -295,6 +300,9 @@ func (e *Engine) Tick() error {
 		}
 	}
 	for k, o := range seen {
+		if o.KeepOnly {
+			continue // it keeps an open alert; there is none
+		}
 		if _, err := queries.InsertAlert(e.db, &queries.Alert{
 			Rule: k.rule, Key: k.key, DeviceID: o.DeviceID, Severity: o.Severity,
 			FirstAt: now, LastAt: now, Confirmed: !o.Unconfirmed, Payload: encodePayload(o),

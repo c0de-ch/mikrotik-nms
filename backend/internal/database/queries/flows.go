@@ -249,12 +249,22 @@ func UpdateFlowExporterConfig(db *sql.DB, e *FlowExporter) error {
 }
 
 // DeleteFlowExporter deletes the exporter; its interfaces, points and
-// templates cascade. Its fact rows are left as orphans for DeleteOrphanFlows
-// (a synchronous purge of days of rows would be slow). ErrFlowNotFound.
+// templates cascade, and the CPU watch that began when it was accepted ends
+// with it. Its fact rows are left as orphans for DeleteOrphanFlows (a
+// synchronous purge of days of rows would be slow). ErrFlowNotFound.
 func DeleteFlowExporter(db *sql.DB, id int64) error {
 	res, err := db.Exec(`DELETE FROM flow_exporters WHERE id = ?`, id)
-	return affectedOrNotFound(res, err)
+	if err := affectedOrNotFound(res, err); err != nil {
+		return err
+	}
+	_, err = db.Exec(deleteWatchOfExporter, id)
+	return err
 }
+
+// deleteWatchOfExporter ends the CPU watch of a removed exporter
+// (flow_export_watches has no foreign key to flow_exporters: an exporter id
+// is never reused, and the previous release deletes exporters too).
+const deleteWatchOfExporter = `DELETE FROM flow_export_watches WHERE exporter_id = ?`
 
 func affectedOrNotFound(res sql.Result, err error) error {
 	if err != nil {

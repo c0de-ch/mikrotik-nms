@@ -229,16 +229,32 @@ const (
 	// flowWatchWindow is how long a device's CPU is watched after its flow
 	// exporter was accepted.
 	flowWatchWindow = 30 * time.Minute
+	// flowWatchSettle is how long after the window its last minutes may
+	// still be written (a device-minute lands when it is final, up to
+	// loadFresh late). For that long the watch still counts as running: one
+	// that trips on a late minute opens its alert, one that has tripped
+	// stands.
+	flowWatchSettle = loadFresh
 	// The watch trips when the CPU reaches flowWatchHighPct in
 	// flowWatchHighCount of its minutes, or once rises flowWatchRise points
 	// above the device's 24 h baseline.
 	flowWatchHighPct   = 80
 	flowWatchHighCount = 3
 	flowWatchRise      = 30
-	// flowWatchCalmMinutes is the window the alert is judged by once the
-	// watch is over: it stands while any of them is still elevated.
+	// flowWatchCalmMinutes is the window an alert that is still open is
+	// judged by once the watch is over: it stands while any of them is
+	// still elevated.
 	flowWatchCalmMinutes = 5
 )
+
+// FlowExportWatchRunning reports whether the CPU watch of an exporter
+// accepted at acceptedAt can still open an alert at now: the 30 minutes
+// after the accept, plus the time their last minutes take to be written.
+// After that the rule only keeps an alert that is open — and once that has
+// resolved, the watch is over (the poller removes its row).
+func FlowExportWatchRunning(acceptedAt, now time.Time) bool {
+	return now.Before(acceptedAt.Truncate(time.Minute).Add(flowWatchWindow + flowWatchSettle))
+}
 
 // flowExportCPUHigh fires when a device's CPU goes up in the 30 minutes
 // after the collector started accepting its flow export: three minutes at or
@@ -247,9 +263,13 @@ const (
 // export is the likely reason, and the diagnose pass it starts looks at the
 // others.
 //
-// Once tripped it stands for the rest of the watch. After that it stands
-// while the device's newest minutes are still elevated and resolves when
-// they are calm; a device that is not being recorded keeps its state.
+// Once tripped it stands for the rest of the watch. After that it only keeps
+// its alert: the alert stands while the device's newest minutes are still
+// elevated and resolves when they are calm (a device that is not being
+// recorded keeps its state) — and a resolved alert is the end of the watch.
+// A CPU spike days later is not "after its flow export was accepted": it
+// opens nothing here (Observation.KeepOnly), whether or not the watch row is
+// still in the table.
 type flowExportCPUHigh struct{ db *sql.DB }
 
 func (flowExportCPUHigh) Name() string { return RuleFlowExportCPUHigh }
@@ -296,24 +316,15 @@ func (r flowExportCPUHigh) Evaluate(now time.Time) ([]Observation, error) {
 		}
 		start := w.AcceptedAt.Truncate(time.Minute)
 		end := start.Add(flowWatchWindow)
-		minutes, err := queries.ListDeviceMinutes(r.db, w.DeviceID, start, now)
+		minutes, err := queries.ListDeviceMinutes(r.db, w.DeviceID, start, end)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", RuleFlowExportCPUHigh, err)
 		}
 
-		// What the watch saw.
+		// What the watch saw: the minutes of its half hour, no others.
 		var highs int
 		var peak, peakRise float64
-		var newest time.Time
-		byUnix := make(map[int64]queries.DeviceMinute, len(minutes))
 		for _, m := range minutes {
-			byUnix[m.Bucket.Unix()] = m
-			if m.Bucket.After(newest) {
-				newest = m.Bucket
-			}
-			if !m.Bucket.Before(end) {
-				continue
-			}
 			high, rise, known := elevated(m, w.Baseline)
 			if !known {
 				continue
@@ -352,11 +363,26 @@ func (r flowExportCPUHigh) Evaluate(now time.Time) ([]Observation, error) {
 		causes[d.ID].attach(facts)
 		o := Observation{Key: d.ID, DeviceID: d.ID, Severity: SeverityWarning, Summary: summary, Facts: facts}
 
-		if now.Before(end) {
+		if FlowExportWatchRunning(w.AcceptedAt, now) {
 			out = append(out, o) // the watch is still running
 			continue
 		}
-		// The watch is over: is the CPU still up?
+		// The watch is over: nothing opens the alert any more. While it is
+		// still open, is the CPU still up?
+		o.KeepOnly = true
+		recent, err := queries.ListDeviceMinutes(r.db, w.DeviceID,
+			now.Add(-loadFresh-flowWatchCalmMinutes*time.Minute).Truncate(time.Minute), now.Add(time.Minute))
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", RuleFlowExportCPUHigh, err)
+		}
+		var newest time.Time
+		byUnix := make(map[int64]queries.DeviceMinute, len(recent))
+		for _, m := range recent {
+			byUnix[m.Bucket.Unix()] = m
+			if m.Bucket.After(newest) {
+				newest = m.Bucket
+			}
+		}
 		if newest.IsZero() || now.Sub(newest) > loadFresh {
 			out = append(out, hold(d.ID))
 			continue

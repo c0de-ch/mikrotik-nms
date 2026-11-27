@@ -308,6 +308,13 @@ func ListFlowExportWatches(db *sql.DB) ([]FlowExportWatch, error) {
 	return out, rows.Err()
 }
 
+// EndFlowExportWatch removes the watch of a device that was accepted at
+// acceptedAt — and leaves one that was started again since alone.
+func EndFlowExportWatch(db *sql.DB, deviceID string, acceptedAt time.Time) error {
+	_, err := db.Exec(`DELETE FROM flow_export_watches WHERE device_id = ? AND accepted_at = ?`, deviceID, acceptedAt.Unix())
+	return err
+}
+
 // DeleteOldFlowExportWatches drops the watches accepted before cutoff.
 func DeleteOldFlowExportWatches(db *sql.DB, cutoff time.Time) (int64, error) {
 	res, err := db.Exec(`DELETE FROM flow_export_watches WHERE accepted_at < ?`, cutoff.Unix())

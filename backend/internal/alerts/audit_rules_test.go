@@ -481,6 +481,71 @@ func TestFlowExportCPUHighRule(t *testing.T) {
 	})
 }
 
+// The alert is about the half hour after the accept. Once it has resolved
+// after that, the watch is over: a CPU spike days later — the watch row is
+// still in the table — must not open a new alert that says "CPU reached 80 %
+// 3 times in the 30 minutes after its flow export was accepted". While the
+// alert is still open, an elevated CPU keeps it.
+func TestFlowExportCPUHighDoesNotReopenAfterTheWatch(t *testing.T) {
+	e, _, now := newTestEngine(t, flowExportCPUHigh{})
+	db := e.db
+	e.rules = []Rule{flowExportCPUHigh{db}}
+	t0 := now.Truncate(time.Minute)
+	for _, id := range []string{"calm", "busy"} {
+		addDevice(t, db, id, devclass.C3, 1<<30)
+		startWatch(t, db, id, t0, nil)
+		watchMinutes(t, db, id, t0, repeat(90, 10)...) // ten minutes at 90 % right after the accept
+	}
+	openFor := func() map[string]bool {
+		t.Helper()
+		out := map[string]bool{}
+		for _, a := range openAlerts(t, e) {
+			out[a.Key] = true
+		}
+		return out
+	}
+
+	*now = t0.Add(12 * time.Minute)
+	mustTick(t, e)
+	if got := openFor(); !got["calm"] || !got["busy"] {
+		t.Fatalf("during the watch: open = %v, want both", got)
+	}
+
+	// "calm" settles down; "busy" stays up well past the watch.
+	watchMinutes(t, db, "calm", t0.Add(10*time.Minute), repeat(15, 45)...)
+	watchMinutes(t, db, "busy", t0.Add(10*time.Minute), repeat(88, 45)...)
+	*now = t0.Add(57 * time.Minute)
+	mustTick(t, e)
+	if got := openFor(); got["calm"] || !got["busy"] {
+		t.Fatalf("after the watch: open = %v, want the alert of the device that is still busy only", got)
+	}
+
+	// Two days later one minute at 85 % on the device whose alert resolved.
+	later := t0.Add(48 * time.Hour)
+	watchMinutes(t, db, "calm", later.Add(-8*time.Minute), 20, 20, 85, 20, 20, 20)
+	watchMinutes(t, db, "busy", later.Add(-8*time.Minute), repeat(87, 6)...)
+	*now = later
+	mustTick(t, e)
+	if got := openFor(); got["calm"] {
+		t.Fatal("a CPU spike two days after the watch reopened flow_export_cpu_high")
+	}
+	if got := openFor(); !got["busy"] {
+		t.Fatal("the alert of the device that never calmed down was resolved")
+	}
+
+	// "busy" calms down at last: resolved, and it stays resolved through the
+	// next spike too.
+	watchMinutes(t, db, "busy", later.Add(-2*time.Minute), repeat(12, 8)...)
+	*now = later.Add(9 * time.Minute)
+	mustTick(t, e)
+	watchMinutes(t, db, "busy", later.Add(6*time.Minute), repeat(95, 10)...)
+	*now = later.Add(19 * time.Minute)
+	mustTick(t, e)
+	if got := openFor(); len(got) != 0 {
+		t.Fatalf("open alerts at the end = %v, want none", got)
+	}
+}
+
 func TestAuditRulesAreRegistered(t *testing.T) {
 	names := []string{}
 	for _, r := range DefaultRules(testDB(t)) {
