@@ -1,0 +1,137 @@
+# DB state after the fleet's hour: table client_signal_samples, 122 rows.
+#
+# Written by: ConnectivityPoller.collectSignals → queries.InsertClientSignalSample
+# The hour:   the call-plan fleet of 5 fake devices (callplan_harness_test.go), every scheduled loop,
+#             one simulated hour and a minute from 2026-01-05 12:00 UTC; the devices' counters, CPU,
+#             memory and uptime move with the clock (callplan_motion_test.go)
+#
+# A change in this file is a change in what the pollers store.
+# Rewrite it with: go test ./internal/poller -run TestDBState -update
+#
+# Normalised (dbstate_test.go):
+#   recorded_at: the simulated clock, as the offset from the start of the hour; stored as TEXT time.Time.String() ("2006-01-02 15:04:05 +0000 UTC", as the driver binds a time.Time)
+#   REAL values with three decimals, strings quoted, NULL as NULL
+#   rows ordered by the primary key (id)
+
+id=1 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:00:15
+id=2 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:00:45
+id=3 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:01:15
+id=4 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:01:45
+id=5 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:02:15
+id=6 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:02:45
+id=7 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:03:15
+id=8 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:03:45
+id=9 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:04:15
+id=10 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:04:45
+id=11 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:05:15
+id=12 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:05:45
+id=13 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:06:15
+id=14 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:06:45
+id=15 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:07:15
+id=16 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:07:45
+id=17 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:08:15
+id=18 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:08:45
+id=19 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:09:15
+id=20 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:09:45
+id=21 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:10:15
+id=22 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:10:45
+id=23 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:11:15
+id=24 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:11:45
+id=25 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:12:15
+id=26 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:12:45
+id=27 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:13:15
+id=28 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:13:45
+id=29 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:14:15
+id=30 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:14:45
+id=31 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:15:15
+id=32 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:15:45
+id=33 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:16:15
+id=34 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:16:45
+id=35 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:17:15
+id=36 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:17:45
+id=37 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:18:15
+id=38 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:18:45
+id=39 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:19:15
+id=40 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:19:45
+id=41 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:20:15
+id=42 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:20:45
+id=43 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:21:15
+id=44 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:21:45
+id=45 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:22:15
+id=46 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:22:45
+id=47 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:23:15
+id=48 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:23:45
+id=49 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:24:15
+id=50 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:24:45
+id=51 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:25:15
+id=52 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:25:45
+id=53 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:26:15
+id=54 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:26:45
+id=55 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:27:15
+id=56 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:27:45
+id=57 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:28:15
+id=58 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:28:45
+id=59 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:29:15
+id=60 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:29:45
+id=61 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:30:15
+id=62 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:30:45
+id=63 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:31:15
+id=64 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:31:45
+id=65 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:32:15
+id=66 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:32:45
+id=67 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:33:15
+id=68 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:33:45
+id=69 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:34:15
+id=70 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:34:45
+id=71 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:35:15
+id=72 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:35:45
+id=73 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:36:15
+id=74 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:36:45
+id=75 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:37:15
+id=76 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:37:45
+id=77 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:38:15
+id=78 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:38:45
+id=79 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:39:15
+id=80 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:39:45
+id=81 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:40:15
+id=82 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:40:45
+id=83 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:41:15
+id=84 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:41:45
+id=85 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:42:15
+id=86 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:42:45
+id=87 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:43:15
+id=88 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:43:45
+id=89 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:44:15
+id=90 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:44:45
+id=91 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:45:15
+id=92 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:45:45
+id=93 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:46:15
+id=94 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:46:45
+id=95 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:47:15
+id=96 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:47:45
+id=97 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:48:15
+id=98 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:48:45
+id=99 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:49:15
+id=100 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:49:45
+id=101 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:50:15
+id=102 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:50:45
+id=103 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:51:15
+id=104 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:51:45
+id=105 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:52:15
+id=106 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:52:45
+id=107 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:53:15
+id=108 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:53:45
+id=109 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:54:15
+id=110 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:54:45
+id=111 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:55:15
+id=112 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:55:45
+id=113 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:56:15
+id=114 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:56:45
+id=115 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:57:15
+id=116 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:57:45
+id=117 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:58:15
+id=118 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:58:45
+id=119 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:59:15
+id=120 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+00:59:45
+id=121 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+01:00:15
+id=122 mac_address="02:00:5E:10:00:01" ap_name="wifi1" ssid="lab" band="5ghz-ax" signal_dbm=-58 tx_rate="286800000" rx_rate="258000000" recorded_at=+01:00:45

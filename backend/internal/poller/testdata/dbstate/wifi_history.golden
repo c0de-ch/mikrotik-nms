@@ -1,0 +1,21 @@
+# DB state after the fleet's hour: table wifi_history, 5 rows.
+#
+# Written by: WifiTracker.emitFromSnapshot / handleLogEvent / emitLeave → queries.InsertWifiHistory
+# The hour:   the call-plan fleet of 5 fake devices (callplan_harness_test.go), every scheduled loop,
+#             one simulated hour and a minute from 2026-01-05 12:00 UTC; the devices' counters, CPU,
+#             memory and uptime move with the clock (callplan_motion_test.go)
+#
+# A change in this file is a change in what the pollers store.
+# Rewrite it with: go test ./internal/poller -run TestDBState -update
+#
+# Normalised (dbstate_test.go):
+#   recorded_at: SQLite's CURRENT_TIMESTAMP (wall clock) → <sqlite-now>; stored as TEXT "2006-01-02 15:04:05" (as CURRENT_TIMESTAMP writes it)
+#   REAL values with three decimals, strings quoted, NULL as NULL
+#   rows ordered by all their columns as shown
+#   left out: id, an AUTOINCREMENT id in no deterministic order — WifiTracker.poll emits the joins of one read in the order of a Go map, which is random
+
+mac_address="02:00:5E:10:00:01" ip_address="192.0.2.101" host_name="laptop-1" ap_name="wifi1" ssid="lab" band="5ghz-ax" channel="" signal="-58 dBm" tx_rate="286800000" rx_rate="258000000" event="join" controller_id="ap-ax" recorded_at=<sqlite-now> source="snapshot" reason=""
+mac_address="02:00:5E:10:00:02" ip_address="192.0.2.102" host_name="phone-1" ap_name="wifi1" ssid="lab" band="5ghz-ax" channel="" signal="-63 dBm" tx_rate="286800000" rx_rate="258000000" event="join" controller_id="ap-ax" recorded_at=<sqlite-now> source="snapshot" reason=""
+mac_address="02:00:5E:10:00:03" ip_address="192.0.2.103" host_name="tablet-1" ap_name="wifi2" ssid="lab" band="2ghz-ax" channel="" signal="-71 dBm" tx_rate="286800000" rx_rate="258000000" event="join" controller_id="ap-ax" recorded_at=<sqlite-now> source="snapshot" reason=""
+mac_address="02:00:5E:10:00:05" ip_address="192.0.2.105" host_name="camera-1" ap_name="wlan1" ssid="" band="" channel="" signal="-66dBm@6Mbps" tx_rate="72.2Mbps-20MHz/1S/SGI" rx_rate="86.6Mbps-20MHz/1S/SGI" event="join" controller_id="ap-ac" recorded_at=<sqlite-now> source="snapshot" reason=""
+mac_address="02:00:5E:10:00:06" ip_address="192.0.2.106" host_name="desk-1" ap_name="wlan2" ssid="" band="" channel="" signal="-74dBm@6Mbps" tx_rate="72.2Mbps-20MHz/1S/SGI" rx_rate="86.6Mbps-20MHz/1S/SGI" event="join" controller_id="ap-ac" recorded_at=<sqlite-now> source="snapshot" reason=""

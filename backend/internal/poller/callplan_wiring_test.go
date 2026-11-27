@@ -96,7 +96,7 @@ func TestCallPlanWiringIsPinned(t *testing.T) {
 	got := b.String()
 
 	path := filepath.Join("testdata", "callplan", "wiring.golden")
-	if *updateCallPlans || os.Getenv("UPDATE_GOLDEN") == "1" {
+	if updateGolden() {
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -158,57 +158,58 @@ func TestCallPlanWiringIsPinned(t *testing.T) {
 		strings.Join(diff, "\n"))
 }
 
-// checkOutcome fails unless the simulated hour did what an hour of polling
-// does: every device audited once and completely, every probe answered, the
-// watched client's signal recorded, every device in the role its personality
-// has, and its interface list stored whole.
-func (h *callPlan) checkOutcome() {
-	t := h.t
-	t.Helper()
+// checkOutcome says what is wrong with the simulated hour, if it did not do
+// what an hour of polling does: every device audited once and completely,
+// every probe answered, the watched client's signal recorded, every device
+// in the role its personality has, and its interface list stored whole.
+func (h *callPlan) checkOutcome() (problems []string) {
+	fail := func(format string, args ...any) { problems = append(problems, fmt.Sprintf(format, args...)) }
 	count := func(query string, args ...any) int {
 		var n int
 		if err := h.db.QueryRow(query, args...).Scan(&n); err != nil {
-			t.Fatalf("call plan: %s: %v", query, err)
+			fail("call plan: %s: %v", query, err)
 		}
 		return n
 	}
 	roles, _, err := topology.LoadDeviceRoles(h.db, UplinkAge(h.m.cadence), h.clock.now())
 	if err != nil {
-		t.Fatalf("call plan: device roles: %v", err)
+		return append(problems, fmt.Sprintf("call plan: device roles: %v", err))
 	}
 	for _, d := range h.devices {
 		if got := roles[d.id].Role; got != d.p.Role {
-			t.Errorf("%s ended the hour as %q (%s), its personality is a %q: the fleet is not what the plans say it is",
+			fail("%s ended the hour as %q (%s), its personality is a %q: the fleet is not what the plans say it is",
 				d.id, got, roles[d.id].Reason, d.p.Role)
 		}
 		dev, err := queries.GetDevice(h.db, d.id)
 		if err != nil {
-			t.Fatalf("call plan: %s: %v", d.id, err)
+			fail("call plan: %s: %v", d.id, err)
+			continue
 		}
 		if dev.Status != "online" || dev.ProbedClass() != d.p.Class {
-			t.Errorf("%s ended the hour %s in class %s, want online in class %s", d.id, dev.Status, dev.ProbedClass(), d.p.Class)
+			fail("%s ended the hour %s in class %s, want online in class %s", d.id, dev.Status, dev.ProbedClass(), d.p.Class)
 		}
 		if got := count(`SELECT COUNT(*) FROM interfaces WHERE device_id = ?`, d.id); got != len(d.p.Ports) {
-			t.Errorf("%s: %d interfaces stored, its personality has %d: the counter read is not being understood", d.id, got, len(d.p.Ports))
+			fail("%s: %d interfaces stored, its personality has %d: the counter read is not being understood", d.id, got, len(d.p.Ports))
 		}
 		audits := count(`SELECT COUNT(*) FROM device_audit_runs WHERE device_id = ? AND kind = ?`, d.id, queries.AuditKindAudit)
 		complete := count(`SELECT COUNT(*) FROM device_audit_runs WHERE device_id = ? AND kind = ? AND status = ? AND failed_reads = 0`,
 			d.id, queries.AuditKindAudit, queries.AuditComplete)
 		if audits != 1 || complete != 1 {
-			t.Errorf("%s: %d hygiene audits in the hour, %d of them complete; want exactly one, complete", d.id, audits, complete)
+			fail("%s: %d hygiene audits in the hour, %d of them complete; want exactly one, complete", d.id, audits, complete)
 		}
 	}
 	if n := count(`SELECT COUNT(*) FROM device_audit_runs WHERE kind != ?`, queries.AuditKindAudit); n != 0 {
-		t.Errorf("%d diagnose passes ran: no alert was open in this hour", n)
+		fail("%d diagnose passes ran: no alert was open in this hour", n)
 	}
 	for _, target := range []string{"internet", "watch"} {
 		ok := count(`SELECT COUNT(*) FROM ping_samples WHERE target_id = ? AND device_id = 'rtr' AND error = '' AND received > 0`, target)
 		failed := count(`SELECT COUNT(*) FROM ping_samples WHERE target_id = ? AND (error != '' OR device_id != 'rtr')`, target)
 		if ok < 120 || failed > 0 {
-			t.Errorf("ping target %q: %d answered samples from the router and %d others, want one every 30 s and nothing else", target, ok, failed)
+			fail("ping target %q: %d answered samples from the router and %d others, want one every 30 s and nothing else", target, ok, failed)
 		}
 	}
 	if n := count(`SELECT COUNT(*) FROM client_signal_samples WHERE mac_address = ? AND signal_dbm IS NOT NULL`, planWatchedMAC); n < 120 {
-		t.Errorf("%d signal samples of the watched client, want one per registration read of its access point (every 30 s)", n)
+		fail("%d signal samples of the watched client, want one per registration read of its access point (every 30 s)", n)
 	}
+	return problems
 }

@@ -1,0 +1,21 @@
+# DB state after the fleet's hour: table interface_relations, 6 rows.
+#
+# Written by: PortStatsCollector.collectDeviceRelations (Tier 3c) → queries.ReplaceInterfaceRelations
+# The hour:   the call-plan fleet of 5 fake devices (callplan_harness_test.go), every scheduled loop,
+#             one simulated hour and a minute from 2026-01-05 12:00 UTC; the devices' counters, CPU,
+#             memory and uptime move with the clock (callplan_motion_test.go)
+#
+# A change in this file is a change in what the pollers store.
+# Rewrite it with: go test ./internal/poller -run TestDBState -update
+#
+# Normalised (dbstate_test.go):
+#   updated_at: SQLite's CURRENT_TIMESTAMP (wall clock) → <sqlite-now>; stored as TEXT "2006-01-02 15:04:05" (as CURRENT_TIMESTAMP writes it)
+#   REAL values with three decimals, strings quoted, NULL as NULL
+#   rows ordered by the primary key (device_id, interface_name, kind)
+
+device_id="sw24" interface_name="vlan-mgmt" kind="vlan" parent="bridge" updated_at=<sqlite-now>
+device_id="sw48" interface_name="ether45" kind="bond" parent="bond1" updated_at=<sqlite-now>
+device_id="sw48" interface_name="ether46" kind="bond" parent="bond1" updated_at=<sqlite-now>
+device_id="sw48" interface_name="ether47" kind="bond" parent="bond2" updated_at=<sqlite-now>
+device_id="sw48" interface_name="ether48" kind="bond" parent="bond2" updated_at=<sqlite-now>
+device_id="sw48" interface_name="vlan-mgmt" kind="vlan" parent="bridge" updated_at=<sqlite-now>

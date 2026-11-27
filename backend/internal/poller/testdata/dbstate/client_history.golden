@@ -1,0 +1,59 @@
+# DB state after the fleet's hour: table client_history, 43 rows.
+#
+# Written by: ClientDiscoveryPoller.store → queries.InsertClientHistory
+# The hour:   the call-plan fleet of 5 fake devices (callplan_harness_test.go), every scheduled loop,
+#             one simulated hour and a minute from 2026-01-05 12:00 UTC; the devices' counters, CPU,
+#             memory and uptime move with the clock (callplan_motion_test.go)
+#
+# A change in this file is a change in what the pollers store.
+# Rewrite it with: go test ./internal/poller -run TestDBState -update
+#
+# Normalised (dbstate_test.go):
+#   recorded_at: SQLite's CURRENT_TIMESTAMP (wall clock) → <sqlite-now>; stored as TEXT "2006-01-02 15:04:05" (as CURRENT_TIMESTAMP writes it)
+#   REAL values with three decimals, strings quoted, NULL as NULL
+#   rows ordered by all their columns as shown
+#   left out: id, an AUTOINCREMENT id in no deterministic order — ClientDiscoveryPoller.store inserts a pass's clients in the order of a Go map, which is random
+
+mac_address="02:00:5E:00:53:01" ip_address="192.0.2.1" host_name="" source="arp" device_name="ap-ac" recorded_at=<sqlite-now>
+mac_address="02:00:5E:00:53:01" ip_address="192.0.2.1" host_name="" source="arp" device_name="ap-ac" recorded_at=<sqlite-now>
+mac_address="02:00:5E:00:53:01" ip_address="192.0.2.1" host_name="" source="arp" device_name="ap-ac" recorded_at=<sqlite-now>
+mac_address="02:00:5E:00:53:01" ip_address="192.0.2.1" host_name="" source="arp" device_name="ap-ax" recorded_at=<sqlite-now>
+mac_address="02:00:5E:00:53:01" ip_address="192.0.2.1" host_name="" source="arp" device_name="ap-ax" recorded_at=<sqlite-now>
+mac_address="02:00:5E:00:53:0A" ip_address="192.0.2.10" host_name="" source="arp" device_name="sw24" recorded_at=<sqlite-now>
+mac_address="02:00:5E:00:53:0A" ip_address="192.0.2.10" host_name="" source="arp" device_name="sw24" recorded_at=<sqlite-now>
+mac_address="02:00:5E:00:53:0A" ip_address="192.0.2.10" host_name="" source="arp" device_name="sw24" recorded_at=<sqlite-now>
+mac_address="02:00:5E:00:53:FE" ip_address="198.51.100.1" host_name="" source="arp" device_name="rtr" recorded_at=<sqlite-now>
+mac_address="02:00:5E:00:53:FE" ip_address="198.51.100.1" host_name="" source="arp" device_name="rtr" recorded_at=<sqlite-now>
+mac_address="02:00:5E:00:53:FE" ip_address="198.51.100.1" host_name="" source="arp" device_name="rtr" recorded_at=<sqlite-now>
+mac_address="02:00:5E:00:53:FE" ip_address="198.51.100.1" host_name="" source="arp" device_name="rtr" recorded_at=<sqlite-now>
+mac_address="02:00:5E:00:53:FE" ip_address="198.51.100.1" host_name="" source="arp" device_name="rtr" recorded_at=<sqlite-now>
+mac_address="02:00:5E:10:00:01" ip_address="192.0.2.101" host_name="laptop-1" source="arp" device_name="rtr" recorded_at=<sqlite-now>
+mac_address="02:00:5E:10:00:01" ip_address="192.0.2.101" host_name="laptop-1" source="arp" device_name="rtr" recorded_at=<sqlite-now>
+mac_address="02:00:5E:10:00:01" ip_address="192.0.2.101" host_name="laptop-1" source="arp" device_name="rtr" recorded_at=<sqlite-now>
+mac_address="02:00:5E:10:00:01" ip_address="192.0.2.101" host_name="laptop-1" source="arp" device_name="rtr" recorded_at=<sqlite-now>
+mac_address="02:00:5E:10:00:01" ip_address="192.0.2.101" host_name="laptop-1" source="arp" device_name="rtr" recorded_at=<sqlite-now>
+mac_address="02:00:5E:10:00:02" ip_address="192.0.2.102" host_name="phone-1" source="arp" device_name="rtr" recorded_at=<sqlite-now>
+mac_address="02:00:5E:10:00:02" ip_address="192.0.2.102" host_name="phone-1" source="arp" device_name="rtr" recorded_at=<sqlite-now>
+mac_address="02:00:5E:10:00:02" ip_address="192.0.2.102" host_name="phone-1" source="arp" device_name="rtr" recorded_at=<sqlite-now>
+mac_address="02:00:5E:10:00:02" ip_address="192.0.2.102" host_name="phone-1" source="arp" device_name="rtr" recorded_at=<sqlite-now>
+mac_address="02:00:5E:10:00:02" ip_address="192.0.2.102" host_name="phone-1" source="arp" device_name="rtr" recorded_at=<sqlite-now>
+mac_address="02:00:5E:10:00:03" ip_address="192.0.2.103" host_name="tablet-1" source="arp" device_name="rtr" recorded_at=<sqlite-now>
+mac_address="02:00:5E:10:00:03" ip_address="192.0.2.103" host_name="tablet-1" source="arp" device_name="rtr" recorded_at=<sqlite-now>
+mac_address="02:00:5E:10:00:03" ip_address="192.0.2.103" host_name="tablet-1" source="arp" device_name="rtr" recorded_at=<sqlite-now>
+mac_address="02:00:5E:10:00:03" ip_address="192.0.2.103" host_name="tablet-1" source="arp" device_name="rtr" recorded_at=<sqlite-now>
+mac_address="02:00:5E:10:00:03" ip_address="192.0.2.103" host_name="tablet-1" source="arp" device_name="rtr" recorded_at=<sqlite-now>
+mac_address="02:00:5E:10:00:04" ip_address="192.0.2.104" host_name="printer-1" source="arp" device_name="rtr" recorded_at=<sqlite-now>
+mac_address="02:00:5E:10:00:04" ip_address="192.0.2.104" host_name="printer-1" source="arp" device_name="rtr" recorded_at=<sqlite-now>
+mac_address="02:00:5E:10:00:04" ip_address="192.0.2.104" host_name="printer-1" source="arp" device_name="rtr" recorded_at=<sqlite-now>
+mac_address="02:00:5E:10:00:04" ip_address="192.0.2.104" host_name="printer-1" source="arp" device_name="rtr" recorded_at=<sqlite-now>
+mac_address="02:00:5E:10:00:04" ip_address="192.0.2.104" host_name="printer-1" source="arp" device_name="rtr" recorded_at=<sqlite-now>
+mac_address="02:00:5E:10:00:05" ip_address="192.0.2.105" host_name="camera-1" source="arp" device_name="rtr" recorded_at=<sqlite-now>
+mac_address="02:00:5E:10:00:05" ip_address="192.0.2.105" host_name="camera-1" source="arp" device_name="rtr" recorded_at=<sqlite-now>
+mac_address="02:00:5E:10:00:05" ip_address="192.0.2.105" host_name="camera-1" source="arp" device_name="rtr" recorded_at=<sqlite-now>
+mac_address="02:00:5E:10:00:05" ip_address="192.0.2.105" host_name="camera-1" source="arp" device_name="rtr" recorded_at=<sqlite-now>
+mac_address="02:00:5E:10:00:05" ip_address="192.0.2.105" host_name="camera-1" source="arp" device_name="rtr" recorded_at=<sqlite-now>
+mac_address="02:00:5E:10:00:06" ip_address="192.0.2.106" host_name="desk-1" source="arp" device_name="rtr" recorded_at=<sqlite-now>
+mac_address="02:00:5E:10:00:06" ip_address="192.0.2.106" host_name="desk-1" source="arp" device_name="rtr" recorded_at=<sqlite-now>
+mac_address="02:00:5E:10:00:06" ip_address="192.0.2.106" host_name="desk-1" source="arp" device_name="rtr" recorded_at=<sqlite-now>
+mac_address="02:00:5E:10:00:06" ip_address="192.0.2.106" host_name="desk-1" source="arp" device_name="rtr" recorded_at=<sqlite-now>
+mac_address="02:00:5E:10:00:06" ip_address="192.0.2.106" host_name="desk-1" source="arp" device_name="rtr" recorded_at=<sqlite-now>

@@ -1,0 +1,261 @@
+# DB state after the fleet's hour: table device_audit_runs, 5 rows.
+#
+# Written by: Auditor.begin → queries.InsertAuditRun
+#             Auditor.finish → queries.FinishAuditRun
+# The hour:   the call-plan fleet of 5 fake devices (callplan_harness_test.go), every scheduled loop,
+#             one simulated hour and a minute from 2026-01-05 12:00 UTC; the devices' counters, CPU,
+#             memory and uptime move with the clock (callplan_motion_test.go)
+#
+# A change in this file is a change in what the pollers store.
+# Rewrite it with: go test ./internal/poller -run TestDBState -update
+#
+# Normalised (dbstate_test.go):
+#   started_at: the simulated clock, as the offset from the start of the hour; stored as INTEGER unix seconds
+#   finished_at: the simulated clock, as the offset from the start of the hour; stored as INTEGER unix seconds
+#   runtime, findings, checks: JSON, keys sorted, simulated times as offsets, printed under the row
+#   REAL values with three decimals, strings quoted, NULL as NULL
+#   rows ordered by the primary key (id)
+
+id=1 device_id="sw24" kind="audit" reason="scheduled" alert_id=0 requested_by="" started_at=+00:09:55 finished_at=+00:11:10 status="complete" reads=16 failed_reads=0 hash="a372b69256171d7e0c2811fd24dff243a22b106ef560419842a69946b57dcc0c" detail="" runtime=(below) findings=(below) checks=(below)
+    runtime:
+      {
+        "at": "+00:11:10",
+        "cpu_forwarded": 42110000
+      }
+    findings:
+      [
+        {
+          "detail": "mode=advanced; allows fetch, bandwidth-test, email, sniffer",
+          "kind": "device_mode_permissive",
+          "severity": "info",
+          "title": "Device-mode allows tools this device does not need"
+        }
+      ]
+    checks:
+      [
+        {
+          "cause": "graphing",
+          "state": "absent"
+        },
+        {
+          "cause": "traffic_flow",
+          "state": "absent"
+        },
+        {
+          "cause": "sniffer",
+          "state": "absent"
+        },
+        {
+          "cause": "switch_to_cpu",
+          "state": "absent"
+        },
+        {
+          "cause": "bond_mode",
+          "state": "absent"
+        },
+        {
+          "cause": "bridge_ip_firewall",
+          "state": "absent"
+        },
+        {
+          "cause": "snmp",
+          "state": "absent"
+        },
+        {
+          "cause": "api_client",
+          "state": "absent"
+        }
+      ]
+id=2 device_id="ap-ax" kind="audit" reason="scheduled" alert_id=0 requested_by="" started_at=+00:10:50 finished_at=+00:11:12 status="complete" reads=12 failed_reads=0 hash="66d3fd45f78587190347eeeea8823d443537a2c4abfad7e59930d819b738dcc8" detail="" runtime=(below) findings=(below) checks=(below)
+    runtime:
+      {
+        "at": "+00:11:12",
+        "cpu_forwarded": 98234511
+      }
+    findings:
+      [
+        {
+          "detail": "mode=advanced; allows fetch, bandwidth-test, email, sniffer",
+          "kind": "device_mode_permissive",
+          "severity": "info",
+          "title": "Device-mode allows tools this device does not need"
+        }
+      ]
+    checks:
+      [
+        {
+          "cause": "graphing",
+          "state": "absent"
+        },
+        {
+          "cause": "traffic_flow",
+          "state": "absent"
+        },
+        {
+          "cause": "sniffer",
+          "state": "absent"
+        },
+        {
+          "cause": "switch_to_cpu",
+          "state": "absent"
+        },
+        {
+          "cause": "bond_mode",
+          "state": "absent"
+        },
+        {
+          "cause": "bridge_ip_firewall",
+          "state": "absent"
+        },
+        {
+          "cause": "snmp",
+          "state": "absent"
+        },
+        {
+          "cause": "api_client",
+          "state": "absent"
+        }
+      ]
+id=3 device_id="sw48" kind="audit" reason="scheduled" alert_id=0 requested_by="" started_at=+00:15:34 finished_at=+00:21:54 status="complete" reads=20 failed_reads=0 hash="133865319ee81952922a146ee105852a789af7e8a05f38ffe6c32d3695f0dcbc" detail="" runtime=(below) findings=(below) checks=(below)
+    runtime:
+      {
+        "at": "+00:21:54",
+        "cpu_forwarded": 42110000
+      }
+    findings:
+      [
+        {
+          "detail": "mode=advanced; allows fetch, bandwidth-test, email, sniffer",
+          "kind": "device_mode_permissive",
+          "severity": "info",
+          "title": "Device-mode allows tools this device does not need"
+        }
+      ]
+    checks:
+      [
+        {
+          "cause": "graphing",
+          "state": "absent"
+        },
+        {
+          "cause": "traffic_flow",
+          "state": "absent"
+        },
+        {
+          "cause": "sniffer",
+          "state": "absent"
+        },
+        {
+          "cause": "switch_to_cpu",
+          "state": "absent"
+        },
+        {
+          "cause": "bond_mode",
+          "state": "absent"
+        },
+        {
+          "cause": "bridge_ip_firewall",
+          "state": "absent"
+        },
+        {
+          "cause": "snmp",
+          "state": "absent"
+        },
+        {
+          "cause": "api_client",
+          "state": "absent"
+        }
+      ]
+id=4 device_id="rtr" kind="audit" reason="scheduled" alert_id=0 requested_by="" started_at=+00:17:34 finished_at=+00:17:58 status="complete" reads=13 failed_reads=0 hash="7cc0ef0409d55e8d0f41754e50265a08e464ed163865a2026307be42e262e5ab" detail="" runtime=(below) findings=(below) checks=(below)
+    runtime:
+      {
+        "at": "+00:17:58",
+        "cpu_forwarded": 98234511
+      }
+    findings:
+      []
+    checks:
+      [
+        {
+          "cause": "graphing",
+          "state": "absent"
+        },
+        {
+          "cause": "traffic_flow",
+          "state": "absent"
+        },
+        {
+          "cause": "sniffer",
+          "state": "absent"
+        },
+        {
+          "cause": "switch_to_cpu",
+          "state": "absent"
+        },
+        {
+          "cause": "bond_mode",
+          "state": "absent"
+        },
+        {
+          "cause": "bridge_ip_firewall",
+          "state": "absent"
+        },
+        {
+          "cause": "snmp",
+          "state": "absent"
+        },
+        {
+          "cause": "api_client",
+          "state": "absent"
+        }
+      ]
+id=5 device_id="ap-ac" kind="audit" reason="scheduled" alert_id=0 requested_by="" started_at=+00:19:14 finished_at=+00:22:54 status="complete" reads=12 failed_reads=0 hash="66d3fd45f78587190347eeeea8823d443537a2c4abfad7e59930d819b738dcc8" detail="" runtime=(below) findings=(below) checks=(below)
+    runtime:
+      {
+        "at": "+00:22:54",
+        "cpu_forwarded": 98234511
+      }
+    findings:
+      [
+        {
+          "detail": "mode=advanced; allows fetch, bandwidth-test, email, sniffer",
+          "kind": "device_mode_permissive",
+          "severity": "info",
+          "title": "Device-mode allows tools this device does not need"
+        }
+      ]
+    checks:
+      [
+        {
+          "cause": "graphing",
+          "state": "absent"
+        },
+        {
+          "cause": "traffic_flow",
+          "state": "absent"
+        },
+        {
+          "cause": "sniffer",
+          "state": "absent"
+        },
+        {
+          "cause": "switch_to_cpu",
+          "state": "absent"
+        },
+        {
+          "cause": "bond_mode",
+          "state": "absent"
+        },
+        {
+          "cause": "bridge_ip_firewall",
+          "state": "absent"
+        },
+        {
+          "cause": "snmp",
+          "state": "absent"
+        },
+        {
+          "cause": "api_client",
+          "state": "absent"
+        }
+      ]

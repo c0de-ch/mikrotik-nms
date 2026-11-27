@@ -1,0 +1,20 @@
+# DB state after the fleet's hour: table bridge_status, 5 rows.
+#
+# Written by: NetworkHealthPoller.readBridges → queries.UpsertBridgeStatus (stale rows: NetworkHealthPoller.maintain → queries.DeleteStaleBridgeRows)
+# The hour:   the call-plan fleet of 5 fake devices (callplan_harness_test.go), every scheduled loop,
+#             one simulated hour and a minute from 2026-01-05 12:00 UTC; the devices' counters, CPU,
+#             memory and uptime move with the clock (callplan_motion_test.go)
+#
+# A change in this file is a change in what the pollers store.
+# Rewrite it with: go test ./internal/poller -run TestDBState -update
+#
+# Normalised (dbstate_test.go):
+#   last_polled: SQLite's CURRENT_TIMESTAMP (wall clock) → <sqlite-now>; stored as TEXT "2006-01-02 15:04:05" (as CURRENT_TIMESTAMP writes it)
+#   REAL values with three decimals, strings quoted, NULL as NULL
+#   rows ordered by the primary key (id)
+
+id="ap-ac:bridge" device_id="ap-ac" bridge_name="bridge" protocol="rstp" stp_enabled=1 bridge_id="0x8000.02:07:FA:6E:00:00" root_bridge_id="0x7000.02:00:5E:00:53:01" root_path_cost=20000 root_port="ether1" topology_changes=0 last_topology_change="2026-01-04 08:00:12" port_count=4 last_polled=<sqlite-now> stp_source="print"
+id="ap-ax:bridge" device_id="ap-ax" bridge_name="bridge" protocol="rstp" stp_enabled=1 bridge_id="0x8000.02:D6:B5:1A:00:00" root_bridge_id="0x7000.02:00:5E:00:53:01" root_path_cost=20000 root_port="ether1" topology_changes=0 last_topology_change="2026-01-04 08:00:12" port_count=4 last_polled=<sqlite-now> stp_source="monitor-batched"
+id="rtr:bridge" device_id="rtr" bridge_name="bridge" protocol="rstp" stp_enabled=1 bridge_id="0x8000.02:A4:7E:AA:00:00" root_bridge_id="0x7000.02:00:5E:00:53:01" root_path_cost=20000 root_port="sfp-sfpplus1" topology_changes=0 last_topology_change="2026-01-04 08:00:12" port_count=8 last_polled=<sqlite-now> stp_source="print"
+id="sw24:bridge" device_id="sw24" bridge_name="bridge" protocol="rstp" stp_enabled=1 bridge_id="0x8000.02:D4:D2:81:00:00" root_bridge_id="0x7000.02:00:5E:00:53:01" root_path_cost=20000 root_port="sfp-sfpplus1" topology_changes=0 last_topology_change="2026-01-04 08:00:12" port_count=25 last_polled=<sqlite-now> stp_source="print"
+id="sw48:bridge" device_id="sw48" bridge_name="bridge" protocol="rstp" stp_enabled=1 bridge_id="0x8000.02:22:D9:BB:00:00" root_bridge_id="0x7000.02:00:5E:00:53:01" root_path_cost=20000 root_port="sfp-sfpplus1" topology_changes=0 last_topology_change="2026-01-04 08:00:12" port_count=58 last_polled=<sqlite-now> stp_source="print"

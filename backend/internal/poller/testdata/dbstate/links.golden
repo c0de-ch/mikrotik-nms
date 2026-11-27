@@ -1,0 +1,20 @@
+# DB state after the fleet's hour: table links, 4 rows.
+#
+# Written by: Manager.pollTopology → topology.Builder.Build → queries.UpsertLink (MarkStaleLinksDown, DeleteOldLinks)
+# The hour:   the call-plan fleet of 5 fake devices (callplan_harness_test.go), every scheduled loop,
+#             one simulated hour and a minute from 2026-01-05 12:00 UTC; the devices' counters, CPU,
+#             memory and uptime move with the clock (callplan_motion_test.go)
+#
+# A change in this file is a change in what the pollers store.
+# Rewrite it with: go test ./internal/poller -run TestDBState -update
+#
+# Normalised (dbstate_test.go):
+#   last_seen: SQLite's CURRENT_TIMESTAMP (wall clock) → <sqlite-now>; stored as TEXT "2006-01-02 15:04:05" (as CURRENT_TIMESTAMP writes it)
+#   id: a generated id → <uuid-n>, numbered by first appearance
+#   REAL values with three decimals, strings quoted, NULL as NULL
+#   rows ordered by all their columns as shown
+
+id=<uuid-1> device_a_id="ap-ac" interface_a="ether1" device_b_id="sw48" interface_b="ether2" link_type="ethernet" discovered_by="mndp" status="up" last_seen=<sqlite-now>
+id=<uuid-2> device_a_id="ap-ax" interface_a="ether1" device_b_id="sw48" interface_b="ether1" link_type="ethernet" discovered_by="mndp" status="up" last_seen=<sqlite-now>
+id=<uuid-3> device_a_id="rtr" interface_a="sfp-sfpplus1" device_b_id="sw48" interface_b="sfp-sfpplus1" link_type="ethernet" discovered_by="mndp" status="up" last_seen=<sqlite-now>
+id=<uuid-4> device_a_id="sw24" interface_a="sfp-sfpplus1" device_b_id="sw48" interface_b="sfp-sfpplus2" link_type="ethernet" discovered_by="mndp" status="up" last_seen=<sqlite-now>

@@ -353,7 +353,7 @@ func (m *Manager) safePollDevice(dev queries.Device) {
 func (m *Manager) pollDevice(dev queries.Device) {
 	err := m.ping(dev)
 	if m.load != nil {
-		m.load.NoteLiveness(dev.ID, time.Now(), err == nil)
+		m.load.NoteLiveness(dev.ID, m.clock(), err == nil)
 	}
 	if err != nil {
 		m.markUnreachable(dev, err)

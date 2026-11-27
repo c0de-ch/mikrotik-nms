@@ -1,0 +1,21 @@
+# DB state after the fleet's hour: table firmware_status, 5 rows.
+#
+# Written by: Manager.refreshDeviceInfo (Tier 6) → FirmwareChecker.RecordDevice → queries.UpsertDeviceFirmware
+# The hour:   the call-plan fleet of 5 fake devices (callplan_harness_test.go), every scheduled loop,
+#             one simulated hour and a minute from 2026-01-05 12:00 UTC; the devices' counters, CPU,
+#             memory and uptime move with the clock (callplan_motion_test.go)
+#
+# A change in this file is a change in what the pollers store.
+# Rewrite it with: go test ./internal/poller -run TestDBState -update
+#
+# Normalised (dbstate_test.go):
+#   last_checked: SQLite's CURRENT_TIMESTAMP (wall clock) → <sqlite-now>; stored as TEXT "2006-01-02 15:04:05" (as CURRENT_TIMESTAMP writes it)
+#   updated_at: SQLite's CURRENT_TIMESTAMP (wall clock) → <sqlite-now>; stored as TEXT "2006-01-02 15:04:05" (as CURRENT_TIMESTAMP writes it)
+#   REAL values with three decimals, strings quoted, NULL as NULL
+#   rows ordered by the primary key (id)
+
+id="ap-ac:fw" device_id="ap-ac" channel="stable" installed_version="7.25" latest_version=NULL update_available=0 routerboard_current="7.25" routerboard_upgrade="7.25" last_checked=<sqlite-now> updated_at=<sqlite-now>
+id="ap-ax:fw" device_id="ap-ax" channel="stable" installed_version="7.20.4" latest_version=NULL update_available=0 routerboard_current="7.20.4" routerboard_upgrade="7.20.4" last_checked=<sqlite-now> updated_at=<sqlite-now>
+id="rtr:fw" device_id="rtr" channel="stable" installed_version="7.25" latest_version=NULL update_available=0 routerboard_current="7.25" routerboard_upgrade="7.25" last_checked=<sqlite-now> updated_at=<sqlite-now>
+id="sw24:fw" device_id="sw24" channel="stable" installed_version="7.25" latest_version=NULL update_available=0 routerboard_current="7.25" routerboard_upgrade="7.25" last_checked=<sqlite-now> updated_at=<sqlite-now>
+id="sw48:fw" device_id="sw48" channel="stable" installed_version="7.24.5" latest_version=NULL update_available=0 routerboard_current="7.24.5" routerboard_upgrade="7.24.5" last_checked=<sqlite-now> updated_at=<sqlite-now>
