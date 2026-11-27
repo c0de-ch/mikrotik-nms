@@ -60,19 +60,28 @@ export function passEndedAt(pass: HygienePass): number | null {
   return Number.isFinite(t) && t > 0 ? t : null;
 }
 
-// "2 h ago — complete, 19 reads" / "running since 12:04".
+// "2 h ago — 19 reads" / "… — incomplete: 1 of 19 reads failed" /
+// "… — incomplete after 4 reads: ended for the diagnose pass …" / "running".
 export function passSummary(pass: HygienePass, now: number): string {
   const ended = passEndedAt(pass);
   if (pass.status === "running" || ended === null) return "running";
   const when = now ? fmtAgo(Math.max(0, (now - ended) / 1000)) : new Date(ended).toLocaleTimeString();
   const reads = `${pass.reads} read${pass.reads === 1 ? "" : "s"}`;
+  const why = pass.detail ? `: ${pass.detail}` : "";
   switch (pass.status) {
     case "complete":
-      return `${when} — ${reads}`;
+      // A complete pass has a detail only when it left something unchecked
+      // (the device's role was not known).
+      return `${when} — ${reads}${pass.detail ? `; ${pass.detail}` : ""}`;
     case "partial":
-      return `${when} — incomplete: ${pass.failed_reads} of ${reads} failed`;
+      // Incomplete because a read failed — or because the pass ended early
+      // (it made way for a diagnose pass, lost its session). The second is
+      // not "0 reads failed": the pass says why it stopped.
+      return pass.failed_reads > 0
+        ? `${when} — incomplete: ${pass.failed_reads} of ${reads} failed`
+        : `${when} — incomplete after ${reads}${why}`;
     default:
-      return `${when} — stopped${pass.detail ? `: ${pass.detail}` : ""}`;
+      return `${when} — stopped${why}`;
   }
 }
 
