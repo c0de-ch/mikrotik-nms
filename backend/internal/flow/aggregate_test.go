@@ -32,7 +32,7 @@ func TestSplitAcrossMinutesSumsExactly(t *testing.T) {
 	now := t0.Add(2*time.Minute + 30*time.Second) // open: 12:00, 12:01, 12:02
 	next := floorMinute(now.Unix()) - 120
 	// 12:00:40 .. 12:02:10 = 90 s: 20 s / 60 s / 10 s.
-	f := flowOf(1, 13, "1.1.1.1", "192.168.28.33", 443, 1_000_003, 997, t0.Add(40*time.Second), t0.Add(130*time.Second))
+	f := flowOf(1, 13, "1.1.1.1", "192.168.40.33", 443, 1_000_003, 997, t0.Add(40*time.Second), t0.Add(130*time.Second))
 	if a.add(f, now, next) {
 		t.Fatal("not late")
 	}

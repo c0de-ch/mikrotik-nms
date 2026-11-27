@@ -469,8 +469,8 @@ func V5(unixSecs, sysUptimeMs uint32, declaredCount uint16, n int) []byte {
 	w.u8(0)
 	w.u16(0x4000 | 64) // sampling mode 01 (packet interval) + interval 64
 	for i := 0; i < n; i++ {
-		w.ip4("192.168.78.70")
-		w.ip4("192.168.79.216")
+		w.ip4("192.168.60.70")
+		w.ip4("192.168.61.216")
 		w.ip4("0.0.0.0")
 		w.u16(7)
 		w.u16(9)
@@ -609,7 +609,7 @@ func SFlowExpandedHugeCount() []byte {
 	w := &buf{}
 	w.u32(5)
 	w.u32(1)
-	w.ip4("192.168.78.201")
+	w.ip4("192.168.60.201")
 	w.u32(0)
 	w.u32(1)
 	w.u32(1)

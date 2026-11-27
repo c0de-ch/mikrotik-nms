@@ -76,12 +76,12 @@ func TestListenPort(t *testing.T) {
 
 func TestExporterStatusFromRow(t *testing.T) {
 	now := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
-	row := queries.FlowExporter{ID: 2, Name: "firewall003", Address: "192.168.78.81", Kind: "opnsense", Enabled: true,
-		NATAddresses: []netip.Addr{netip.MustParseAddr("192.168.28.81")}, LastSeen: now.Add(-time.Minute),
+	row := queries.FlowExporter{ID: 2, Name: "fw03", Address: "192.168.60.81", Kind: "opnsense", Enabled: true,
+		NATAddresses: []netip.Addr{netip.MustParseAddr("192.168.40.81")}, LastSeen: now.Add(-time.Minute),
 		Protocol: "netflow9", SamplingRate: 1, Datagrams: 5, Flows: 6, Bytes: 7, DecodeErrors: 1, TemplateMisses: 2,
 		SeqLost: 3, ClockSkewMs: 40}
 	s := ExporterStatusFromRow(row, now)
-	if s.State != StateOK || s.DeviceID != nil || s.LastSeen == nil || s.NATAddresses[0] != "192.168.28.81" ||
+	if s.State != StateOK || s.DeviceID != nil || s.LastSeen == nil || s.NATAddresses[0] != "192.168.40.81" ||
 		s.TemplateState != TemplateNA || s.Counters["datagrams"] != 5 || s.Counters["seq_lost"] != 3 ||
 		s.Counters["replayed"] != 0 || len(s.Counters) != len(ExporterCounterKeys) || len(s.TimeSource) != 4 ||
 		s.ClockSkewMs != 40 || s.LastErrorAt != nil {
@@ -138,8 +138,8 @@ func TestSettingsReadersClamp(t *testing.T) {
 	if TopN(nil) != 50 || AutoAcceptClasses(nil) != "" {
 		t.Fatal("nil db must yield defaults")
 	}
-	got := parsePrefixCSV("192.168.23.0/24, 10.1.2.3 ,junk,2001:db8::1,::ffff:10.0.0.0/104\n172.16.0.1/12")
-	want := []string{"192.168.23.0/24", "10.1.2.3/32", "2001:db8::1/128", "10.0.0.0/8", "172.16.0.0/12"}
+	got := parsePrefixCSV("192.168.30.0/24, 10.1.2.3 ,junk,2001:db8::1,::ffff:10.0.0.0/104\n172.16.0.1/12")
+	want := []string{"192.168.30.0/24", "10.1.2.3/32", "2001:db8::1/128", "10.0.0.0/8", "172.16.0.0/12"}
 	if len(got) != len(want) {
 		t.Fatalf("parsePrefixCSV = %v", got)
 	}

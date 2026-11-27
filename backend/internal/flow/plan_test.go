@@ -14,24 +14,24 @@ import (
 func TestBuildPlanLab(t *testing.T) {
 	now := tLab
 	rb := planAddrsOf("rb", []routeros.DeviceAddress{
-		{Address: "100.114.241.213/10", Interface: "eth1-wan"},
-		{Address: "192.168.78.202/23", Interface: "bridge"},
-		{Address: "192.168.28.202/24", Interface: "net28"},
+		{Address: "100.101.102.103/10", Interface: "eth1-wan"},
+		{Address: "192.168.60.202/23", Interface: "bridge"},
+		{Address: "192.168.40.202/24", Interface: "net28"},
 		{Address: "172.16.28.1/28", Interface: "wg-labnet"},
-		{Address: "2a01:4f8:202:13d1:28::202/64", Interface: "net28"},
+		{Address: "2001:db8:100:10:28::202/64", Interface: "net28"},
 		{Address: "169.254.1.1/16", Interface: "ether9"},
 		{Address: "garbage", Interface: "x"},
 	}, map[string]string{"wg-labnet": "wg", "eth1-wan": "ether"})
-	sw := planAddrsOf("sw", []routeros.DeviceAddress{{Address: "192.168.78.201/23", Interface: "bridge"}}, nil)
+	sw := planAddrsOf("sw", []routeros.DeviceAddress{{Address: "192.168.60.201/23", Interface: "bridge"}}, nil)
 	lte := planAddrsOf("lte", []routeros.DeviceAddress{
-		{Address: "192.168.23.2/24", Interface: "lte1"},  // WAN of the LTE router
+		{Address: "192.168.30.2/24", Interface: "lte1"},  // WAN of the LTE router
 		{Address: "10.99.0.1/24", Interface: "ether2"},   // a shared WAN below
-		{Address: "192.168.111.2/24", Interface: "wg0"},  // vpn here ...
+		{Address: "192.168.150.2/24", Interface: "wg0"},  // vpn here ...
 		{Address: "192.168.200.1/24", Interface: "wg1"}}, // vpn, inside an external entry
 		map[string]string{"wg0": "wg", "wg1": "wg"})
 	other := planAddrsOf("other", []routeros.DeviceAddress{
 		{Address: "10.99.0.7/24", Interface: "ether1"},
-		{Address: "192.168.111.81/24", Interface: "ether5"}, // ... internal on another device
+		{Address: "192.168.150.81/24", Interface: "ether5"}, // ... internal on another device
 		{Address: "192.168.200.9/24", Interface: "ether6"}}, nil)
 	addrs := append(append(append(rb, sw...), lte...), other...)
 	uplinks := []queries.DeviceUplink{
@@ -39,7 +39,7 @@ func TestBuildPlanLab(t *testing.T) {
 		{DeviceID: "lte", Kind: "default-route", Interface: "lte1", IfaceType: "lte"},
 		{DeviceID: "lte", Kind: "default-route", Interface: "ether2", IfaceType: "ether"},
 	}
-	devAddrs := map[string]netip.Addr{"rb": netip.MustParseAddr("192.168.78.202"), "sw": netip.MustParseAddr("192.168.78.201")}
+	devAddrs := map[string]netip.Addr{"rb": netip.MustParseAddr("192.168.60.202"), "sw": netip.MustParseAddr("192.168.60.201")}
 	external := parsePrefixCSV("192.168.200.0/24")
 	plan := buildPlan(addrs, devAddrs, uplinks, external, now)
 
@@ -56,8 +56,8 @@ func TestBuildPlanLab(t *testing.T) {
 	}
 	// Every address also gets a host row with its prefix's class (the
 	// views' "self" set).
-	for h, want := range map[string]string{"100.114.241.213/32": "transit/rb", "192.168.78.202/32": "internal/rb",
-		"172.16.28.1/32": "vpn/rb", "2a01:4f8:202:13d1:28::202/128": "internal/rb", "192.168.78.201/32": "internal/sw",
+	for h, want := range map[string]string{"100.101.102.103/32": "transit/rb", "192.168.60.202/32": "internal/rb",
+		"172.16.28.1/32": "vpn/rb", "2001:db8:100:10:28::202/128": "internal/rb", "192.168.60.201/32": "internal/sw",
 		"192.168.200.9/32": "vpn/other"} {
 		if hosts[h] != want {
 			t.Errorf("host row %s = %q, want %q", h, hosts[h], want)
@@ -67,15 +67,15 @@ func TestBuildPlanLab(t *testing.T) {
 		t.Errorf("host rows = %d, want %d: %v", len(hosts), len(addrs), hosts)
 	}
 	want := map[string]string{
-		"100.64.0.0/10":          "transit",  // only the RB5009, its WAN
-		"192.168.78.0/23":        "internal", // many devices
-		"192.168.28.0/24":        "internal",
-		"172.16.28.0/28":         "vpn", // wg
-		"2a01:4f8:202:13d1::/64": "internal",
-		"192.168.23.0/24":        "transit",  // LTE WAN, single device
-		"10.99.0.0/24":           "internal", // WAN of lte, but another device has an address inside
-		"192.168.111.0/24":       "internal", // vpn on one device, internal on another: internal wins
-		"192.168.200.0/24":       "vpn",      // ... unless inside an external entry
+		"100.64.0.0/10":        "transit",  // only the RB5009, its WAN
+		"192.168.60.0/23":      "internal", // many devices
+		"192.168.40.0/24":      "internal",
+		"172.16.28.0/28":       "vpn", // wg
+		"2001:db8:100:10::/64": "internal",
+		"192.168.30.0/24":      "transit",  // LTE WAN, single device
+		"10.99.0.0/24":         "internal", // WAN of lte, but another device has an address inside
+		"192.168.150.0/24":     "internal", // vpn on one device, internal on another: internal wins
+		"192.168.200.0/24":     "vpn",      // ... unless inside an external entry
 	}
 	if len(got) != len(want) {
 		t.Fatalf("plan = %v", got)
@@ -101,24 +101,24 @@ func TestBuildPlanLab(t *testing.T) {
 // uplink (its addresses never become transit, even a lone v6 /64).
 func TestBuildPlanIPv6HostLengthLAN(t *testing.T) {
 	rb := planAddrsOf("rb", []routeros.DeviceAddress{
-		{Address: "192.168.78.202/23", Interface: "bridge"},
-		{Address: "100.114.241.213/10", Interface: "eth1-wan"},
-		{Address: "2a0d:3341:ee00:9c4d::1234/128", Interface: "eth1-wan"},
-		{Address: "2a01:4f8:202:13d1:80::1/80", Interface: "pool80"},
+		{Address: "192.168.60.202/23", Interface: "bridge"},
+		{Address: "100.101.102.103/10", Interface: "eth1-wan"},
+		{Address: "2001:db8:f00:1::1234/128", Interface: "eth1-wan"},
+		{Address: "2001:db8:100:10:80::1/80", Interface: "pool80"},
 	}, nil)
 	sw := planAddrsOf("sw012", []routeros.DeviceAddress{
-		{Address: "192.168.78.19/23", Interface: "bridge"},
-		{Address: "2a01:4f8:202:13d1:78::2019/128", Interface: "bridge"},
+		{Address: "192.168.60.19/23", Interface: "bridge"},
+		{Address: "2001:db8:100:10:78::2019/128", Interface: "bridge"},
 	}, nil)
-	iot := planAddrsOf("iot", []routeros.DeviceAddress{{Address: "2a01:4f8:202:13d1:78::202a/128", Interface: "ether1"}}, nil)
+	iot := planAddrsOf("iot", []routeros.DeviceAddress{{Address: "2001:db8:100:10:78::202a/128", Interface: "ether1"}}, nil)
 	lone := planAddrsOf("lone", []routeros.DeviceAddress{
-		{Address: "192.168.78.30/23", Interface: "bridge"},
-		{Address: "2a01:4f8:202:99::30/128", Interface: "bridge"}, // a /64 no other device holds
+		{Address: "192.168.60.30/23", Interface: "bridge"},
+		{Address: "2001:db8:100:9::30/128", Interface: "bridge"}, // a /64 no other device holds
 	}, nil)
 	uplinks := []queries.DeviceUplink{
 		{DeviceID: "rb", Kind: "default-route", Interface: "eth1-wan", IfaceType: "ether", GatewayIP: "100.64.0.1"},
-		{DeviceID: "sw012", Kind: "default-route", Interface: "bridge", IfaceType: "bridge", GatewayIP: "192.168.78.81"},
-		{DeviceID: "lone", Kind: "default-route", Interface: "bridge", IfaceType: "bridge", GatewayIP: "192.168.78.81%bridge"},
+		{DeviceID: "sw012", Kind: "default-route", Interface: "bridge", IfaceType: "bridge", GatewayIP: "192.168.60.81"},
+		{DeviceID: "lone", Kind: "default-route", Interface: "bridge", IfaceType: "bridge", GatewayIP: "192.168.60.81%bridge"},
 	}
 	addrs := slices.Concat(rb, sw, iot, lone)
 	got := map[string]string{}
@@ -126,13 +126,13 @@ func TestBuildPlanIPv6HostLengthLAN(t *testing.T) {
 		got[p.Prefix.String()] = p.Class
 	}
 	for p, want := range map[string]string{
-		"2a01:4f8:202:13d1::/64":         "internal",
-		"2a01:4f8:202:13d1:78::2019/128": "internal", // host row, not transit
-		"2a0d:3341:ee00:9c4d::/64":       "transit",
-		"2a01:4f8:202:13d1:80::/80":      "internal", // explicit lengths kept
-		"2a01:4f8:202:99::/64":           "internal",
-		"192.168.78.0/23":                "internal",
-		"100.64.0.0/10":                  "transit",
+		"2001:db8:100:10::/64":         "internal",
+		"2001:db8:100:10:78::2019/128": "internal", // host row, not transit
+		"2001:db8:f00:1::/64":          "transit",
+		"2001:db8:100:10:80::/80":      "internal", // explicit lengths kept
+		"2001:db8:100:9::/64":          "internal",
+		"192.168.60.0/23":              "internal",
+		"100.64.0.0/10":                "transit",
 	} {
 		if got[p] != want {
 			t.Errorf("%s = %q, want %q", p, got[p], want)
@@ -145,16 +145,16 @@ func TestBuildPlanIPv6HostLengthLAN(t *testing.T) {
 		rows = append(rows, p)
 	}
 	pl := flowview.NewPlan(rows, nil, nil, nil, nil)
-	for a, want := range map[string]string{"2a01:4f8:202:13d1:78::60": "internal", "2620:fe::fe": "external",
-		"2a0d:3341:ee00:9c4d::1": "external"} {
+	for a, want := range map[string]string{"2001:db8:100:10:78::60": "internal", "2620:fe::fe": "external",
+		"2001:db8:f00:1::1": "external"} {
 		if c := pl.Class(netip.MustParseAddr(a)); c != want {
 			t.Errorf("class(%s) = %s, want %s", a, c, want)
 		}
 	}
 	pt := flowview.Point{FlowPoint: queries.FlowPoint{IfIndexes: []uint32{1}, Facing: "down", LocalInternal: true}}
 	in := []queries.FlowAgg{
-		{InIf: 1, OutIf: 7, Src: netip.MustParseAddr("192.168.78.60"), Dst: netip.MustParseAddr("9.9.9.9"), Bytes: 1000},
-		{InIf: 1, OutIf: 7, Src: netip.MustParseAddr("2a01:4f8:202:13d1:78::60"), Dst: netip.MustParseAddr("2620:fe::fe"), Bytes: 2000},
+		{InIf: 1, OutIf: 7, Src: netip.MustParseAddr("192.168.60.60"), Dst: netip.MustParseAddr("9.9.9.9"), Bytes: 1000},
+		{InIf: 1, OutIf: 7, Src: netip.MustParseAddr("2001:db8:100:10:78::60"), Dst: netip.MustParseAddr("2620:fe::fe"), Bytes: 2000},
 	}
 	if n := flowview.Totals(flowview.Select(in, pt, flowview.Upload, pl)); n != 3000 {
 		t.Errorf("upload bytes kept = %d, want 3000 (IPv6 LAN row dropped)", n)
@@ -162,22 +162,22 @@ func TestBuildPlanIPv6HostLengthLAN(t *testing.T) {
 }
 
 func TestNativeFacingRules(t *testing.T) {
-	rb := queries.FlowExporter{ID: 1, Name: "rb", Address: "192.168.78.202", Kind: "routeros", DeviceID: "rb"}
-	fw := queries.FlowExporter{ID: 2, Name: "firewall003", Address: "192.168.78.81", Kind: "opnsense"}
+	rb := queries.FlowExporter{ID: 1, Name: "rb", Address: "192.168.60.202", Kind: "routeros", DeviceID: "rb"}
+	fw := queries.FlowExporter{ID: 2, Name: "fw03", Address: "192.168.60.81", Kind: "opnsense"}
 	ctx := &pointContext{
 		exporters: map[int64]queries.FlowExporter{1: rb, 2: fw},
 		ifaces: map[int64]map[uint32]queries.FlowIface{
 			1: {1: {Name: "eth1-wan", Type: "ether"}, 13: {Name: "net28", Type: "vlan"}, 10: {Name: "bridge", Type: "bridge"},
 				15: {Name: "wg-labnet", Type: "wg"}, 20: {Name: "lte1"}, 21: {Name: "ovpn1"}, 22: {Name: "ether5"}},
-			2: {1: {Hint: "192.168.78.0/24,192.168.79.0/24"}, 5: {Hint: "9.9.9.0/24,142.250.203.0/24"},
-				6: {Hint: "10.20.30.0/24"}, 7: {}, 8: {Hint: "8.8.8.0/24", Role: "lan"}, 9: {Hint: "192.168.78.0/24", Role: "wan"},
+			2: {1: {Hint: "192.168.60.0/24,192.168.61.0/24"}, 5: {Hint: "9.9.9.0/24,203.0.113.0/24"},
+				6: {Hint: "10.20.30.0/24"}, 7: {}, 8: {Hint: "8.8.8.0/24", Role: "lan"}, 9: {Hint: "192.168.60.0/24", Role: "wan"},
 				10: {Hint: "8.8.4.0/24", Role: "other"}, 11: {Role: "vpn"}},
 		},
 		uplinks: []queries.DeviceUplink{
 			{DeviceID: "rb", Kind: "default-route", Interface: "eth1-wan", IfaceType: "ether"},
 			{DeviceID: "rb", Kind: "default-route", Interface: "ovpn1", IfaceType: "ovpn-client"}, // VPN default route: via (c)
 			{DeviceID: "rb", Kind: "vpn", Interface: "ovpn1"},
-			{DeviceID: "rb", Kind: "gateway-host", Interface: "ether5", GatewayIP: "192.168.78.81"},
+			{DeviceID: "rb", Kind: "gateway-host", Interface: "ether5", GatewayIP: "192.168.60.81"},
 			{DeviceID: "other", Kind: "default-route", Interface: "net28"},
 		},
 		ifTypes:  map[string]map[string]string{"rb": {"lte1": "lte"}},
@@ -197,14 +197,14 @@ func TestNativeFacingRules(t *testing.T) {
 		{rb, 21, "rb · ovpn1", "up"},     // (b) vpn uplink
 		{rb, 22, "rb · ether5", "up"},    // (d) gateway-host
 		{rb, 99, "rb · if#99", "down"},   // unknown name
-		{fw, 1, "firewall003 · if#1", "down"},
-		{fw, 5, "firewall003 · if#5", "up"},
-		{fw, 6, "firewall003 · if#6", "down"}, // overlaps the internal plan
-		{fw, 7, "firewall003 · if#7", "down"}, // no hint yet
-		{fw, 8, "firewall003 · if#8", "down"}, // role lan
-		{fw, 9, "firewall003 · if#9", "up"},   // role wan wins over the hint
-		{fw, 10, "firewall003 · if#10", "down"},
-		{fw, 11, "firewall003 · if#11", "up"},
+		{fw, 1, "fw03 · if#1", "down"},
+		{fw, 5, "fw03 · if#5", "up"},
+		{fw, 6, "fw03 · if#6", "down"}, // overlaps the internal plan
+		{fw, 7, "fw03 · if#7", "down"}, // no hint yet
+		{fw, 8, "fw03 · if#8", "down"}, // role lan
+		{fw, 9, "fw03 · if#9", "up"},   // role wan wins over the hint
+		{fw, 10, "fw03 · if#10", "down"},
+		{fw, 11, "fw03 · if#11", "up"},
 	}
 	for _, c := range cases {
 		p := ctx.nativeSpec(c.exp, c.idx)

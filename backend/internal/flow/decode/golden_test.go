@@ -30,9 +30,9 @@ var (
 	tOPNUp   = uint32(500_000_000)
 	tRecvLag = 500 * time.Millisecond // receive = header export time + this
 
-	addrROS = netip.MustParseAddr("192.168.78.202")
-	addrOPN = netip.MustParseAddr("192.168.78.81")
-	addrSW  = netip.MustParseAddr("192.168.78.201")
+	addrROS = netip.MustParseAddr("192.168.60.202")
+	addrOPN = netip.MustParseAddr("192.168.60.81")
+	addrSW  = netip.MustParseAddr("192.168.60.201")
 )
 
 const exportSecs = uint32(1_790_000_000)
@@ -49,35 +49,35 @@ func rosFlows(withSysInit bool) []pktgen.IPFIXFlow {
 	}
 	return []pktgen.IPFIXFlow{
 		{ // R1 download, NATed back to the net28 host; 64-bit counters
-			Src: "142.250.203.100", Dst: "100.114.241.213", SrcPort: 443, DstPort: 50514, Proto: 6, TCPFlags: 0x18,
-			Bytes: 5_000_000_000, Packets: 3_500_000, InIf: 1, OutIf: 13, NextHop: "192.168.28.33",
+			Src: "203.0.113.100", Dst: "100.101.102.103", SrcPort: 443, DstPort: 50514, Proto: 6, TCPFlags: 0x18,
+			Bytes: 5_000_000_000, Packets: 3_500_000, InIf: 1, OutIf: 13, NextHop: "192.168.40.33",
 			StartUp: rosUp(-45 * time.Second), EndUp: rosUp(-2 * time.Second), SysInitMs: si,
-			NatSrc: "142.250.203.100", NatDst: "192.168.28.33", NatSrcPort: 443, NatDstPort: 50514,
+			NatSrc: "203.0.113.100", NatDst: "192.168.40.33", NatSrcPort: 443, NatDstPort: 50514,
 		},
 		{ // R2 upload, masqueraded out eth1-wan
-			Src: "192.168.28.33", Dst: "142.250.203.100", SrcPort: 50514, DstPort: 443, Proto: 6, TCPFlags: 0x18,
+			Src: "192.168.40.33", Dst: "203.0.113.100", SrcPort: 50514, DstPort: 443, Proto: 6, TCPFlags: 0x18,
 			Bytes: 80_000, Packets: 100, InIf: 13, OutIf: 1, NextHop: "100.64.0.1",
 			StartUp: rosUp(-45 * time.Second), EndUp: rosUp(-2 * time.Second), SysInitMs: si,
-			NatSrc: "100.114.241.213", NatDst: "142.250.203.100", NatSrcPort: 61000, NatDstPort: 443,
+			NatSrc: "100.101.102.103", NatDst: "203.0.113.100", NatSrcPort: 61000, NatDstPort: 443,
 		},
-		{ // R3 firewall003's own NATed traffic
-			Src: "192.168.28.81", Dst: "1.1.1.1", SrcPort: 40000, DstPort: 443, Proto: 6,
+		{ // R3 fw03's own NATed traffic
+			Src: "192.168.40.81", Dst: "1.1.1.1", SrcPort: 40000, DstPort: 443, Proto: 6,
 			Bytes: 10_000, Packets: 20, InIf: 13, OutIf: 1, NextHop: "100.64.0.1",
 			StartUp: rosUp(-30 * time.Second), EndUp: rosUp(-1 * time.Second), SysInitMs: si,
-			NatSrc: "100.114.241.213", NatDst: "1.1.1.1", NatSrcPort: 40001, NatDstPort: 443,
+			NatSrc: "100.101.102.103", NatDst: "1.1.1.1", NatSrcPort: 40001, NatDstPort: 443,
 		},
 		{ // R4 the NMS polling the router (local delivery, no NAT: 226 = 0.0.0.0)
-			Src: "192.168.79.216", Dst: "192.168.78.202", SrcPort: 51000, DstPort: 8728, Proto: 6,
+			Src: "192.168.61.216", Dst: "192.168.60.202", SrcPort: 51000, DstPort: 8728, Proto: 6,
 			Bytes: 5_000, Packets: 40, InIf: 10, OutIf: 0,
 			StartUp: rosUp(-59 * time.Second), EndUp: rosUp(-500 * time.Millisecond), SysInitMs: si,
 		},
 		{ // R5 the router's own IPFIX export (self-export)
-			Src: "192.168.78.202", Dst: "192.168.79.216", SrcPort: 40001, DstPort: 2055, Proto: 17,
+			Src: "192.168.60.202", Dst: "192.168.61.216", SrcPort: 40001, DstPort: 2055, Proto: 17,
 			Bytes: 3_000, Packets: 3, InIf: 0, OutIf: 10,
 			StartUp: rosUp(-60 * time.Second), EndUp: rosUp(0), SysInitMs: si,
 		},
 		{ // R6 IPv6 download
-			Src: "2606:4700::1111", Dst: "2a01:4f8:202:13d1:28::33", SrcPort: 443, DstPort: 50600, Proto: 6,
+			Src: "2606:4700::1111", Dst: "2001:db8:100:10:28::33", SrcPort: 443, DstPort: 50600, Proto: 6,
 			Bytes: 64_000, Packets: 50, InIf: 1, OutIf: 13,
 			StartUp: rosUp(-20 * time.Second), EndUp: rosUp(-3 * time.Second), SysInitMs: si,
 		},
@@ -88,17 +88,17 @@ func rosFlows(withSysInit bool) []pktgen.IPFIXFlow {
 func opnFlows(uptime uint32) []pktgen.V9Flow {
 	return []pktgen.V9Flow{
 		{ // O1 upload from the LAN
-			Src: "192.168.78.60", Dst: "9.9.9.9", NextHop: "192.168.111.1", InIf: 1, OutIf: 7, Packets: 12,
+			Src: "192.168.60.60", Dst: "9.9.9.9", NextHop: "192.168.150.1", InIf: 1, OutIf: 7, Packets: 12,
 			Bytes: 1480, First: uptime - 40_000, Last: uptime - 1_000, SrcPort: 53124, DstPort: 853, TCPFlags: 0x1b,
 			Proto: 6, SrcMask: 23, DstMask: 0,
 		},
 		{ // O2 the matching download (LAN egress)
-			Src: "9.9.9.9", Dst: "192.168.78.60", InIf: 7, OutIf: 1, Packets: 50, Bytes: 64_000,
+			Src: "9.9.9.9", Dst: "192.168.60.60", InIf: 7, OutIf: 1, Packets: 50, Bytes: 64_000,
 			First: uptime - 40_000, Last: uptime - 1_000, SrcPort: 853, DstPort: 53124, TCPFlags: 0x1b, Proto: 6,
 			SrcMask: 0, DstMask: 23,
 		},
 		{ // O3 IPv6
-			Src: "2a01:4f8:202:13d1:78::60", Dst: "2620:fe::fe", InIf: 1, OutIf: 7, Packets: 10, Bytes: 2000,
+			Src: "2001:db8:100:10:78::60", Dst: "2620:fe::fe", InIf: 1, OutIf: 7, Packets: 10, Bytes: 2000,
 			First: uptime - 30_000, Last: uptime - 2_000, SrcPort: 40000, DstPort: 853, Proto: 6, SrcMask: 64,
 		},
 	}
@@ -118,14 +118,14 @@ var fixtures = []fixture{
 	{"opn_v9_templates", func() []byte { return pktgen.OPNsenseV9Templates(exportSecs+5, tOPNUp+5_000, 3) }},
 	{"opn_v9_wrap", func() []byte {
 		return pktgen.OPNsenseV9TemplatesAndData(exportSecs, 0x00000100, 1, pktgen.V9Flow{
-			Src: "192.168.78.60", Dst: "9.9.9.9", InIf: 1, OutIf: 7, Packets: 1, Bytes: 100,
+			Src: "192.168.60.60", Dst: "9.9.9.9", InIf: 1, OutIf: 7, Packets: 1, Bytes: 100,
 			First: 0xFFFF0000, Last: 0xFFFFFF00, SrcPort: 53124, DstPort: 853, Proto: 6})
 	}},
 	{"v5", func() []byte { return pktgen.V5(exportSecs, 1_000_000, 2, 2) }},
 	{"v5_truncated", func() []byte { return pktgen.V5(exportSecs, 1_000_000, 30, 1) }},
 	{"sflow_switch", func() []byte {
-		hdr := pktgen.EthIPv4TCPHeader(28, "192.168.28.25", "142.250.203.100", 50514, 443, 1500)
-		return pktgen.SFlowSwitch("192.168.78.201", 1, 512, 1, 1, 2, 1518, hdr)
+		hdr := pktgen.EthIPv4TCPHeader(28, "192.168.40.25", "203.0.113.100", 50514, 443, 1500)
+		return pktgen.SFlowSwitch("192.168.60.201", 1, 512, 1, 1, 2, 1518, hdr)
 	}},
 	{"ipfix_options_sampling", func() []byte {
 		return pktgen.IPFIXSampledData(exportSecs, 1, 0, 1, 99, rosFlows(true)[1])

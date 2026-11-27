@@ -153,7 +153,7 @@ func (d *dupFilter) seen(h uint64, now time.Time) bool {
 
 // hintTracker learns, per ingress interface of an exporter without a device,
 // the top source prefixes by bytes (v4 /24, v6 /64): the hint that names an
-// interface ("192.168.78.0/24,192.168.79.0/24" is the LAN). Two hourly
+// interface ("192.168.60.0/24,192.168.61.0/24" is the LAN). Two hourly
 // generations keep the hint stable across the reset.
 type hintTracker struct {
 	cur, prev map[uint32]map[netip.Prefix]int64
