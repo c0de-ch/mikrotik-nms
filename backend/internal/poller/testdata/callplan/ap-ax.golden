@@ -7,9 +7,9 @@
 # A change in this file is a change in what a device of this kind is sent.
 # Rewrite it with: go test ./internal/poller -run TestCallPlan -update
 
-commands in the hour     769
-  average per minute     12.82
-  most in one minute     31 (minute 0)
+commands in the hour     765
+  average per minute     12.75
+  most in one minute     30 (minute 0)
   most after start-up    26 (minute 10; start-up is minutes 0-1)
 reply rows in the hour   2390
 liveness dials           120 (a TCP connect to the API port, no command)
@@ -36,7 +36,6 @@ count  every        rows/call  command
     6  10 min 15 s          1  /system/resource/print [1 field]
     4  15 min               1  /ip/arp/print
     4  15 min               0  /ip/dhcp-server/lease/print
-    4  15 min               0  /ip/dhcp-server/print
     1  once              trap  /caps-man/interface/print =count-only=
     1  once                 0  /interface/bridge/print =count-only=
     1  once                 1  /interface/bridge/settings/print [6 fields]
@@ -60,16 +59,16 @@ count  every        rows/call  command
 
 ## Commands per minute
 
-minutes  0- 9:  31   8  14   8  14  14  14   8  14   8
-minutes 10-19:  26  15  14   8  14  17  14   8  14   8
+minutes  0- 9:  30   8  14   8  14  14  14   8  14   8
+minutes 10-19:  26  15  14   8  14  16  14   8  14   8
 minutes 20-29:  21   8  14   8  14  14  14   8  14   8
-minutes 30-39:  24   8  14   8  14  14  14   8  14   8
-minutes 40-49:  21   8  14   8  14  17  14   8  14   8
+minutes 30-39:  23   8  14   8  14  14  14   8  14   8
+minutes 40-49:  21   8  14   8  14  16  14   8  14   8
 minutes 50-59:  20   9  14   8  14  14  14   8  14   8
 
 ## The first 10 minutes
 
-minute 0: 31 commands
+minute 0: 30 commands
     1× /system/resource/print [11 fields]
     1× /system/package/update/print [2 fields]
     1× /system/routerboard/print [2 fields]
@@ -77,7 +76,6 @@ minute 0: 31 commands
     1× /interface/ethernet/print [16 fields]
     1× /ip/arp/print
     1× /ip/dhcp-server/lease/print
-    1× /ip/dhcp-server/print
     1× /system/resource/print [1 field]
     1× /interface/wifi/print =count-only=
     1× /caps-man/interface/print =count-only=
@@ -175,7 +173,7 @@ minute 9: 8 commands
 
 ## The minute after the hour: the hourly inventory pass comes round
 
-minute 60: 27 commands
+minute 60: 26 commands
     1× /system/resource/print [3 fields]
     1× /system/identity/print
     1× /system/resource/print [11 fields]
@@ -185,7 +183,6 @@ minute 60: 27 commands
     1× /interface/ethernet/print [16 fields]
     1× /ip/arp/print
     1× /ip/dhcp-server/lease/print
-    1× /ip/dhcp-server/print
     1× /log/print [4 fields]
     2× /interface/wifi/registration-table/print
     1× /interface/bridge/print [7 fields]
