@@ -2,6 +2,7 @@ package poller
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -147,6 +148,37 @@ func TestAuditOverTheWireNeverStoresASecret(t *testing.T) {
 		if strings.Contains(snap.Snapshot, field) {
 			t.Errorf("the snapshot holds %s", field)
 		}
+	}
+	// Whatever the device answered with: every field the snapshot holds is
+	// one a read asked for, none has a secret's name, and the community
+	// rows have no name at all.
+	var kept hygiene.Snapshot
+	if err := json.Unmarshal([]byte(snap.Snapshot), &kept); err != nil {
+		t.Fatalf("the stored snapshot does not parse: %v", err)
+	}
+	asked := map[string]map[string]bool{}
+	for _, read := range hygiene.Plan(hygiene.ModeAudit) {
+		asked[read.Key] = map[string]bool{}
+		for _, f := range read.Fields {
+			asked[read.Key][f] = true
+		}
+	}
+	fields := 0
+	for key, section := range kept.Sections {
+		for _, row := range section.Rows {
+			for field := range row {
+				fields++
+				if !asked[key][field] {
+					t.Errorf("section %s holds %q, which no read asked for", key, field)
+				}
+				if routeros.IsSecretField(field) || (key == hygiene.SecSNMPCommunities && field == "name") {
+					t.Errorf("section %s holds the secret field %q", key, field)
+				}
+			}
+		}
+	}
+	if fields < 20 {
+		t.Fatalf("the snapshot holds only %d fields: the check looked at next to nothing", fields)
 	}
 }
 
