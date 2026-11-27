@@ -225,6 +225,65 @@ func NextRun(end time.Time, interval time.Duration, phase uint64) time.Time {
 	return end.Add(interval + jitter)
 }
 
+// firstRunLeads is how long each tier's first read waits after a loop first
+// sees the device: one group of reads a minute. Every later read counts from
+// the end of the one before (NextRun, the same jitter for every tier of a
+// device), so the groups keep the minutes they start in — on a C1 device the
+// 5-minute reads fall into three different minutes of five and the
+// 15-minute ones and the post-poll CPU sample into the two others, where
+// reads that all started at once would fall together for good (on a CRS354:
+// 16 commands in one minute, against a budget of 12). A tier not listed is
+// read at once:
+//
+//   - Tier 0 (port counters) and the CPU sample, which has a slot of its own
+//     every minute (SlotAt);
+//   - the inventory read: it opens the device's pooled session, which every
+//     other loop waits for, and it probes the class of a new device;
+//   - the hygiene audit, which has its own start-up spread;
+//   - the shared log read (what a device logs before the reader first reads
+//     it is history, handed to nobody), the wifi tier (its first visit is
+//     the capability probe), Tier 4a (the ethernet properties the audit's
+//     facts need before its first pass) and the client tables (ARP, DHCP
+//     leases), which a client watch finds its client's address in.
+var firstRunLeads = [tierCount]time.Duration{
+	TierBridgePorts: 1 * time.Minute,
+	TierNeighbors:   2 * time.Minute,
+	TierRoutes:      2 * time.Minute,
+	TierBridgeHosts: 3 * time.Minute,
+	TierBridgeVLAN:  3 * time.Minute,
+	TierRelations:   4 * time.Minute,
+	TierCPUPost:     4 * time.Minute,
+}
+
+// maxFirstRunDelay caps how long any tier's first read waits.
+const maxFirstRunDelay = 10 * time.Minute
+
+// FirstRunBound is the longest a tier's first read may wait at interval: half
+// the interval, and never more than 10 minutes. A device's rows are judged
+// current for three of its reads (links, egress, FDB rows) or 30 minutes and
+// more (the network-health prunes), so a first read within half an interval
+// of a restart finds the previous process's rows still current: a restart
+// does not look like an outage.
+func FirstRunBound(interval time.Duration) time.Duration {
+	if interval <= 0 {
+		return 0
+	}
+	return min(interval/2, maxFirstRunDelay)
+}
+
+// FirstRunDelay is how long the first read of tier t waits after a loop first
+// sees a device it runs at interval: the tier's lead (firstRunLeads), at most
+// FirstRunBound(interval) — on a strong device, whose reads come round in a
+// minute or two, the leads fold into the first half-interval. It is the same
+// for every device: what spreads a fleet is the per-device jitter of every
+// later run. 0 for a tier that is read at once.
+func FirstRunDelay(t Tier, interval time.Duration) time.Duration {
+	if t < 0 || t >= tierCount {
+		return 0
+	}
+	return min(firstRunLeads[t], FirstRunBound(interval))
+}
+
 // SlotAt returns the start of the slot holding t on a device's grid: slots
 // are exactly interval apart and begin at a fixed offset inside the interval,
 // a pure function of phase within its first three quarters (the last quarter

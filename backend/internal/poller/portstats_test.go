@@ -824,6 +824,7 @@ func TestPortStatsCollectHosts(t *testing.T) {
 	clock := &testClock{t: time.Now().UTC().Truncate(time.Second)}
 	c.now = clock.now
 	c.hostClock = newTierClock(NewScheduleRegistry())
+	c.hostClock.spread = noSpread
 	c.UseCadence(hostsCadence())
 	hostCalls := map[string]int{}
 	c.fetchHosts = func(id string) ([]routeros.BridgeHost, error) {
@@ -920,6 +921,7 @@ func TestPortStatsCollectHostsRetriesDevicesWithoutClient(t *testing.T) {
 	clock := &testClock{t: time.Now().UTC().Truncate(time.Second)}
 	c.now = clock.now
 	c.hostClock = newTierClock(NewScheduleRegistry())
+	c.hostClock.spread = noSpread
 	c.UseCadence(hostsCadence())
 	c.fetchRelations = func(string) ([]routeros.InterfaceRelation, error) { return nil, nil }
 	dialled := map[string]bool{"sw": true}
@@ -974,7 +976,7 @@ func TestPortStatsHostsPerClassCadenceAndPause(t *testing.T) {
 	c.now = clock.now
 	reg := NewScheduleRegistry()
 	c.hostClock = newTierClock(reg)
-	c.hostClock.phase = noJitter
+	c.hostClock.phase, c.hostClock.spread = noJitter, noSpread
 	c.UseCadence(NewCadence(db, nil))
 	fdb, rel := map[string]int{}, map[string]int{}
 	c.fetchHosts = func(id string) ([]routeros.BridgeHost, error) { fdb[id]++; return nil, nil }

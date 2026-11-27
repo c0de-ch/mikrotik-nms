@@ -70,6 +70,7 @@ func newTestPortStats(t *testing.T, run routeros.Runner) (*PortStatsCollector, *
 	c.phase = noJitter
 	c.reg = NewScheduleRegistry()
 	c.hostClock = newTierClock(c.reg)
+	c.hostClock.spread = noSpread
 	return c, clock
 }
 

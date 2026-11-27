@@ -9,8 +9,8 @@
 
 commands in the hour     860
   average per minute     14.33
-  most in one minute     32 (minute 0)
-  most after start-up    25 (minute 30; start-up is minutes 0-1)
+  most in one minute     28 (minute 17)
+  most after start-up    28 (minute 17; start-up is minutes 0-1)
 reply rows in the hour   4614
 liveness dials           120 (a TCP connect to the API port, no command)
 
@@ -60,16 +60,16 @@ count  every        rows/call  command
 
 ## Commands per minute
 
-minutes  0- 9:  32  10  15  10  15  16  15  10  15  10
-minutes 10-19:  22  10  15  10  15  19  15  23  15  10
-minutes 20-29:  22  10  15  10  15  16  15  10  15  10
-minutes 30-39:  25  10  15  10  15  16  15  10  15  10
-minutes 40-49:  22  10  15  10  15  19  15  10  15  10
-minutes 50-59:  21  11  15  10  15  16  15  10  15  10
+minutes  0- 9:  22  14  12  18  12  15  11  15  15  14
+minutes 10-19:  12  14  12  18  12  18  11  28  15  14
+minutes 20-29:  12  14  12  18  12  15  11  15  15  14
+minutes 30-39:  15  14  12  18  11  16  11  15  15  14
+minutes 40-49:  12  14  12  18  11  19  11  15  15  14
+minutes 50-59:  12  14  12  18  11  16  11  15  15  14
 
 ## The first 10 minutes
 
-minute 0: 32 commands
+minute 0: 22 commands
     1× /system/resource/print [11 fields]
     1× /system/package/update/print [2 fields]
     1× /system/routerboard/print [2 fields]
@@ -78,99 +78,99 @@ minute 0: 32 commands
     1× /ip/arp/print
     1× /ip/dhcp-server/lease/print
     1× /ip/dhcp-server/print
-    1× /system/resource/print [1 field]
     1× /interface/wifi/print =count-only=
     1× /caps-man/interface/print =count-only=
     1× /interface/wireless/print =count-only=
     1× /ip/dhcp-server/print =count-only=
     1× /interface/bridge/print =count-only=
     4× /ping =address= =count= =interval=
+    1× /log/print [4 fields]
+    1× /ip/route/print ?dst-address=0.0.0.0/0
+minute 1: 14 commands
+    1× /system/resource/print [3 fields]
+    1× /ip/neighbor/print
+    4× /interface/print [21 fields]
+    4× /ping =address= =count= =interval=
     1× /interface/bridge/print [7 fields]
     1× /interface/bridge/port/print [22 fields]
     1× /interface/bridge/monitor =numbers= =once= [9 fields]
-    1× /interface/bridge/vlan/print
+    1× /ip/route/print ?dst-address=0.0.0.0/0
+minute 2: 12 commands
+    1× /system/resource/print [3 fields]
+    4× /interface/print [21 fields]
+    4× /ping =address= =count= =interval=
     1× /log/print [4 fields]
+    1× /ip/route/print ?dst-address=0.0.0.0/0
+    1× /interface/bridge/vlan/print
+minute 3: 18 commands
     1× /interface/bridge/host/print ?local=false [10 fields]
     1× /interface/bonding/print [2 fields]
     1× /interface/vlan/print [3 fields]
     1× /interface/pppoe-client/print [2 fields]
+    1× /system/resource/print [3 fields]
     1× /ip/neighbor/print
-    1× /ip/route/print ?dst-address=0.0.0.0/0
-minute 1: 10 commands
-    1× /system/resource/print [3 fields]
-    4× /interface/print [21 fields]
-    4× /ping =address= =count= =interval=
-    1× /ip/route/print ?dst-address=0.0.0.0/0
-minute 2: 15 commands
-    1× /system/resource/print [3 fields]
     4× /interface/print [21 fields]
     4× /ping =address= =count= =interval=
     1× /interface/bridge/print [7 fields]
     1× /interface/bridge/port/print [22 fields]
     1× /interface/bridge/monitor =numbers= =once= [9 fields]
-    1× /log/print [4 fields]
-    1× /ip/neighbor/print
     1× /ip/route/print ?dst-address=0.0.0.0/0
-minute 3: 10 commands
+minute 4: 12 commands
     1× /system/resource/print [3 fields]
     4× /interface/print [21 fields]
     4× /ping =address= =count= =interval=
-    1× /ip/route/print ?dst-address=0.0.0.0/0
-minute 4: 15 commands
-    1× /system/resource/print [3 fields]
-    4× /interface/print [21 fields]
-    4× /ping =address= =count= =interval=
-    1× /interface/bridge/print [7 fields]
-    1× /interface/bridge/port/print [22 fields]
-    1× /interface/bridge/monitor =numbers= =once= [9 fields]
     1× /log/print [4 fields]
-    1× /ip/neighbor/print
+    1× /system/resource/print [1 field]
     1× /ip/route/print ?dst-address=0.0.0.0/0
-minute 5: 16 commands
+minute 5: 15 commands
     1× /system/resource/print [3 fields]
+    1× /ip/neighbor/print
     4× /interface/print [21 fields]
     1× /interface/ethernet/print [16 fields]
     4× /ping =address= =count= =interval=
+    1× /interface/bridge/print [7 fields]
+    1× /interface/bridge/port/print [22 fields]
+    1× /interface/bridge/monitor =numbers= =once= [9 fields]
+    1× /ip/route/print ?dst-address=0.0.0.0/0
+minute 6: 11 commands
+    1× /system/resource/print [3 fields]
+    4× /interface/print [21 fields]
+    4× /ping =address= =count= =interval=
+    1× /log/print [4 fields]
+    1× /ip/route/print ?dst-address=0.0.0.0/0
+minute 7: 15 commands
+    1× /system/resource/print [3 fields]
+    1× /ip/neighbor/print
+    4× /interface/print [21 fields]
+    4× /ping =address= =count= =interval=
+    1× /interface/bridge/print [7 fields]
+    1× /interface/bridge/port/print [22 fields]
+    1× /interface/bridge/monitor =numbers= =once= [9 fields]
+    1× /ip/route/print ?dst-address=0.0.0.0/0
     1× /interface/bridge/vlan/print
+minute 8: 15 commands
     1× /interface/bridge/host/print ?local=false [10 fields]
     1× /interface/bonding/print [2 fields]
     1× /interface/vlan/print [3 fields]
     1× /interface/pppoe-client/print [2 fields]
-    1× /ip/route/print ?dst-address=0.0.0.0/0
-minute 6: 15 commands
     1× /system/resource/print [3 fields]
+    4× /interface/print [21 fields]
+    4× /ping =address= =count= =interval=
+    1× /log/print [4 fields]
+    1× /ip/route/print ?dst-address=0.0.0.0/0
+minute 9: 14 commands
+    1× /system/resource/print [3 fields]
+    1× /ip/neighbor/print
     4× /interface/print [21 fields]
     4× /ping =address= =count= =interval=
     1× /interface/bridge/print [7 fields]
     1× /interface/bridge/port/print [22 fields]
     1× /interface/bridge/monitor =numbers= =once= [9 fields]
-    1× /log/print [4 fields]
-    1× /ip/neighbor/print
-    1× /ip/route/print ?dst-address=0.0.0.0/0
-minute 7: 10 commands
-    1× /system/resource/print [3 fields]
-    4× /interface/print [21 fields]
-    4× /ping =address= =count= =interval=
-    1× /ip/route/print ?dst-address=0.0.0.0/0
-minute 8: 15 commands
-    1× /system/resource/print [3 fields]
-    4× /interface/print [21 fields]
-    4× /ping =address= =count= =interval=
-    1× /interface/bridge/print [7 fields]
-    1× /interface/bridge/port/print [22 fields]
-    1× /interface/bridge/monitor =numbers= =once= [9 fields]
-    1× /log/print [4 fields]
-    1× /ip/neighbor/print
-    1× /ip/route/print ?dst-address=0.0.0.0/0
-minute 9: 10 commands
-    1× /system/resource/print [3 fields]
-    4× /interface/print [21 fields]
-    4× /ping =address= =count= =interval=
     1× /ip/route/print ?dst-address=0.0.0.0/0
 
 ## The minute after the hour: the hourly inventory pass comes round
 
-minute 60: 29 commands
+minute 60: 20 commands
     1× /system/resource/print [3 fields]
     1× /system/identity/print
     1× /system/resource/print [11 fields]
@@ -183,14 +183,5 @@ minute 60: 29 commands
     1× /ip/dhcp-server/print
     1× /interface/wifi/print =count-only=
     4× /ping =address= =count= =interval=
-    1× /interface/bridge/print [7 fields]
-    1× /interface/bridge/port/print [22 fields]
-    1× /interface/bridge/monitor =numbers= =once= [9 fields]
-    1× /interface/bridge/vlan/print
     1× /log/print [4 fields]
-    1× /interface/bridge/host/print ?local=false [10 fields]
-    1× /interface/bonding/print [2 fields]
-    1× /interface/vlan/print [3 fields]
-    1× /interface/pppoe-client/print [2 fields]
-    1× /ip/neighbor/print
     1× /ip/route/print ?dst-address=0.0.0.0/0

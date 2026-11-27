@@ -132,7 +132,7 @@ func topoTestManager(t *testing.T, db *sql.DB, devices map[string]*fakeRunner) (
 			return nil
 		},
 	}
-	m.topoClock.phase = noJitter
+	m.topoClock.phase, m.topoClock.spread = noJitter, noSpread
 	return m, clock, reg
 }
 

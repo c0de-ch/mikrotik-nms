@@ -61,7 +61,7 @@ func TestNetworkHealthPerClassCadenceAndPause(t *testing.T) {
 	clock := &testClock{t: at(12, 0, 0)}
 	n.now = clock.now
 	n.clock = newTierClock(NewScheduleRegistry())
-	n.clock.phase = noJitter
+	n.clock.phase, n.clock.spread = noJitter, noSpread
 	n.UseCadence(NewCadence(db, &config.Config{TopologyInterval: time.Minute, NetworkHealthInterval: time.Minute}))
 	n.runner = scriptedRunners(runners)
 	reads := func(id string) [3]int {

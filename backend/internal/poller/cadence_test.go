@@ -35,6 +35,10 @@ func (s *stubCadence) Paused(dev queries.Device, _ time.Time) bool { return s.pa
 // devclass.NextRun is exactly end + interval.
 func noJitter(string) uint64 { return 1000 }
 
+// noSpread reads every tier at once after start-up (no first-run lead), for
+// the tests of a loop's cadences, pauses and retries.
+func noSpread(devclass.Tier, time.Duration) time.Duration { return 0 }
+
 func TestNoJitterPhase(t *testing.T) {
 	end := at(12, 0, 0)
 	if got := devclass.NextRun(end, time.Minute, noJitter("x")); !got.Equal(end.Add(time.Minute)) {
@@ -156,22 +160,30 @@ func TestRunIntervalPaused(t *testing.T) {
 	}
 }
 
-// The tier clock: due when not run since startup, then at NextRun(end,
-// interval, phase) — so within ±10 % of the interval, steady per device —
-// with the interval in force at the check and no catch-up; retries and
-// non-running tiers are published to the registry.
+// The tier clock: due its first-run lead after it first looked at the tier,
+// then at NextRun(end, interval, phase) — so within ±10 % of the interval,
+// steady per device — with the interval in force at the check and no
+// catch-up; retries and non-running tiers are published to the registry.
 func TestTierClockDueJitterRetryAndRegistry(t *testing.T) {
 	reg := NewScheduleRegistry()
 	k := newTierClock(reg)
 	const iv = time.Minute
 	now := at(12, 0, 0)
+	lead := devclass.FirstRunDelay(devclass.TierNeighbors, iv) // half the minute
+	if lead != 30*time.Second {
+		t.Fatalf("neighbor lead at a 1 min interval = %v, want 30 s", lead)
+	}
 
-	if !k.due("sw", devclass.TierNeighbors, iv, now) {
-		t.Fatal("a tier not run since startup is due")
+	if k.due("sw", devclass.TierNeighbors, iv, now) {
+		t.Fatal("a tier with a lead is not due at the first look")
 	}
-	if got := reg.NextRuns("sw")["neighbors"]; !got.Equal(now) {
-		t.Errorf("registry before the first run = %v, want now", got)
+	if got := reg.NextRuns("sw")["neighbors"]; !got.Equal(now.Add(lead)) {
+		t.Errorf("registry before the first run = %v, want the first look + %v", got, lead)
 	}
+	if k.due("sw", devclass.TierNeighbors, iv, now.Add(lead-time.Millisecond)) || !k.due("sw", devclass.TierNeighbors, iv, now.Add(lead)) {
+		t.Fatal("a tier not run since startup is due its lead after the first look")
+	}
+	now = now.Add(lead)
 	end := now.Add(3 * time.Second) // the run took 3 s
 	k.ran("sw", devclass.TierNeighbors, iv, end)
 	next := devclass.NextRun(end, iv, devclass.Phase("sw"))
@@ -222,6 +234,73 @@ func TestTierClockDueJitterRetryAndRegistry(t *testing.T) {
 	k.retain(map[string]bool{"ap": true})
 	if !k.lastEnd("sw", devclass.TierNeighbors).IsZero() {
 		t.Error("retain must forget other devices")
+	}
+}
+
+// A tier's first run after start-up waits its lead from the clock's first
+// look at the device, whether the tier could run then or not: a device that
+// was paused or offline when the process started is read at once when it can
+// be (as after any pause or outage), one that appears later gets its lead
+// from then. Every later run, and a retry, count without it.
+func TestTierClockFirstRunLead(t *testing.T) {
+	reg := NewScheduleRegistry()
+	k := newTierClock(reg)
+	k.phase = noJitter
+	const iv = 5 * time.Minute // a C1 device's bridge ports: a 1 min lead
+	t0 := at(12, 0, 0)
+	lead := devclass.FirstRunDelay(devclass.TierBridgePorts, iv)
+	if lead != time.Minute {
+		t.Fatalf("bridge-port lead at 5 min = %v, want 1 min", lead)
+	}
+
+	// Online at start-up: due one lead after the first look, and published so.
+	if k.due("sw", devclass.TierBridgePorts, iv, t0) {
+		t.Fatal("due at the first look despite its lead")
+	}
+	if got := reg.NextRuns("sw")["bridge_ports"]; !got.Equal(t0.Add(lead)) {
+		t.Errorf("published first run = %v, want %v", got, t0.Add(lead))
+	}
+	if k.due("sw", devclass.TierBridgePorts, iv, t0.Add(lead-time.Second)) || !k.due("sw", devclass.TierBridgePorts, iv, t0.Add(lead)) {
+		t.Fatal("the first run is due exactly its lead after the first look")
+	}
+	// No session yet: the retry wins, and the run after it counts from its end.
+	k.retryAt("sw", devclass.TierBridgePorts, t0.Add(lead+noClientRetry))
+	if k.due("sw", devclass.TierBridgePorts, iv, t0.Add(lead+noClientRetry-time.Second)) || !k.due("sw", devclass.TierBridgePorts, iv, t0.Add(lead+noClientRetry)) {
+		t.Fatal("a retry of the first run is due at its retry time")
+	}
+	end := t0.Add(lead + noClientRetry)
+	k.ran("sw", devclass.TierBridgePorts, iv, end)
+	if k.due("sw", devclass.TierBridgePorts, iv, end.Add(iv-time.Second)) || !k.due("sw", devclass.TierBridgePorts, iv, end.Add(iv)) {
+		t.Fatal("the run after the first is due one interval after its end, no lead")
+	}
+
+	// A tier without a lead is due at the first look.
+	if !k.due("sw", devclass.TierLogs, iv, t0) {
+		t.Error("the log read waits at start-up")
+	}
+
+	// Paused (or offline) at start-up: not due, not published — and the lead
+	// counted from that first look all the same.
+	if k.due("held", devclass.TierBridgePorts, 0, t0) {
+		t.Fatal("a paused device's tier is due")
+	}
+	if _, listed := reg.NextRuns("held")["bridge_ports"]; listed {
+		t.Error("a paused device's tier is published")
+	}
+	if !k.due("held", devclass.TierBridgePorts, iv, t0.Add(time.Hour)) {
+		t.Error("a device paused at start-up is not read at once when its pause ends")
+	}
+
+	// A device that appears later gets its lead from its first look.
+	later := t0.Add(30 * time.Minute)
+	if k.due("new", devclass.TierBridgePorts, iv, later) || !k.due("new", devclass.TierBridgePorts, iv, later.Add(lead)) {
+		t.Error("a device added later is not read one lead after the clock first sees it")
+	}
+
+	// A device deleted and added again starts afresh.
+	k.retain(map[string]bool{})
+	if k.due("sw", devclass.TierBridgePorts, iv, t0.Add(2*time.Hour)) {
+		t.Error("a device the clock forgot is due at once")
 	}
 }
 

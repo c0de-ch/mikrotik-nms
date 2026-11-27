@@ -71,7 +71,7 @@ func newSamplerHarness(t *testing.T, ids ...string) *samplerHarness {
 	s.phase = func(string) uint64 { return 0 }
 	s.reg = NewScheduleRegistry()
 	s.postClock = newTierClock(s.reg)
-	s.postClock.phase = noJitter
+	s.postClock.phase, s.postClock.spread = noJitter, noSpread
 	s.runner = func(id string) routeros.Runner {
 		h.mu.Lock()
 		defer h.mu.Unlock()

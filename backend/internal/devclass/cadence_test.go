@@ -204,6 +204,97 @@ func TestSlotAt(t *testing.T) {
 	}
 }
 
+// A tier's first read after start-up waits its lead, never more than half its
+// interval or 10 minutes; the reads that must come first do not wait at all.
+func TestFirstRunDelay(t *testing.T) {
+	for _, tt := range []struct {
+		interval, bound time.Duration
+	}{
+		{0, 0}, {-time.Minute, 0},
+		{30 * time.Second, 15 * time.Second},
+		{5 * time.Minute, 150 * time.Second},
+		{15 * time.Minute, 450 * time.Second},
+		{20 * time.Minute, 10 * time.Minute},
+		{6 * time.Hour, 10 * time.Minute},
+	} {
+		if got := FirstRunBound(tt.interval); got != tt.bound {
+			t.Errorf("FirstRunBound(%v) = %v, want %v", tt.interval, got, tt.bound)
+		}
+	}
+
+	for _, tier := range []Tier{TierCounters, TierCPU, TierInventory, TierAudit, TierLogs, TierWifiRegistrations, TierEthernet, TierARP, TierDHCPLeases} {
+		for _, c := range []Class{C1, C2, C3} {
+			if got := FirstRunDelay(tier, Cadence(c, tier)); got != 0 {
+				t.Errorf("FirstRunDelay(%s, %s cadence) = %v: it is read at once", tier, c, got)
+			}
+		}
+	}
+	for _, c := range []Class{C1, C2, C3} {
+		for _, tier := range Tiers() {
+			iv := Cadence(c, tier)
+			if got := FirstRunDelay(tier, iv); got < 0 || got > FirstRunBound(iv) {
+				t.Errorf("FirstRunDelay(%s, %v) = %v, outside [0, %v]", tier, iv, got, FirstRunBound(iv))
+			}
+		}
+	}
+	if got := FirstRunDelay(Tier(99), time.Hour); got != 0 {
+		t.Errorf("an unknown tier waits %v", got)
+	}
+
+	// On a C1 device the first reads come one group a minute; on a strong
+	// device the same leads fold into the first half-interval.
+	for _, tt := range []struct {
+		c    Class
+		tier Tier
+		want time.Duration
+	}{
+		{C1, TierBridgePorts, time.Minute},
+		{C1, TierNeighbors, 2 * time.Minute},
+		{C1, TierRoutes, 2 * time.Minute},
+		{C1, TierBridgeHosts, 3 * time.Minute},
+		{C1, TierBridgeVLAN, 3 * time.Minute},
+		{C1, TierRelations, 4 * time.Minute},
+		{C1, TierCPUPost, 4 * time.Minute},
+		{C3, TierRoutes, 30 * time.Second},       // every minute: half of it
+		{C3, TierNeighbors, time.Minute},         // every 2 min
+		{C3, TierBridgePorts, time.Minute},       // every 2 min
+		{C3, TierBridgeHosts, 150 * time.Second}, // every 5 min
+		{C3, TierRelations, 150 * time.Second},
+	} {
+		if got := FirstRunDelay(tt.tier, Cadence(tt.c, tt.tier)); got != tt.want {
+			t.Errorf("FirstRunDelay(%s) on %s = %v, want %v", tt.tier, tt.c, got, tt.want)
+		}
+	}
+}
+
+// The point of the leads: on the C1 plan, the 5-minute reads start in three
+// different minutes of the five-minute cycle, and none of the 15-minute reads
+// or the post-poll sample starts in one of those — so, every later read
+// counting from the end of the one before, they do not fall together.
+func TestFirstRunLeadsSpreadTheC1Plan(t *testing.T) {
+	minuteOf := func(tier Tier) int {
+		return int(FirstRunDelay(tier, Cadence(C1, tier)) / time.Minute)
+	}
+	fiveMinute := map[int][]Tier{} // minute of the five-minute cycle → the 5-minute tiers starting in it
+	for _, tier := range Tiers() {
+		if Cadence(C1, tier) == 5*time.Minute {
+			m := minuteOf(tier) % 5
+			fiveMinute[m] = append(fiveMinute[m], tier)
+		}
+	}
+	if len(fiveMinute) < 3 {
+		t.Errorf("the C1 5-minute reads start in %d minutes of five: %v", len(fiveMinute), fiveMinute)
+	}
+	for _, tier := range []Tier{TierBridgeHosts, TierBridgeVLAN, TierRelations, TierCPUPost} {
+		if iv := Cadence(C1, tier); iv%(5*time.Minute) != 0 {
+			t.Fatalf("%s runs every %v on C1, not a multiple of 5 min: rethink the leads", tier, iv)
+		}
+		if others := fiveMinute[minuteOf(tier)%5]; len(others) > 0 {
+			t.Errorf("%s starts in minute %d, with the 5-minute reads %v", tier, minuteOf(tier), others)
+		}
+	}
+}
+
 func TestBudgets(t *testing.T) {
 	if b := BudgetOf(C1); b.CommandsPerMin != 12 || b.BurstCommands != 6 || b.CostSecPerMin != 2.0 || b.RowsPerMin != 1500 {
 		t.Fatalf("C1 budget %+v", b)

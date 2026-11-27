@@ -115,23 +115,35 @@ type tierKey struct {
 type tierRun struct {
 	end   time.Time // end of the last run; zero = not run since startup
 	retry time.Time // non-zero: due again at this time (a run that could not start)
+	// first is when the clock first looked at the tier on the device, run or
+	// not: its first run is due its lead (devclass.FirstRunDelay) after that.
+	first time.Time
 }
 
-// tierClock schedules the tiers one loop owns, per device. A tier is due when
-// it has not run since startup, when its retry time has come, or at
-// devclass.NextRun(end of the last run, interval, the device's phase) — with
-// the interval in force at the check, so a class, profile or floor change
-// applies at once. Every check publishes the next run to the registry. Safe
-// for concurrent use.
+// tierClock schedules the tiers one loop owns, per device. A tier that has
+// not run since startup is due its lead after the clock first looked at it on
+// the device (devclass.FirstRunDelay: one group of reads a minute, at most
+// half the interval and 10 minutes, so a device's reads do not all start —
+// and then stay — together); after that it is due when its retry time has
+// come, or at devclass.NextRun(end of the last run, interval, the device's
+// phase) — with the interval in force at the check, so a class, profile or
+// floor change applies at once. The lead counts from that first look, whether
+// the tier could run then or not: a device that was offline or paused when
+// the process started is read at once when it can be, as after any outage or
+// pause. Every check publishes the next run to the registry. Safe for
+// concurrent use.
 type tierClock struct {
 	mu    sync.Mutex
 	runs  map[tierKey]tierRun
 	phase func(deviceID string) uint64
-	reg   *ScheduleRegistry
+	// spread is a tier's first-run lead at an interval (devclass.FirstRunDelay;
+	// tests that are about something else pin it to none).
+	spread func(tier devclass.Tier, interval time.Duration) time.Duration
+	reg    *ScheduleRegistry
 }
 
 func newTierClock(reg *ScheduleRegistry) *tierClock {
-	return &tierClock{runs: make(map[tierKey]tierRun), phase: devclass.Phase, reg: reg}
+	return &tierClock{runs: make(map[tierKey]tierRun), phase: devclass.Phase, spread: devclass.FirstRunDelay, reg: reg}
 }
 
 // nextLocked is when key is due next at interval. k.mu held.
@@ -141,7 +153,11 @@ func (k *tierClock) nextLocked(key tierKey, interval time.Duration, now time.Tim
 	case !r.retry.IsZero():
 		return r.retry
 	case r.end.IsZero():
-		return now
+		first := r.first
+		if first.IsZero() {
+			first = now
+		}
+		return first.Add(k.spread(key.tier, interval))
 	}
 	return devclass.NextRun(r.end, interval, k.phase(key.device))
 }
@@ -150,12 +166,17 @@ func (k *tierClock) nextLocked(key tierKey, interval time.Duration, now time.Tim
 // interval (runInterval: 0 while paused or when the tier is not in the plan),
 // for which the tier is never due and drops out of the registry.
 func (k *tierClock) due(deviceID string, tier devclass.Tier, interval time.Duration, now time.Time) bool {
+	key := tierKey{deviceID, tier}
+	k.mu.Lock()
+	if r := k.runs[key]; r.first.IsZero() {
+		r.first = now
+		k.runs[key] = r
+	}
 	if interval <= 0 {
+		k.mu.Unlock()
 		k.reg.clear(deviceID, tier)
 		return false
 	}
-	key := tierKey{deviceID, tier}
-	k.mu.Lock()
 	next := k.nextLocked(key, interval, now)
 	k.mu.Unlock()
 	k.reg.set(deviceID, tier, next)
