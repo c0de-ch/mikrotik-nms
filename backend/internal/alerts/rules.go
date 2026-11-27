@@ -20,12 +20,14 @@ const (
 
 // RuleNames lists the rules this build evaluates.
 func RuleNames() []string {
-	return []string{RuleDeviceUnreachable, RuleParallelAPIPoller, RuleTLSPinMismatch, RuleCPUHigh, RuleMemLow, RulePortEgressDrops, RuleFlowExportOnSwitch}
+	return []string{RuleDeviceUnreachable, RuleParallelAPIPoller, RuleTLSPinMismatch, RuleCPUHigh, RuleMemLow, RulePortEgressDrops,
+		RuleFlowExportOnSwitch, RuleAuditCritical, RuleFlowExportCPUHigh}
 }
 
 // DefaultRules are the rules evaluated on a polling instance.
 func DefaultRules(db *sql.DB) []Rule {
-	return []Rule{deviceUnreachable{db}, parallelAPIPoller{db}, tlsPinMismatch{db}, cpuHigh{db}, memLow{db}, portEgressDrops{db}, flowExportOnSwitch{db}}
+	return []Rule{deviceUnreachable{db}, parallelAPIPoller{db}, tlsPinMismatch{db}, cpuHigh{db}, memLow{db}, portEgressDrops{db},
+		flowExportOnSwitch{db}, auditCritical{db}, flowExportCPUHigh{db}}
 }
 
 func deviceLabel(d queries.Device) string {

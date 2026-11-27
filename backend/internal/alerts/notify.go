@@ -217,15 +217,27 @@ func (n *Notifier) compose(a queries.Alert, event Event) message {
 	if link != "" {
 		lines = append(lines, "Alerts:   "+link)
 	}
-	// A firing alert whose rule attached rollback steps carries them in
-	// the mail: whoever is paged has them without opening the NMS.
-	var rollback []string
+	// A firing alert carries what its rule attached for whoever is paged —
+	// the likely cause a diagnose pass found, the hygiene findings and
+	// their fix, the rollback steps — so they have it without opening the
+	// NMS.
+	type section struct {
+		title string
+		lines []string
+	}
+	var sections []section
 	if event == EventFiring {
-		rollback = factLines(p.Facts["rollback"])
+		for _, s := range []struct{ title, fact string }{
+			{"Likely cause", FactLikelyCause}, {"Findings", FactFindings}, {"Suggested fix", FactFix}, {"Rollback", "rollback"},
+		} {
+			if l := factLines(p.Facts[s.fact]); len(l) > 0 {
+				sections = append(sections, section{s.title, l})
+			}
+		}
 	}
 	text := strings.Join(lines, "\r\n")
-	if len(rollback) > 0 {
-		text += "\r\n\r\nRollback:\r\n" + strings.Join(rollback, "\r\n")
+	for _, s := range sections {
+		text += "\r\n\r\n" + s.title + ":\r\n" + strings.Join(s.lines, "\r\n")
 	}
 	text += "\r\n\r\n-- MikroTik NMS (automated message, please do not reply)\r\n"
 
@@ -241,8 +253,9 @@ func (n *Notifier) compose(a queries.Alert, event Event) message {
 		hb.WriteString("<tr><td>" + html.EscapeString(k) + "</td><td>" + cell + "</td></tr>")
 	}
 	hb.WriteString("</table>")
-	if len(rollback) > 0 {
-		hb.WriteString("<p><strong>Rollback</strong></p><pre>" + html.EscapeString(strings.Join(rollback, "\n")) + "</pre>")
+	for _, s := range sections {
+		hb.WriteString("<p><strong>" + html.EscapeString(s.title) + "</strong></p><pre>" +
+			html.EscapeString(strings.Join(s.lines, "\n")) + "</pre>")
 	}
 
 	body := webhookBody{
