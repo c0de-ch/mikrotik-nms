@@ -66,6 +66,11 @@ func GetDHCPLeases(run Runner) ([]DHCPLease, error) {
 			Dynamic:    m["dynamic"] == "true",
 		})
 	}
+	if len(leases) == 0 {
+		// No lease, nothing to filter: a device that runs no DHCP server is
+		// not asked for its servers as well.
+		return nil, nil
+	}
 	// A disabled DHCP server keeps its lease/reservation rows in the table, but
 	// those aren't live assignments — the server isn't handing them out. Drop
 	// them so a switch whose dhcp server is turned off doesn't surface a ghost

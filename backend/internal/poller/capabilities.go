@@ -15,7 +15,16 @@ const (
 	CapPresent                           // the menu exists (the package is installed)
 	CapAbsent                            // "no such command": the package is not installed
 	CapPermissionMissing                 // the menu exists but the API user may not read it
+	CapEmpty                             // the menu exists and has nothing in it
 )
+
+// Installed reports whether the menu exists on the device, with or without
+// anything in it. From RouterOS 7.13 every device has /interface/wifi, radios
+// or not, so "installed" says little about wireless; "present" — something is
+// configured there — is what the reads go by.
+func (s CapState) Installed() bool {
+	return s == CapPresent || s == CapEmpty
+}
 
 func (s CapState) String() string {
 	switch s {
@@ -25,14 +34,17 @@ func (s CapState) String() string {
 		return "absent"
 	case CapPermissionMissing:
 		return "permission_missing"
+	case CapEmpty:
+		return "empty"
 	}
 	return "unknown"
 }
 
 // Caps are the per-device capabilities the pollers gate their reads on.
 // Role and capabilities decide which reads apply to a device, never how
-// much: a switch without the wireless package is never asked for a
-// registration table, so it never pays for the trap.
+// much: a switch is never asked for a registration table — not when the
+// wireless package is missing (it would pay for the trap), and not when the
+// menu is there with no interface in it (nothing can register on it).
 type Caps struct {
 	Wifi       CapState // /interface/wifi (RouterOS 7 wifi, CAPsMAN v2)
 	CAPsMAN    CapState // /caps-man (legacy CAPsMAN)
@@ -41,14 +53,20 @@ type Caps struct {
 	Bridge     CapState // /interface/bridge
 
 	ProbedAt time.Time
-	Version  string // RouterOS version the probe ran on
+	// EmptyAt is when the empty registration menus were last asked again
+	// (recheckEmptyMenus); zero until then.
+	EmptyAt time.Time
+	Version string // RouterOS version the probe ran on
 	// Partial marks a probe the device did not finish answering, filled in
 	// from the previous one; it is retried soon (probeDue).
 	Partial bool
 }
 
-// RegistrationMenus lists the registration-table menus the device has, in
-// read order. Empty for a device without any wireless package.
+// RegistrationMenus lists the registration-table menus worth reading, in
+// read order: the wireless menus that have at least one interface. Empty for
+// a device without any wireless package, and for one whose wireless menus
+// are empty — a switch on RouterOS 7.13 or later, a controller no access
+// point has joined yet.
 func (c Caps) RegistrationMenus() []string {
 	var menus []string
 	if c.Wifi == CapPresent {
@@ -95,6 +113,7 @@ const (
 	capProbeEvery      = 24 * time.Hour // packages change with upgrades, which also change the version
 	capPermissionRetry = time.Hour      // a fixed user policy is picked up within the hour
 	capIncompleteRetry = time.Minute    // the probe did not reach the device: try again soon
+	capEmptyRetry      = time.Hour      // an empty wireless menu: a first interface (an access point joining its controller) is found within the hour
 )
 
 // CapabilityCache remembers each device's probe. Probes run on the first
@@ -128,6 +147,14 @@ func (c *CapabilityCache) Ensure(deviceID, version string, run routeros.Runner, 
 	caps, ok := c.devs[deviceID]
 	c.mu.Unlock()
 	if ok && !probeDue(caps, version, now) {
+		return caps
+	}
+	if ok && !fullProbeDue(caps, version, now) {
+		// Only the empty wireless menus are due: ask for those alone.
+		caps = recheckEmptyMenus(run, caps, now)
+		c.mu.Lock()
+		c.devs[deviceID] = caps
+		c.mu.Unlock()
 		return caps
 	}
 	fresh := probeCapabilities(run, version, now)
@@ -192,7 +219,58 @@ func (c *CapabilityCache) Forget(deviceID string) {
 	delete(c.devs, deviceID)
 }
 
+// probeDue reports whether the device has to be asked again: the whole probe
+// (fullProbeDue), or only its empty wireless menus (emptyRecheckDue).
 func probeDue(caps Caps, version string, now time.Time) bool {
+	return fullProbeDue(caps, version, now) || emptyRecheckDue(caps, now)
+}
+
+// emptyRegistrationMenu reports a wireless menu that is installed and empty.
+func (c Caps) emptyRegistrationMenu() bool {
+	return c.Wifi == CapEmpty || c.CAPsMAN == CapEmpty || c.Wireless == CapEmpty
+}
+
+// emptyRecheckDue: an empty wireless menu is asked again every capEmptyRetry,
+// so the first interface in it starts the registration reads within the hour
+// rather than at the next daily probe.
+func emptyRecheckDue(caps Caps, now time.Time) bool {
+	if !caps.emptyRegistrationMenu() {
+		return false
+	}
+	last := caps.ProbedAt
+	if caps.EmptyAt.After(last) {
+		last = caps.EmptyAt
+	}
+	return now.Sub(last) >= capEmptyRetry
+}
+
+// recheckEmptyMenus asks again for the wireless menus that were installed
+// and empty — one =count-only= print each, nothing else of the probe. A menu
+// the device does not answer for keeps its state and is asked again after
+// another capEmptyRetry.
+func recheckEmptyMenus(run routeros.Runner, caps Caps, now time.Time) Caps {
+	caps.EmptyAt = now
+	for _, p := range []struct {
+		state *CapState
+		cmd   string
+	}{
+		{&caps.Wifi, routeros.WifiProbeCommand},
+		{&caps.CAPsMAN, routeros.CAPsMANProbeCommand},
+		{&caps.Wireless, routeros.WirelessProbeCommand},
+	} {
+		if *p.state != CapEmpty {
+			continue
+		}
+		state := probeMenu(run, p.cmd)
+		if state == CapUnknown {
+			break
+		}
+		*p.state = state
+	}
+	return caps
+}
+
+func fullProbeDue(caps Caps, version string, now time.Time) bool {
 	switch {
 	case caps.ProbedAt.IsZero():
 		return true
@@ -247,10 +325,13 @@ func probeCapabilities(run routeros.Runner, version string, now time.Time) Caps 
 	return caps
 }
 
-// probeMenu classifies one =count-only= print.
+// probeMenu classifies one =count-only= print: a menu with rows is present,
+// one without is empty.
 func probeMenu(run routeros.Runner, cmd string) CapState {
-	_, err := routeros.CountOnly(run, cmd)
+	n, err := routeros.CountOnly(run, cmd)
 	switch {
+	case err == nil && n == 0:
+		return CapEmpty
 	case err == nil:
 		return CapPresent
 	case routeros.IsNoSuchCommand(err):

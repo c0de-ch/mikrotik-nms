@@ -48,13 +48,14 @@ type planBudget struct {
 // poller, fixed in fa697a4, were up to six more commands a minute on every
 // device. Raising a number is a decision about that class of device, to be
 // made in review; none may be above its class's ceiling (devclass.BudgetOf),
-// and the two C1 devices are at it in their busiest minute already.
+// and the two C1 devices are within two commands of it in their busiest
+// minute.
 var planBudgets = map[string]planBudget{
-	"sw48":  {perMinute: 5, oneMinute: 18},   // C1 switch, 48 ports:    4.5 a minute today, 17 in its busiest
-	"ap-ac": {perMinute: 5.5, oneMinute: 18}, // C1 access point:        4.8 a minute today, 18 in its busiest
-	"sw24":  {perMinute: 9, oneMinute: 28},   // C2 switch, 24 ports:    7.9 a minute today, 26 in its busiest
-	"ap-ax": {perMinute: 14, oneMinute: 28},  // C3 access point:       12.8 a minute today, 26 in its busiest
-	"rtr":   {perMinute: 18, oneMinute: 30},  // C3 router, two probes: 16.3 a minute today, 27 in its busiest
+	"sw48":  {perMinute: 5, oneMinute: 18},  // C1 switch, 48 ports:    4.3 a minute today, 16 in its busiest
+	"ap-ac": {perMinute: 5, oneMinute: 18},  // C1 access point:        4.4 a minute today, 16 in its busiest
+	"sw24":  {perMinute: 8, oneMinute: 28},  // C2 switch, 24 ports:    6.9 a minute today, 25 in its busiest
+	"ap-ax": {perMinute: 14, oneMinute: 28}, // C3 access point:       12.8 a minute today, 26 in its busiest
+	"rtr":   {perMinute: 16, oneMinute: 30}, // C3 router, two probes: 14.3 a minute today, 25 in its busiest
 }
 
 // printsWithoutProplist are the prints the loops send whole today: neither a
@@ -72,7 +73,6 @@ var printsWithoutProplist = map[string]string{
 	"/ip/dhcp-server/lease/print":                  "Tier 5b, routeros.GetDHCPLeases",
 	"/ip/dhcp-server/print":                        "Tier 5b, routeros.GetDHCPLeases: the disabled servers, read after the leases",
 	"/interface/wifi/registration-table/print":     "Tier 5c, routeros.GetRegistrations",
-	"/caps-man/registration-table/print":           "Tier 5c, routeros.GetRegistrations",
 	"/interface/wireless/registration-table/print": "Tier 5c, routeros.GetRegistrations",
 }
 
