@@ -494,7 +494,8 @@ Roles: `wan uplink downlink peer access wireless vpn virtual idle`.
 
 Bond membership and VLAN/PPPoE carriers are read from the devices
 (`/interface/bonding`, `/interface/vlan`, `/interface/pppoe-client`) on each
-`port_hosts_interval` pass and kept in `interface_relations`. The port list of
+`port_hosts_interval` pass and kept in `interface_relations` — each menu only
+on a device whose interface list has a bond, a VLAN or a PPPoE client. The port list of
 a device the collector currently polls is its live `/interface/print`;
 `interfaces`-table rows it lacks are ignored (and pruned on the next info
 refresh).
