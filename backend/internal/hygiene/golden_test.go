@@ -30,6 +30,12 @@ func TestGoldenCleanDevicesHaveNoCriticalFinding(t *testing.T) {
 		// Device-mode is the one thing a factory-fresh device has to report.
 		"ap_clean":       {hygiene.KindDeviceMode + ":" + hygiene.Info},
 		"switch48_clean": {hygiene.KindDeviceMode + ":" + hygiene.Info},
+		// The personalities the call plans added (poller, TestCallPlans): a
+		// small switch and a weak access point like the two above, and a
+		// router — which may export flows, so its device-mode is not read.
+		"switch24_clean": {hygiene.KindDeviceMode + ":" + hygiene.Info},
+		"ap_small_clean": {hygiene.KindDeviceMode + ":" + hygiene.Info},
+		"router_clean":   {},
 	} {
 		p := hygienetest.Load(t, name)
 		for _, mode := range []hygiene.Mode{hygiene.ModeAudit, hygiene.ModeDiagnose} {
@@ -70,6 +76,14 @@ func TestGoldenReadCounts(t *testing.T) {
 		// switch gets: forward-chain and bridge-filter counts, DNS, DHCP
 		// servers. No wifi menu, so no CAPsMAN read.
 		{"switch48_clean", 19, 11},
+		// A C2 switch on ARM: the switch chip and the switch-only counts, but
+		// no bond and none of the reads a weak (C1 or MIPS) switch gets.
+		{"switch24_clean", 16, 10},
+		// The same reads as the capable access point, whatever the radios.
+		{"ap_small_clean", 12, 8},
+		// A router: its switch chip (+ rules) on top of the base reads, and
+		// no device-mode read — that one is for devices that never export.
+		{"router_clean", 13, 10},
 	} {
 		p := hygienetest.Load(t, c.name)
 		_, run := p.Pass(hygiene.ModeAudit, p.Facts(now))

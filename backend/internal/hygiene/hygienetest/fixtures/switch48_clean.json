@@ -1268,6 +1268,198 @@
      "attempt-count": "0"
     }
    ]
+  },
+  "/system/identity/print": {
+   "rows": [
+    {
+     "name": "switch48_clean"
+    }
+   ]
+  },
+  "/system/package/update/print": {
+   "rows": [
+    {
+     "channel": "stable",
+     "installed-version": "7.24.5"
+    }
+   ]
+  },
+  "/system/routerboard/print": {
+   "rows": [
+    {
+     "routerboard": "true",
+     "board-name": "CRS354-48G-4S+2Q+",
+     "model": "CRS354-48G-4S+2Q+",
+     "serial-number": "TEST00000001",
+     "firmware-type": "generic",
+     "factory-firmware": "7.10",
+     "current-firmware": "7.24.5",
+     "upgrade-firmware": "7.24.5"
+    }
+   ]
+  },
+  "/interface/pppoe-client/print": {},
+  "/ip/dhcp-server/lease/print": {},
+  "/system/resource/print": {
+   "rows": [
+    {
+     "uptime": "5w2d3h14m7s",
+     "version": "7.24.5 (stable)",
+     "build-time": "2026-01-05 09:30:00",
+     "free-memory": "21495808",
+     "total-memory": "67108864",
+     "cpu": "MIPS 74Kc V5.0",
+     "cpu-count": "1",
+     "cpu-frequency": "650",
+     "cpu-load": "12",
+     "free-hdd-space": "5242880",
+     "total-hdd-space": "16777216",
+     "architecture-name": "mipsbe",
+     "board-name": "CRS354-48G-4S+2Q+",
+     "platform": "MikroTik"
+    }
+   ]
+  },
+  "/interface/wifi/print": {
+   "count": 0
+  },
+  "/interface/wifi/registration-table/print": {},
+  "/interface/wifi/capsman/print": {
+   "rows": [
+    {
+     "enabled": "false"
+    }
+   ]
+  },
+  "/caps-man/interface/print": {
+   "trap": "no such command prefix"
+  },
+  "/interface/wireless/print": {
+   "trap": "no such command prefix"
+  },
+  "/log/print": {
+   "rows": [
+    {
+     ".id": "*1",
+     "time": "2026-01-10 08:00:03",
+     "topics": "system,info",
+     "message": "router rebooted"
+    },
+    {
+     ".id": "*2",
+     "time": "2026-01-10 08:00:09",
+     "topics": "interface,info",
+     "message": "ether1 link up (speed 1G, full duplex)"
+    },
+    {
+     ".id": "*3",
+     "time": "2026-01-10 08:00:12",
+     "topics": "bridge,stp",
+     "message": "bridge: root port changed"
+    },
+    {
+     ".id": "*4",
+     "time": "2026-01-10 08:02:40",
+     "topics": "system,info,account",
+     "message": "user nms logged in from 192.0.2.10 via api"
+    },
+    {
+     ".id": "*5",
+     "time": "2026-01-12 03:10:00",
+     "topics": "system,info",
+     "message": "ntp change time Jan/12/2026 03:10:00 => Jan/12/2026 03:10:00"
+    }
+   ]
+  },
+  "/interface/vlan/print": {
+   "rows": [
+    {
+     "name": "vlan-mgmt",
+     "interface": "bridge",
+     "vlan-id": "99",
+     "mtu": "1500",
+     "disabled": "false",
+     "running": "true"
+    }
+   ]
+  },
+  "/interface/bridge/vlan/print": {
+   "rows": [
+    {
+     "bridge": "bridge",
+     "vlan-ids": "1",
+     "tagged": "",
+     "untagged": "ether1,ether2,ether3,ether4,ether5,ether6,ether7,ether8",
+     "current-tagged": "",
+     "current-untagged": "ether1,ether2,ether3,ether4,ether5,ether6,ether7,ether8",
+     "dynamic": "false",
+     "disabled": "false"
+    },
+    {
+     "bridge": "bridge",
+     "vlan-ids": "10",
+     "tagged": "sfp-sfpplus1,sfp-sfpplus2,bond1",
+     "untagged": "ether9,ether10,ether11,ether12",
+     "current-tagged": "sfp-sfpplus1,sfp-sfpplus2,bond1",
+     "current-untagged": "ether9,ether10,ether11,ether12",
+     "dynamic": "false",
+     "disabled": "false"
+    },
+    {
+     "bridge": "bridge",
+     "vlan-ids": "20",
+     "tagged": "sfp-sfpplus1,sfp-sfpplus2,bond2",
+     "untagged": "ether13,ether14,ether15,ether16",
+     "current-tagged": "sfp-sfpplus1,sfp-sfpplus2,bond2",
+     "current-untagged": "ether13,ether14,ether15,ether16",
+     "dynamic": "false",
+     "disabled": "false"
+    },
+    {
+     "bridge": "bridge",
+     "vlan-ids": "99",
+     "tagged": "bridge,sfp-sfpplus1,sfp-sfpplus2",
+     "untagged": "",
+     "current-tagged": "bridge,sfp-sfpplus1,sfp-sfpplus2",
+     "current-untagged": "",
+     "dynamic": "false",
+     "disabled": "false"
+    }
+   ]
+  },
+  "/ip/arp/print": {
+   "rows": [
+    {
+     "address": "192.0.2.1",
+     "mac-address": "02:00:5E:00:53:01",
+     "interface": "vlan-mgmt",
+     "dynamic": "true",
+     "complete": "true",
+     "status": "reachable",
+     "published": "false",
+     "invalid": "false",
+     "DHCP": "false",
+     "disabled": "false"
+    },
+    {
+     "address": "192.0.2.10",
+     "mac-address": "02:00:5E:00:53:0A",
+     "interface": "vlan-mgmt",
+     "dynamic": "true",
+     "complete": "true",
+     "status": "reachable",
+     "published": "false",
+     "invalid": "false",
+     "DHCP": "false",
+     "disabled": "false"
+    }
+   ]
+  },
+  "/caps-man/registration-table/print": {
+   "trap": "no such command prefix"
+  },
+  "/interface/wireless/registration-table/print": {
+   "trap": "no such command prefix"
   }
  }
 }

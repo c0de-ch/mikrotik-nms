@@ -1,0 +1,877 @@
+{
+ "name": "switch24_clean",
+ "board": "CRS326-24G-2S+",
+ "architecture": "arm",
+ "version": "7.25",
+ "class": "C2",
+ "role": "switch",
+ "nms_user": "nms",
+ "wifi_package": false,
+ "ports": [
+  {
+   "name": "bridge",
+   "type": "bridge",
+   "running": true,
+   "bps": 0,
+   "rate_known": true
+  },
+  {
+   "name": "ether1",
+   "type": "ether",
+   "running": true,
+   "switch": "switch1",
+   "rx_flow_control": "off",
+   "tx_flow_control": "off",
+   "loop_protect": "default",
+   "bridge": "bridge",
+   "hw": true,
+   "hw_known": true,
+   "hw_offload": true,
+   "hw_offload_known": true,
+   "horizon": "none",
+   "bps": 250000,
+   "rate_known": true
+  },
+  {
+   "name": "ether2",
+   "type": "ether",
+   "running": true,
+   "switch": "switch1",
+   "rx_flow_control": "off",
+   "tx_flow_control": "off",
+   "loop_protect": "default",
+   "bridge": "bridge",
+   "hw": true,
+   "hw_known": true,
+   "hw_offload": true,
+   "hw_offload_known": true,
+   "horizon": "none",
+   "bps": 250000,
+   "rate_known": true
+  },
+  {
+   "name": "ether3",
+   "type": "ether",
+   "running": true,
+   "switch": "switch1",
+   "rx_flow_control": "off",
+   "tx_flow_control": "off",
+   "loop_protect": "default",
+   "bridge": "bridge",
+   "hw": true,
+   "hw_known": true,
+   "hw_offload": true,
+   "hw_offload_known": true,
+   "horizon": "none",
+   "bps": 250000,
+   "rate_known": true
+  },
+  {
+   "name": "ether4",
+   "type": "ether",
+   "running": true,
+   "switch": "switch1",
+   "rx_flow_control": "off",
+   "tx_flow_control": "off",
+   "loop_protect": "default",
+   "bridge": "bridge",
+   "hw": true,
+   "hw_known": true,
+   "hw_offload": true,
+   "hw_offload_known": true,
+   "horizon": "none",
+   "bps": 250000,
+   "rate_known": true
+  },
+  {
+   "name": "ether5",
+   "type": "ether",
+   "running": true,
+   "switch": "switch1",
+   "rx_flow_control": "off",
+   "tx_flow_control": "off",
+   "loop_protect": "default",
+   "bridge": "bridge",
+   "hw": true,
+   "hw_known": true,
+   "hw_offload": true,
+   "hw_offload_known": true,
+   "horizon": "none",
+   "bps": 250000,
+   "rate_known": true
+  },
+  {
+   "name": "ether6",
+   "type": "ether",
+   "running": true,
+   "switch": "switch1",
+   "rx_flow_control": "off",
+   "tx_flow_control": "off",
+   "loop_protect": "default",
+   "bridge": "bridge",
+   "hw": true,
+   "hw_known": true,
+   "hw_offload": true,
+   "hw_offload_known": true,
+   "horizon": "none",
+   "bps": 250000,
+   "rate_known": true
+  },
+  {
+   "name": "ether7",
+   "type": "ether",
+   "running": true,
+   "switch": "switch1",
+   "rx_flow_control": "off",
+   "tx_flow_control": "off",
+   "loop_protect": "default",
+   "bridge": "bridge",
+   "hw": true,
+   "hw_known": true,
+   "hw_offload": true,
+   "hw_offload_known": true,
+   "horizon": "none",
+   "bps": 250000,
+   "rate_known": true
+  },
+  {
+   "name": "ether8",
+   "type": "ether",
+   "running": true,
+   "switch": "switch1",
+   "rx_flow_control": "off",
+   "tx_flow_control": "off",
+   "loop_protect": "default",
+   "bridge": "bridge",
+   "hw": true,
+   "hw_known": true,
+   "hw_offload": true,
+   "hw_offload_known": true,
+   "horizon": "none",
+   "bps": 250000,
+   "rate_known": true
+  },
+  {
+   "name": "ether9",
+   "type": "ether",
+   "running": true,
+   "switch": "switch1",
+   "rx_flow_control": "off",
+   "tx_flow_control": "off",
+   "loop_protect": "default",
+   "bridge": "bridge",
+   "hw": true,
+   "hw_known": true,
+   "hw_offload": true,
+   "hw_offload_known": true,
+   "horizon": "none",
+   "bps": 250000,
+   "rate_known": true
+  },
+  {
+   "name": "ether10",
+   "type": "ether",
+   "running": true,
+   "switch": "switch1",
+   "rx_flow_control": "off",
+   "tx_flow_control": "off",
+   "loop_protect": "default",
+   "bridge": "bridge",
+   "hw": true,
+   "hw_known": true,
+   "hw_offload": true,
+   "hw_offload_known": true,
+   "horizon": "none",
+   "bps": 250000,
+   "rate_known": true
+  },
+  {
+   "name": "ether11",
+   "type": "ether",
+   "running": true,
+   "switch": "switch1",
+   "rx_flow_control": "off",
+   "tx_flow_control": "off",
+   "loop_protect": "default",
+   "bridge": "bridge",
+   "hw": true,
+   "hw_known": true,
+   "hw_offload": true,
+   "hw_offload_known": true,
+   "horizon": "none",
+   "bps": 250000,
+   "rate_known": true
+  },
+  {
+   "name": "ether12",
+   "type": "ether",
+   "running": true,
+   "switch": "switch1",
+   "rx_flow_control": "off",
+   "tx_flow_control": "off",
+   "loop_protect": "default",
+   "bridge": "bridge",
+   "hw": true,
+   "hw_known": true,
+   "hw_offload": true,
+   "hw_offload_known": true,
+   "horizon": "none",
+   "bps": 250000,
+   "rate_known": true
+  },
+  {
+   "name": "ether13",
+   "type": "ether",
+   "running": true,
+   "switch": "switch1",
+   "rx_flow_control": "off",
+   "tx_flow_control": "off",
+   "loop_protect": "default",
+   "bridge": "bridge",
+   "hw": true,
+   "hw_known": true,
+   "hw_offload": true,
+   "hw_offload_known": true,
+   "horizon": "none",
+   "bps": 250000,
+   "rate_known": true
+  },
+  {
+   "name": "ether14",
+   "type": "ether",
+   "running": true,
+   "switch": "switch1",
+   "rx_flow_control": "off",
+   "tx_flow_control": "off",
+   "loop_protect": "default",
+   "bridge": "bridge",
+   "hw": true,
+   "hw_known": true,
+   "hw_offload": true,
+   "hw_offload_known": true,
+   "horizon": "none",
+   "bps": 250000,
+   "rate_known": true
+  },
+  {
+   "name": "ether15",
+   "type": "ether",
+   "running": true,
+   "switch": "switch1",
+   "rx_flow_control": "off",
+   "tx_flow_control": "off",
+   "loop_protect": "default",
+   "bridge": "bridge",
+   "hw": true,
+   "hw_known": true,
+   "hw_offload": true,
+   "hw_offload_known": true,
+   "horizon": "none",
+   "bps": 250000,
+   "rate_known": true
+  },
+  {
+   "name": "ether16",
+   "type": "ether",
+   "running": true,
+   "switch": "switch1",
+   "rx_flow_control": "off",
+   "tx_flow_control": "off",
+   "loop_protect": "default",
+   "bridge": "bridge",
+   "hw": true,
+   "hw_known": true,
+   "hw_offload": true,
+   "hw_offload_known": true,
+   "horizon": "none",
+   "bps": 250000,
+   "rate_known": true
+  },
+  {
+   "name": "ether17",
+   "type": "ether",
+   "running": false,
+   "switch": "switch1",
+   "rx_flow_control": "off",
+   "tx_flow_control": "off",
+   "loop_protect": "default",
+   "bridge": "bridge",
+   "hw": true,
+   "hw_known": true,
+   "hw_offload": false,
+   "hw_offload_known": true,
+   "horizon": "none",
+   "bridge_inactive": true
+  },
+  {
+   "name": "ether18",
+   "type": "ether",
+   "running": false,
+   "switch": "switch1",
+   "rx_flow_control": "off",
+   "tx_flow_control": "off",
+   "loop_protect": "default",
+   "bridge": "bridge",
+   "hw": true,
+   "hw_known": true,
+   "hw_offload": false,
+   "hw_offload_known": true,
+   "horizon": "none",
+   "bridge_inactive": true
+  },
+  {
+   "name": "ether19",
+   "type": "ether",
+   "running": false,
+   "switch": "switch1",
+   "rx_flow_control": "off",
+   "tx_flow_control": "off",
+   "loop_protect": "default",
+   "bridge": "bridge",
+   "hw": true,
+   "hw_known": true,
+   "hw_offload": false,
+   "hw_offload_known": true,
+   "horizon": "none",
+   "bridge_inactive": true
+  },
+  {
+   "name": "ether20",
+   "type": "ether",
+   "running": false,
+   "switch": "switch1",
+   "rx_flow_control": "off",
+   "tx_flow_control": "off",
+   "loop_protect": "default",
+   "bridge": "bridge",
+   "hw": true,
+   "hw_known": true,
+   "hw_offload": false,
+   "hw_offload_known": true,
+   "horizon": "none",
+   "bridge_inactive": true
+  },
+  {
+   "name": "ether21",
+   "type": "ether",
+   "running": false,
+   "switch": "switch1",
+   "rx_flow_control": "off",
+   "tx_flow_control": "off",
+   "loop_protect": "default",
+   "bridge": "bridge",
+   "hw": true,
+   "hw_known": true,
+   "hw_offload": false,
+   "hw_offload_known": true,
+   "horizon": "none",
+   "bridge_inactive": true
+  },
+  {
+   "name": "ether22",
+   "type": "ether",
+   "running": false,
+   "switch": "switch1",
+   "rx_flow_control": "off",
+   "tx_flow_control": "off",
+   "loop_protect": "default",
+   "bridge": "bridge",
+   "hw": true,
+   "hw_known": true,
+   "hw_offload": false,
+   "hw_offload_known": true,
+   "horizon": "none",
+   "bridge_inactive": true
+  },
+  {
+   "name": "ether23",
+   "type": "ether",
+   "running": false,
+   "switch": "switch1",
+   "rx_flow_control": "off",
+   "tx_flow_control": "off",
+   "loop_protect": "default",
+   "bridge": "bridge",
+   "hw": true,
+   "hw_known": true,
+   "hw_offload": false,
+   "hw_offload_known": true,
+   "horizon": "none",
+   "bridge_inactive": true
+  },
+  {
+   "name": "ether24",
+   "type": "ether",
+   "running": false,
+   "switch": "switch1",
+   "rx_flow_control": "off",
+   "tx_flow_control": "off",
+   "loop_protect": "default",
+   "bridge": "bridge",
+   "hw": true,
+   "hw_known": true,
+   "hw_offload": false,
+   "hw_offload_known": true,
+   "horizon": "none",
+   "bridge_inactive": true
+  },
+  {
+   "name": "sfp-sfpplus1",
+   "type": "ether",
+   "running": true,
+   "switch": "switch1",
+   "rx_flow_control": "off",
+   "tx_flow_control": "off",
+   "loop_protect": "default",
+   "trunk": true,
+   "bridge": "bridge",
+   "hw": true,
+   "hw_known": true,
+   "hw_offload": true,
+   "hw_offload_known": true,
+   "horizon": "none",
+   "bps": 42000000,
+   "rate_known": true
+  },
+  {
+   "name": "sfp-sfpplus2",
+   "type": "ether",
+   "running": false,
+   "switch": "switch1",
+   "rx_flow_control": "off",
+   "tx_flow_control": "off",
+   "loop_protect": "default",
+   "horizon": "none"
+  },
+  {
+   "name": "vlan-mgmt",
+   "type": "vlan",
+   "running": true,
+   "bps": 9000,
+   "rate_known": true
+  }
+ ],
+ "replies": {
+  "/tool/graphing/interface/print": {},
+  "/tool/graphing/resource/print": {},
+  "/tool/graphing/queue/print": {},
+  "/ip/traffic-flow/print": {
+   "rows": [
+    {
+     "enabled": "false",
+     "interfaces": "all",
+     "cache-entries": "256k",
+     "active-flow-timeout": "30m",
+     "inactive-flow-timeout": "15s",
+     "packet-sampling": "false",
+     "sampling-interval": "0",
+     "sampling-space": "0"
+    }
+   ]
+  },
+  "/ip/traffic-flow/target/print": {},
+  "/tool/sniffer/print": {
+   "rows": [
+    {
+     "running": "false",
+     "interface": "all",
+     "only-headers": "false",
+     "memory-limit": "100KiB",
+     "file-name": "",
+     "streaming-enabled": "false",
+     "streaming-server": "0.0.0.0:37008",
+     "filter-stream": "false"
+    }
+   ]
+  },
+  "/interface/ethernet/switch/print": {
+   "rows": [
+    {
+     ".id": "*0",
+     "name": "switch1",
+     "type": "Marvell-98DX3236",
+     "l3-hw-offloading": "false",
+     "mirror-source": "none",
+     "mirror-target": "none",
+     "mirror-egress-target": "none",
+     "cpu-flow-control": "true",
+     "rspan": "false"
+    }
+   ]
+  },
+  "/interface/ethernet/switch/rule/print": {},
+  "/interface/bridge/settings/print": {
+   "rows": [
+    {
+     "use-ip-firewall": "false",
+     "use-ip-firewall-for-vlan": "false",
+     "use-ip-firewall-for-pppoe": "false",
+     "allow-fast-path": "true",
+     "bridge-fast-path-active": "true",
+     "bridge-fast-path-packets": "41230000",
+     "bridge-fast-path-bytes": "4123000000",
+     "bridge-fast-forward-packets": "880000",
+     "bridge-fast-forward-bytes": "88000000"
+    }
+   ]
+  },
+  "/interface/bonding/print": {},
+  "/snmp/print": {
+   "rows": [
+    {
+     "enabled": "false",
+     "contact": "",
+     "location": "",
+     "engine-id-suffix": "",
+     "trap-target": "",
+     "trap-community": "DO-NOT-STORE-trap-community",
+     "trap-version": "1",
+     "trap-generators": "temp-exception",
+     "vrf": "main"
+    }
+   ]
+  },
+  "/snmp/community/print": {
+   "rows": [
+    {
+     "name": "DO-NOT-STORE-community",
+     "addresses": "::/0",
+     "security": "none",
+     "read-access": "true",
+     "write-access": "false",
+     "authentication-protocol": "MD5",
+     "encryption-protocol": "DES",
+     "authentication-password": "DO-NOT-STORE-auth",
+     "encryption-password": "DO-NOT-STORE-priv",
+     "disabled": "false",
+     "default": "true"
+    }
+   ]
+  },
+  "/user/active/print": {
+   "rows": [
+    {
+     ".id": "*1",
+     "when": "2026-01-10 08:00:00",
+     "name": "nms",
+     "address": "192.0.2.10",
+     "via": "api",
+     "group": "nms-read"
+    }
+   ]
+  },
+  "/ip/firewall/filter/print": {
+   "count": 0
+  },
+  "/interface/bridge/filter/print": {
+   "count": 0
+  },
+  "/system/logging/print": {
+   "rows": [
+    {
+     ".id": "*1",
+     "topics": "info",
+     "action": "memory",
+     "disabled": "false",
+     "prefix": ""
+    },
+    {
+     ".id": "*2",
+     "topics": "error",
+     "action": "memory",
+     "disabled": "false",
+     "prefix": ""
+    },
+    {
+     ".id": "*3",
+     "topics": "warning",
+     "action": "memory",
+     "disabled": "false",
+     "prefix": ""
+    },
+    {
+     ".id": "*4",
+     "topics": "critical",
+     "action": "echo",
+     "disabled": "false",
+     "prefix": ""
+    }
+   ]
+  },
+  "/system/logging/action/print": {
+   "rows": [
+    {
+     "name": "memory",
+     "target": "memory",
+     "memory-lines": "1000",
+     "default": "true"
+    },
+    {
+     "name": "disk",
+     "target": "disk",
+     "disk-file-name": "log",
+     "default": "true"
+    },
+    {
+     "name": "echo",
+     "target": "echo",
+     "default": "true"
+    },
+    {
+     "name": "remote",
+     "target": "remote",
+     "remote": "0.0.0.0",
+     "remote-port": "514",
+     "default": "true"
+    }
+   ]
+  },
+  "/system/scheduler/print": {},
+  "/user/group/print": {
+   "rows": [
+    {
+     "name": "read",
+     "policy": "local,telnet,ssh,reboot,read,test,winbox,password,web,sniff,sensitive,api,romon,rest-api,!ftp,!write,!policy",
+     "skin": "default"
+    },
+    {
+     "name": "write",
+     "policy": "local,telnet,ssh,reboot,read,write,test,winbox,password,web,sniff,sensitive,api,romon,rest-api,!ftp,!policy",
+     "skin": "default"
+    },
+    {
+     "name": "full",
+     "policy": "local,telnet,ssh,ftp,reboot,read,write,policy,test,winbox,password,web,sniff,sensitive,api,romon,rest-api",
+     "skin": "default"
+    },
+    {
+     "name": "nms-read",
+     "policy": "read,test,api,!local,!telnet,!ssh,!ftp,!reboot,!write,!policy,!winbox,!password,!web,!sniff,!sensitive,!romon,!rest-api",
+     "skin": "default"
+    }
+   ]
+  },
+  "/ip/dns/print": {
+   "rows": [
+    {
+     "allow-remote-requests": "false",
+     "servers": "",
+     "cache-size": "2048KiB"
+    }
+   ]
+  },
+  "/ip/dhcp-server/print": {},
+  "/system/device-mode/print": {
+   "rows": [
+    {
+     "mode": "advanced",
+     "allowed-versions": "7.13+,6.49.8+",
+     "flagged": "false",
+     "flagging-enabled": "true",
+     "scheduler": "true",
+     "socks": "true",
+     "fetch": "true",
+     "pptp": "true",
+     "l2tp": "true",
+     "bandwidth-test": "true",
+     "traffic-gen": "false",
+     "sniffer": "true",
+     "ipsec": "true",
+     "romon": "true",
+     "proxy": "true",
+     "hotspot": "true",
+     "smb": "true",
+     "email": "true",
+     "zerotier": "true",
+     "container": "false",
+     "install-any-version": "false",
+     "partitions": "false",
+     "routerboard": "false",
+     "attempt-count": "0"
+    }
+   ]
+  },
+  "/system/identity/print": {
+   "rows": [
+    {
+     "name": "switch24_clean"
+    }
+   ]
+  },
+  "/system/package/update/print": {
+   "rows": [
+    {
+     "channel": "stable",
+     "installed-version": "7.25"
+    }
+   ]
+  },
+  "/system/routerboard/print": {
+   "rows": [
+    {
+     "routerboard": "true",
+     "board-name": "CRS326-24G-2S+",
+     "model": "CRS326-24G-2S+",
+     "serial-number": "TEST00000003",
+     "firmware-type": "generic",
+     "factory-firmware": "7.10",
+     "current-firmware": "7.25",
+     "upgrade-firmware": "7.25"
+    }
+   ]
+  },
+  "/interface/pppoe-client/print": {},
+  "/ip/dhcp-server/lease/print": {},
+  "/system/resource/print": {
+   "rows": [
+    {
+     "uptime": "1w3d1h9m30s",
+     "version": "7.25 (stable)",
+     "build-time": "2026-01-05 09:30:00",
+     "free-memory": "441450496",
+     "total-memory": "536870912",
+     "cpu": "ARMv7",
+     "cpu-count": "1",
+     "cpu-frequency": "800",
+     "cpu-load": "6",
+     "free-hdd-space": "5242880",
+     "total-hdd-space": "16777216",
+     "architecture-name": "arm",
+     "board-name": "CRS326-24G-2S+",
+     "platform": "MikroTik"
+    }
+   ]
+  },
+  "/interface/wifi/print": {
+   "count": 0
+  },
+  "/interface/wifi/registration-table/print": {},
+  "/interface/wifi/capsman/print": {
+   "rows": [
+    {
+     "enabled": "false"
+    }
+   ]
+  },
+  "/caps-man/interface/print": {
+   "trap": "no such command prefix"
+  },
+  "/interface/wireless/print": {
+   "trap": "no such command prefix"
+  },
+  "/log/print": {
+   "rows": [
+    {
+     ".id": "*1",
+     "time": "2026-01-10 08:00:03",
+     "topics": "system,info",
+     "message": "router rebooted"
+    },
+    {
+     ".id": "*2",
+     "time": "2026-01-10 08:00:09",
+     "topics": "interface,info",
+     "message": "ether1 link up (speed 1G, full duplex)"
+    },
+    {
+     ".id": "*3",
+     "time": "2026-01-10 08:00:12",
+     "topics": "bridge,stp",
+     "message": "bridge: root port changed"
+    },
+    {
+     ".id": "*4",
+     "time": "2026-01-10 08:02:40",
+     "topics": "system,info,account",
+     "message": "user nms logged in from 192.0.2.10 via api"
+    },
+    {
+     ".id": "*5",
+     "time": "2026-01-12 03:10:00",
+     "topics": "system,info",
+     "message": "ntp change time Jan/12/2026 03:10:00 => Jan/12/2026 03:10:00"
+    }
+   ]
+  },
+  "/interface/vlan/print": {
+   "rows": [
+    {
+     "name": "vlan-mgmt",
+     "interface": "bridge",
+     "vlan-id": "99",
+     "mtu": "1500",
+     "disabled": "false",
+     "running": "true"
+    }
+   ]
+  },
+  "/interface/bridge/vlan/print": {
+   "rows": [
+    {
+     "bridge": "bridge",
+     "vlan-ids": "10",
+     "tagged": "sfp-sfpplus1",
+     "untagged": "ether1,ether2,ether3,ether4,ether5,ether6,ether7,ether8",
+     "current-tagged": "sfp-sfpplus1",
+     "current-untagged": "ether1,ether2,ether3,ether4,ether5,ether6,ether7,ether8",
+     "dynamic": "false",
+     "disabled": "false"
+    },
+    {
+     "bridge": "bridge",
+     "vlan-ids": "20",
+     "tagged": "sfp-sfpplus1",
+     "untagged": "ether9,ether10,ether11,ether12,ether13,ether14,ether15,ether16",
+     "current-tagged": "sfp-sfpplus1",
+     "current-untagged": "ether9,ether10,ether11,ether12,ether13,ether14,ether15,ether16",
+     "dynamic": "false",
+     "disabled": "false"
+    },
+    {
+     "bridge": "bridge",
+     "vlan-ids": "99",
+     "tagged": "bridge,sfp-sfpplus1",
+     "untagged": "",
+     "current-tagged": "bridge,sfp-sfpplus1",
+     "current-untagged": "",
+     "dynamic": "false",
+     "disabled": "false"
+    }
+   ]
+  },
+  "/ip/arp/print": {
+   "rows": [
+    {
+     "address": "192.0.2.1",
+     "mac-address": "02:00:5E:00:53:01",
+     "interface": "vlan-mgmt",
+     "dynamic": "true",
+     "complete": "true",
+     "status": "reachable",
+     "published": "false",
+     "invalid": "false",
+     "DHCP": "false",
+     "disabled": "false"
+    },
+    {
+     "address": "192.0.2.10",
+     "mac-address": "02:00:5E:00:53:0A",
+     "interface": "vlan-mgmt",
+     "dynamic": "true",
+     "complete": "true",
+     "status": "reachable",
+     "published": "false",
+     "invalid": "false",
+     "DHCP": "false",
+     "disabled": "false"
+    }
+   ]
+  },
+  "/caps-man/registration-table/print": {
+   "trap": "no such command prefix"
+  },
+  "/interface/wireless/registration-table/print": {
+   "trap": "no such command prefix"
+  }
+ }
+}

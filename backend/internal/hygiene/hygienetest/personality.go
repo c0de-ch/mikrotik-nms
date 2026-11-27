@@ -9,6 +9,18 @@
 // deliberately carry fields the audit must never keep (an SNMP community
 // name, a scheduler's script, a user's password hash): a device that
 // ignores the proplist must not get a secret into the database.
+//
+// A fixture also lists what the device answers to the scheduled loops' small
+// reads — resource, firmware, log, capability probes, registration tables,
+// ARP, leases — so that the poller's call plans (TestCallPlans) can run every
+// loop against the same devices (ScriptAll). The per-port tables of those
+// loops are derived from Ports there. The personalities: a 48-port C1 switch
+// (switch48_clean), a 24-port C2 switch (switch24_clean), a C3 router
+// (router_clean), a C3 access point with the wifi package (ap_clean) and a
+// C1 access point with the legacy wireless package (ap_small_clean). The
+// switches, the router and the legacy access point have no wifi radio and
+// still have the /interface/wifi menu — empty, as on every device from
+// RouterOS 7.13 on: a count-only print there answers 0, it does not trap.
 package hygienetest
 
 import (
@@ -214,6 +226,30 @@ func (p Personality) Script(d *routerostest.Device) {
 				d.SetCount(read.Command, n)
 			}
 		}
+	}
+}
+
+// UnknownCommandTrap is what RouterOS answers for a menu it does not have.
+const UnknownCommandTrap = "no such command prefix"
+
+// ScriptAll makes a routerostest fake answer every command the personality
+// lists, not only the audit's: its rows, the count for =count-only=, or its
+// trap. Any other command is answered with the trap of a missing menu, and
+// routerostest marks it as unscripted (Exchange.Scripted), so a test can
+// tell a command its device was never taught from one the device refuses.
+func (p Personality) ScriptAll(d *routerostest.Device) {
+	d.SetUnknownTrap(UnknownCommandTrap)
+	for command, reply := range p.Replies {
+		if reply.Trap != "" {
+			d.SetTrap(command, reply.Trap)
+			continue
+		}
+		d.SetReply(command, reply.Rows...)
+		n := len(reply.Rows)
+		if reply.Count != nil {
+			n = *reply.Count
+		}
+		d.SetCount(command, n)
 	}
 }
 

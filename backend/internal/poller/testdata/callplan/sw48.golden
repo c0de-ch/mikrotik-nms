@@ -1,0 +1,160 @@
+# Call plan of sw48: what the NMS's scheduled loops send this device.
+#
+# device:   CRS354-48G-4S+2Q+, RouterOS 7.24.5, class C1, role switch (personality switch48_clean)
+# scenario: the NMS starts with this device in a known fleet of 5 and polls it for one hour:
+#           default settings, nominal cadences (no jitter), a command takes no time
+#
+# A change in this file is a change in what a device of this kind is sent.
+# Rewrite it with: go test ./internal/poller -run TestCallPlan -update
+
+commands in the hour     271
+  average per minute     4.52
+  most in one minute     24 (minute 0)
+  most after start-up    17 (minute 15; start-up is minutes 0-1)
+reply rows in the hour   5815
+liveness dials           120 (a TCP connect to the API port, no command)
+
+## Commands in the hour
+
+count  every        rows/call  command
+   60  1 min               65  /interface/print [21 fields]
+   59  1 min                1  /system/resource/print [3 fields]
+   12  5 min                1  /interface/bridge/monitor =numbers= =once= [9 fields]
+   12  5 min               58  /interface/bridge/port/print [22 fields]
+   12  5 min                1  /interface/bridge/print [7 fields]
+   12  5 min               61  /interface/ethernet/print [16 fields]
+   12  5 min                0  /interface/wifi/registration-table/print
+   12  5 min                4  /ip/neighbor/print
+   12  5 min                1  /ip/route/print ?dst-address=0.0.0.0/0
+   12  5 min                5  /log/print [4 fields]
+    6  11 min               1  /system/resource/print [1 field]
+    4  15 min               2  /interface/bonding/print [2 fields]
+    4  15 min              56  /interface/bridge/host/print ?local=false [10 fields]
+    4  15 min               4  /interface/bridge/vlan/print
+    4  15 min               0  /interface/pppoe-client/print [2 fields]
+    4  15 min               1  /interface/vlan/print [3 fields]
+    2  30 min               2  /ip/arp/print
+    1  once              trap  /caps-man/interface/print =count-only=
+    1  once                 2  /interface/bonding/print [4 fields]
+    1  once                 0  /interface/bridge/filter/print =count-only=
+    1  once                 0  /interface/bridge/print =count-only=
+    1  once                 1  /interface/bridge/settings/print [6 fields]
+    1  once                 1  /interface/ethernet/switch/print [6 fields]
+    1  once                 0  /interface/ethernet/switch/rule/print [7 fields]
+    1  once                 1  /interface/wifi/capsman/print [1 field]
+    1  once                 0  /interface/wifi/print =count-only=
+    1  once              trap  /interface/wireless/print =count-only=
+    1  once                 0  /ip/dhcp-server/print =count-only=
+    1  once                 0  /ip/dhcp-server/print [2 fields]
+    1  once                 1  /ip/dns/print [1 field]
+    1  once                 0  /ip/firewall/filter/print =count-only= ?chain=forward
+    1  once                 1  /ip/traffic-flow/print [4 fields]
+    1  once                 1  /snmp/print [1 field]
+    1  once                 1  /system/device-mode/print [6 fields]
+    1  once                 4  /system/logging/print [3 fields]
+    1  once                 1  /system/package/update/print [2 fields]
+    1  once                 1  /system/resource/print [11 fields]
+    1  once                 1  /system/routerboard/print [2 fields]
+    1  once                 0  /system/scheduler/print [3 fields]
+    1  once                 0  /tool/graphing/interface/print [4 fields]
+    1  once                 0  /tool/graphing/queue/print [4 fields]
+    1  once                 0  /tool/graphing/resource/print [3 fields]
+    1  once                 1  /tool/sniffer/print [1 field]
+    1  once                 1  /user/active/print [4 fields]
+    1  once                 4  /user/group/print [2 fields]
+
+## Commands per minute
+
+minutes  0- 9:  24   2   2   2   2  10   2   2   2   2
+minutes 10-19:  11   2   2   2   2  17   5   5   5   5
+minutes 20-29:  13   6   2   2   2  10   2   2   2   2
+minutes 30-39:  16   2   3   2   2  10   2   2   2   2
+minutes 40-49:  10   2   2   3   2  15   2   2   2   2
+minutes 50-59:  10   2   2   2   3  10   2   2   2   2
+
+## The first 10 minutes
+
+minute 0: 24 commands
+    1× /system/resource/print [11 fields]
+    1× /system/package/update/print [2 fields]
+    1× /system/routerboard/print [2 fields]
+    1× /interface/print [21 fields]
+    1× /interface/ethernet/print [16 fields]
+    1× /ip/arp/print
+    1× /system/resource/print [1 field]
+    1× /interface/wifi/print =count-only=
+    1× /caps-man/interface/print =count-only=
+    1× /interface/wireless/print =count-only=
+    1× /ip/dhcp-server/print =count-only=
+    1× /interface/bridge/print =count-only=
+    1× /log/print [4 fields]
+    1× /interface/wifi/registration-table/print
+    1× /interface/bridge/print [7 fields]
+    1× /interface/bridge/port/print [22 fields]
+    1× /interface/bridge/monitor =numbers= =once= [9 fields]
+    1× /interface/bridge/vlan/print
+    1× /interface/bridge/host/print ?local=false [10 fields]
+    1× /interface/bonding/print [2 fields]
+    1× /interface/vlan/print [3 fields]
+    1× /interface/pppoe-client/print [2 fields]
+    1× /ip/neighbor/print
+    1× /ip/route/print ?dst-address=0.0.0.0/0
+minute 1: 2 commands
+    1× /system/resource/print [3 fields]
+    1× /interface/print [21 fields]
+minute 2: 2 commands
+    1× /system/resource/print [3 fields]
+    1× /interface/print [21 fields]
+minute 3: 2 commands
+    1× /system/resource/print [3 fields]
+    1× /interface/print [21 fields]
+minute 4: 2 commands
+    1× /system/resource/print [3 fields]
+    1× /interface/print [21 fields]
+minute 5: 10 commands
+    1× /system/resource/print [3 fields]
+    1× /interface/print [21 fields]
+    1× /interface/ethernet/print [16 fields]
+    1× /log/print [4 fields]
+    1× /interface/wifi/registration-table/print
+    1× /interface/bridge/print [7 fields]
+    1× /interface/bridge/port/print [22 fields]
+    1× /interface/bridge/monitor =numbers= =once= [9 fields]
+    1× /ip/neighbor/print
+    1× /ip/route/print ?dst-address=0.0.0.0/0
+minute 6: 2 commands
+    1× /system/resource/print [3 fields]
+    1× /interface/print [21 fields]
+minute 7: 2 commands
+    1× /system/resource/print [3 fields]
+    1× /interface/print [21 fields]
+minute 8: 2 commands
+    1× /system/resource/print [3 fields]
+    1× /interface/print [21 fields]
+minute 9: 2 commands
+    1× /system/resource/print [3 fields]
+    1× /interface/print [21 fields]
+
+## The minute after the hour: the hourly inventory pass comes round
+
+minute 60: 20 commands
+    1× /system/resource/print [3 fields]
+    1× /system/identity/print
+    1× /system/resource/print [11 fields]
+    1× /system/package/update/print [2 fields]
+    1× /system/routerboard/print [2 fields]
+    1× /interface/print [21 fields]
+    1× /interface/ethernet/print [16 fields]
+    1× /ip/arp/print
+    1× /log/print [4 fields]
+    1× /interface/wifi/registration-table/print
+    1× /interface/bridge/print [7 fields]
+    1× /interface/bridge/port/print [22 fields]
+    1× /interface/bridge/monitor =numbers= =once= [9 fields]
+    1× /interface/bridge/vlan/print
+    1× /interface/bridge/host/print ?local=false [10 fields]
+    1× /interface/bonding/print [2 fields]
+    1× /interface/vlan/print [3 fields]
+    1× /interface/pppoe-client/print [2 fields]
+    1× /ip/neighbor/print
+    1× /ip/route/print ?dst-address=0.0.0.0/0
