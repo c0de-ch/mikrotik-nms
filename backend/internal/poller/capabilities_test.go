@@ -10,16 +10,16 @@ import (
 
 func TestProbeCapabilitiesClassifiesMenus(t *testing.T) {
 	f := &fakeRunner{byCmd: map[string]fakeReply{
-		routeros.WifiProbeCommand:       {done: map[string]string{"ret": "0"}},
+		routeros.WifiProbeCommand:       {done: map[string]string{"ret": "2"}},
 		routeros.WirelessProbeCommand:   {err: trapErr("not enough permissions (9)")},
-		routeros.DHCPServerProbeCommand: {done: map[string]string{"ret": "1"}},
+		routeros.DHCPServerProbeCommand: {done: map[string]string{"ret": "0"}},
 		routeros.BridgeProbeCommand:     {done: map[string]string{"ret": "1"}},
 		// caps-man: not in byCmd → "no such command prefix"
 	}}
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	caps := probeCapabilities(f, "7.24.5", now)
 	if caps.Wifi != CapPresent || caps.CAPsMAN != CapAbsent || caps.Wireless != CapPermissionMissing ||
-		caps.DHCPServer != CapPresent || caps.Bridge != CapPresent {
+		caps.DHCPServer != CapEmpty || caps.Bridge != CapPresent {
 		t.Fatalf("caps = %+v", caps)
 	}
 	if menus := caps.RegistrationMenus(); len(menus) != 1 || menus[0] != routeros.RegMenuWifi || !caps.HasWifiRole() {
@@ -43,7 +43,7 @@ func TestProbeCapabilitiesClassifiesMenus(t *testing.T) {
 	}
 
 	// A transport failure stops the probe: the rest stays unknown.
-	dead := &fakeRunner{queue: []fakeReply{{done: map[string]string{"ret": "0"}}, {err: errors.New("i/o timeout")}}}
+	dead := &fakeRunner{queue: []fakeReply{{done: map[string]string{"ret": "1"}}, {err: errors.New("i/o timeout")}}}
 	part := probeCapabilities(dead, "7.24.5", now)
 	if part.Wifi != CapPresent || part.CAPsMAN != CapUnknown || part.Bridge != CapUnknown || part.complete() || len(dead.calls) != 2 {
 		t.Fatalf("partial = %+v calls=%v", part, dead.calls)
@@ -163,5 +163,93 @@ func TestCapabilityCacheReadTrapReprobes(t *testing.T) {
 	}
 	if got, _ := c.Get("ap"); got.Wifi != CapPermissionMissing {
 		t.Fatalf("after a permission trap: %+v", got)
+	}
+}
+
+// A wireless menu that is installed and empty — every device has
+// /interface/wifi from RouterOS 7.13, radios or not — gives no wifi role: no
+// registration table is read. The package still counts as installed (the
+// audit asks a weak switch whether it runs CAPsMAN), and only the empty menu
+// is asked again, hourly, with one count-only print: the first interface in
+// it starts the reads.
+func TestAnEmptyWirelessMenuIsNotARoleAndIsAskedAgainHourly(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	sw := &fakeRunner{byCmd: map[string]fakeReply{
+		routeros.WifiProbeCommand:       {done: map[string]string{"ret": "0"}},
+		routeros.DHCPServerProbeCommand: {done: map[string]string{"ret": "0"}},
+		routeros.BridgeProbeCommand:     {done: map[string]string{"ret": "1"}},
+		// caps-man and legacy wireless: no such command
+	}}
+	c := NewCapabilityCache()
+	caps := c.Ensure("sw", "7.25.2", sw, now)
+	if caps.Wifi != CapEmpty || caps.HasWifiRole() || len(caps.RegistrationMenus()) != 0 {
+		t.Fatalf("caps of a switch with an empty wifi menu = %+v, want wifi empty and no role", caps)
+	}
+	if !caps.Wifi.Installed() || caps.CAPsMAN.Installed() || !caps.complete() {
+		t.Fatalf("installed: wifi %v caps-man %v, complete %v; want true, false, true",
+			caps.Wifi.Installed(), caps.CAPsMAN.Installed(), caps.complete())
+	}
+	if len(sw.calls) != 5 {
+		t.Fatalf("the first probe sent %d commands, want the 5 of the whole probe", len(sw.calls))
+	}
+
+	// Within the hour: nothing is due, nothing is sent.
+	if probeDue(caps, "7.25.2", now.Add(59*time.Minute)) {
+		t.Fatal("an empty menu was due again within the hour")
+	}
+	c.Ensure("sw", "7.25.2", sw, now.Add(59*time.Minute))
+	if len(sw.calls) != 5 {
+		t.Fatalf("a command was sent within the hour: %v", sw.calls[5:])
+	}
+
+	// After an hour: the empty menu alone is asked again — one command.
+	at := now.Add(capEmptyRetry)
+	if !probeDue(caps, "7.25.2", at) || fullProbeDue(caps, "7.25.2", at) {
+		t.Fatalf("after an hour: probeDue %v, fullProbeDue %v; want true, false",
+			probeDue(caps, "7.25.2", at), fullProbeDue(caps, "7.25.2", at))
+	}
+	caps = c.Ensure("sw", "7.25.2", sw, at)
+	if got := sw.calls[5:]; len(got) != 1 || !endsWith(got[0], "=count-only=") || sw.countCalls(routeros.WifiProbeCommand) != 2 {
+		t.Fatalf("the hourly recheck sent %v, want one count-only print of the wifi menu", got)
+	}
+	if caps.Wifi != CapEmpty || caps.HasWifiRole() || probeDue(caps, "7.25.2", at.Add(59*time.Minute)) ||
+		!probeDue(caps, "7.25.2", at.Add(capEmptyRetry)) {
+		t.Fatalf("after the recheck: %+v; want still empty, due again an hour after it", caps)
+	}
+
+	// A first interface appears (an access point joined this controller):
+	// the next recheck finds it and the registration reads start.
+	sw.byCmd[routeros.WifiProbeCommand] = fakeReply{done: map[string]string{"ret": "2"}}
+	caps = c.Ensure("sw", "7.25.2", sw, at.Add(capEmptyRetry))
+	if caps.Wifi != CapPresent || !caps.HasWifiRole() || len(sw.calls) != 7 {
+		t.Fatalf("after the first interface: %+v, %d commands; want wifi present with a role after one more command", caps, len(sw.calls))
+	}
+	if probeDue(caps, "7.25.2", at.Add(3*time.Hour)) {
+		t.Fatal("a device without an empty wireless menu is rechecked hourly")
+	}
+
+	// The daily probe still asks for everything.
+	if !fullProbeDue(caps, "7.25.2", now.Add(capProbeEvery)) {
+		t.Fatal("the daily probe is no longer due")
+	}
+}
+
+// A recheck the device does not answer changes nothing and waits another
+// hour: it is one command, not a retry storm.
+func TestAnUnansweredRecheckKeepsTheMenuEmpty(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	ok := &fakeRunner{byCmd: map[string]fakeReply{
+		routeros.WifiProbeCommand:   {done: map[string]string{"ret": "0"}},
+		routeros.BridgeProbeCommand: {done: map[string]string{"ret": "1"}},
+	}}
+	c := NewCapabilityCache()
+	c.Ensure("sw", "7.25.2", ok, now)
+	dead := &fakeRunner{queue: []fakeReply{{err: errors.New("i/o timeout")}}}
+	caps := c.Ensure("sw", "7.25.2", dead, now.Add(capEmptyRetry))
+	if caps.Wifi != CapEmpty || len(dead.calls) != 1 || !caps.complete() {
+		t.Fatalf("after an unanswered recheck: %+v, %d commands; want still empty after one command", caps, len(dead.calls))
+	}
+	if probeDue(caps, "7.25.2", now.Add(capEmptyRetry+30*time.Minute)) || !probeDue(caps, "7.25.2", now.Add(2*capEmptyRetry)) {
+		t.Fatal("an unanswered recheck must be due again an hour later, not sooner")
 	}
 }

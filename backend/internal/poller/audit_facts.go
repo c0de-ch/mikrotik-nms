@@ -36,8 +36,8 @@ func (a *Auditor) facts(dev queries.Device, now time.Time) hygiene.Facts {
 		}
 	}
 	if caps, ok := a.capsOf(dev.ID); ok {
-		f.WifiPackage = caps.Wifi == CapPresent
-		f.LegacyCAPsMAN = caps.CAPsMAN == CapPresent
+		f.WifiPackage = caps.Wifi.Installed()
+		f.LegacyCAPsMAN = caps.CAPsMAN.Installed()
 	}
 	if raw, _, err := queries.LatestAuditRuntime(a.db, dev.ID); err == nil {
 		if rt, ok := hygiene.ParseRuntime(raw); ok {
