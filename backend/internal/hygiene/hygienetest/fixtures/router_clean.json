@@ -1,0 +1,806 @@
+{
+ "name": "router_clean",
+ "board": "RB5009UG+S+",
+ "architecture": "arm64",
+ "version": "7.25",
+ "class": "C3",
+ "role": "router",
+ "nms_user": "nms",
+ "wifi_package": false,
+ "ports": [
+  {
+   "name": "bridge",
+   "type": "bridge",
+   "running": true,
+   "bps": 0,
+   "rate_known": true
+  },
+  {
+   "name": "ether1",
+   "type": "ether",
+   "running": true,
+   "switch": "switch1",
+   "rx_flow_control": "off",
+   "tx_flow_control": "off",
+   "loop_protect": "default",
+   "bps": 61000000,
+   "rate_known": true
+  },
+  {
+   "name": "ether2",
+   "type": "ether",
+   "running": true,
+   "switch": "switch1",
+   "rx_flow_control": "off",
+   "tx_flow_control": "off",
+   "loop_protect": "default",
+   "bridge": "bridge",
+   "hw": true,
+   "hw_known": true,
+   "hw_offload": true,
+   "hw_offload_known": true,
+   "horizon": "none",
+   "bps": 1200000,
+   "rate_known": true
+  },
+  {
+   "name": "ether3",
+   "type": "ether",
+   "running": true,
+   "switch": "switch1",
+   "rx_flow_control": "off",
+   "tx_flow_control": "off",
+   "loop_protect": "default",
+   "bridge": "bridge",
+   "hw": true,
+   "hw_known": true,
+   "hw_offload": true,
+   "hw_offload_known": true,
+   "horizon": "none",
+   "bps": 1200000,
+   "rate_known": true
+  },
+  {
+   "name": "ether4",
+   "type": "ether",
+   "running": true,
+   "switch": "switch1",
+   "rx_flow_control": "off",
+   "tx_flow_control": "off",
+   "loop_protect": "default",
+   "bridge": "bridge",
+   "hw": true,
+   "hw_known": true,
+   "hw_offload": true,
+   "hw_offload_known": true,
+   "horizon": "none",
+   "bps": 1200000,
+   "rate_known": true
+  },
+  {
+   "name": "ether5",
+   "type": "ether",
+   "running": false,
+   "switch": "switch1",
+   "rx_flow_control": "off",
+   "tx_flow_control": "off",
+   "loop_protect": "default",
+   "bridge": "bridge",
+   "hw": true,
+   "hw_known": true,
+   "hw_offload": false,
+   "hw_offload_known": true,
+   "horizon": "none",
+   "bridge_inactive": true
+  },
+  {
+   "name": "ether6",
+   "type": "ether",
+   "running": false,
+   "switch": "switch1",
+   "rx_flow_control": "off",
+   "tx_flow_control": "off",
+   "loop_protect": "default",
+   "bridge": "bridge",
+   "hw": true,
+   "hw_known": true,
+   "hw_offload": false,
+   "hw_offload_known": true,
+   "horizon": "none",
+   "bridge_inactive": true
+  },
+  {
+   "name": "ether7",
+   "type": "ether",
+   "running": false,
+   "switch": "switch1",
+   "rx_flow_control": "off",
+   "tx_flow_control": "off",
+   "loop_protect": "default",
+   "bridge": "bridge",
+   "hw": true,
+   "hw_known": true,
+   "hw_offload": false,
+   "hw_offload_known": true,
+   "horizon": "none",
+   "bridge_inactive": true
+  },
+  {
+   "name": "ether8",
+   "type": "ether",
+   "running": false,
+   "switch": "switch1",
+   "rx_flow_control": "off",
+   "tx_flow_control": "off",
+   "loop_protect": "default",
+   "bridge": "bridge",
+   "hw": true,
+   "hw_known": true,
+   "hw_offload": false,
+   "hw_offload_known": true,
+   "horizon": "none",
+   "bridge_inactive": true
+  },
+  {
+   "name": "sfp-sfpplus1",
+   "type": "ether",
+   "running": true,
+   "switch": "switch1",
+   "rx_flow_control": "off",
+   "tx_flow_control": "off",
+   "loop_protect": "default",
+   "trunk": true,
+   "bridge": "bridge",
+   "hw": true,
+   "hw_known": true,
+   "hw_offload": true,
+   "hw_offload_known": true,
+   "horizon": "none",
+   "bps": 58000000,
+   "rate_known": true
+  }
+ ],
+ "replies": {
+  "/tool/graphing/interface/print": {},
+  "/tool/graphing/resource/print": {},
+  "/tool/graphing/queue/print": {},
+  "/ip/traffic-flow/print": {
+   "rows": [
+    {
+     "enabled": "false",
+     "interfaces": "all",
+     "cache-entries": "256k",
+     "active-flow-timeout": "30m",
+     "inactive-flow-timeout": "15s",
+     "packet-sampling": "false",
+     "sampling-interval": "0",
+     "sampling-space": "0"
+    }
+   ]
+  },
+  "/ip/traffic-flow/target/print": {},
+  "/tool/sniffer/print": {
+   "rows": [
+    {
+     "running": "false",
+     "interface": "all",
+     "only-headers": "false",
+     "memory-limit": "100KiB",
+     "file-name": "",
+     "streaming-enabled": "false",
+     "streaming-server": "0.0.0.0:37008",
+     "filter-stream": "false"
+    }
+   ]
+  },
+  "/interface/ethernet/switch/print": {
+   "rows": [
+    {
+     ".id": "*0",
+     "name": "switch1",
+     "type": "Marvell-88E6393X",
+     "l3-hw-offloading": "false",
+     "mirror-source": "none",
+     "mirror-target": "none",
+     "mirror-egress-target": "none",
+     "cpu-flow-control": "true",
+     "rspan": "false"
+    }
+   ]
+  },
+  "/interface/ethernet/switch/rule/print": {},
+  "/interface/bridge/settings/print": {
+   "rows": [
+    {
+     "use-ip-firewall": "false",
+     "use-ip-firewall-for-vlan": "false",
+     "use-ip-firewall-for-pppoe": "false",
+     "allow-fast-path": "true",
+     "bridge-fast-path-active": "true",
+     "bridge-fast-path-packets": "98234511",
+     "bridge-fast-path-bytes": "9823451100",
+     "bridge-fast-forward-packets": "0",
+     "bridge-fast-forward-bytes": "0"
+    }
+   ]
+  },
+  "/interface/bonding/print": {},
+  "/snmp/print": {
+   "rows": [
+    {
+     "enabled": "false",
+     "contact": "",
+     "location": "",
+     "engine-id-suffix": "",
+     "trap-target": "",
+     "trap-community": "DO-NOT-STORE-trap-community",
+     "trap-version": "1",
+     "trap-generators": "temp-exception",
+     "vrf": "main"
+    }
+   ]
+  },
+  "/snmp/community/print": {
+   "rows": [
+    {
+     "name": "DO-NOT-STORE-community",
+     "addresses": "::/0",
+     "security": "none",
+     "read-access": "true",
+     "write-access": "false",
+     "authentication-protocol": "MD5",
+     "encryption-protocol": "DES",
+     "authentication-password": "DO-NOT-STORE-auth",
+     "encryption-password": "DO-NOT-STORE-priv",
+     "disabled": "false",
+     "default": "true"
+    }
+   ]
+  },
+  "/user/active/print": {
+   "rows": [
+    {
+     ".id": "*1",
+     "when": "2026-01-10 08:00:00",
+     "name": "nms",
+     "address": "192.0.2.10",
+     "via": "api",
+     "group": "nms-read"
+    }
+   ]
+  },
+  "/ip/firewall/filter/print": {
+   "count": 0
+  },
+  "/interface/bridge/filter/print": {
+   "count": 0
+  },
+  "/system/logging/print": {
+   "rows": [
+    {
+     ".id": "*1",
+     "topics": "info",
+     "action": "memory",
+     "disabled": "false",
+     "prefix": ""
+    },
+    {
+     ".id": "*2",
+     "topics": "error",
+     "action": "memory",
+     "disabled": "false",
+     "prefix": ""
+    },
+    {
+     ".id": "*3",
+     "topics": "warning",
+     "action": "memory",
+     "disabled": "false",
+     "prefix": ""
+    },
+    {
+     ".id": "*4",
+     "topics": "critical",
+     "action": "echo",
+     "disabled": "false",
+     "prefix": ""
+    }
+   ]
+  },
+  "/system/logging/action/print": {
+   "rows": [
+    {
+     "name": "memory",
+     "target": "memory",
+     "memory-lines": "1000",
+     "default": "true"
+    },
+    {
+     "name": "disk",
+     "target": "disk",
+     "disk-file-name": "log",
+     "default": "true"
+    },
+    {
+     "name": "echo",
+     "target": "echo",
+     "default": "true"
+    },
+    {
+     "name": "remote",
+     "target": "remote",
+     "remote": "0.0.0.0",
+     "remote-port": "514",
+     "default": "true"
+    }
+   ]
+  },
+  "/system/scheduler/print": {},
+  "/user/group/print": {
+   "rows": [
+    {
+     "name": "read",
+     "policy": "local,telnet,ssh,reboot,read,test,winbox,password,web,sniff,sensitive,api,romon,rest-api,!ftp,!write,!policy",
+     "skin": "default"
+    },
+    {
+     "name": "write",
+     "policy": "local,telnet,ssh,reboot,read,write,test,winbox,password,web,sniff,sensitive,api,romon,rest-api,!ftp,!policy",
+     "skin": "default"
+    },
+    {
+     "name": "full",
+     "policy": "local,telnet,ssh,ftp,reboot,read,write,policy,test,winbox,password,web,sniff,sensitive,api,romon,rest-api",
+     "skin": "default"
+    },
+    {
+     "name": "nms-read",
+     "policy": "read,test,api,!local,!telnet,!ssh,!ftp,!reboot,!write,!policy,!winbox,!password,!web,!sniff,!sensitive,!romon,!rest-api",
+     "skin": "default"
+    }
+   ]
+  },
+  "/ip/dns/print": {
+   "rows": [
+    {
+     "allow-remote-requests": "false",
+     "servers": "",
+     "cache-size": "2048KiB"
+    }
+   ]
+  },
+  "/ip/dhcp-server/print": {
+   "rows": [
+    {
+     ".id": "*1",
+     "name": "dhcp-lan",
+     "interface": "bridge",
+     "address-pool": "pool-lan",
+     "lease-time": "30m",
+     "disabled": "false"
+    }
+   ]
+  },
+  "/interface/wifi/capsman/print": {
+   "rows": [
+    {
+     "enabled": "false"
+    }
+   ]
+  },
+  "/system/device-mode/print": {
+   "rows": [
+    {
+     "mode": "advanced",
+     "allowed-versions": "7.13+,6.49.8+",
+     "flagged": "false",
+     "flagging-enabled": "true",
+     "scheduler": "true",
+     "socks": "true",
+     "fetch": "true",
+     "pptp": "true",
+     "l2tp": "true",
+     "bandwidth-test": "true",
+     "traffic-gen": "false",
+     "sniffer": "true",
+     "ipsec": "true",
+     "romon": "true",
+     "proxy": "true",
+     "hotspot": "true",
+     "smb": "true",
+     "email": "true",
+     "zerotier": "true",
+     "container": "false",
+     "install-any-version": "false",
+     "partitions": "false",
+     "routerboard": "false",
+     "attempt-count": "0"
+    }
+   ]
+  },
+  "/system/identity/print": {
+   "rows": [
+    {
+     "name": "router_clean"
+    }
+   ]
+  },
+  "/system/package/update/print": {
+   "rows": [
+    {
+     "channel": "stable",
+     "installed-version": "7.25"
+    }
+   ]
+  },
+  "/system/routerboard/print": {
+   "rows": [
+    {
+     "routerboard": "true",
+     "board-name": "RB5009UG+S+",
+     "model": "RB5009UG+S+",
+     "serial-number": "TEST00000004",
+     "firmware-type": "generic",
+     "factory-firmware": "7.10",
+     "current-firmware": "7.25",
+     "upgrade-firmware": "7.25"
+    }
+   ]
+  },
+  "/interface/pppoe-client/print": {},
+  "/ip/dhcp-server/lease/print": {
+   "rows": [
+    {
+     ".id": "*1",
+     "address": "192.0.2.101",
+     "mac-address": "02:00:5E:10:00:01",
+     "server": "dhcp-lan",
+     "status": "bound",
+     "active-address": "192.0.2.101",
+     "active-mac-address": "02:00:5E:10:00:01",
+     "host-name": "laptop-1",
+     "dynamic": "true",
+     "disabled": "false",
+     "expires-after": "21m3s",
+     "last-seen": "8m57s"
+    },
+    {
+     ".id": "*2",
+     "address": "192.0.2.102",
+     "mac-address": "02:00:5E:10:00:02",
+     "server": "dhcp-lan",
+     "status": "bound",
+     "active-address": "192.0.2.102",
+     "active-mac-address": "02:00:5E:10:00:02",
+     "host-name": "phone-1",
+     "dynamic": "true",
+     "disabled": "false",
+     "expires-after": "21m3s",
+     "last-seen": "8m57s"
+    },
+    {
+     ".id": "*3",
+     "address": "192.0.2.103",
+     "mac-address": "02:00:5E:10:00:03",
+     "server": "dhcp-lan",
+     "status": "bound",
+     "active-address": "192.0.2.103",
+     "active-mac-address": "02:00:5E:10:00:03",
+     "host-name": "tablet-1",
+     "dynamic": "true",
+     "disabled": "false",
+     "expires-after": "21m3s",
+     "last-seen": "8m57s"
+    },
+    {
+     ".id": "*4",
+     "address": "192.0.2.104",
+     "mac-address": "02:00:5E:10:00:04",
+     "server": "dhcp-lan",
+     "status": "bound",
+     "active-address": "192.0.2.104",
+     "active-mac-address": "02:00:5E:10:00:04",
+     "host-name": "printer-1",
+     "dynamic": "true",
+     "disabled": "false",
+     "expires-after": "21m3s",
+     "last-seen": "8m57s"
+    },
+    {
+     ".id": "*5",
+     "address": "192.0.2.105",
+     "mac-address": "02:00:5E:10:00:05",
+     "server": "dhcp-lan",
+     "status": "bound",
+     "active-address": "192.0.2.105",
+     "active-mac-address": "02:00:5E:10:00:05",
+     "host-name": "camera-1",
+     "dynamic": "true",
+     "disabled": "false",
+     "expires-after": "21m3s",
+     "last-seen": "8m57s"
+    },
+    {
+     ".id": "*6",
+     "address": "192.0.2.106",
+     "mac-address": "02:00:5E:10:00:06",
+     "server": "dhcp-lan",
+     "status": "bound",
+     "active-address": "192.0.2.106",
+     "active-mac-address": "02:00:5E:10:00:06",
+     "host-name": "desk-1",
+     "dynamic": "true",
+     "disabled": "false",
+     "expires-after": "21m3s",
+     "last-seen": "8m57s"
+    }
+   ]
+  },
+  "/system/resource/print": {
+   "rows": [
+    {
+     "uptime": "6w4d2h51m3s",
+     "version": "7.25 (stable)",
+     "build-time": "2026-01-05 09:30:00",
+     "free-memory": "846200832",
+     "total-memory": "1073741824",
+     "cpu": "ARM64",
+     "cpu-count": "4",
+     "cpu-frequency": "1400",
+     "cpu-load": "3",
+     "free-hdd-space": "5242880",
+     "total-hdd-space": "16777216",
+     "architecture-name": "arm64",
+     "board-name": "RB5009UG+S+",
+     "platform": "MikroTik"
+    }
+   ]
+  },
+  "/interface/wifi/print": {
+   "count": 0
+  },
+  "/interface/wifi/registration-table/print": {},
+  "/caps-man/interface/print": {
+   "trap": "no such command prefix"
+  },
+  "/interface/wireless/print": {
+   "trap": "no such command prefix"
+  },
+  "/log/print": {
+   "rows": [
+    {
+     ".id": "*1",
+     "time": "2026-01-10 08:00:03",
+     "topics": "system,info",
+     "message": "router rebooted"
+    },
+    {
+     ".id": "*2",
+     "time": "2026-01-10 08:00:09",
+     "topics": "interface,info",
+     "message": "ether1 link up (speed 1G, full duplex)"
+    },
+    {
+     ".id": "*3",
+     "time": "2026-01-10 08:00:12",
+     "topics": "bridge,stp",
+     "message": "bridge: root port changed"
+    },
+    {
+     ".id": "*4",
+     "time": "2026-01-10 08:02:40",
+     "topics": "system,info,account",
+     "message": "user nms logged in from 192.0.2.10 via api"
+    },
+    {
+     ".id": "*5",
+     "time": "2026-01-12 03:10:00",
+     "topics": "system,info",
+     "message": "ntp change time Jan/12/2026 03:10:00 => Jan/12/2026 03:10:00"
+    }
+   ]
+  },
+  "/interface/vlan/print": {},
+  "/interface/bridge/vlan/print": {
+   "rows": [
+    {
+     "bridge": "bridge",
+     "vlan-ids": "1",
+     "tagged": "",
+     "untagged": "ether2,ether3,ether4,ether5,ether6,ether7,ether8",
+     "current-tagged": "",
+     "current-untagged": "ether2,ether3,ether4,ether5,ether6,ether7,ether8",
+     "dynamic": "false",
+     "disabled": "false"
+    },
+    {
+     "bridge": "bridge",
+     "vlan-ids": "10",
+     "tagged": "bridge,sfp-sfpplus1",
+     "untagged": "",
+     "current-tagged": "bridge,sfp-sfpplus1",
+     "current-untagged": "",
+     "dynamic": "false",
+     "disabled": "false"
+    },
+    {
+     "bridge": "bridge",
+     "vlan-ids": "20",
+     "tagged": "bridge,sfp-sfpplus1",
+     "untagged": "",
+     "current-tagged": "bridge,sfp-sfpplus1",
+     "current-untagged": "",
+     "dynamic": "false",
+     "disabled": "false"
+    },
+    {
+     "bridge": "bridge",
+     "vlan-ids": "99",
+     "tagged": "bridge,sfp-sfpplus1",
+     "untagged": "",
+     "current-tagged": "bridge,sfp-sfpplus1",
+     "current-untagged": "",
+     "dynamic": "false",
+     "disabled": "false"
+    }
+   ]
+  },
+  "/ip/arp/print": {
+   "rows": [
+    {
+     "address": "192.0.2.101",
+     "mac-address": "02:00:5E:10:00:01",
+     "interface": "bridge",
+     "dynamic": "true",
+     "complete": "true",
+     "status": "reachable",
+     "published": "false",
+     "invalid": "false",
+     "DHCP": "false",
+     "disabled": "false"
+    },
+    {
+     "address": "192.0.2.102",
+     "mac-address": "02:00:5E:10:00:02",
+     "interface": "bridge",
+     "dynamic": "true",
+     "complete": "true",
+     "status": "reachable",
+     "published": "false",
+     "invalid": "false",
+     "DHCP": "false",
+     "disabled": "false"
+    },
+    {
+     "address": "192.0.2.103",
+     "mac-address": "02:00:5E:10:00:03",
+     "interface": "bridge",
+     "dynamic": "true",
+     "complete": "true",
+     "status": "reachable",
+     "published": "false",
+     "invalid": "false",
+     "DHCP": "false",
+     "disabled": "false"
+    },
+    {
+     "address": "192.0.2.104",
+     "mac-address": "02:00:5E:10:00:04",
+     "interface": "bridge",
+     "dynamic": "true",
+     "complete": "true",
+     "status": "reachable",
+     "published": "false",
+     "invalid": "false",
+     "DHCP": "false",
+     "disabled": "false"
+    },
+    {
+     "address": "192.0.2.105",
+     "mac-address": "02:00:5E:10:00:05",
+     "interface": "bridge",
+     "dynamic": "true",
+     "complete": "true",
+     "status": "reachable",
+     "published": "false",
+     "invalid": "false",
+     "DHCP": "false",
+     "disabled": "false"
+    },
+    {
+     "address": "192.0.2.106",
+     "mac-address": "02:00:5E:10:00:06",
+     "interface": "bridge",
+     "dynamic": "true",
+     "complete": "true",
+     "status": "reachable",
+     "published": "false",
+     "invalid": "false",
+     "DHCP": "false",
+     "disabled": "false"
+    },
+    {
+     "address": "198.51.100.1",
+     "mac-address": "02:00:5E:00:53:FE",
+     "interface": "ether1",
+     "dynamic": "true",
+     "complete": "true",
+     "status": "reachable",
+     "published": "false",
+     "invalid": "false",
+     "DHCP": "false",
+     "disabled": "false"
+    }
+   ]
+  },
+  "/ping": {
+   "rows": [
+    {
+     "seq": "0",
+     "host": "198.51.100.53",
+     "size": "56",
+     "ttl": "57",
+     "time": "11ms120us",
+     "sent": "1",
+     "received": "1",
+     "packet-loss": "0",
+     "min-rtt": "11ms120us",
+     "avg-rtt": "11ms400us",
+     "max-rtt": "11ms120us"
+    },
+    {
+     "seq": "1",
+     "host": "198.51.100.53",
+     "size": "56",
+     "ttl": "57",
+     "time": "12ms240us",
+     "sent": "2",
+     "received": "2",
+     "packet-loss": "0",
+     "min-rtt": "11ms120us",
+     "avg-rtt": "11ms400us",
+     "max-rtt": "12ms240us"
+    },
+    {
+     "seq": "2",
+     "host": "198.51.100.53",
+     "size": "56",
+     "ttl": "57",
+     "time": "13ms360us",
+     "sent": "3",
+     "received": "3",
+     "packet-loss": "0",
+     "min-rtt": "11ms120us",
+     "avg-rtt": "12ms400us",
+     "max-rtt": "13ms360us"
+    },
+    {
+     "seq": "3",
+     "host": "198.51.100.53",
+     "size": "56",
+     "ttl": "57",
+     "time": "14ms480us",
+     "sent": "4",
+     "received": "4",
+     "packet-loss": "0",
+     "min-rtt": "11ms120us",
+     "avg-rtt": "12ms400us",
+     "max-rtt": "14ms480us"
+    },
+    {
+     "seq": "4",
+     "host": "198.51.100.53",
+     "size": "56",
+     "ttl": "57",
+     "time": "15ms600us",
+     "sent": "5",
+     "received": "5",
+     "packet-loss": "0",
+     "min-rtt": "11ms120us",
+     "avg-rtt": "13ms400us",
+     "max-rtt": "15ms600us"
+    }
+   ]
+  }
+ }
+}

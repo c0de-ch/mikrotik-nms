@@ -307,6 +307,189 @@
      "attempt-count": "0"
     }
    ]
+  },
+  "/system/identity/print": {
+   "rows": [
+    {
+     "name": "ap_clean"
+    }
+   ]
+  },
+  "/system/package/update/print": {
+   "rows": [
+    {
+     "channel": "stable",
+     "installed-version": "7.20.4"
+    }
+   ]
+  },
+  "/system/routerboard/print": {
+   "rows": [
+    {
+     "routerboard": "true",
+     "board-name": "cAP ax",
+     "model": "cAP ax",
+     "serial-number": "TEST00000002",
+     "firmware-type": "generic",
+     "factory-firmware": "7.10",
+     "current-firmware": "7.20.4",
+     "upgrade-firmware": "7.20.4"
+    }
+   ]
+  },
+  "/interface/pppoe-client/print": {},
+  "/ip/dhcp-server/lease/print": {},
+  "/system/resource/print": {
+   "rows": [
+    {
+     "uptime": "2w1d6h2m11s",
+     "version": "7.20.4 (stable)",
+     "build-time": "2026-01-05 09:30:00",
+     "free-memory": "131072000",
+     "total-memory": "268435456",
+     "cpu": "ARM64",
+     "cpu-count": "4",
+     "cpu-frequency": "864",
+     "cpu-load": "4",
+     "free-hdd-space": "5242880",
+     "total-hdd-space": "16777216",
+     "architecture-name": "arm64",
+     "board-name": "cAP ax",
+     "platform": "MikroTik"
+    }
+   ]
+  },
+  "/interface/wifi/print": {
+   "count": 2
+  },
+  "/interface/wifi/registration-table/print": {
+   "rows": [
+    {
+     "interface": "wifi1",
+     "ssid": "lab",
+     "mac-address": "02:00:5E:10:00:01",
+     "uptime": "3h12m40s",
+     "last-activity": "1s",
+     "signal": "-58",
+     "auth-type": "wpa2-psk",
+     "band": "5ghz-ax",
+     "tx-rate": "286800000",
+     "rx-rate": "258000000",
+     "packets": "81234,60211",
+     "bytes": "70123456,9123456",
+     "authorized": "true",
+     "last-ip": "192.0.2.101"
+    },
+    {
+     "interface": "wifi1",
+     "ssid": "lab",
+     "mac-address": "02:00:5E:10:00:02",
+     "uptime": "3h12m40s",
+     "last-activity": "1s",
+     "signal": "-63",
+     "auth-type": "wpa2-psk",
+     "band": "5ghz-ax",
+     "tx-rate": "286800000",
+     "rx-rate": "258000000",
+     "packets": "81234,60211",
+     "bytes": "70123456,9123456",
+     "authorized": "true",
+     "last-ip": "192.0.2.102"
+    },
+    {
+     "interface": "wifi2",
+     "ssid": "lab",
+     "mac-address": "02:00:5E:10:00:03",
+     "uptime": "3h12m40s",
+     "last-activity": "1s",
+     "signal": "-71",
+     "auth-type": "wpa2-psk",
+     "band": "2ghz-ax",
+     "tx-rate": "286800000",
+     "rx-rate": "258000000",
+     "packets": "81234,60211",
+     "bytes": "70123456,9123456",
+     "authorized": "true",
+     "last-ip": "192.0.2.103"
+    }
+   ]
+  },
+  "/caps-man/interface/print": {
+   "trap": "no such command prefix"
+  },
+  "/interface/wireless/print": {
+   "trap": "no such command prefix"
+  },
+  "/log/print": {
+   "rows": [
+    {
+     ".id": "*1",
+     "time": "2026-01-10 08:00:03",
+     "topics": "system,info",
+     "message": "router rebooted"
+    },
+    {
+     ".id": "*2",
+     "time": "2026-01-10 08:00:09",
+     "topics": "interface,info",
+     "message": "ether1 link up (speed 1G, full duplex)"
+    },
+    {
+     ".id": "*3",
+     "time": "2026-01-10 08:00:12",
+     "topics": "bridge,stp",
+     "message": "bridge: root port changed"
+    },
+    {
+     ".id": "*4",
+     "time": "2026-01-10 08:02:40",
+     "topics": "system,info,account",
+     "message": "user nms logged in from 192.0.2.10 via api"
+    },
+    {
+     ".id": "*5",
+     "time": "2026-01-12 03:10:00",
+     "topics": "system,info",
+     "message": "ntp change time Jan/12/2026 03:10:00 => Jan/12/2026 03:10:00"
+    },
+    {
+     ".id": "*6",
+     "time": "2026-01-12 07:15:02",
+     "topics": "wireless,info",
+     "message": "02:00:5E:10:00:02@wifi1 connected, signal strength -63"
+    }
+   ]
+  },
+  "/interface/vlan/print": {},
+  "/interface/bridge/vlan/print": {
+   "rows": [
+    {
+     "bridge": "bridge",
+     "vlan-ids": "1",
+     "tagged": "",
+     "untagged": "ether1,ether2,wifi1,wifi2",
+     "current-tagged": "",
+     "current-untagged": "ether1,ether2,wifi1,wifi2",
+     "dynamic": "false",
+     "disabled": "false"
+    }
+   ]
+  },
+  "/ip/arp/print": {
+   "rows": [
+    {
+     "address": "192.0.2.1",
+     "mac-address": "02:00:5E:00:53:01",
+     "interface": "bridge",
+     "dynamic": "true",
+     "complete": "true",
+     "status": "reachable",
+     "published": "false",
+     "invalid": "false",
+     "DHCP": "false",
+     "disabled": "false"
+    }
+   ]
   }
  }
 }
