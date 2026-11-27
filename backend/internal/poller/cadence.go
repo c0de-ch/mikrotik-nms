@@ -259,6 +259,8 @@ func (c fleetCadence) Interval(_ queries.Device, tier devclass.Tier, now time.Ti
 		return defaultCPUInterval
 	case devclass.TierCPUPost:
 		return defaultCPUPostInterval
+	case devclass.TierAudit:
+		return devclass.Cadence(devclass.C1, tier) // 6 h on every class; no fleet floor
 	}
 	return c.floors.of(tier, now)
 }

@@ -104,6 +104,9 @@ type portCounterSample struct {
 	rxPackets, txPackets int64
 	extra                extraCounters
 	rate                 PortRate
+	// rated: rate was computed from this reading and the one before (it is
+	// not the zero of a first read, a counter reset or a gap).
+	rated bool
 }
 
 // The drop, error and link-down counters of a Tier 0 row, stored per minute
@@ -729,6 +732,7 @@ func (c *PortStatsCollector) ingest(deviceID string, stats []routeros.InterfaceS
 			Disabled: s.Disabled,
 		}
 		extra := extrasOf(s)
+		rated := false // the rate rests on two comparable readings
 
 		if prev != nil {
 			if dt := t.Sub(prev.at).Seconds(); dt > 0 && dt <= maxGap {
@@ -736,6 +740,7 @@ func (c *PortStatsCollector) ingest(deviceID string, stats []routeros.InterfaceS
 				reset := false
 				if prev.hasCounters && s.HasCounters {
 					dRx, dTx := s.RxBytes-prev.rxBytes, s.TxBytes-prev.txBytes
+					rated = dRx >= 0 && dTx >= 0
 					switch {
 					case dRx < 0 || dTx < 0:
 						reset = true
@@ -768,7 +773,28 @@ func (c *PortStatsCollector) ingest(deviceID string, stats []routeros.InterfaceS
 		prev.rxPackets, prev.txPackets = s.RxPackets, s.TxPackets
 		prev.extra = extra
 		prev.rate = rate
+		prev.rated = rated
 	}
+}
+
+// DeviceRates returns the traffic on each of deviceID's interfaces — rx plus
+// tx, in bits per second, over its last counter interval — for the
+// interfaces whose rate rests on two comparable readings. An interface that
+// is missing has no rate yet (first read, a counter reset, a gap); one with
+// 0 was idle. A nil collector has none.
+func (c *PortStatsCollector) DeviceRates(deviceID string) map[string]int64 {
+	out := map[string]int64{}
+	if c == nil {
+		return out
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for key, s := range c.samples {
+		if key.device == deviceID && s.rated {
+			out[key.iface] = s.rate.RxBps + s.rate.TxBps
+		}
+	}
+	return out
 }
 
 // portDelta is one observed interval's counter increase. bytes says the byte

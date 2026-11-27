@@ -163,6 +163,7 @@ func TestReadBridgeState724OnePrintNoMonitors(t *testing.T) {
 	if e1.Role != "root" || e1.Status != "forwarding" || e1.PortState != "in-bridge" || !e1.HasRuntime ||
 		e1.Edge || !e1.PointToPoint || e1.DesignatedBridge != "0x8000.D4:01:C3:00:00:01" ||
 		e1.TopologyChanges != 3 || !e1.HasTopologyChanges || !e1.HWOffload || !e1.HWOffloadReported ||
+		!e1.HW || !e1.HWReported ||
 		e1.HWOffloadGroup != "switch1" || e1.PVID != 1 || e1.PathCost != 10 || e1.EdgeConfig != "auto" {
 		t.Fatalf("ether1 = %+v", e1)
 	}

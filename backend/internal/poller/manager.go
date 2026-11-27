@@ -53,6 +53,10 @@ type Manager struct {
 	// feeds it. Both only do anything once Start runs with polling on.
 	load *LoadRecorder
 	cpu  *CPUSampler
+	// audit runs the hygiene audit (Tier 7), the diagnose pass and the
+	// passes an admin asks for. Built in NewManager because main hands it to
+	// the API; its loop only runs with polling on.
+	audit *Auditor
 	// inventory schedules Tier 6 (the info refresh) per device, topoClock
 	// the topology loop's neighbor and route reads; classes holds the class
 	// probe's pending changes (hysteresis).
@@ -134,7 +138,21 @@ func NewManager(db *sql.DB, pool *routeros.Pool, hub *ws.Hub, cfg *config.Config
 	m.portStats.UseCoverageSink(m.load)
 	m.cpu = NewCPUSampler(db, pool, hub, m.load, m.portStats)
 	m.cpu.UseCadence(m.cadence)
+	// The hygiene audit and the diagnose pass: they read the device's CPU
+	// samples, interface snapshot and capabilities from the collectors
+	// above, and take the flow collector's "exporter accepted" as the start
+	// of a CPU watch (G6).
+	m.audit = NewAuditor(db, pool, m.load, m.portStats, m.caps)
+	m.audit.UseCadence(m.cadence)
+	m.audit.UseCollectorPort(flow.ListenPort(flowCfg.Listen))
+	m.flows.UseAcceptHook(m.audit.NoteExporterAccepted)
 	return m
+}
+
+// Audit returns the hygiene auditor (non-nil right after NewManager) behind
+// the device page's "Audit now" and "Diagnose now".
+func (m *Manager) Audit() *Auditor {
+	return m.audit
 }
 
 // LatestCPU returns every device's latest quiet-window CPU sample with its
@@ -234,6 +252,9 @@ func (m *Manager) Start() {
 
 	speedTests := NewSpeedTestPoller(m.db, m.hub, defaultSpeedTestInterval)
 	go speedTests.Run(ctx)
+
+	// The hygiene audit (every 6 h per device) and the diagnose pass.
+	go m.audit.Run(ctx)
 
 	// Alerting reads what the loops above store — it never contacts a
 	// device — and only runs here, on an instance that polls: on a copy of a
@@ -1030,6 +1051,7 @@ func (m *Manager) retentionLoop(ctx context.Context) {
 
 			sweepPortStats(m.db, time.Now())
 			sweepDeviceLoad(m.db, time.Now())
+			sweepAudit(m.db, time.Now())
 
 			flow.Sweep(m.db, time.Now())
 

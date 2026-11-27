@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"log"
 	"net/netip"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -198,20 +199,46 @@ func (w *LoginWatch) isSelf(dev *queries.Device, address string, now time.Time) 
 
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if now.Sub(w.selfAt) >= loginSelfSettingTTL {
+	set, ob := w.selfLocked(dev, now)
+	return set[addr] || (ob.ok && ob.addr == addr)
+}
+
+// selfLocked returns the addresses the NMS's sessions to dev come from: the
+// nms_source_addresses setting and the outbound address towards the device,
+// both cached. w.mu held.
+func (w *LoginWatch) selfLocked(dev *queries.Device, now time.Time) (map[netip.Addr]bool, outboundAddr) {
+	if now.Sub(w.selfAt) >= loginSelfSettingTTL || now.Before(w.selfAt) {
 		w.selfSet = parseSelfAddresses(w.settingValue())
 		w.selfAt = now
 	}
-	if w.selfSet[addr] {
-		return true
-	}
 	ob, ok := w.outbound[dev.Address]
-	if !ok || now.Sub(ob.at) >= loginOutboundTTL {
+	if !ok || now.Sub(ob.at) >= loginOutboundTTL || now.Before(ob.at) {
 		ob = outboundAddr{at: now}
 		ob.addr, ob.ok = w.outboundFn(dev.Address, dev.APIPort)
 		w.outbound[dev.Address] = ob
 	}
-	return ob.ok && ob.addr == addr
+	return w.selfSet, ob
+}
+
+// SelfAddresses lists the addresses the NMS's own sessions to dev come from
+// — the outbound address towards the device first, then the configured
+// ones. Empty when neither is known: a session cannot be told apart then.
+func (w *LoginWatch) SelfAddresses(dev *queries.Device, now time.Time) []netip.Addr {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	set, ob := w.selfLocked(dev, now)
+	var out []netip.Addr
+	if ob.ok {
+		out = append(out, ob.addr)
+	}
+	rest := make([]netip.Addr, 0, len(set))
+	for a := range set {
+		if !ob.ok || a != ob.addr {
+			rest = append(rest, a)
+		}
+	}
+	slices.SortFunc(rest, func(a, b netip.Addr) int { return a.Compare(b) })
+	return append(out, rest...)
 }
 
 func (w *LoginWatch) settingValue() string {
