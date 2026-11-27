@@ -43,6 +43,7 @@ type auditHarness struct {
 	devices map[string]hygienetest.Personality
 	down    map[string]bool // no pooled session
 	fail    map[string]map[string]error
+	panicOn map[string]string // device → the command whose handling panics
 	sent    map[string][]sentCommand
 	cpu     map[string]CPUReading
 	self    []netip.Addr
@@ -59,8 +60,12 @@ func (r harnessRunner) Run(command string, args ...string) (*ros.Reply, error) {
 	r.h.mu.Lock()
 	p := r.h.devices[r.id]
 	err := r.h.fail[r.id][command]
+	boom := r.h.panicOn[r.id] == command
 	r.h.sent[r.id] = append(r.h.sent[r.id], sentCommand{at: r.h.clock.now(), command: strings.TrimSpace(command + " " + strings.Join(args, " "))})
 	r.h.mu.Unlock()
+	if boom {
+		panic("the reply of " + command + " could not be handled")
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -74,7 +79,7 @@ func newAuditHarness(t *testing.T) *auditHarness {
 		t: t, db: db, clock: &testClock{t: at(12, 0, 0)}, reg: NewScheduleRegistry(),
 		cs:      &stubCadence{iv: map[devclass.Tier]time.Duration{devclass.TierAudit: 6 * time.Hour}, paused: map[string]bool{}},
 		devices: map[string]hygienetest.Personality{}, down: map[string]bool{}, fail: map[string]map[string]error{},
-		sent: map[string][]sentCommand{}, cpu: map[string]CPUReading{},
+		panicOn: map[string]string{}, sent: map[string][]sentCommand{}, cpu: map[string]CPUReading{},
 		self: []netip.Addr{netip.MustParseAddr(hygienetest.NMSAddress)},
 	}
 	// The device the others hang off: the far end of their trunks and the
@@ -1142,6 +1147,66 @@ func TestAdminPasses(t *testing.T) {
 	}
 	if h.count("paused")+h.count("down") != 0 {
 		t.Fatal("a refused pass sent commands")
+	}
+}
+
+// A scheduled audit that stepped aside for a high CPU holds the device's
+// slot until the CPU drops — which is exactly when an admin asks for the
+// pass that reads a busy device. "Diagnose now" ends the waiting audit, as
+// an alert's pass does; it does not answer "a pass is already running".
+func TestDiagnoseNowEndsAWaitingAudit(t *testing.T) {
+	h := newAuditHarness(t)
+	graphing := hygienetest.Load(t, "switch48_clean").With("/tool/graphing/interface/print", graphingRule)
+	h.add("sw", graphing)
+	h.add("recent", graphing)
+	// "recent" had a diagnose pass ten minutes ago: another is refused, and
+	// a refused request must leave the waiting audit alone.
+	old, _ := queries.InsertAuditRun(h.db, &queries.AuditRun{DeviceID: "recent", Kind: queries.AuditKindDiagnose, Reason: PassAdmin, StartedAt: h.clock.now().Add(-10 * time.Minute)})
+	_ = queries.FinishAuditRun(h.db, &queries.AuditRun{ID: old, FinishedAt: h.clock.now().Add(-5 * time.Minute), Status: queries.AuditComplete, Reads: 11})
+
+	h.run(auditStartupDelay + 65*time.Second)
+	audited := h.count("sw")
+	if audited < 3 || audited >= 19 {
+		t.Fatalf("mid-pass: %d commands", audited)
+	}
+	h.setCPU("sw", 100)
+	h.setCPU("recent", 100)
+	h.run(5 * time.Minute)
+	if h.count("sw") != audited || h.a.Running("sw") != queries.AuditKindAudit {
+		t.Fatalf("the audit did not step aside: %d commands, running %q", h.count("sw"), h.a.Running("sw"))
+	}
+
+	run, err := h.a.Request("sw", queries.AuditKindDiagnose, "alice")
+	if err != nil {
+		t.Fatalf("diagnose now while a scheduled audit waits for the CPU to drop: %v", err)
+	}
+	if run.Kind != queries.AuditKindDiagnose || h.a.Running("sw") != queries.AuditKindDiagnose {
+		t.Fatalf("run = %+v, running %q", run, h.a.Running("sw"))
+	}
+	h.run(8 * time.Minute)
+	audit := h.lastRun("sw", queries.AuditKindAudit)
+	if audit.Status != queries.AuditPartial || audit.Reads != audited || !strings.Contains(audit.Detail, "diagnose") {
+		t.Fatalf("the waiting audit = %+v, want it ended with what it had read", audit)
+	}
+	diag := h.lastRun("sw", queries.AuditKindDiagnose)
+	if diag.Status != queries.AuditComplete || diag.Reason != PassAdmin || diag.RequestedBy != "alice" || diag.Reads != 11 {
+		t.Fatalf("the admin's diagnose pass = %+v", diag)
+	}
+	if h.count("sw") != audited+11 {
+		t.Fatalf("%d commands, want the audit's %d and the diagnose pass's 11", h.count("sw"), audited)
+	}
+
+	// Refused for its own reason — the hour — and the waiting audit stays.
+	var budget *PassBudgetError
+	if _, err := h.a.Request("recent", queries.AuditKindDiagnose, "alice"); !errors.As(err, &budget) {
+		t.Fatalf("a second diagnose pass within the hour: %v, want the hourly budget", err)
+	}
+	if h.a.Running("recent") != queries.AuditKindAudit {
+		t.Fatalf("a refused request ended the waiting audit (running %q)", h.a.Running("recent"))
+	}
+	// "Audit now" does not push a waiting audit aside: it is an audit too.
+	if _, err := h.a.Request("recent", queries.AuditKindAudit, "alice"); !errors.Is(err, ErrPassRunning) {
+		t.Fatalf("audit now while an audit waits: %v", err)
 	}
 }
 

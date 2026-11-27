@@ -513,12 +513,43 @@ func (a *Auditor) NextAllowed(deviceID, kind string, now time.Time) time.Time {
 
 // Running reports the kind of pass in progress on the device ("" = none).
 func (a *Auditor) Running(deviceID string) string {
+	kind, _ := a.inProgress(deviceID)
+	return kind
+}
+
+// inProgress reports the kind of pass in progress on the device ("" = none)
+// and whether it is a scheduled audit that stepped aside for a high CPU and
+// is doing nothing but wait.
+func (a *Auditor) inProgress(deviceID string) (kind string, waiting bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if p := a.passes[deviceID]; p != nil {
-		return p.req.kind
+	p := a.passes[deviceID]
+	if p == nil {
+		return "", false
 	}
-	return ""
+	return p.req.kind, p.waiting && !p.busy
+}
+
+// endWaitingAudit ends a scheduled audit that is waiting for the device's
+// CPU to drop, so that the diagnose pass — the one that reads a busy device
+// — can run: the audit ends with what it has read. It reports whether the
+// device is free now: true when there was no pass or the waiting audit was
+// ended, false when a pass is in the way that is not just waiting.
+func (a *Auditor) endWaitingAudit(dev queries.Device, now time.Time) bool {
+	a.mu.Lock()
+	p := a.passes[dev.ID]
+	if p == nil {
+		a.mu.Unlock()
+		return true
+	}
+	if !p.waiting || p.busy {
+		a.mu.Unlock()
+		return false
+	}
+	p.busy = true // claimed: the loop leaves it alone until it is finished
+	a.mu.Unlock()
+	a.finish(p, dev, "ended for the diagnose pass: the CPU stayed high", false, now)
+	return true
 }
 
 // Request starts the pass an admin asked for — "Audit now" or "Diagnose
@@ -526,7 +557,10 @@ func (a *Auditor) Running(deviceID string) string {
 // device's CPU says; it is refused while polling is off (routeros.ErrPollersOff),
 // while the device is paused (*PassPausedError), without a session
 // (ErrPassNoSession), while another pass runs (ErrPassRunning) and within an
-// hour of the device's last pass of that kind (*PassBudgetError).
+// hour of the device's last pass of that kind (*PassBudgetError). A
+// scheduled audit that is only waiting for the device's CPU to drop is not
+// "another pass running" for a diagnose request: it is ended with what it
+// has read, and the diagnose pass begins.
 func (a *Auditor) Request(deviceID, kind, user string) (*queries.AuditRun, error) {
 	if kind != queries.AuditKindAudit && kind != queries.AuditKindDiagnose {
 		return nil, fmt.Errorf("unknown kind of pass %q", kind)
@@ -542,7 +576,13 @@ func (a *Auditor) Request(deviceID, kind, user string) (*queries.AuditRun, error
 	if a.cadence.Paused(*dev, now) && dev.PollingPausedUntil != nil {
 		return nil, &PassPausedError{Until: *dev.PollingPausedUntil}
 	}
-	if a.Running(deviceID) != "" {
+	// A scheduled audit that stepped aside for a high CPU holds the device
+	// until the CPU drops. The diagnose pass is the one that reads a busy
+	// device: a request for it does not wait for that audit, it ends it —
+	// once nothing else stands in the request's way.
+	running, waiting := a.inProgress(deviceID)
+	yields := waiting && kind == queries.AuditKindDiagnose
+	if running != "" && !yields {
 		return nil, ErrPassRunning
 	}
 	if next, free := a.budget(deviceID, kind, now); !free {
@@ -550,6 +590,9 @@ func (a *Auditor) Request(deviceID, kind, user string) (*queries.AuditRun, error
 	}
 	if dev.Status != "online" || a.runner(deviceID) == nil {
 		return nil, ErrPassNoSession
+	}
+	if yields && !a.endWaitingAudit(*dev, now) {
+		return nil, ErrPassRunning // the audit went on meanwhile
 	}
 	a.begun(now)
 	p, err := a.begin(*dev, passRequest{kind: kind, reason: PassAdmin, by: user}, now)
