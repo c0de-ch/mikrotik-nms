@@ -824,6 +824,7 @@ func TestPortStatsCollectHosts(t *testing.T) {
 	clock := &testClock{t: time.Now().UTC().Truncate(time.Second)}
 	c.now = clock.now
 	c.hostClock = newTierClock(NewScheduleRegistry())
+	c.hostClock.spread = noSpread
 	c.UseCadence(hostsCadence())
 	hostCalls := map[string]int{}
 	c.fetchHosts = func(id string) ([]routeros.BridgeHost, error) {
@@ -842,13 +843,13 @@ func TestPortStatsCollectHosts(t *testing.T) {
 		return nil, nil
 	}
 	relCalls := map[string]int{}
-	c.fetchRelations = func(id string) ([]routeros.InterfaceRelation, error) {
+	c.fetchRelations = func(id string) (routeros.RelationRead, error) {
 		relCalls[id]++
-		return []routeros.InterfaceRelation{
+		return routeros.RelationRead{Relations: []routeros.InterfaceRelation{
 			{Iface: "ether7", Parent: "bond1", Kind: routeros.RelationBond},
 			{Iface: "net28", Parent: "bridge", Kind: routeros.RelationVLAN, VLANID: 28},
 			{Iface: "pppoe-out1", Parent: "ether1", Kind: routeros.RelationPPPoE},
-		}, nil
+		}}, nil
 	}
 	c.hostsTick(context.Background())
 	rels, err := queries.ListInterfaceRelations(db)
@@ -881,7 +882,7 @@ func TestPortStatsCollectHosts(t *testing.T) {
 
 	// A failed read keeps the previous rows.
 	clock.set(clock.now().Add(6 * time.Minute))
-	c.fetchRelations = func(string) ([]routeros.InterfaceRelation, error) { return nil, errors.New("trap") }
+	c.fetchRelations = func(string) (routeros.RelationRead, error) { return routeros.RelationRead{}, errors.New("timeout") }
 	c.hostsTick(context.Background())
 	if rels, _ := queries.ListInterfaceRelations(db); len(rels) != 3 {
 		t.Errorf("relations after a failed read = %+v, want the previous 3", rels)
@@ -920,8 +921,9 @@ func TestPortStatsCollectHostsRetriesDevicesWithoutClient(t *testing.T) {
 	clock := &testClock{t: time.Now().UTC().Truncate(time.Second)}
 	c.now = clock.now
 	c.hostClock = newTierClock(NewScheduleRegistry())
+	c.hostClock.spread = noSpread
 	c.UseCadence(hostsCadence())
-	c.fetchRelations = func(string) ([]routeros.InterfaceRelation, error) { return nil, nil }
+	c.fetchRelations = func(string) (routeros.RelationRead, error) { return routeros.RelationRead{}, nil }
 	dialled := map[string]bool{"sw": true}
 	calls := map[string]int{}
 	c.fetchHosts = func(id string) ([]routeros.BridgeHost, error) {
@@ -974,11 +976,11 @@ func TestPortStatsHostsPerClassCadenceAndPause(t *testing.T) {
 	c.now = clock.now
 	reg := NewScheduleRegistry()
 	c.hostClock = newTierClock(reg)
-	c.hostClock.phase = noJitter
+	c.hostClock.phase, c.hostClock.spread = noJitter, noSpread
 	c.UseCadence(NewCadence(db, nil))
 	fdb, rel := map[string]int{}, map[string]int{}
 	c.fetchHosts = func(id string) ([]routeros.BridgeHost, error) { fdb[id]++; return nil, nil }
-	c.fetchRelations = func(id string) ([]routeros.InterfaceRelation, error) { rel[id]++; return nil, nil }
+	c.fetchRelations = func(id string) (routeros.RelationRead, error) { rel[id]++; return routeros.RelationRead{}, nil }
 
 	for _, step := range []struct {
 		at       time.Duration

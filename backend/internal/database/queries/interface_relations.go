@@ -18,15 +18,24 @@ type InterfaceRelation struct {
 // ReplaceInterfaceRelations swaps one device's rows for a fresh dump in ONE
 // transaction. DeviceID on each row is ignored (the deviceID argument wins);
 // rows without an interface, parent or kind are skipped, and a duplicate
-// (interface, kind) keeps the last one.
-func ReplaceInterfaceRelations(db *sql.DB, deviceID string, rels []InterfaceRelation) error {
+// (interface, kind) keeps the last one. The device's rows of the kinds in
+// keep stay as they are: the dump did not read them (the device refused that
+// menu).
+func ReplaceInterfaceRelations(db *sql.DB, deviceID string, rels []InterfaceRelation, keep ...string) error {
 	tx, err := db.Begin()
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	if _, err := tx.Exec(`DELETE FROM interface_relations WHERE device_id = ?`, deviceID); err != nil {
+	del, args := `DELETE FROM interface_relations WHERE device_id = ?`, []any{deviceID}
+	if len(keep) > 0 {
+		del += ` AND kind NOT IN (?` + strings.Repeat(`, ?`, len(keep)-1) + `)`
+		for _, k := range keep {
+			args = append(args, k)
+		}
+	}
+	if _, err := tx.Exec(del, args...); err != nil {
 		return err
 	}
 	stmt, err := tx.Prepare(

@@ -35,6 +35,10 @@ func (s *stubCadence) Paused(dev queries.Device, _ time.Time) bool { return s.pa
 // devclass.NextRun is exactly end + interval.
 func noJitter(string) uint64 { return 1000 }
 
+// noSpread reads every tier at once after start-up (no first-run lead), for
+// the tests of a loop's cadences, pauses and retries.
+func noSpread(devclass.Tier, time.Duration) time.Duration { return 0 }
+
 func TestNoJitterPhase(t *testing.T) {
 	end := at(12, 0, 0)
 	if got := devclass.NextRun(end, time.Minute, noJitter("x")); !got.Equal(end.Add(time.Minute)) {
@@ -156,50 +160,76 @@ func TestRunIntervalPaused(t *testing.T) {
 	}
 }
 
-// The tier clock: due when not run since startup, then at NextRun(end,
-// interval, phase) — so within ±10 % of the interval, steady per device —
-// with the interval in force at the check and no catch-up; retries and
-// non-running tiers are published to the registry.
+// The tier clock: due its first-run lead after it first looked at the tier,
+// then on its slot grid — anchor + k·period, the period the interval
+// stretched by the device's jitter (±10 %, steady per device) — at the first
+// slot at least half a period after the end of the last run: a run that
+// starts late or takes long does not move the next one, nor does a late run
+// catch up; the interval in force at the check applies; retries and tiers
+// that do not run are published to the registry.
 func TestTierClockDueJitterRetryAndRegistry(t *testing.T) {
 	reg := NewScheduleRegistry()
 	k := newTierClock(reg)
 	const iv = time.Minute
 	now := at(12, 0, 0)
+	phase := devclass.Phase("sw")
+	period := devclass.Period(iv, phase)
+	if period < 54*time.Second || period > 66*time.Second {
+		t.Fatalf("period %v outside ±10 %% of the interval", period)
+	}
+	lead := devclass.FirstRunDelay(devclass.TierNeighbors, iv) // half the minute
+	if lead != 30*time.Second {
+		t.Fatalf("neighbor lead at a 1 min interval = %v, want 30 s", lead)
+	}
+	anchor := now.Add(devclass.Scale(lead, phase)) // the lead stretched like the period
 
-	if !k.due("sw", devclass.TierNeighbors, iv, now) {
-		t.Fatal("a tier not run since startup is due")
+	if k.due("sw", devclass.TierNeighbors, iv, now) {
+		t.Fatal("a tier with a lead is not due at the first look")
 	}
-	if got := reg.NextRuns("sw")["neighbors"]; !got.Equal(now) {
-		t.Errorf("registry before the first run = %v, want now", got)
+	if got := reg.NextRuns("sw")["neighbors"]; !got.Equal(anchor) {
+		t.Errorf("registry before the first run = %v, want the first look + the stretched lead (%v)", got, anchor)
 	}
-	end := now.Add(3 * time.Second) // the run took 3 s
-	k.ran("sw", devclass.TierNeighbors, iv, end)
-	next := devclass.NextRun(end, iv, devclass.Phase("sw"))
-	if lo, hi := end.Add(54*time.Second), end.Add(66*time.Second); next.Before(lo) || next.After(hi) {
-		t.Fatalf("next = %v outside ±10 %% of the interval after the END of the run", next)
+	if k.due("sw", devclass.TierNeighbors, iv, anchor.Add(-time.Millisecond)) || !k.due("sw", devclass.TierNeighbors, iv, anchor) {
+		t.Fatal("a tier not run since startup is due its lead after the first look")
 	}
+	// The run started 4 s late and took 3 s: the next is its slot all the same.
+	k.ran("sw", devclass.TierNeighbors, iv, anchor.Add(7*time.Second))
+	next := anchor.Add(period)
 	if k.due("sw", devclass.TierNeighbors, iv, next.Add(-time.Millisecond)) {
-		t.Error("due before its next run")
+		t.Error("due before its next slot")
 	}
 	if !k.due("sw", devclass.TierNeighbors, iv, next) {
-		t.Error("not due at its next run")
+		t.Error("not due at its next slot")
 	}
 	if got := reg.NextRuns("sw")["neighbors"]; !got.Equal(next) {
 		t.Errorf("registry = %v, want %v", got, next)
 	}
-	// No catch-up: an hour late is due once, and the next run counts from
-	// the end of that run.
-	late := end.Add(time.Hour)
-	if !k.due("sw", devclass.TierNeighbors, iv, late) {
-		t.Fatal("overdue tier must be due")
+	// A run that ends more than half a period after its slot skips the next
+	// one: never two runs within half a period.
+	k.ran("sw", devclass.TierNeighbors, iv, next.Add(period/2+time.Second))
+	if got := reg.NextRuns("sw")["neighbors"]; !got.Equal(next.Add(2 * period)) {
+		t.Errorf("after an overrun the next run = %v, want the slot after next (%v)", got, next.Add(2*period))
 	}
-	k.ran("sw", devclass.TierNeighbors, iv, late)
-	if k.due("sw", devclass.TierNeighbors, iv, late.Add(30*time.Second)) {
-		t.Error("an overdue tier must not catch up with extra runs")
+	// A tick late by less than a period: due at once, and the run after it
+	// is back on the grid.
+	slot := next.Add(2 * period)
+	if !k.due("sw", devclass.TierNeighbors, iv, slot.Add(5*time.Second)) {
+		t.Fatal("a tier a tick past its slot must be due")
+	}
+	k.ran("sw", devclass.TierNeighbors, iv, slot.Add(6*time.Second))
+	if got := reg.NextRuns("sw")["neighbors"]; !got.Equal(slot.Add(period)) {
+		t.Errorf("after a late run the next = %v, want its slot %v", got, slot.Add(period))
 	}
 
-	// A shorter interval (profile or override change) applies at once.
-	if !k.due("sw", devclass.TierNeighbors, 10*time.Second, late.Add(30*time.Second)) {
+	// A shorter interval (profile or override change) applies at the next
+	// check: the grid of the new interval, at least half its period after
+	// the last run.
+	last := slot.Add(6 * time.Second)
+	short := 10 * time.Second
+	if k.due("sw", devclass.TierNeighbors, short, last.Add(time.Second)) {
+		t.Error("an interval change must not read within half a new period of the last run")
+	}
+	if !k.due("sw", devclass.TierNeighbors, short, last.Add(15*time.Second)) {
 		t.Error("an interval change must apply at the next check")
 	}
 
@@ -212,7 +242,7 @@ func TestTierClockDueJitterRetryAndRegistry(t *testing.T) {
 
 	// A tier that does not run (paused, not in the plan) is never due and
 	// leaves the registry.
-	if k.due("sw", devclass.TierNeighbors, 0, late.Add(time.Hour)) {
+	if k.due("sw", devclass.TierNeighbors, 0, last.Add(time.Hour)) {
 		t.Error("interval 0 must never be due")
 	}
 	if _, ok := reg.NextRuns("sw")["neighbors"]; ok {
@@ -225,6 +255,148 @@ func TestTierClockDueJitterRetryAndRegistry(t *testing.T) {
 	}
 }
 
+// A tier's first run after start-up waits its lead from the clock's first
+// look at the device, whether the tier could run then or not; that first
+// slot anchors its grid. A device that appears later gets its lead from its
+// first look; a retry is off the grid and the run after it back on it.
+func TestTierClockFirstRunLead(t *testing.T) {
+	reg := NewScheduleRegistry()
+	k := newTierClock(reg)
+	k.phase = noJitter
+	const iv = 5 * time.Minute // a C1 device's bridge ports: a 100 s lead
+	t0 := at(12, 0, 0)
+	lead := devclass.FirstRunDelay(devclass.TierBridgePorts, iv)
+	if lead != 100*time.Second {
+		t.Fatalf("bridge-port lead at 5 min = %v, want 100 s", lead)
+	}
+
+	// Online at start-up: due one lead after the first look, and published so.
+	if k.due("sw", devclass.TierBridgePorts, iv, t0) {
+		t.Fatal("due at the first look despite its lead")
+	}
+	if got := reg.NextRuns("sw")["bridge_ports"]; !got.Equal(t0.Add(lead)) {
+		t.Errorf("published first run = %v, want %v", got, t0.Add(lead))
+	}
+	if k.due("sw", devclass.TierBridgePorts, iv, t0.Add(lead-time.Second)) || !k.due("sw", devclass.TierBridgePorts, iv, t0.Add(lead)) {
+		t.Fatal("the first run is due exactly its lead after the first look")
+	}
+	// No session yet: the retry wins; the run after it is back on the grid.
+	k.retryAt("sw", devclass.TierBridgePorts, t0.Add(lead+noClientRetry))
+	if k.due("sw", devclass.TierBridgePorts, iv, t0.Add(lead+noClientRetry-time.Second)) || !k.due("sw", devclass.TierBridgePorts, iv, t0.Add(lead+noClientRetry)) {
+		t.Fatal("a retry of the first run is due at its retry time")
+	}
+	end := t0.Add(lead + noClientRetry)
+	k.ran("sw", devclass.TierBridgePorts, iv, end)
+	slot := t0.Add(lead + iv)
+	if k.due("sw", devclass.TierBridgePorts, iv, slot.Add(-time.Second)) || !k.due("sw", devclass.TierBridgePorts, iv, slot) {
+		t.Fatal("the run after the retried first one is due at the grid's second slot")
+	}
+
+	// A tier without a lead is due at the first look.
+	if !k.due("sw", devclass.TierLogs, iv, t0) {
+		t.Error("the log read waits at start-up")
+	}
+
+	// A device that appears later gets its lead from its first look.
+	later := t0.Add(30 * time.Minute)
+	if k.due("new", devclass.TierBridgePorts, iv, later) || !k.due("new", devclass.TierBridgePorts, iv, later.Add(lead)) {
+		t.Error("a device added later is not read one lead after the clock first sees it")
+	}
+
+	// A device deleted and added again starts afresh.
+	k.retain(map[string]bool{})
+	if k.due("sw", devclass.TierBridgePorts, iv, t0.Add(2*time.Hour)) {
+		t.Error("a device the clock forgot is due at once")
+	}
+}
+
+// A pause or an outage: a tier whose rows are judged by their age (neighbors,
+// routes, the FDB dump, Tier 4a, the audit) is read as soon as the device can
+// be read again; any other rejoins its grid at the next slot — and runs
+// there, whichever tick first sees it due. Either way the run after it is
+// on the grid. The registry always says when the tier runs next.
+func TestTierClockPauseAndOutage(t *testing.T) {
+	reg := NewScheduleRegistry()
+	k := newTierClock(reg)
+	k.phase, k.spread = noJitter, noSpread
+	const iv = 5 * time.Minute
+	t0 := at(12, 0, 0)
+	for _, tier := range []devclass.Tier{devclass.TierNeighbors, devclass.TierBridgePorts} {
+		if !k.due("sw", tier, iv, t0) {
+			t.Fatalf("%s not due at the first look", tier)
+		}
+		k.ran("sw", tier, iv, t0.Add(time.Second))
+	}
+
+	// Paused from 12:02 to 12:23:30 (the loop sees interval 0 meanwhile).
+	for ts := t0.Add(2 * time.Minute); ts.Before(t0.Add(23*time.Minute + 30*time.Second)); ts = ts.Add(pollerTick) {
+		for _, tier := range []devclass.Tier{devclass.TierNeighbors, devclass.TierBridgePorts} {
+			if k.due("sw", tier, 0, ts) {
+				t.Fatalf("%s due while paused", tier)
+			}
+		}
+	}
+	end := t0.Add(23*time.Minute + 30*time.Second)
+	if !k.due("sw", devclass.TierNeighbors, iv, end) {
+		t.Error("neighbors (links age by their reads) are not read at once when the pause ends")
+	}
+	k.ran("sw", devclass.TierNeighbors, iv, end.Add(time.Second))
+	if got := reg.NextRuns("sw")["neighbors"]; !got.Equal(t0.Add(30 * time.Minute)) {
+		t.Errorf("neighbors after the catch-up: next = %v, want the grid's 12:30", got)
+	}
+	// The bridge ports wait for 12:25, published so — and run at the first
+	// tick after it, though no tick lands on it exactly.
+	if k.due("sw", devclass.TierBridgePorts, iv, end) {
+		t.Error("bridge ports are read at once when the pause ends, off their grid")
+	}
+	if got := reg.NextRuns("sw")["bridge_ports"]; !got.Equal(t0.Add(25 * time.Minute)) {
+		t.Errorf("bridge ports published at %v, want their slot 12:25", got)
+	}
+	ran := time.Time{}
+	for ts := end.Add(3 * time.Second); ts.Before(t0.Add(27 * time.Minute)); ts = ts.Add(pollerTick) {
+		if k.due("sw", devclass.TierBridgePorts, iv, ts) {
+			ran = ts
+			k.ran("sw", devclass.TierBridgePorts, iv, ts.Add(2*time.Second))
+			break
+		}
+	}
+	if ran.Before(t0.Add(25*time.Minute)) || ran.After(t0.Add(25*time.Minute+pollerTick)) {
+		t.Fatalf("bridge ports ran at %v after the pause, want the first tick at or after 12:25", ran)
+	}
+	if got := reg.NextRuns("sw")["bridge_ports"]; !got.Equal(t0.Add(30 * time.Minute)) {
+		t.Errorf("bridge ports after rejoining: next = %v, want 12:30", got)
+	}
+
+	// An outage without a pause (the loop keeps looking, the reads cannot
+	// run, a retry each time): the same once a read succeeds.
+	k.due("sw", devclass.TierBridgePorts, iv, t0.Add(30*time.Minute))
+	k.retryAt("sw", devclass.TierBridgePorts, t0.Add(30*time.Minute+noClientRetry))
+	for ts := t0.Add(30*time.Minute + noClientRetry); ts.Before(t0.Add(41 * time.Minute)); ts = ts.Add(noClientRetry) {
+		if !k.due("sw", devclass.TierBridgePorts, iv, ts) {
+			t.Fatalf("retry at %v not due", ts)
+		}
+		k.retryAt("sw", devclass.TierBridgePorts, ts.Add(noClientRetry))
+	}
+	k.ran("sw", devclass.TierBridgePorts, iv, t0.Add(41*time.Minute))
+	if got := reg.NextRuns("sw")["bridge_ports"]; !got.Equal(t0.Add(45 * time.Minute)) {
+		t.Errorf("after the outage: next = %v, want the grid's 12:45", got)
+	}
+
+	// A tier that runs only at times (the wifi tier of a switch, for its
+	// capability probe) does not run off its grid when it comes back into
+	// the plan: the slot it missed while out of it is not owed.
+	k.due("sw", devclass.TierWifiRegistrations, iv, t0)
+	k.ran("sw", devclass.TierWifiRegistrations, iv, t0)
+	k.due("sw", devclass.TierWifiRegistrations, 0, t0.Add(time.Minute))
+	back := t0.Add(7 * time.Minute)
+	if k.due("sw", devclass.TierWifiRegistrations, iv, back) {
+		t.Error("a tier back in the plan ran at once, off its grid")
+	}
+	if got := reg.NextRuns("sw")["wifi_registrations"]; !got.Equal(t0.Add(10 * time.Minute)) {
+		t.Errorf("tier back in the plan published at %v, want its slot 12:10", got)
+	}
+}
+
 // Fleet devices spread out: a fleet on one cadence does not run in lockstep.
 func TestTierClockSpreadsDevices(t *testing.T) {
 	k := newTierClock(NewScheduleRegistry())
@@ -234,7 +406,7 @@ func TestTierClockSpreadsDevices(t *testing.T) {
 		id := "dev-" + string(rune('a'+i%26)) + string(rune('a'+i/26))
 		k.ran(id, devclass.TierCounters, time.Minute, end)
 		k.mu.Lock()
-		seen[k.nextLocked(tierKey{id, devclass.TierCounters}, time.Minute, end)] = true
+		seen[k.nextLocked(tierKey{id, devclass.TierCounters}, time.Minute, end, false)] = true
 		k.mu.Unlock()
 	}
 	if len(seen) < 25 {

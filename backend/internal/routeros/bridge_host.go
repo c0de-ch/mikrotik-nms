@@ -1,6 +1,7 @@
 package routeros
 
 import (
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -103,31 +104,88 @@ func VLANs(rels []InterfaceRelation) []VLANInfo {
 	return out
 }
 
+// RelationMenus names the stacking menus a read prints (GetInterfaceRelations).
+type RelationMenus struct {
+	Bonding, VLAN, PPPoE bool
+}
+
+// AllRelationMenus prints every stacking menu: the read of a device whose
+// interface list is not at hand.
+var AllRelationMenus = RelationMenus{Bonding: true, VLAN: true, PPPoE: true}
+
+// RelationMenusOf returns the stacking menus worth printing on a device whose
+// /interface/print lists interfaces of these types: the bonding table only
+// with a "bond", the VLAN table only with a "vlan", the PPPoE clients only
+// with a "pppoe-out" — every bond, VLAN and PPPoE client is an interface, so
+// a menu without one has nothing in it.
+func RelationMenusOf(types ...string) RelationMenus {
+	var m RelationMenus
+	for _, t := range types {
+		switch strings.ToLower(strings.TrimSpace(t)) {
+		case "bond":
+			m.Bonding = true
+		case "vlan":
+			m.VLAN = true
+		case "pppoe-out":
+			m.PPPoE = true
+		}
+	}
+	return m
+}
+
+// RelationRead is one stacking read: the relations of every kind it settled
+// — its menu printed, or not printed because the device has nothing in it —
+// and the kinds whose print the device refused.
+type RelationRead struct {
+	Relations []InterfaceRelation
+	// Refused lists the kinds (RelationBond, RelationVLAN, RelationPPPoE)
+	// whose menu answered with a !trap: what is known of them is unchanged.
+	Refused []string
+}
+
+// Settled reports whether the read settled kind: its relations are complete.
+func (r RelationRead) Settled(kind string) bool {
+	return !slices.Contains(r.Refused, kind)
+}
+
 // GetInterfaceRelations reads the device's bond membership
 // (/interface/bonding slaves), VLAN parents and ids and PPPoE-client carriers
-// (interface=) on the pooled client — three short prints. Any failing print
-// fails the whole read, so a partial answer never replaces a complete one.
-func GetInterfaceRelations(run Runner) ([]InterfaceRelation, error) {
-	var out []InterfaceRelation
+// (interface=) on the pooled client, one short print per menu in menus — a
+// menu left out settles its kind as having nothing. A menu the device refuses
+// (a !trap) is reported in Refused and the read goes on with the others; any
+// other failure (no answer, a session that ended) fails the whole read, so a
+// partial answer never replaces a complete one.
+func GetInterfaceRelations(run Runner, menus RelationMenus) (RelationRead, error) {
+	var read RelationRead
 	for _, q := range []struct {
+		print         bool
+		kind          string
 		cmd, proplist string
 		parse         func(map[string]string) []InterfaceRelation
 	}{
-		{"/interface/bonding/print", "=.proplist=name,slaves", parseBondSlaves},
-		{"/interface/vlan/print", "=.proplist=name,interface,vlan-id", parseVLANCarrier},
-		{"/interface/pppoe-client/print", "=.proplist=name,interface", func(m map[string]string) []InterfaceRelation {
+		{menus.Bonding, RelationBond, "/interface/bonding/print", "=.proplist=name,slaves", parseBondSlaves},
+		{menus.VLAN, RelationVLAN, "/interface/vlan/print", "=.proplist=name,interface,vlan-id", parseVLANCarrier},
+		{menus.PPPoE, RelationPPPoE, "/interface/pppoe-client/print", "=.proplist=name,interface", func(m map[string]string) []InterfaceRelation {
 			return parseCarrier(m, RelationPPPoE)
 		}},
 	} {
+		if !q.print {
+			continue
+		}
 		reply, err := run.Run(q.cmd, q.proplist)
-		if err != nil {
-			return nil, err
+		switch {
+		case err == nil:
+		case isTrap(err) && !IsSessionFatal(err):
+			read.Refused = append(read.Refused, q.kind)
+			continue
+		default:
+			return RelationRead{}, err
 		}
 		for _, re := range reply.Re {
-			out = append(out, q.parse(GetSentenceMap(re))...)
+			read.Relations = append(read.Relations, q.parse(GetSentenceMap(re))...)
 		}
 	}
-	return out, nil
+	return read, nil
 }
 
 // parseBondSlaves turns one /interface/bonding row ("slaves" is a comma

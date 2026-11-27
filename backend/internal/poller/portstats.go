@@ -232,7 +232,7 @@ type PortStatsCollector struct {
 	fetchStats     func(deviceID string) ([]routeros.InterfaceStats, error)
 	fetchEthernet  func(deviceID string) ([]routeros.EthernetStats, error)
 	fetchHosts     func(deviceID string) ([]routeros.BridgeHost, error)
-	fetchRelations func(deviceID string) ([]routeros.InterfaceRelation, error)
+	fetchRelations func(deviceID string) (routeros.RelationRead, error)
 	now            func() time.Time
 
 	// tierInterval decides how often a tier runs on a device; 0 = not at
@@ -320,14 +320,30 @@ func NewPortStatsCollector(db *sql.DB, pool *routeros.Pool, hub *ws.Hub) *PortSt
 		}
 		return routeros.GetBridgeHosts(run)
 	}
-	c.fetchRelations = func(id string) ([]routeros.InterfaceRelation, error) {
+	c.fetchRelations = func(id string) (routeros.RelationRead, error) {
 		run, err := c.deviceRunner(id)
 		if err != nil {
-			return nil, err
+			return routeros.RelationRead{}, err
 		}
-		return routeros.GetInterfaceRelations(run)
+		return routeros.GetInterfaceRelations(run, c.relationMenus(id))
 	}
 	return c
+}
+
+// relationMenus is which stacking menus deviceID's Tier 3c read prints: with
+// a fresh Tier 0 interface snapshot, only those the device has an interface
+// for (a bond, a vlan, a pppoe-out); without one — or with an empty one,
+// which never wipes a device — all of them.
+func (c *PortStatsCollector) relationMenus(deviceID string) routeros.RelationMenus {
+	rows, _, ok := c.DeviceSnapshot(deviceID)
+	if !ok || len(rows) == 0 {
+		return routeros.AllRelationMenus
+	}
+	types := make([]string, len(rows))
+	for i, r := range rows {
+		types[i] = r.Type
+	}
+	return routeros.RelationMenusOf(types...)
 }
 
 // poolRunner is the production device link: the pooled client, or nil while
@@ -535,12 +551,16 @@ func (c *PortStatsCollector) cycle(ctx context.Context, base time.Duration) time
 
 // planDevice decides which tiers of dev are due at now and, when any is,
 // claims the device (its poll is then in flight). A due tier is provisionally
-// scheduled one interval (± the device's jitter) ahead for the loop's
-// wake-up; the end of its read sets the real next run (scheduleNext), so a
-// slow reply pushes the next one out instead of being caught up. A device
-// whose previous poll has not returned is not claimed. wake is when the
-// device is due next (zero while in flight or when no tier runs on it), for
-// the loop's sleep. Every tier's next run is published to the registry.
+// scheduled ahead for the loop's wake-up — Tier 0 one interval (± the
+// device's jitter), Tier 4a its next slot — and the end of its read sets the
+// real next run (scheduleNext), so neither is caught up. Tier 4a runs on a
+// slot grid like the tier clocks' (nextOnGrid), anchored at the first cycle
+// that planned it plus its lead (none): it stays in its place among the
+// device's other reads however late a read starts, and after a pause or an
+// outage it is read at once, as its rows age. A device whose previous poll
+// has not returned is not claimed. wake is when the device is due next (zero
+// while in flight or when no tier runs on it), for the loop's sleep. Every
+// tier's next run is published to the registry.
 func (c *PortStatsCollector) planDevice(dev queries.Device, now time.Time) (p tierPlan, claimed bool, wake time.Time) {
 	p.statsInterval = c.tierInterval(dev, devclass.TierCounters, now)
 	p.ethernetPeriod = c.tierInterval(dev, devclass.TierEthernet, now)
@@ -551,13 +571,20 @@ func (c *PortStatsCollector) planDevice(dev queries.Device, now time.Time) (p ti
 		return tierPlan{}, false, time.Time{}
 	}
 	st := c.deviceLocked(dev.ID)
+	if p.ethernetPeriod > 0 && st.ethAnchor.IsZero() {
+		lead := devclass.FirstRunDelay(devclass.TierEthernet, p.ethernetPeriod)
+		st.ethAnchor = now.Add(devclass.Scale(lead, c.phase(dev.ID)))
+		if lead > 0 && st.nextEthernet.IsZero() {
+			st.nextEthernet = st.ethAnchor
+		}
+	}
 	p.stats = p.statsInterval > 0 && isDue(st.nextStats, now, p.statsInterval)
 	p.ethernet = p.ethernetPeriod > 0 && isDue(st.nextEthernet, now, p.ethernetPeriod)
 	if p.stats {
 		st.nextStats = devclass.NextRun(now, p.statsInterval, c.phase(dev.ID))
 	}
 	if p.ethernet {
-		st.nextEthernet = devclass.NextRun(now, p.ethernetPeriod, c.phase(dev.ID))
+		st.nextEthernet = c.ethernetSlotLocked(st, dev.ID, p.ethernetPeriod, now)
 	}
 	if p.statsInterval > 0 {
 		wake = st.nextStats
@@ -587,22 +614,36 @@ func (c *PortStatsCollector) publishTierLocked(deviceID string, tier devclass.Ti
 	}
 }
 
-// scheduleNext sets tier's next run on deviceID from the end of its read.
+// scheduleNext sets tier's next run on deviceID from the end of its read:
+// Tier 0 one interval (± jitter) later, Tier 4a at the first slot of its grid
+// at least half a period later.
 func (c *PortStatsCollector) scheduleNext(deviceID string, tier devclass.Tier, end time.Time, interval time.Duration) {
 	if interval <= 0 {
 		return
 	}
-	next := devclass.NextRun(end, interval, c.phase(deviceID))
 	c.mu.Lock()
 	st := c.deviceLocked(deviceID)
+	var next time.Time
 	switch tier {
 	case devclass.TierCounters:
+		next = devclass.NextRun(end, interval, c.phase(deviceID))
 		st.nextStats = next
 	case devclass.TierEthernet:
+		next = c.ethernetSlotLocked(st, deviceID, interval, end)
 		st.nextEthernet = next
 	}
 	c.mu.Unlock()
 	c.reg.set(deviceID, tier, next)
+}
+
+// ethernetSlotLocked is the first slot of deviceID's Tier 4a grid at least
+// half a period after a read that ended at end. c.mu held.
+func (c *PortStatsCollector) ethernetSlotLocked(st *deviceState, deviceID string, interval time.Duration, end time.Time) time.Time {
+	if st.ethAnchor.IsZero() {
+		st.ethAnchor = end
+	}
+	next, _ := nextOnGrid(st.ethAnchor, devclass.Period(interval, c.phase(deviceID)), end, end, true, false)
+	return next
 }
 
 // notePause remembers whether dev is paused, and until when: its snapshot and
@@ -1417,9 +1458,13 @@ func (c *PortStatsCollector) collectDeviceHosts(dev queries.Device) (err error) 
 
 // collectDeviceRelations replaces one device's interface_relations with a
 // fresh read, and keeps its VLAN rows in memory for the flow ifIndex sync
-// (DeviceVLANs). On a failed read the previous rows stay: stacking rarely
-// changes, and a partial answer must not drop a bond's members. It returns
-// errNoClient when the device had no pooled connection.
+// (DeviceVLANs). The read prints only the menus the device has an interface
+// for (relationMenus): a device without a VLAN interface has "no VLANs", not
+// an unknown. On a failed read the previous rows stay: stacking rarely
+// changes, and a partial answer must not drop a bond's members. A menu the
+// device refuses (a !trap) keeps that kind's previous rows — and, for the
+// VLAN menu, the VLAN rows in memory — while the kinds it did settle are
+// replaced. It returns errNoClient when the device had no pooled connection.
 func (c *PortStatsCollector) collectDeviceRelations(dev queries.Device) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -1430,19 +1475,25 @@ func (c *PortStatsCollector) collectDeviceRelations(dev queries.Device) (err err
 			err = errors.New("panic reading interface stacking")
 		}
 	}()
-	rels, err := c.fetchRelations(dev.ID)
+	read, err := c.fetchRelations(dev.ID)
 	if err != nil {
 		if !errors.Is(err, errNoClient) {
 			c.logThrottled("relations:"+dev.ID, "poller portstats: interface stacking for %s: %v", dev.Identity, err)
 		}
 		return err
 	}
-	c.storeVLANs(dev.ID, rels, c.now().UTC())
-	rows := make([]queries.InterfaceRelation, 0, len(rels))
-	for _, r := range rels {
+	if len(read.Refused) > 0 {
+		c.logThrottled("relations-refused:"+dev.ID, "poller portstats: interface stacking for %s: the device refused the %s menus; their previous rows stay",
+			dev.Identity, strings.Join(read.Refused, ", "))
+	}
+	if read.Settled(routeros.RelationVLAN) {
+		c.storeVLANs(dev.ID, read.Relations, c.now().UTC())
+	}
+	rows := make([]queries.InterfaceRelation, 0, len(read.Relations))
+	for _, r := range read.Relations {
 		rows = append(rows, queries.InterfaceRelation{InterfaceName: r.Iface, Kind: r.Kind, Parent: r.Parent})
 	}
-	if err := queries.ReplaceInterfaceRelations(c.db, dev.ID, rows); err != nil {
+	if err := queries.ReplaceInterfaceRelations(c.db, dev.ID, rows, read.Refused...); err != nil {
 		log.Printf("poller portstats: store interface stacking for %s: %v", dev.Identity, err)
 	}
 	return nil

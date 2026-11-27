@@ -1,6 +1,115 @@
 package routeros
 
-import "testing"
+import (
+	"errors"
+	"slices"
+	"testing"
+
+	ros "github.com/go-routeros/routeros/v3"
+	"github.com/go-routeros/routeros/v3/proto"
+)
+
+// The stacking menus worth printing are the ones the device has an interface
+// of: every bond, VLAN and PPPoE client is one.
+func TestRelationMenusOf(t *testing.T) {
+	for _, tt := range []struct {
+		types []string
+		want  RelationMenus
+	}{
+		{nil, RelationMenus{}},
+		{[]string{"ether", "bridge", "wifi", "wg", "pppoe-in"}, RelationMenus{}},
+		{[]string{"ether", "bond", "vlan"}, RelationMenus{Bonding: true, VLAN: true}},
+		{[]string{" VLAN "}, RelationMenus{VLAN: true}},
+		{[]string{"pppoe-out", "ether"}, RelationMenus{PPPoE: true}},
+	} {
+		if got := RelationMenusOf(tt.types...); got != tt.want {
+			t.Errorf("RelationMenusOf(%q) = %+v, want %+v", tt.types, got, tt.want)
+		}
+	}
+	if AllRelationMenus != (RelationMenus{Bonding: true, VLAN: true, PPPoE: true}) {
+		t.Errorf("AllRelationMenus = %+v", AllRelationMenus)
+	}
+}
+
+// A stacking read prints only the menus asked for. A menu the device refuses
+// (a !trap) is named in Refused and the others are still read; a failure that
+// is not the device's answer fails the whole read.
+func TestGetInterfaceRelations(t *testing.T) {
+	menus := func() map[string]fakeReply {
+		return map[string]fakeReply{
+			"/interface/bonding/print":      rep(map[string]string{"name": "bond1", "slaves": "ether1,ether2"}),
+			"/interface/vlan/print":         rep(map[string]string{"name": "vlan-mgmt", "interface": "bridge", "vlan-id": "99"}),
+			"/interface/pppoe-client/print": rep(map[string]string{"name": "pppoe-out1", "interface": "ether9"}),
+		}
+	}
+	bond := []InterfaceRelation{{Iface: "ether1", Parent: "bond1", Kind: RelationBond}, {Iface: "ether2", Parent: "bond1", Kind: RelationBond}}
+	vlan := InterfaceRelation{Iface: "vlan-mgmt", Parent: "bridge", Kind: RelationVLAN, VLANID: 99}
+	pppoe := InterfaceRelation{Iface: "pppoe-out1", Parent: "ether9", Kind: RelationPPPoE}
+
+	f := &fakeRunner{byCmd: menus()}
+	read, err := GetInterfaceRelations(f, AllRelationMenus)
+	if err != nil || len(read.Refused) != 0 {
+		t.Fatalf("all menus: refused %v, err %v", read.Refused, err)
+	}
+	if want := append(append([]InterfaceRelation{}, bond...), vlan, pppoe); !slices.Equal(read.Relations, want) {
+		t.Errorf("all menus: relations = %+v, want %+v", read.Relations, want)
+	}
+	if want := []string{
+		"/interface/bonding/print =.proplist=name,slaves",
+		"/interface/vlan/print =.proplist=name,interface,vlan-id",
+		"/interface/pppoe-client/print =.proplist=name,interface",
+	}; !slices.Equal(f.calls, want) {
+		t.Errorf("all menus: calls = %q, want %q", f.calls, want)
+	}
+
+	// Only the VLAN menu: one print, and the other kinds settled as none.
+	f = &fakeRunner{byCmd: menus()}
+	read, err = GetInterfaceRelations(f, RelationMenus{VLAN: true})
+	if err != nil || !slices.Equal(read.Relations, []InterfaceRelation{vlan}) || len(f.calls) != 1 {
+		t.Errorf("VLAN menu only: relations %+v, calls %q, err %v", read.Relations, f.calls, err)
+	}
+	if !read.Settled(RelationBond) || !read.Settled(RelationVLAN) || !read.Settled(RelationPPPoE) {
+		t.Errorf("VLAN menu only: refused %v, want every kind settled", read.Refused)
+	}
+
+	// No menu: nothing sent, nothing there.
+	f = &fakeRunner{byCmd: menus()}
+	if read, err = GetInterfaceRelations(f, RelationMenus{}); err != nil || len(read.Relations) != 0 || len(f.calls) != 0 {
+		t.Errorf("no menu: relations %+v, calls %q, err %v", read.Relations, f.calls, err)
+	}
+
+	// A refused menu does not cost the others.
+	replies := menus()
+	replies["/interface/vlan/print"] = fakeReply{err: trapErr("not enough permissions (9)")}
+	f = &fakeRunner{byCmd: replies}
+	read, err = GetInterfaceRelations(f, AllRelationMenus)
+	if err != nil {
+		t.Fatalf("a refused menu fails the read: %v", err)
+	}
+	if want := append(append([]InterfaceRelation{}, bond...), pppoe); !slices.Equal(read.Relations, want) {
+		t.Errorf("VLAN menu refused: relations = %+v, want %+v", read.Relations, want)
+	}
+	if !slices.Equal(read.Refused, []string{RelationVLAN}) || read.Settled(RelationVLAN) || !read.Settled(RelationBond) {
+		t.Errorf("VLAN menu refused: refused = %v", read.Refused)
+	}
+
+	// No answer, or a session the device ended: nothing is known.
+	for name, failure := range map[string]error{
+		"a timeout": errors.New("i/o timeout"),
+		"a !fatal": &ros.SessionFatalError{Err: &ros.DeviceError{Sentence: &proto.Sentence{Word: "!fatal",
+			Map: map[string]string{"message": "session terminated"}}}},
+	} {
+		replies := menus()
+		replies["/interface/vlan/print"] = fakeReply{err: failure}
+		f = &fakeRunner{byCmd: replies}
+		if read, err := GetInterfaceRelations(f, AllRelationMenus); err == nil || len(read.Relations) != 0 {
+			t.Errorf("%s on the VLAN menu: relations %+v, err %v; want the read failed", name, read.Relations, err)
+		}
+		if len(f.calls) != 2 {
+			t.Errorf("%s on the VLAN menu: calls %q, want the read to stop there", name, f.calls)
+		}
+	}
+}
 
 func TestParseBridgeHost(t *testing.T) {
 	tests := []struct {

@@ -71,7 +71,7 @@ func newSamplerHarness(t *testing.T, ids ...string) *samplerHarness {
 	s.phase = func(string) uint64 { return 0 }
 	s.reg = NewScheduleRegistry()
 	s.postClock = newTierClock(s.reg)
-	s.postClock.phase = noJitter
+	s.postClock.phase, s.postClock.spread = noJitter, noSpread
 	s.runner = func(id string) routeros.Runner {
 		h.mu.Lock()
 		defer h.mu.Unlock()
@@ -291,7 +291,8 @@ func TestCPUPostSampleFollowsATier0Read(t *testing.T) {
 	if posts() != 1 {
 		t.Fatalf("post-poll samples within 10 min = %d, want 1", posts())
 	}
-	// Due again at 12:10:33. A read the loop only sees long after it ended
+	// Due again at 12:10:20, its slot (the first look + 10 min). A read the
+	// loop only sees long after it ended
 	// is not followed: the sample would no longer show its effect.
 	h.setTier0("sw", at(12, 10, 20))
 	h.tickAt(at(12, 10, 40))
@@ -303,8 +304,8 @@ func TestCPUPostSampleFollowsATier0Read(t *testing.T) {
 	if posts() != 2 {
 		t.Fatalf("post-poll samples = %d, want the second one after the next read", posts())
 	}
-	if next := h.s.reg.NextRuns("sw")["cpu_post"]; !next.Equal(at(12, 20, 48)) {
-		t.Errorf("next cpu_post run = %v, want 10 min after the last", next)
+	if next := h.s.reg.NextRuns("sw")["cpu_post"]; !next.Equal(at(12, 20, 20)) {
+		t.Errorf("next cpu_post run = %v, want its next slot, 12:20:20 (the grid does not move by the 28 s the last one waited)", next)
 	}
 
 	h.load.FlushMinutes(at(12, 11, 0), nil)
