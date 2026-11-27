@@ -72,7 +72,10 @@ func UpsertMACLookup(db *sql.DB, m *MACLookup) error {
 		        ELSE mac_lookup.ip_address END,
 		    host_name=CASE WHEN excluded.host_name != '' THEN excluded.host_name ELSE mac_lookup.host_name END,
 		    dns_name=CASE WHEN excluded.dns_name != '' THEN excluded.dns_name ELSE mac_lookup.dns_name END,
-		    source=excluded.source, device_name=excluded.device_name,
+		    -- The device that reported the client: kept when a writer names none
+		    -- (a write without one must not blank "Reported By").
+		    source=excluded.source,
+		    device_name=CASE WHEN excluded.device_name != '' THEN excluded.device_name ELSE mac_lookup.device_name END,
 		    interface_name=CASE WHEN excluded.interface_name != '' THEN excluded.interface_name ELSE mac_lookup.interface_name END,
 		    device_id=CASE WHEN excluded.device_id != '' THEN excluded.device_id ELSE mac_lookup.device_id END,
 		    ap=CASE WHEN excluded.ap != '' THEN excluded.ap ELSE mac_lookup.ap END,

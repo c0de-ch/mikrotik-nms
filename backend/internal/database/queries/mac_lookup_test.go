@@ -59,3 +59,34 @@ func TestUpsertMACLookup_PrefersIPv4(t *testing.T) {
 		t.Fatalf("v4->v4 should refresh to newest, got %q", got)
 	}
 }
+
+// The device that reported a client is kept when a later writer does not
+// name one: a write without a device must not blank "Reported By".
+func TestUpsertMACLookupKeepsTheReportingDevice(t *testing.T) {
+	db := testDB(t)
+	const mac = "02:00:00:00:D0:01"
+	get := func() *MACLookup {
+		t.Helper()
+		m, err := GetMACLookup(db, mac)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}
+	if err := UpsertMACLookup(db, &MACLookup{MACAddress: mac, IPAddress: "192.0.2.50", Source: "arp", DeviceName: "rtr", DeviceID: "d-rtr"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := UpsertMACLookup(db, &MACLookup{MACAddress: mac, IPAddress: "192.0.2.50", Source: "wifi", SSID: "lab"}); err != nil {
+		t.Fatal(err)
+	}
+	if m := get(); m.DeviceName != "rtr" || m.DeviceID != "d-rtr" || m.Source != "wifi" || m.SSID != "lab" {
+		t.Fatalf("after a write without a device: device %q (%q), source %q, ssid %q; want rtr (d-rtr), wifi, lab",
+			m.DeviceName, m.DeviceID, m.Source, m.SSID)
+	}
+	if err := UpsertMACLookup(db, &MACLookup{MACAddress: mac, Source: "wifi", DeviceName: "ap", DeviceID: "d-ap"}); err != nil {
+		t.Fatal(err)
+	}
+	if m := get(); m.DeviceName != "ap" || m.DeviceID != "d-ap" {
+		t.Fatalf("a write that names a device: got %q (%q), want ap (d-ap)", m.DeviceName, m.DeviceID)
+	}
+}
