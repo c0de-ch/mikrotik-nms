@@ -45,6 +45,9 @@ const (
 	TierWifiRegistrations
 	// TierInventory is 6: static resource, routerboard, packages, addresses.
 	TierInventory
+	// TierAudit is 7: the scheduled hygiene audit — a pass of read-only,
+	// proplisted configuration prints, spaced out on the device.
+	TierAudit
 	tierCount
 )
 
@@ -65,6 +68,7 @@ var tierNames = [...]string{
 	TierDHCPLeases:        "dhcp_leases",
 	TierWifiRegistrations: "wifi_registrations",
 	TierInventory:         "inventory",
+	TierAudit:             "audit",
 }
 
 // String returns the tier's identifier.
@@ -105,6 +109,7 @@ var cadences = map[Class][tierCount]time.Duration{
 		TierDHCPLeases:        0,
 		TierWifiRegistrations: 5 * time.Minute,
 		TierInventory:         60 * time.Minute,
+		TierAudit:             6 * time.Hour,
 	},
 	C2: {
 		TierCounters:          30 * time.Second,
@@ -122,6 +127,7 @@ var cadences = map[Class][tierCount]time.Duration{
 		TierDHCPLeases:        0,
 		TierWifiRegistrations: 60 * time.Second,
 		TierInventory:         60 * time.Minute,
+		TierAudit:             6 * time.Hour,
 	},
 	C3: {
 		TierCounters:          15 * time.Second,
@@ -139,6 +145,7 @@ var cadences = map[Class][tierCount]time.Duration{
 		TierDHCPLeases:        5 * time.Minute,
 		TierWifiRegistrations: 30 * time.Second,
 		TierInventory:         60 * time.Minute,
+		TierAudit:             6 * time.Hour,
 	},
 }
 

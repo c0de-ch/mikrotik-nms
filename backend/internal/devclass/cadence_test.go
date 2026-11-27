@@ -42,6 +42,10 @@ func TestCadenceTable(t *testing.T) {
 		{C2, TierWifiRegistrations, 60 * time.Second},
 		{C3, TierWifiRegistrations, 30 * time.Second},
 		{C3, TierInventory, 60 * time.Minute},
+		// The hygiene audit: every 6 h, whatever the class.
+		{C1, TierAudit, 6 * time.Hour},
+		{C2, TierAudit, 6 * time.Hour},
+		{C3, TierAudit, 6 * time.Hour},
 		// Unprobed and invalid classes run the C1 plan.
 		{C0Unknown, TierCounters, 60 * time.Second},
 		{Class("bogus"), TierBridgePorts, 5 * time.Minute},

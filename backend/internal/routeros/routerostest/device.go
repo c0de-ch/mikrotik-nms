@@ -48,6 +48,7 @@ type Device struct {
 	commands     []string
 	args         [][]string
 	replies      map[string][]map[string]string
+	counts       map[string]int
 	traps        map[string]string
 	fatals       map[string]string
 	raws         map[string][]byte
@@ -200,6 +201,7 @@ func (d *Device) serve(c net.Conn) {
 		d.mu.Lock()
 		refuse := d.refuseLogins
 		rows := d.replies[sen.Word]
+		count, counted := d.counts[sen.Word]
 		trap, trapped := d.traps[sen.Word]
 		fatal, isFatal := d.fatals[sen.Word]
 		raw, isRaw := d.raws[sen.Word]
@@ -211,8 +213,10 @@ func (d *Device) serve(c net.Conn) {
 			} else {
 				trapped, rows = false, nil
 			}
+			counted = false
 		} else {
 			d.record(sen.Word, sen.List)
+			counted = counted && hasWord(sen.List, "count-only")
 		}
 		switch {
 		case isRaw:
@@ -236,6 +240,8 @@ func (d *Device) serve(c net.Conn) {
 			if err := w.EndSentence(); err != nil {
 				return
 			}
+		case counted:
+			// =count-only=: no rows, the count in the !done sentence.
 		default:
 			for _, row := range rows {
 				w.BeginSentence()
@@ -250,6 +256,9 @@ func (d *Device) serve(c net.Conn) {
 		}
 		w.BeginSentence()
 		w.WriteWord("!done")
+		if counted && !trapped {
+			w.WriteWord("=ret=" + strconv.Itoa(count))
+		}
 		if err := w.EndSentence(); err != nil {
 			return
 		}
@@ -271,6 +280,29 @@ func (d *Device) SetReply(command string, rows ...map[string]string) {
 		d.replies = make(map[string][]map[string]string)
 	}
 	d.replies[command] = rows
+}
+
+// SetCount makes the device answer command, when it is sent with
+// =count-only=, with that row count in the !done sentence and no rows — as
+// RouterOS does. Sent without =count-only=, the command is answered as
+// before (SetReply's rows).
+func (d *Device) SetCount(command string, n int) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.counts == nil {
+		d.counts = make(map[string]int)
+	}
+	d.counts[command] = n
+}
+
+// hasWord reports an attribute word (=key=…) among a sentence's pairs.
+func hasWord(pairs []proto.Pair, key string) bool {
+	for _, p := range pairs {
+		if p.Key == key {
+			return true
+		}
+	}
+	return false
 }
 
 // SetTrap makes the device answer command with a !trap carrying message.
