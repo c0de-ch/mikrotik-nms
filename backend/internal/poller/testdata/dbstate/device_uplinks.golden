@@ -1,0 +1,20 @@
+# DB state after the fleet's hour: table device_uplinks, 5 rows.
+#
+# Written by: Manager.collectUplinks → queries.ReplaceDeviceUplinks (gateway-host rows: Manager.resolveGatewayHosts → queries.ReplaceGatewayHosts)
+# The hour:   the call-plan fleet of 5 fake devices (callplan_harness_test.go), every scheduled loop,
+#             one simulated hour and a minute from 2026-01-05 12:00 UTC; the devices' counters, CPU,
+#             memory and uptime move with the clock (callplan_motion_test.go)
+#
+# A change in this file is a change in what the pollers store.
+# Rewrite it with: go test ./internal/poller -run TestDBState -update
+#
+# Normalised (dbstate_test.go):
+#   last_seen: SQLite's CURRENT_TIMESTAMP (wall clock) → <sqlite-now>; stored as TEXT "2006-01-02 15:04:05" (as CURRENT_TIMESTAMP writes it)
+#   REAL values with three decimals, strings quoted, NULL as NULL
+#   rows ordered by the primary key (id)
+
+id="ap-ac:default-route:bridge:127.0.0.31" device_id="ap-ac" kind="default-route" interface="bridge" iface_type="bridge" gateway_ip="127.0.0.31" last_seen=<sqlite-now>
+id="ap-ax:default-route:bridge:127.0.0.31" device_id="ap-ax" kind="default-route" interface="bridge" iface_type="bridge" gateway_ip="127.0.0.31" last_seen=<sqlite-now>
+id="rtr:default-route:ether1:198.51.100.1" device_id="rtr" kind="default-route" interface="ether1" iface_type="ether" gateway_ip="198.51.100.1" last_seen=<sqlite-now>
+id="sw24:default-route:vlan-mgmt:127.0.0.31" device_id="sw24" kind="default-route" interface="vlan-mgmt" iface_type="vlan" gateway_ip="127.0.0.31" last_seen=<sqlite-now>
+id="sw48:default-route:vlan-mgmt:127.0.0.31" device_id="sw48" kind="default-route" interface="vlan-mgmt" iface_type="vlan" gateway_ip="127.0.0.31" last_seen=<sqlite-now>

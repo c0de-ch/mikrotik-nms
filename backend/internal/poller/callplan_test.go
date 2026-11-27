@@ -23,9 +23,16 @@ import (
 //	go test ./internal/poller -run TestCallPlan -update    # rewrite the files
 //
 // (UPDATE_GOLDEN=1 does the same.) Read the diff before committing it: it is
-// the device's side of the change.
+// the device's side of the change. The same flag rewrites the DB-state
+// goldens of the same hour (TestDBState, testdata/dbstate).
 
-var updateCallPlans = flag.Bool("update", false, "rewrite the golden call plans in testdata/callplan")
+var updateGoldenFiles = flag.Bool("update", false, "rewrite the golden files in testdata (call plans, DB state)")
+
+// updateGolden reports whether this run rewrites the golden files instead of
+// comparing with them: -update, or UPDATE_GOLDEN=1.
+func updateGolden() bool {
+	return *updateGoldenFiles || os.Getenv("UPDATE_GOLDEN") == "1"
+}
 
 // planStartupMinutes are the minutes in which a just-started NMS reads
 // everything once — the capability probes, the inventory, the first read of
@@ -399,17 +406,16 @@ func planDiff(got, want string) string {
 // held to its budget, every command must be one its personality answers, and
 // every print must name its fields.
 func TestCallPlans(t *testing.T) {
-	h := newCallPlan(t)
-	// One minute past the hour: the hourly inventory pass comes round then,
-	// and with it the only command of the pool's own (its keep-alive).
-	h.run(h.hour + time.Minute)
+	h := fleetHourOf(t)
 	// A plan is only worth reading if the hour behind it worked.
-	h.checkOutcome()
+	for _, p := range h.problems {
+		t.Error(p)
+	}
 
-	update := *updateCallPlans || os.Getenv("UPDATE_GOLDEN") == "1"
+	update := updateGolden()
 	bare := map[string]bool{}
 	for _, d := range h.devices {
-		calls := d.calls()
+		calls := h.calls[d.id]
 		if len(calls) == 0 {
 			t.Fatalf("%s was sent nothing: the harness reached no device", d.id)
 		}

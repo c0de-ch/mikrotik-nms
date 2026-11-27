@@ -1,0 +1,23 @@
+# DB state after the fleet's hour: table neighbors, 8 rows.
+#
+# Written by: Manager.collectNeighbors (Tier 3d) → queries.UpsertNeighbor (stale rows: Manager.sweepNeighbors)
+# The hour:   the call-plan fleet of 5 fake devices (callplan_harness_test.go), every scheduled loop,
+#             one simulated hour and a minute from 2026-01-05 12:00 UTC; the devices' counters, CPU,
+#             memory and uptime move with the clock (callplan_motion_test.go)
+#
+# A change in this file is a change in what the pollers store.
+# Rewrite it with: go test ./internal/poller -run TestDBState -update
+#
+# Normalised (dbstate_test.go):
+#   last_seen: SQLite's CURRENT_TIMESTAMP (wall clock) → <sqlite-now>; stored as TEXT "2006-01-02 15:04:05" (as CURRENT_TIMESTAMP writes it)
+#   REAL values with three decimals, strings quoted, NULL as NULL
+#   rows ordered by the primary key (id)
+
+id="ap-ac:ether1:02:22:D9:BB:00:02" device_id="ap-ac" local_interface="ether1" neighbor_address="127.0.0.32" neighbor_mac="02:22:D9:BB:00:02" neighbor_identity="sw48" neighbor_platform="MikroTik" neighbor_board="CRS354-48G-4S+2Q+" neighbor_version="7.24.5 (stable)" neighbor_interface="ether2" discovered_by="mndp" last_seen=<sqlite-now>
+id="ap-ax:ether1:02:22:D9:BB:00:01" device_id="ap-ax" local_interface="ether1" neighbor_address="127.0.0.32" neighbor_mac="02:22:D9:BB:00:01" neighbor_identity="sw48" neighbor_platform="MikroTik" neighbor_board="CRS354-48G-4S+2Q+" neighbor_version="7.24.5 (stable)" neighbor_interface="ether1" discovered_by="mndp" last_seen=<sqlite-now>
+id="rtr:sfp-sfpplus1:02:22:D9:BB:00:32" device_id="rtr" local_interface="sfp-sfpplus1" neighbor_address="127.0.0.32" neighbor_mac="02:22:D9:BB:00:32" neighbor_identity="sw48" neighbor_platform="MikroTik" neighbor_board="CRS354-48G-4S+2Q+" neighbor_version="7.24.5 (stable)" neighbor_interface="sfp-sfpplus1" discovered_by="mndp" last_seen=<sqlite-now>
+id="sw24:sfp-sfpplus1:02:22:D9:BB:00:33" device_id="sw24" local_interface="sfp-sfpplus1" neighbor_address="127.0.0.32" neighbor_mac="02:22:D9:BB:00:33" neighbor_identity="sw48" neighbor_platform="MikroTik" neighbor_board="CRS354-48G-4S+2Q+" neighbor_version="7.24.5 (stable)" neighbor_interface="sfp-sfpplus2" discovered_by="mndp" last_seen=<sqlite-now>
+id="sw48:ether1:02:D6:B5:1A:00:01" device_id="sw48" local_interface="ether1" neighbor_address="127.0.0.34" neighbor_mac="02:D6:B5:1A:00:01" neighbor_identity="ap-ax" neighbor_platform="MikroTik" neighbor_board="cAP ax" neighbor_version="7.20.4 (stable)" neighbor_interface="ether1" discovered_by="mndp" last_seen=<sqlite-now>
+id="sw48:ether2:02:07:FA:6E:00:01" device_id="sw48" local_interface="ether2" neighbor_address="127.0.0.35" neighbor_mac="02:07:FA:6E:00:01" neighbor_identity="ap-ac" neighbor_platform="MikroTik" neighbor_board="cAP ac" neighbor_version="7.25 (stable)" neighbor_interface="ether1" discovered_by="mndp" last_seen=<sqlite-now>
+id="sw48:sfp-sfpplus1:02:A4:7E:AA:00:09" device_id="sw48" local_interface="sfp-sfpplus1" neighbor_address="127.0.0.31" neighbor_mac="02:A4:7E:AA:00:09" neighbor_identity="rtr" neighbor_platform="MikroTik" neighbor_board="RB5009UG+S+" neighbor_version="7.25 (stable)" neighbor_interface="sfp-sfpplus1" discovered_by="mndp" last_seen=<sqlite-now>
+id="sw48:sfp-sfpplus2:02:D4:D2:81:00:19" device_id="sw48" local_interface="sfp-sfpplus2" neighbor_address="127.0.0.33" neighbor_mac="02:D4:D2:81:00:19" neighbor_identity="sw24" neighbor_platform="MikroTik" neighbor_board="CRS326-24G-2S+" neighbor_version="7.25 (stable)" neighbor_interface="sfp-sfpplus1" discovered_by="mndp" last_seen=<sqlite-now>

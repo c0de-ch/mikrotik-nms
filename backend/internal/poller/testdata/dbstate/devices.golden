@@ -1,0 +1,26 @@
+# DB state after the fleet's hour: table devices, 5 rows.
+#
+# Written by: Manager.pollDevice (liveness) → queries.MarkDeviceOnline: status, last_seen, last_error
+#             Manager.refreshDeviceInfo (Tier 6) → queries.UpdateDeviceHealth: cpu_load, memory, uptime, last_seen; queries.UpdateDeviceInfo: platform, board, ros_version, firmware_version, architecture
+#             Manager.probeClass → queries.SetDeviceClass: device_class, class_probed_at, cpu_count, cpu_mhz_max
+#             CPUSampler.sample (Tier 1) → queries.UpdateDeviceLoad: cpu_load, memory_used, uptime
+# The hour:   the call-plan fleet of 5 fake devices (callplan_harness_test.go), every scheduled loop,
+#             one simulated hour and a minute from 2026-01-05 12:00 UTC; the devices' counters, CPU,
+#             memory and uptime move with the clock (callplan_motion_test.go)
+#
+# A change in this file is a change in what the pollers store.
+# Rewrite it with: go test ./internal/poller -run TestDBState -update
+#
+# Normalised (dbstate_test.go):
+#   last_seen: SQLite's CURRENT_TIMESTAMP (wall clock) → <sqlite-now>; stored as TEXT "2006-01-02 15:04:05" (as CURRENT_TIMESTAMP writes it)
+#   updated_at: SQLite's CURRENT_TIMESTAMP (wall clock) → <sqlite-now>; stored as TEXT "2006-01-02 15:04:05" (as CURRENT_TIMESTAMP writes it)
+#   class_probed_at: the simulated clock, as the offset from the start of the hour; stored as TEXT time.Time.String() ("2006-01-02 15:04:05 +0000 UTC", as the driver binds a time.Time)
+#   REAL values with three decimals, strings quoted, NULL as NULL
+#   rows ordered by the primary key (id)
+#   left out, as only the harness's seed writes them (checked unchanged): address, identity, username, password_enc, use_tls, api_port, tags, notes, created_at, class_override, poll_profile, polling_paused_until, pin_cert_sha256
+
+id="ap-ac" platform="MikroTik" board="cAP ac" ros_version="7.25 (stable)" firmware_version="" architecture="arm" status="online" cpu_load=10 memory_used=82444288 memory_total=134217728 uptime="3w0d10h44m27s" last_seen=<sqlite-now> last_error=NULL updated_at=<sqlite-now> device_class="C1" class_probed_at=+01:00:08 cpu_count=4 cpu_mhz_max=716
+id="ap-ax" platform="MikroTik" board="cAP ax" ros_version="7.20.4 (stable)" firmware_version="" architecture="arm64" status="online" cpu_load=5 memory_used=137756672 memory_total=268435456 uptime="2w1d7h2m19s" last_seen=<sqlite-now> last_error=NULL updated_at=<sqlite-now> device_class="C3" class_probed_at=+01:00:08 cpu_count=4 cpu_mhz_max=864
+id="rtr" platform="MikroTik" board="RB5009UG+S+" ros_version="7.25 (stable)" firmware_version="" architecture="arm64" status="online" cpu_load=4 memory_used=227934208 memory_total=1073741824 uptime="6w4d3h51m11s" last_seen=<sqlite-now> last_error=NULL updated_at=<sqlite-now> device_class="C3" class_probed_at=+01:00:08 cpu_count=4 cpu_mhz_max=1400
+id="sw24" platform="MikroTik" board="CRS326-24G-2S+" ros_version="7.25 (stable)" firmware_version="" architecture="arm" status="online" cpu_load=10 memory_used=96272384 memory_total=536870912 uptime="1w3d2h9m38s" last_seen=<sqlite-now> last_error=NULL updated_at=<sqlite-now> device_class="C2" class_probed_at=+01:00:08 cpu_count=1 cpu_mhz_max=800
+id="sw48" platform="MikroTik" board="CRS354-48G-4S+2Q+" ros_version="7.24.5 (stable)" firmware_version="" architecture="mipsbe" status="online" cpu_load=15 memory_used=46071808 memory_total=67108864 uptime="5w2d4h14m15s" last_seen=<sqlite-now> last_error=NULL updated_at=<sqlite-now> device_class="C1" class_probed_at=+01:00:08 cpu_count=1 cpu_mhz_max=650

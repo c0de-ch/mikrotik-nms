@@ -1,0 +1,61 @@
+# DB state after the fleet's hour: table device_findings, 4 rows.
+#
+# Written by: Auditor.storeFindings → queries.UpsertAuditFinding (and DeleteAuditFindingsExcept, ReleaseAuditFindings for what a pass no longer sees)
+# The hour:   the call-plan fleet of 5 fake devices (callplan_harness_test.go), every scheduled loop,
+#             one simulated hour and a minute from 2026-01-05 12:00 UTC; the devices' counters, CPU,
+#             memory and uptime move with the clock (callplan_motion_test.go)
+#
+# A change in this file is a change in what the pollers store.
+# Rewrite it with: go test ./internal/poller -run TestDBState -update
+#
+# Normalised (dbstate_test.go):
+#   first_seen: the simulated clock, as the offset from the start of the hour; stored as TEXT "2006-01-02 15:04:05" (as CURRENT_TIMESTAMP writes it)
+#   last_seen: the simulated clock, as the offset from the start of the hour; stored as TEXT "2006-01-02 15:04:05" (as CURRENT_TIMESTAMP writes it)
+#   fix: JSON, keys sorted, simulated times as offsets, printed under the row
+#   REAL values with three decimals, strings quoted, NULL as NULL
+#   rows ordered by the primary key (id)
+
+id=1 device_id="sw24" kind="device_mode_permissive" severity="info" detail="mode=advanced; allows fetch, bandwidth-test, email, sniffer" first_seen=+00:11:10 last_seen=+00:11:10 count=1 title="Device-mode allows tools this device does not need" explanation="Device-mode is RouterOS's last line of defence: what it forbids cannot be switched on by anyone who logs in, only by someone standing at the device. A switch has no use for fetch, bandwidth-test, email, sniffer." fix=(below) source="audit"
+    fix:
+      [
+        {
+          "commands": [
+            "/system device-mode update fetch=no bandwidth-test=no email=no sniffer=no"
+          ],
+          "text": "At the next site visit: the change must be confirmed at the device itself (the reset button or a power cycle) within a few minutes, and the device restarts.",
+          "window": true
+        }
+      ]
+id=2 device_id="ap-ax" kind="device_mode_permissive" severity="info" detail="mode=advanced; allows fetch, bandwidth-test, email, sniffer" first_seen=+00:11:12 last_seen=+00:11:12 count=1 title="Device-mode allows tools this device does not need" explanation="Device-mode is RouterOS's last line of defence: what it forbids cannot be switched on by anyone who logs in, only by someone standing at the device. An access point or CPE has no use for fetch, bandwidth-test, email, sniffer." fix=(below) source="audit"
+    fix:
+      [
+        {
+          "commands": [
+            "/system device-mode update fetch=no bandwidth-test=no email=no sniffer=no"
+          ],
+          "text": "At the next site visit: the change must be confirmed at the device itself (the reset button or a power cycle) within a few minutes, and the device restarts.",
+          "window": true
+        }
+      ]
+id=3 device_id="sw48" kind="device_mode_permissive" severity="info" detail="mode=advanced; allows fetch, bandwidth-test, email, sniffer" first_seen=+00:21:54 last_seen=+00:21:54 count=1 title="Device-mode allows tools this device does not need" explanation="Device-mode is RouterOS's last line of defence: what it forbids cannot be switched on by anyone who logs in, only by someone standing at the device. A switch has no use for fetch, bandwidth-test, email, sniffer." fix=(below) source="audit"
+    fix:
+      [
+        {
+          "commands": [
+            "/system device-mode update fetch=no bandwidth-test=no email=no sniffer=no"
+          ],
+          "text": "At the next site visit: the change must be confirmed at the device itself (the reset button or a power cycle) within a few minutes, and the device restarts.",
+          "window": true
+        }
+      ]
+id=4 device_id="ap-ac" kind="device_mode_permissive" severity="info" detail="mode=advanced; allows fetch, bandwidth-test, email, sniffer" first_seen=+00:22:54 last_seen=+00:22:54 count=1 title="Device-mode allows tools this device does not need" explanation="Device-mode is RouterOS's last line of defence: what it forbids cannot be switched on by anyone who logs in, only by someone standing at the device. An access point or CPE has no use for fetch, bandwidth-test, email, sniffer." fix=(below) source="audit"
+    fix:
+      [
+        {
+          "commands": [
+            "/system device-mode update fetch=no bandwidth-test=no email=no sniffer=no"
+          ],
+          "text": "At the next site visit: the change must be confirmed at the device itself (the reset button or a power cycle) within a few minutes, and the device restarts.",
+          "window": true
+        }
+      ]

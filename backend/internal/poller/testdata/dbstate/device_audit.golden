@@ -1,0 +1,604 @@
+# DB state after the fleet's hour: table device_audit, 5 rows.
+#
+# Written by: Auditor.storeSnapshot → queries.InsertDeviceAudit
+# The hour:   the call-plan fleet of 5 fake devices (callplan_harness_test.go), every scheduled loop,
+#             one simulated hour and a minute from 2026-01-05 12:00 UTC; the devices' counters, CPU,
+#             memory and uptime move with the clock (callplan_motion_test.go)
+#
+# A change in this file is a change in what the pollers store.
+# Rewrite it with: go test ./internal/poller -run TestDBState -update
+#
+# Normalised (dbstate_test.go):
+#   taken_at: the simulated clock, as the offset from the start of the hour; stored as INTEGER unix seconds
+#   snapshot, findings: JSON, keys sorted, simulated times as offsets, printed under the row
+#   REAL values with three decimals, strings quoted, NULL as NULL
+#   rows ordered by the primary key (id)
+
+id=1 device_id="sw24" taken_at=+00:11:10 hash="a372b69256171d7e0c2811fd24dff243a22b106ef560419842a69946b57dcc0c" ros_version="7.25 (stable)" snapshot=(below) findings=(below)
+    snapshot:
+      {
+        "schema": 1,
+        "sections": {
+          "bridge_filter": {
+            "count": 0,
+            "state": "ok"
+          },
+          "bridge_settings": {
+            "rows": [
+              {
+                "allow-fast-path": "true",
+                "use-ip-firewall": "false",
+                "use-ip-firewall-for-vlan": "false"
+              }
+            ],
+            "state": "ok"
+          },
+          "device_mode": {
+            "rows": [
+              {
+                "bandwidth-test": "true",
+                "email": "true",
+                "fetch": "true",
+                "mode": "advanced",
+                "sniffer": "true",
+                "traffic-gen": "false"
+              }
+            ],
+            "state": "ok"
+          },
+          "firewall_forward": {
+            "count": 0,
+            "state": "ok"
+          },
+          "logging": {
+            "rows": [
+              {
+                "action": "memory",
+                "disabled": "false",
+                "topics": "info"
+              },
+              {
+                "action": "memory",
+                "disabled": "false",
+                "topics": "error"
+              },
+              {
+                "action": "memory",
+                "disabled": "false",
+                "topics": "warning"
+              },
+              {
+                "action": "echo",
+                "disabled": "false",
+                "topics": "critical"
+              }
+            ],
+            "state": "ok"
+          },
+          "snmp": {
+            "rows": [
+              {
+                "enabled": "false"
+              }
+            ],
+            "state": "ok"
+          },
+          "switches": {
+            "rows": [
+              {
+                "l3-hw-offloading": "false",
+                "mirror-egress-target": "none",
+                "mirror-source": "none",
+                "mirror-target": "none",
+                "name": "switch1",
+                "type": "Marvell-98DX3236"
+              }
+            ],
+            "state": "ok"
+          },
+          "traffic_flow": {
+            "rows": [
+              {
+                "active-flow-timeout": "30m",
+                "cache-entries": "256k",
+                "enabled": "false",
+                "interfaces": "all"
+              }
+            ],
+            "state": "ok"
+          },
+          "user_groups": {
+            "rows": [
+              {
+                "name": "read",
+                "policy": "local,telnet,ssh,reboot,read,test,winbox,password,web,sniff,sensitive,api,romon,rest-api,!ftp,!write,!policy"
+              },
+              {
+                "name": "write",
+                "policy": "local,telnet,ssh,reboot,read,write,test,winbox,password,web,sniff,sensitive,api,romon,rest-api,!ftp,!policy"
+              },
+              {
+                "name": "full",
+                "policy": "local,telnet,ssh,ftp,reboot,read,write,policy,test,winbox,password,web,sniff,sensitive,api,romon,rest-api"
+              },
+              {
+                "name": "nms-read",
+                "policy": "read,test,api,!local,!telnet,!ssh,!ftp,!reboot,!write,!policy,!winbox,!password,!web,!sniff,!sensitive,!romon,!rest-api"
+              }
+            ],
+            "state": "ok"
+          }
+        }
+      }
+    findings:
+      [
+        {
+          "detail": "mode=advanced; allows fetch, bandwidth-test, email, sniffer",
+          "kind": "device_mode_permissive",
+          "severity": "info",
+          "title": "Device-mode allows tools this device does not need"
+        }
+      ]
+id=2 device_id="ap-ax" taken_at=+00:11:12 hash="66d3fd45f78587190347eeeea8823d443537a2c4abfad7e59930d819b738dcc8" ros_version="7.20.4 (stable)" snapshot=(below) findings=(below)
+    snapshot:
+      {
+        "schema": 1,
+        "sections": {
+          "bridge_settings": {
+            "rows": [
+              {
+                "allow-fast-path": "true",
+                "use-ip-firewall": "false",
+                "use-ip-firewall-for-vlan": "false"
+              }
+            ],
+            "state": "ok"
+          },
+          "device_mode": {
+            "rows": [
+              {
+                "bandwidth-test": "true",
+                "email": "true",
+                "fetch": "true",
+                "mode": "advanced",
+                "sniffer": "true",
+                "traffic-gen": "false"
+              }
+            ],
+            "state": "ok"
+          },
+          "logging": {
+            "rows": [
+              {
+                "action": "memory",
+                "disabled": "false",
+                "topics": "info"
+              },
+              {
+                "action": "memory",
+                "disabled": "false",
+                "topics": "error"
+              },
+              {
+                "action": "memory",
+                "disabled": "false",
+                "topics": "warning"
+              },
+              {
+                "action": "echo",
+                "disabled": "false",
+                "topics": "critical"
+              }
+            ],
+            "state": "ok"
+          },
+          "snmp": {
+            "rows": [
+              {
+                "enabled": "false"
+              }
+            ],
+            "state": "ok"
+          },
+          "traffic_flow": {
+            "rows": [
+              {
+                "active-flow-timeout": "30m",
+                "cache-entries": "256k",
+                "enabled": "false",
+                "interfaces": "all"
+              }
+            ],
+            "state": "ok"
+          },
+          "user_groups": {
+            "rows": [
+              {
+                "name": "read",
+                "policy": "local,telnet,ssh,reboot,read,test,winbox,password,web,sniff,sensitive,api,romon,rest-api,!ftp,!write,!policy"
+              },
+              {
+                "name": "write",
+                "policy": "local,telnet,ssh,reboot,read,write,test,winbox,password,web,sniff,sensitive,api,romon,rest-api,!ftp,!policy"
+              },
+              {
+                "name": "full",
+                "policy": "local,telnet,ssh,ftp,reboot,read,write,policy,test,winbox,password,web,sniff,sensitive,api,romon,rest-api"
+              },
+              {
+                "name": "nms-read",
+                "policy": "read,test,api,!local,!telnet,!ssh,!ftp,!reboot,!write,!policy,!winbox,!password,!web,!sniff,!sensitive,!romon,!rest-api"
+              }
+            ],
+            "state": "ok"
+          }
+        }
+      }
+    findings:
+      [
+        {
+          "detail": "mode=advanced; allows fetch, bandwidth-test, email, sniffer",
+          "kind": "device_mode_permissive",
+          "severity": "info",
+          "title": "Device-mode allows tools this device does not need"
+        }
+      ]
+id=3 device_id="rtr" taken_at=+00:17:58 hash="7cc0ef0409d55e8d0f41754e50265a08e464ed163865a2026307be42e262e5ab" ros_version="7.25 (stable)" snapshot=(below) findings=(below)
+    snapshot:
+      {
+        "schema": 1,
+        "sections": {
+          "bridge_settings": {
+            "rows": [
+              {
+                "allow-fast-path": "true",
+                "use-ip-firewall": "false",
+                "use-ip-firewall-for-vlan": "false"
+              }
+            ],
+            "state": "ok"
+          },
+          "logging": {
+            "rows": [
+              {
+                "action": "memory",
+                "disabled": "false",
+                "topics": "info"
+              },
+              {
+                "action": "memory",
+                "disabled": "false",
+                "topics": "error"
+              },
+              {
+                "action": "memory",
+                "disabled": "false",
+                "topics": "warning"
+              },
+              {
+                "action": "echo",
+                "disabled": "false",
+                "topics": "critical"
+              }
+            ],
+            "state": "ok"
+          },
+          "snmp": {
+            "rows": [
+              {
+                "enabled": "false"
+              }
+            ],
+            "state": "ok"
+          },
+          "switches": {
+            "rows": [
+              {
+                "l3-hw-offloading": "false",
+                "mirror-egress-target": "none",
+                "mirror-source": "none",
+                "mirror-target": "none",
+                "name": "switch1",
+                "type": "Marvell-88E6393X"
+              }
+            ],
+            "state": "ok"
+          },
+          "traffic_flow": {
+            "rows": [
+              {
+                "active-flow-timeout": "30m",
+                "cache-entries": "256k",
+                "enabled": "false",
+                "interfaces": "all"
+              }
+            ],
+            "state": "ok"
+          },
+          "user_groups": {
+            "rows": [
+              {
+                "name": "read",
+                "policy": "local,telnet,ssh,reboot,read,test,winbox,password,web,sniff,sensitive,api,romon,rest-api,!ftp,!write,!policy"
+              },
+              {
+                "name": "write",
+                "policy": "local,telnet,ssh,reboot,read,write,test,winbox,password,web,sniff,sensitive,api,romon,rest-api,!ftp,!policy"
+              },
+              {
+                "name": "full",
+                "policy": "local,telnet,ssh,ftp,reboot,read,write,policy,test,winbox,password,web,sniff,sensitive,api,romon,rest-api"
+              },
+              {
+                "name": "nms-read",
+                "policy": "read,test,api,!local,!telnet,!ssh,!ftp,!reboot,!write,!policy,!winbox,!password,!web,!sniff,!sensitive,!romon,!rest-api"
+              }
+            ],
+            "state": "ok"
+          }
+        }
+      }
+    findings:
+      []
+id=4 device_id="sw48" taken_at=+00:21:54 hash="133865319ee81952922a146ee105852a789af7e8a05f38ffe6c32d3695f0dcbc" ros_version="7.24.5 (stable)" snapshot=(below) findings=(below)
+    snapshot:
+      {
+        "schema": 1,
+        "sections": {
+          "bonding": {
+            "rows": [
+              {
+                "disabled": "false",
+                "mode": "802.3ad",
+                "name": "bond1",
+                "slaves": "ether45,ether46"
+              },
+              {
+                "disabled": "false",
+                "mode": "802.3ad",
+                "name": "bond2",
+                "slaves": "ether47,ether48"
+              }
+            ],
+            "state": "ok"
+          },
+          "bridge_filter": {
+            "count": 0,
+            "state": "ok"
+          },
+          "bridge_settings": {
+            "rows": [
+              {
+                "allow-fast-path": "true",
+                "use-ip-firewall": "false",
+                "use-ip-firewall-for-vlan": "false"
+              }
+            ],
+            "state": "ok"
+          },
+          "capsman": {
+            "rows": [
+              {
+                "enabled": "false"
+              }
+            ],
+            "state": "ok"
+          },
+          "device_mode": {
+            "rows": [
+              {
+                "bandwidth-test": "true",
+                "email": "true",
+                "fetch": "true",
+                "mode": "advanced",
+                "sniffer": "true",
+                "traffic-gen": "false"
+              }
+            ],
+            "state": "ok"
+          },
+          "dns": {
+            "rows": [
+              {
+                "allow-remote-requests": "false"
+              }
+            ],
+            "state": "ok"
+          },
+          "firewall_forward": {
+            "count": 0,
+            "state": "ok"
+          },
+          "logging": {
+            "rows": [
+              {
+                "action": "memory",
+                "disabled": "false",
+                "topics": "info"
+              },
+              {
+                "action": "memory",
+                "disabled": "false",
+                "topics": "error"
+              },
+              {
+                "action": "memory",
+                "disabled": "false",
+                "topics": "warning"
+              },
+              {
+                "action": "echo",
+                "disabled": "false",
+                "topics": "critical"
+              }
+            ],
+            "state": "ok"
+          },
+          "snmp": {
+            "rows": [
+              {
+                "enabled": "false"
+              }
+            ],
+            "state": "ok"
+          },
+          "switches": {
+            "rows": [
+              {
+                "l3-hw-offloading": "false",
+                "mirror-egress-target": "none",
+                "mirror-source": "none",
+                "mirror-target": "none",
+                "name": "switch1",
+                "type": "Marvell-98DX3257"
+              }
+            ],
+            "state": "ok"
+          },
+          "traffic_flow": {
+            "rows": [
+              {
+                "active-flow-timeout": "30m",
+                "cache-entries": "256k",
+                "enabled": "false",
+                "interfaces": "all"
+              }
+            ],
+            "state": "ok"
+          },
+          "user_groups": {
+            "rows": [
+              {
+                "name": "read",
+                "policy": "local,telnet,ssh,reboot,read,test,winbox,password,web,sniff,sensitive,api,romon,rest-api,!ftp,!write,!policy"
+              },
+              {
+                "name": "write",
+                "policy": "local,telnet,ssh,reboot,read,write,test,winbox,password,web,sniff,sensitive,api,romon,rest-api,!ftp,!policy"
+              },
+              {
+                "name": "full",
+                "policy": "local,telnet,ssh,ftp,reboot,read,write,policy,test,winbox,password,web,sniff,sensitive,api,romon,rest-api"
+              },
+              {
+                "name": "nms-read",
+                "policy": "read,test,api,!local,!telnet,!ssh,!ftp,!reboot,!write,!policy,!winbox,!password,!web,!sniff,!sensitive,!romon,!rest-api"
+              }
+            ],
+            "state": "ok"
+          }
+        }
+      }
+    findings:
+      [
+        {
+          "detail": "mode=advanced; allows fetch, bandwidth-test, email, sniffer",
+          "kind": "device_mode_permissive",
+          "severity": "info",
+          "title": "Device-mode allows tools this device does not need"
+        }
+      ]
+id=5 device_id="ap-ac" taken_at=+00:22:54 hash="66d3fd45f78587190347eeeea8823d443537a2c4abfad7e59930d819b738dcc8" ros_version="7.25 (stable)" snapshot=(below) findings=(below)
+    snapshot:
+      {
+        "schema": 1,
+        "sections": {
+          "bridge_settings": {
+            "rows": [
+              {
+                "allow-fast-path": "true",
+                "use-ip-firewall": "false",
+                "use-ip-firewall-for-vlan": "false"
+              }
+            ],
+            "state": "ok"
+          },
+          "device_mode": {
+            "rows": [
+              {
+                "bandwidth-test": "true",
+                "email": "true",
+                "fetch": "true",
+                "mode": "advanced",
+                "sniffer": "true",
+                "traffic-gen": "false"
+              }
+            ],
+            "state": "ok"
+          },
+          "logging": {
+            "rows": [
+              {
+                "action": "memory",
+                "disabled": "false",
+                "topics": "info"
+              },
+              {
+                "action": "memory",
+                "disabled": "false",
+                "topics": "error"
+              },
+              {
+                "action": "memory",
+                "disabled": "false",
+                "topics": "warning"
+              },
+              {
+                "action": "echo",
+                "disabled": "false",
+                "topics": "critical"
+              }
+            ],
+            "state": "ok"
+          },
+          "snmp": {
+            "rows": [
+              {
+                "enabled": "false"
+              }
+            ],
+            "state": "ok"
+          },
+          "traffic_flow": {
+            "rows": [
+              {
+                "active-flow-timeout": "30m",
+                "cache-entries": "256k",
+                "enabled": "false",
+                "interfaces": "all"
+              }
+            ],
+            "state": "ok"
+          },
+          "user_groups": {
+            "rows": [
+              {
+                "name": "read",
+                "policy": "local,telnet,ssh,reboot,read,test,winbox,password,web,sniff,sensitive,api,romon,rest-api,!ftp,!write,!policy"
+              },
+              {
+                "name": "write",
+                "policy": "local,telnet,ssh,reboot,read,write,test,winbox,password,web,sniff,sensitive,api,romon,rest-api,!ftp,!policy"
+              },
+              {
+                "name": "full",
+                "policy": "local,telnet,ssh,ftp,reboot,read,write,policy,test,winbox,password,web,sniff,sensitive,api,romon,rest-api"
+              },
+              {
+                "name": "nms-read",
+                "policy": "read,test,api,!local,!telnet,!ssh,!ftp,!reboot,!write,!policy,!winbox,!password,!web,!sniff,!sensitive,!romon,!rest-api"
+              }
+            ],
+            "state": "ok"
+          }
+        }
+      }
+    findings:
+      [
+        {
+          "detail": "mode=advanced; allows fetch, bandwidth-test, email, sniffer",
+          "kind": "device_mode_permissive",
+          "severity": "info",
+          "title": "Device-mode allows tools this device does not need"
+        }
+      ]

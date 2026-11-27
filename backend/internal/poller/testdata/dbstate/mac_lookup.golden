@@ -1,0 +1,25 @@
+# DB state after the fleet's hour: table mac_lookup, 9 rows.
+#
+# Written by: ClientDiscoveryPoller.store → queries.UpsertMACLookup
+#             WifiTracker.poll → queries.UpsertMACLookup
+# The hour:   the call-plan fleet of 5 fake devices (callplan_harness_test.go), every scheduled loop,
+#             one simulated hour and a minute from 2026-01-05 12:00 UTC; the devices' counters, CPU,
+#             memory and uptime move with the clock (callplan_motion_test.go)
+#
+# A change in this file is a change in what the pollers store.
+# Rewrite it with: go test ./internal/poller -run TestDBState -update
+#
+# Normalised (dbstate_test.go):
+#   updated_at: SQLite's CURRENT_TIMESTAMP (wall clock) → <sqlite-now>; stored as TEXT "2006-01-02 15:04:05" (as CURRENT_TIMESTAMP writes it)
+#   REAL values with three decimals, strings quoted, NULL as NULL
+#   rows ordered by the primary key (mac_address)
+
+mac_address="02:00:5E:00:53:01" ip_address="192.0.2.1" host_name="" dns_name="" source="arp" device_name="ap-ac" updated_at=<sqlite-now> interface_name="" device_id="" ap="" ssid="" band="" channel="" frequency="" signal="" tx_rate="" rx_rate="" uptime=""
+mac_address="02:00:5E:00:53:0A" ip_address="192.0.2.10" host_name="" dns_name="" source="arp" device_name="sw24" updated_at=<sqlite-now> interface_name="" device_id="" ap="" ssid="" band="" channel="" frequency="" signal="" tx_rate="" rx_rate="" uptime=""
+mac_address="02:00:5E:00:53:FE" ip_address="198.51.100.1" host_name="" dns_name="" source="arp" device_name="rtr" updated_at=<sqlite-now> interface_name="" device_id="" ap="" ssid="" band="" channel="" frequency="" signal="" tx_rate="" rx_rate="" uptime=""
+mac_address="02:00:5E:10:00:01" ip_address="192.0.2.101" host_name="laptop-1" dns_name="" source="wifi" device_name="" updated_at=<sqlite-now> interface_name="" device_id="" ap="wifi1" ssid="lab" band="5ghz-ax" channel="" frequency="" signal="-58 dBm" tx_rate="286800000" rx_rate="258000000" uptime=""
+mac_address="02:00:5E:10:00:02" ip_address="192.0.2.102" host_name="phone-1" dns_name="" source="wifi" device_name="" updated_at=<sqlite-now> interface_name="" device_id="" ap="wifi1" ssid="lab" band="5ghz-ax" channel="" frequency="" signal="-63 dBm" tx_rate="286800000" rx_rate="258000000" uptime=""
+mac_address="02:00:5E:10:00:03" ip_address="192.0.2.103" host_name="tablet-1" dns_name="" source="wifi" device_name="" updated_at=<sqlite-now> interface_name="" device_id="" ap="wifi2" ssid="lab" band="2ghz-ax" channel="" frequency="" signal="-71 dBm" tx_rate="286800000" rx_rate="258000000" uptime=""
+mac_address="02:00:5E:10:00:04" ip_address="192.0.2.104" host_name="printer-1" dns_name="" source="arp" device_name="rtr" updated_at=<sqlite-now> interface_name="" device_id="" ap="" ssid="" band="" channel="" frequency="" signal="" tx_rate="" rx_rate="" uptime=""
+mac_address="02:00:5E:10:00:05" ip_address="192.0.2.105" host_name="camera-1" dns_name="" source="arp" device_name="rtr" updated_at=<sqlite-now> interface_name="" device_id="" ap="" ssid="" band="" channel="" frequency="" signal="" tx_rate="" rx_rate="" uptime=""
+mac_address="02:00:5E:10:00:06" ip_address="192.0.2.106" host_name="desk-1" dns_name="" source="arp" device_name="rtr" updated_at=<sqlite-now> interface_name="" device_id="" ap="" ssid="" band="" channel="" frequency="" signal="" tx_rate="" rx_rate="" uptime=""

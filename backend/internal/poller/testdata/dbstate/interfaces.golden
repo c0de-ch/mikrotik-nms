@@ -1,0 +1,128 @@
+# DB state after the fleet's hour: table interfaces, 113 rows.
+#
+# Written by: PortStatsCollector.syncInventory (Tier 0) → queries.SyncInterfaces
+# The hour:   the call-plan fleet of 5 fake devices (callplan_harness_test.go), every scheduled loop,
+#             one simulated hour and a minute from 2026-01-05 12:00 UTC; the devices' counters, CPU,
+#             memory and uptime move with the clock (callplan_motion_test.go)
+#
+# A change in this file is a change in what the pollers store.
+# Rewrite it with: go test ./internal/poller -run TestDBState -update
+#
+# Normalised (dbstate_test.go):
+#   last_updated: SQLite's CURRENT_TIMESTAMP (wall clock) → <sqlite-now>; stored as TEXT "2006-01-02 15:04:05" (as CURRENT_TIMESTAMP writes it)
+#   REAL values with three decimals, strings quoted, NULL as NULL
+#   rows ordered by the primary key (id)
+
+id="ap-ac:bridge" device_id="ap-ac" name="bridge" type="bridge" mac_address="02:07:FA:6E:00:00" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="ap-ac:ether1" device_id="ap-ac" name="ether1" type="ether" mac_address="02:07:FA:6E:00:01" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="ap-ac:ether2" device_id="ap-ac" name="ether2" type="ether" mac_address="02:07:FA:6E:00:02" mtu=1500 running=0 disabled=0 comment="" last_updated=<sqlite-now>
+id="ap-ac:wlan1" device_id="ap-ac" name="wlan1" type="wlan" mac_address="02:07:FA:6E:00:03" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="ap-ac:wlan2" device_id="ap-ac" name="wlan2" type="wlan" mac_address="02:07:FA:6E:00:04" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="ap-ax:bridge" device_id="ap-ax" name="bridge" type="bridge" mac_address="02:D6:B5:1A:00:00" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="ap-ax:ether1" device_id="ap-ax" name="ether1" type="ether" mac_address="02:D6:B5:1A:00:01" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="ap-ax:ether2" device_id="ap-ax" name="ether2" type="ether" mac_address="02:D6:B5:1A:00:02" mtu=1500 running=0 disabled=0 comment="" last_updated=<sqlite-now>
+id="ap-ax:wifi1" device_id="ap-ax" name="wifi1" type="wifi" mac_address="02:D6:B5:1A:00:03" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="ap-ax:wifi2" device_id="ap-ax" name="wifi2" type="wifi" mac_address="02:D6:B5:1A:00:04" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="rtr:bridge" device_id="rtr" name="bridge" type="bridge" mac_address="02:A4:7E:AA:00:00" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="rtr:ether1" device_id="rtr" name="ether1" type="ether" mac_address="02:A4:7E:AA:00:01" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="rtr:ether2" device_id="rtr" name="ether2" type="ether" mac_address="02:A4:7E:AA:00:02" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="rtr:ether3" device_id="rtr" name="ether3" type="ether" mac_address="02:A4:7E:AA:00:03" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="rtr:ether4" device_id="rtr" name="ether4" type="ether" mac_address="02:A4:7E:AA:00:04" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="rtr:ether5" device_id="rtr" name="ether5" type="ether" mac_address="02:A4:7E:AA:00:05" mtu=1500 running=0 disabled=0 comment="" last_updated=<sqlite-now>
+id="rtr:ether6" device_id="rtr" name="ether6" type="ether" mac_address="02:A4:7E:AA:00:06" mtu=1500 running=0 disabled=0 comment="" last_updated=<sqlite-now>
+id="rtr:ether7" device_id="rtr" name="ether7" type="ether" mac_address="02:A4:7E:AA:00:07" mtu=1500 running=0 disabled=0 comment="" last_updated=<sqlite-now>
+id="rtr:ether8" device_id="rtr" name="ether8" type="ether" mac_address="02:A4:7E:AA:00:08" mtu=1500 running=0 disabled=0 comment="" last_updated=<sqlite-now>
+id="rtr:sfp-sfpplus1" device_id="rtr" name="sfp-sfpplus1" type="ether" mac_address="02:A4:7E:AA:00:09" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw24:bridge" device_id="sw24" name="bridge" type="bridge" mac_address="02:D4:D2:81:00:00" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw24:ether1" device_id="sw24" name="ether1" type="ether" mac_address="02:D4:D2:81:00:01" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw24:ether10" device_id="sw24" name="ether10" type="ether" mac_address="02:D4:D2:81:00:0A" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw24:ether11" device_id="sw24" name="ether11" type="ether" mac_address="02:D4:D2:81:00:0B" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw24:ether12" device_id="sw24" name="ether12" type="ether" mac_address="02:D4:D2:81:00:0C" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw24:ether13" device_id="sw24" name="ether13" type="ether" mac_address="02:D4:D2:81:00:0D" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw24:ether14" device_id="sw24" name="ether14" type="ether" mac_address="02:D4:D2:81:00:0E" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw24:ether15" device_id="sw24" name="ether15" type="ether" mac_address="02:D4:D2:81:00:0F" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw24:ether16" device_id="sw24" name="ether16" type="ether" mac_address="02:D4:D2:81:00:10" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw24:ether17" device_id="sw24" name="ether17" type="ether" mac_address="02:D4:D2:81:00:11" mtu=1500 running=0 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw24:ether18" device_id="sw24" name="ether18" type="ether" mac_address="02:D4:D2:81:00:12" mtu=1500 running=0 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw24:ether19" device_id="sw24" name="ether19" type="ether" mac_address="02:D4:D2:81:00:13" mtu=1500 running=0 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw24:ether2" device_id="sw24" name="ether2" type="ether" mac_address="02:D4:D2:81:00:02" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw24:ether20" device_id="sw24" name="ether20" type="ether" mac_address="02:D4:D2:81:00:14" mtu=1500 running=0 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw24:ether21" device_id="sw24" name="ether21" type="ether" mac_address="02:D4:D2:81:00:15" mtu=1500 running=0 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw24:ether22" device_id="sw24" name="ether22" type="ether" mac_address="02:D4:D2:81:00:16" mtu=1500 running=0 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw24:ether23" device_id="sw24" name="ether23" type="ether" mac_address="02:D4:D2:81:00:17" mtu=1500 running=0 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw24:ether24" device_id="sw24" name="ether24" type="ether" mac_address="02:D4:D2:81:00:18" mtu=1500 running=0 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw24:ether3" device_id="sw24" name="ether3" type="ether" mac_address="02:D4:D2:81:00:03" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw24:ether4" device_id="sw24" name="ether4" type="ether" mac_address="02:D4:D2:81:00:04" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw24:ether5" device_id="sw24" name="ether5" type="ether" mac_address="02:D4:D2:81:00:05" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw24:ether6" device_id="sw24" name="ether6" type="ether" mac_address="02:D4:D2:81:00:06" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw24:ether7" device_id="sw24" name="ether7" type="ether" mac_address="02:D4:D2:81:00:07" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw24:ether8" device_id="sw24" name="ether8" type="ether" mac_address="02:D4:D2:81:00:08" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw24:ether9" device_id="sw24" name="ether9" type="ether" mac_address="02:D4:D2:81:00:09" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw24:sfp-sfpplus1" device_id="sw24" name="sfp-sfpplus1" type="ether" mac_address="02:D4:D2:81:00:19" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw24:sfp-sfpplus2" device_id="sw24" name="sfp-sfpplus2" type="ether" mac_address="02:D4:D2:81:00:1A" mtu=1500 running=0 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw24:vlan-mgmt" device_id="sw24" name="vlan-mgmt" type="vlan" mac_address="02:D4:D2:81:00:1B" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw48:bond1" device_id="sw48" name="bond1" type="bond" mac_address="02:22:D9:BB:00:3E" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw48:bond2" device_id="sw48" name="bond2" type="bond" mac_address="02:22:D9:BB:00:3F" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw48:bridge" device_id="sw48" name="bridge" type="bridge" mac_address="02:22:D9:BB:00:00" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw48:ether1" device_id="sw48" name="ether1" type="ether" mac_address="02:22:D9:BB:00:01" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw48:ether10" device_id="sw48" name="ether10" type="ether" mac_address="02:22:D9:BB:00:0A" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw48:ether11" device_id="sw48" name="ether11" type="ether" mac_address="02:22:D9:BB:00:0B" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw48:ether12" device_id="sw48" name="ether12" type="ether" mac_address="02:22:D9:BB:00:0C" mtu=1500 running=0 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw48:ether13" device_id="sw48" name="ether13" type="ether" mac_address="02:22:D9:BB:00:0D" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw48:ether14" device_id="sw48" name="ether14" type="ether" mac_address="02:22:D9:BB:00:0E" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw48:ether15" device_id="sw48" name="ether15" type="ether" mac_address="02:22:D9:BB:00:0F" mtu=1500 running=0 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw48:ether16" device_id="sw48" name="ether16" type="ether" mac_address="02:22:D9:BB:00:10" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw48:ether17" device_id="sw48" name="ether17" type="ether" mac_address="02:22:D9:BB:00:11" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw48:ether18" device_id="sw48" name="ether18" type="ether" mac_address="02:22:D9:BB:00:12" mtu=1500 running=0 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw48:ether19" device_id="sw48" name="ether19" type="ether" mac_address="02:22:D9:BB:00:13" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw48:ether2" device_id="sw48" name="ether2" type="ether" mac_address="02:22:D9:BB:00:02" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw48:ether20" device_id="sw48" name="ether20" type="ether" mac_address="02:22:D9:BB:00:14" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw48:ether21" device_id="sw48" name="ether21" type="ether" mac_address="02:22:D9:BB:00:15" mtu=1500 running=0 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw48:ether22" device_id="sw48" name="ether22" type="ether" mac_address="02:22:D9:BB:00:16" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw48:ether23" device_id="sw48" name="ether23" type="ether" mac_address="02:22:D9:BB:00:17" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw48:ether24" device_id="sw48" name="ether24" type="ether" mac_address="02:22:D9:BB:00:18" mtu=1500 running=0 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw48:ether25" device_id="sw48" name="ether25" type="ether" mac_address="02:22:D9:BB:00:19" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw48:ether26" device_id="sw48" name="ether26" type="ether" mac_address="02:22:D9:BB:00:1A" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw48:ether27" device_id="sw48" name="ether27" type="ether" mac_address="02:22:D9:BB:00:1B" mtu=1500 running=0 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw48:ether28" device_id="sw48" name="ether28" type="ether" mac_address="02:22:D9:BB:00:1C" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw48:ether29" device_id="sw48" name="ether29" type="ether" mac_address="02:22:D9:BB:00:1D" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw48:ether3" device_id="sw48" name="ether3" type="ether" mac_address="02:22:D9:BB:00:03" mtu=1500 running=0 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw48:ether30" device_id="sw48" name="ether30" type="ether" mac_address="02:22:D9:BB:00:1E" mtu=1500 running=0 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw48:ether31" device_id="sw48" name="ether31" type="ether" mac_address="02:22:D9:BB:00:1F" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw48:ether32" device_id="sw48" name="ether32" type="ether" mac_address="02:22:D9:BB:00:20" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw48:ether33" device_id="sw48" name="ether33" type="ether" mac_address="02:22:D9:BB:00:21" mtu=1500 running=0 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw48:ether34" device_id="sw48" name="ether34" type="ether" mac_address="02:22:D9:BB:00:22" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw48:ether35" device_id="sw48" name="ether35" type="ether" mac_address="02:22:D9:BB:00:23" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw48:ether36" device_id="sw48" name="ether36" type="ether" mac_address="02:22:D9:BB:00:24" mtu=1500 running=0 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw48:ether37" device_id="sw48" name="ether37" type="ether" mac_address="02:22:D9:BB:00:25" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw48:ether38" device_id="sw48" name="ether38" type="ether" mac_address="02:22:D9:BB:00:26" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw48:ether39" device_id="sw48" name="ether39" type="ether" mac_address="02:22:D9:BB:00:27" mtu=1500 running=0 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw48:ether4" device_id="sw48" name="ether4" type="ether" mac_address="02:22:D9:BB:00:04" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw48:ether40" device_id="sw48" name="ether40" type="ether" mac_address="02:22:D9:BB:00:28" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw48:ether41" device_id="sw48" name="ether41" type="ether" mac_address="02:22:D9:BB:00:29" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw48:ether42" device_id="sw48" name="ether42" type="ether" mac_address="02:22:D9:BB:00:2A" mtu=1500 running=0 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw48:ether43" device_id="sw48" name="ether43" type="ether" mac_address="02:22:D9:BB:00:2B" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw48:ether44" device_id="sw48" name="ether44" type="ether" mac_address="02:22:D9:BB:00:2C" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw48:ether45" device_id="sw48" name="ether45" type="ether" mac_address="02:22:D9:BB:00:2D" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw48:ether46" device_id="sw48" name="ether46" type="ether" mac_address="02:22:D9:BB:00:2E" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw48:ether47" device_id="sw48" name="ether47" type="ether" mac_address="02:22:D9:BB:00:2F" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw48:ether48" device_id="sw48" name="ether48" type="ether" mac_address="02:22:D9:BB:00:30" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw48:ether49" device_id="sw48" name="ether49" type="ether" mac_address="02:22:D9:BB:00:31" mtu=1500 running=0 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw48:ether5" device_id="sw48" name="ether5" type="ether" mac_address="02:22:D9:BB:00:05" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw48:ether6" device_id="sw48" name="ether6" type="ether" mac_address="02:22:D9:BB:00:06" mtu=1500 running=0 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw48:ether7" device_id="sw48" name="ether7" type="ether" mac_address="02:22:D9:BB:00:07" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw48:ether8" device_id="sw48" name="ether8" type="ether" mac_address="02:22:D9:BB:00:08" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw48:ether9" device_id="sw48" name="ether9" type="ether" mac_address="02:22:D9:BB:00:09" mtu=1500 running=0 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw48:qsfpplus1-1" device_id="sw48" name="qsfpplus1-1" type="ether" mac_address="02:22:D9:BB:00:36" mtu=1500 running=0 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw48:qsfpplus1-2" device_id="sw48" name="qsfpplus1-2" type="ether" mac_address="02:22:D9:BB:00:37" mtu=1500 running=0 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw48:qsfpplus1-3" device_id="sw48" name="qsfpplus1-3" type="ether" mac_address="02:22:D9:BB:00:38" mtu=1500 running=0 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw48:qsfpplus1-4" device_id="sw48" name="qsfpplus1-4" type="ether" mac_address="02:22:D9:BB:00:39" mtu=1500 running=0 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw48:qsfpplus2-1" device_id="sw48" name="qsfpplus2-1" type="ether" mac_address="02:22:D9:BB:00:3A" mtu=1500 running=0 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw48:qsfpplus2-2" device_id="sw48" name="qsfpplus2-2" type="ether" mac_address="02:22:D9:BB:00:3B" mtu=1500 running=0 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw48:qsfpplus2-3" device_id="sw48" name="qsfpplus2-3" type="ether" mac_address="02:22:D9:BB:00:3C" mtu=1500 running=0 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw48:qsfpplus2-4" device_id="sw48" name="qsfpplus2-4" type="ether" mac_address="02:22:D9:BB:00:3D" mtu=1500 running=0 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw48:sfp-sfpplus1" device_id="sw48" name="sfp-sfpplus1" type="ether" mac_address="02:22:D9:BB:00:32" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw48:sfp-sfpplus2" device_id="sw48" name="sfp-sfpplus2" type="ether" mac_address="02:22:D9:BB:00:33" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw48:sfp-sfpplus3" device_id="sw48" name="sfp-sfpplus3" type="ether" mac_address="02:22:D9:BB:00:34" mtu=1500 running=0 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw48:sfp-sfpplus4" device_id="sw48" name="sfp-sfpplus4" type="ether" mac_address="02:22:D9:BB:00:35" mtu=1500 running=0 disabled=0 comment="" last_updated=<sqlite-now>
+id="sw48:vlan-mgmt" device_id="sw48" name="vlan-mgmt" type="vlan" mac_address="02:22:D9:BB:00:40" mtu=1500 running=1 disabled=0 comment="" last_updated=<sqlite-now>

@@ -1,0 +1,17 @@
+# DB state after the fleet's hour: table ping_targets, 2 rows.
+#
+# Written by: ConnectivityPoller.poll → queries.UpdatePingTargetAddress: a client watch's address
+# The hour:   the call-plan fleet of 5 fake devices (callplan_harness_test.go), every scheduled loop,
+#             one simulated hour and a minute from 2026-01-05 12:00 UTC; the devices' counters, CPU,
+#             memory and uptime move with the clock (callplan_motion_test.go)
+#
+# A change in this file is a change in what the pollers store.
+# Rewrite it with: go test ./internal/poller -run TestDBState -update
+#
+# Normalised (dbstate_test.go):
+#   REAL values with three decimals, strings quoted, NULL as NULL
+#   rows ordered by the primary key (id)
+#   left out, as only the harness's seed writes them (checked unchanged): kind, mac_address, label, device_id, enabled, created_at, src_address, src_interface
+
+id="internet" address="198.51.100.53"
+id="watch" address="192.0.2.101"
