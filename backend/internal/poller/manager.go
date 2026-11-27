@@ -44,6 +44,9 @@ type Manager struct {
 
 	// cadence is the per-class schedule every loop shares (NewCadence).
 	cadence CadenceSource
+	// seams are the Config, Exec and Sink of the loops split into their
+	// collect half (monolithSeams: the database, the pool, ingest).
+	seams Seams
 	// caps is the one capability probe per device the pollers share, and
 	// clients the on-demand client refresh; both are built in NewManager
 	// because main hands the refresh to the API right after it.
@@ -133,6 +136,9 @@ func NewManager(db *sql.DB, pool *routeros.Pool, hub *ws.Hub, cfg *config.Config
 		stagger:   time.Second,
 		caps:      NewCapabilityCache(),
 	}
+	// The seams of the loops split into collect and apply halves: their
+	// cadence and pause are this schedule's, judged on the loops' clock.
+	m.seams = monolithSeams(db, pool, m.cadence, m.clock)
 	m.clients = NewClientRefresher(db, pool, resolver.New(db), m.caps, m.cadence)
 	m.firmware = NewFirmwareChecker(db, hub)
 	// One schedule for every loop: the class cadences, floored by the
@@ -250,8 +256,7 @@ func (m *Manager) Start() {
 	wifiTracker.UseCadence(m.cadence)
 	go wifiTracker.Run(ctx)
 
-	clientDisc := NewClientDiscoveryPoller(m.db, m.pool, resolver.New(m.db), 15*time.Minute)
-	clientDisc.UseCadence(m.cadence)
+	clientDisc := NewClientDiscoveryPoller(m.seams, m.externalLeases, resolver.New(m.db), 15*time.Minute)
 	go clientDisc.Run(ctx)
 
 	netHealth := NewNetworkHealthPoller(m.db, m.pool, m.hub, m.cfg.NetworkHealthInterval)

@@ -6,6 +6,7 @@ import (
 
 	"github.com/mikrotik-nms/backend/internal/database/queries"
 	"github.com/mikrotik-nms/backend/internal/devclass"
+	"github.com/mikrotik-nms/backend/internal/edgeproto"
 )
 
 // ScheduleRegistry is the in-memory view of when each device's scheduled
@@ -314,6 +315,15 @@ func (k *tierClock) retain(keep map[string]bool) {
 
 // deviceIDs is the keep-set of a device list.
 func deviceIDs(devices []queries.Device) map[string]bool {
+	keep := make(map[string]bool, len(devices))
+	for _, d := range devices {
+		keep[d.ID] = true
+	}
+	return keep
+}
+
+// specIDs is the keep-set of the device list a ConfigSource returned.
+func specIDs(devices []edgeproto.DeviceSpec) map[string]bool {
 	keep := make(map[string]bool, len(devices))
 	for _, d := range devices {
 		keep[d.ID] = true
