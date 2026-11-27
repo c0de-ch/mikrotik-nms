@@ -189,7 +189,7 @@ func (h *auditHarness) syncPorts(id string) {
 	for _, port := range p.Ports {
 		if port.Bridge != "" {
 			bp := &queries.BridgePortStatus{ID: id + ":" + port.Bridge + ":" + port.Name, DeviceID: id, BridgeName: port.Bridge,
-				PortInterface: port.Name, Horizon: port.Horizon, Disabled: ptr(port.BridgeDisabled)}
+				PortInterface: port.Name, Horizon: port.Horizon, Disabled: ptr(port.BridgeDisabled), Inactive: ptr(port.BridgeInactive)}
 			if port.HWKnown {
 				bp.HW = ptr(port.HW)
 			}
@@ -1008,7 +1008,9 @@ func TestPassIsAbortedByAPause(t *testing.T) {
 func TestAuditFactsComeFromWhatTheNMSAlreadyKnows(t *testing.T) {
 	h := newAuditHarness(t)
 	p := hygienetest.Load(t, "switch48_clean").
-		WithPort("ether1", func(port *hygiene.Port) { port.Horizon = "2"; port.RxFlowControl = "on"; port.LoopProtect = "on" })
+		WithPort("ether1", func(port *hygiene.Port) { port.Horizon = "2"; port.RxFlowControl = "on"; port.LoopProtect = "on" }).
+		WithPort("ether3", func(port *hygiene.Port) { port.BridgeInactive = true }). // down when the bridge ports were read
+		WithPort("ether6", func(port *hygiene.Port) { port.BridgeDisabled = true })
 	h.add("sw", p)
 	h.add("ap", hygienetest.Load(t, "ap_clean"))
 	if err := queries.SetSetting(h.db, "flow_advertise_address", "192.0.2.10"); err != nil {

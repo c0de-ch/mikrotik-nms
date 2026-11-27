@@ -74,6 +74,9 @@ type Port struct {
 	// Known flag is set.
 	Bridge         string `json:"bridge,omitempty"`
 	BridgeDisabled bool   `json:"bridge_disabled,omitempty"`
+	// BridgeInactive: the bridge port table, at its own read, had the port
+	// as not in the bridge (down). Its hw-offload is false then by nature.
+	BridgeInactive bool   `json:"bridge_inactive,omitempty"`
 	HW             bool   `json:"hw,omitempty"`
 	HWKnown        bool   `json:"hw_known,omitempty"`
 	HWOffload      bool   `json:"hw_offload,omitempty"`

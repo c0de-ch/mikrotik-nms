@@ -601,7 +601,11 @@ func offload(_ Sections, f Facts) []Finding {
 		if h := strings.TrimSpace(p.Horizon); h != "" && h != "none" {
 			horizon = append(horizon, p.Name+" (horizon="+h+")")
 		}
-		if p.Running && p.HWKnown && p.HW && p.HWOffloadKnown && !p.HWOffload && p.RateKnown && p.Bps > 0 {
+		// hw-offload and "in the bridge" come from the same read of the
+		// bridge port table; running and the rate from the counter read,
+		// minutes apart. A port that was still down when the table was read
+		// has hw-offload=false by nature, whatever the counters say now.
+		if p.Running && !p.BridgeInactive && p.HWKnown && p.HW && p.HWOffloadKnown && !p.HWOffload && p.RateKnown && p.Bps > 0 {
 			notOffloaded = append(notOffloaded, p.Name)
 		}
 	}

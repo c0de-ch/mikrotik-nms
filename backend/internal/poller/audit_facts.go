@@ -87,6 +87,7 @@ func (a *Auditor) facts(dev queries.Device, now time.Time) hygiene.Facts {
 			f.HasBridge = true
 			p.Bridge, p.Horizon = bp.BridgeName, bp.Horizon
 			p.BridgeDisabled = bp.Disabled != nil && *bp.Disabled
+			p.BridgeInactive = bp.Inactive != nil && *bp.Inactive
 			if bp.HW != nil {
 				p.HW, p.HWKnown = *bp.HW, true
 			}

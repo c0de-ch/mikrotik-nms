@@ -408,6 +408,11 @@ func TestOffload(t *testing.T) {
 		Port{Name: "ether4", Type: "ether", Running: true, Switch: "switch1", Bridge: "bridge", HW: true, HWKnown: true, HWOffloadKnown: true, RateKnown: true},
 		// down: an inactive port is never offloaded
 		Port{Name: "ether5", Type: "ether", Switch: "switch1", Bridge: "bridge", HW: true, HWKnown: true, HWOffloadKnown: true},
+		// just came up: the counters already see it running, but the bridge
+		// port table was read while it was still inactive — and an inactive
+		// port is never offloaded. The two reads are minutes apart; the rule
+		// judges what one of them says.
+		Port{Name: "ether7", Type: "ether", Running: true, Switch: "switch1", Bridge: "bridge", BridgeInactive: true, HW: true, HWKnown: true, HWOffloadKnown: true, Bps: 800000, RateKnown: true},
 		// hw=no on purpose
 		Port{Name: "ether6", Type: "ether", Running: true, Switch: "switch1", Bridge: "bridge", HWKnown: true, HWOffloadKnown: true, Bps: 800000, RateKnown: true},
 		// never offloadable: a management port, a VLAN, a wifi interface
