@@ -170,6 +170,10 @@ func TestBuildLinkTrafficEgressEdges(t *testing.T) {
 		"up:r:wg0:":                 {Source: "r", Target: "vpn:r:wg0", DeviceID: "r", Iface: "wg0", RxBps: 5, TxBps: 6},
 		"up:r:wg1:":                 {Source: "r", Target: "vpn:r:wg1", DeviceID: "r", Iface: "wg1", RxBps: 1, TxBps: 2},
 		"gwhost:10.0.0.254":         {Source: "s", Target: "gw:10.0.0.254", DeviceID: "s", Iface: "ether7", RxBps: 40, TxBps: 30},
+		// The gateway's Internet edge has no port: it carries the attachment
+		// port's rate in the gateway's frame (what it sends into the LAN, the
+		// port's rx, came from the Internet), marked as an estimate.
+		"gwnet:10.0.0.254": {Source: "gw:10.0.0.254", Target: "internet", DeviceID: "s", Iface: "ether7", RxBps: 40, TxBps: 30, Estimated: true},
 	}
 	if len(got) != len(want) {
 		t.Errorf("got %d edges %v, want %d", len(got), got, len(want))

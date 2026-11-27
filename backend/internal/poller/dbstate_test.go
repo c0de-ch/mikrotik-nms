@@ -272,6 +272,7 @@ var dbEmptyTables = map[string]string{
 	"audit_log":                "the API's admin actions, and Manager.probeClass when a class change is accepted — the hour's probes agree with the stored classes",
 	"device_address_proposals": "IP auto-follow (auto_follow_ip) is off, and no device is heard at another address",
 	"dns_servers":              "written only by the API (settings)",
+	"map_positions":            "written only by the API (an admin's saved map layout)",
 	"firmware_releases":        "the release feed (FirmwareChecker.fetch) is not part of the hour: it reads the internet, not a device",
 	"flow_1h":                  "the flow collector is not part of the hour (off unless MIKROTIK_NMS_FLOW_LISTEN is set)",
 	"flow_1h_meta":             "the flow collector is not part of the hour",

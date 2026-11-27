@@ -6,12 +6,13 @@ import { useRouter } from "next/navigation";
 import {
   Wifi, Router as RouterIcon, Network as NetworkIcon, Server, Cpu, MemoryStick, Activity,
   ArrowDownUp, Search, Maximize2, ZoomIn, ZoomOut, Crosshair, Users, Globe, Shield, Lock,
-  Shuffle, ListTree,
+  Shuffle, ListTree, RotateCcw,
 } from "lucide-react";
+import { toast } from "sonner";
 import { useAuth } from "@/context/auth";
 import {
   api, type TopologyData, type TopologyNode, type Device, type LinkTraffic,
-  type BridgeVLAN, type NetworkClient, type LinkTrafficResponse,
+  type BridgeVLAN, type NetworkClient, type LinkTrafficResponse, type MapPosition,
 } from "@/lib/api";
 import { useWebSocket } from "@/hooks/use-websocket";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
@@ -95,7 +96,8 @@ function PortGrid({ deviceId, device, dark }: { deviceId: string; device: Device
 }
 
 export default function MapPage() {
-  const { token } = useAuth();
+  const { token, user } = useAuth();
+  const isAdmin = user?.role === "admin";
   const [topology, setTopology] = useState<TopologyData | null>(null);
   const [devices, setDevices] = useState<Device[]>([]);
   const [wifi, setWifi] = useState<WifiClient[]>([]);
@@ -117,6 +119,32 @@ export default function MapPage() {
   const [showClients, setShowClients] = useState(false);
   const [layout, setLayout] = useState<"force" | "hierarchy">("force");
 
+  // The layout an admin saved, shared by every user (null while loading).
+  // An admin's drag or re-arrangement saves the whole map, debounced; a
+  // viewer can move nodes for themselves, but nothing is stored.
+  const [savedPositions, setSavedPositions] = useState<Record<string, MapPosition> | null>(null);
+  const [layoutSavedAt, setLayoutSavedAt] = useState<string | null>(null);
+  const [resetToken, setResetToken] = useState(0);
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (saveTimer.current) clearTimeout(saveTimer.current); }, []);
+  const savePositions = useCallback((positions: Record<string, MapPosition>) => {
+    if (!token || !isAdmin) return;
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(() => {
+      api.topology.savePositions(token, positions)
+        .then((r) => setLayoutSavedAt(r.updated_at))
+        .catch((e) => toast.error(`Map layout not saved: ${e instanceof Error ? e.message : String(e)}`));
+    }, 600);
+  }, [token, isAdmin]);
+  const resetLayout = useCallback(() => {
+    if (!token) return;
+    if (!window.confirm("Forget the saved map layout for every user and arrange the map automatically?")) return;
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    api.topology.resetPositions(token)
+      .then(() => { setSavedPositions({}); setLayoutSavedAt(null); setResetToken((n) => n + 1); })
+      .catch((e) => toast.error(`Map layout not reset: ${e instanceof Error ? e.message : String(e)}`));
+  }, [token]);
+
   const apiRef = useRef<CanvasApi | null>(null);
   const registerApi = useCallback((a: CanvasApi) => { apiRef.current = a; }, []);
 
@@ -128,7 +156,7 @@ export default function MapPage() {
     const at = r.sampled_at ? Date.parse(r.sampled_at) : 0;
     if (at < linkSampledAt.current) return;
     linkSampledAt.current = at;
-    setRawTraffic(new Map(r.links.map((l: LinkTraffic) => [l.id, { rx: l.rx_bps, tx: l.tx_bps }])));
+    setRawTraffic(new Map(r.links.map((l: LinkTraffic) => [l.id, { rx: l.rx_bps, tx: l.tx_bps, estimated: l.estimated }])));
     setLinkMeta({ meta: r, receivedAt: Date.now() });
   }, []);
 
@@ -140,6 +168,9 @@ export default function MapPage() {
     api.vlans.list(token).then(setVlans).catch(console.error);
     api.clients.cached(token).then((r) => setClients(r.clients)).catch(console.error);
     api.traffic.links(token).then(applyLinks).catch(console.error);
+    api.topology.positions(token)
+      .then((r) => { setSavedPositions(r.positions ?? {}); setLayoutSavedAt(r.updated_at); })
+      .catch((e) => { console.error(e); setSavedPositions({}); });
   }, [token, applyLinks]);
 
   useWebSocket("topology.update", useCallback((data) => setTopology(data as TopologyData), []));
@@ -394,6 +425,17 @@ export default function MapPage() {
             <ListTree className="h-3.5 w-3.5" /> Hierarchy
           </button>
         </div>
+        <span
+          className="text-xs text-muted-foreground"
+          title={isAdmin ? "Drag a node or pick a layout: the map is saved for every user." : "Only admins can save the map layout."}
+        >
+          {layoutSavedAt ? `Layout saved ${new Date(layoutSavedAt).toLocaleString()}` : isAdmin ? "Drag nodes to save a layout" : "Automatic layout"}
+        </span>
+        {isAdmin && layoutSavedAt && (
+          <button onClick={resetLayout} className="px-2.5 h-9 rounded-md border text-sm inline-flex items-center gap-1 hover:bg-muted" title="Forget the saved layout">
+            <RotateCcw className="h-3.5 w-3.5" /> Reset layout
+          </button>
+        )}
       </div>
 
       <div className="relative flex-1 rounded-lg border bg-card overflow-hidden">
@@ -410,6 +452,9 @@ export default function MapPage() {
             onSelect={setSelectedId}
             registerApi={registerApi}
             dark={dark}
+            savedPositions={savedPositions}
+            onPositionsChanged={isAdmin ? savePositions : undefined}
+            resetToken={resetToken}
           />
         )}
 

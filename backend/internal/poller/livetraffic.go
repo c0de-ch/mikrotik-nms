@@ -63,6 +63,10 @@ type LinkTraffic struct {
 	// DeviceID and Iface name the end the rate was read from.
 	DeviceID string `json:"device_id"`
 	Iface    string `json:"iface"`
+	// Estimated: no port measures this edge itself; the rate is a nearby
+	// port's (a gateway's Internet edge carries its attachment port's rate,
+	// which also holds what the gateway routes between its LAN networks).
+	Estimated bool `json:"estimated,omitempty"`
 }
 
 // LinkTrafficPayload is what GET /traffic/links serves and topology.traffic
@@ -270,8 +274,20 @@ func BuildLinkTraffic(in LinkTrafficInput) []LinkTraffic {
 		default:
 			continue
 		}
-		if e, ok := end(u.DeviceID, u.Interface); ok {
-			out = append(out, measured(id, u.DeviceID, target, e))
+		e, ok := end(u.DeviceID, u.Interface)
+		if !ok {
+			continue
+		}
+		out = append(out, measured(id, u.DeviceID, target, e))
+		if u.Kind == "gateway-host" {
+			// The gateway's Internet edge (gwnet:, drawn by the builder for
+			// every gateway node) has no port of its own. Its best estimate is
+			// the attachment port: what the gateway sends into the LAN (the
+			// port's rx) is mostly what it received from the Internet. It is
+			// an upper bound — traffic the gateway routes between VLANs on
+			// that trunk counts too — so it is marked as an estimate.
+			out = append(out, LinkTraffic{ID: "gwnet:" + gw, Source: "gw:" + gw, Target: "internet",
+				DeviceID: e.device, Iface: e.iface, RxBps: e.rate.RxBps, TxBps: e.rate.TxBps, Estimated: true})
 		}
 	}
 	return out

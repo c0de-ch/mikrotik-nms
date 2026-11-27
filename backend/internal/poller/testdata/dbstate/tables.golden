@@ -43,7 +43,7 @@ wifi_history                 5 rows  WifiTracker.emitFromSnapshot / handleLogEve
 ## Filled before the hour, not written in it (checked unchanged)
 
 app_settings                32 rows  the migrations' defaults and NewManager's AdoptIntervalSettings, before the hour; the loops only read it
-goose_db_version            34 rows  the migrations
+goose_db_version            35 rows  the migrations
 
 ## Empty after the hour
 
@@ -66,6 +66,7 @@ flow_prefixes            the flow collector is not part of the hour
 flow_sender_policy       the flow collector is not part of the hour
 flow_templates           the flow collector is not part of the hour
 loop_events              network health records a loop, a MAC flap, a port going down, flapping or disabled, or an address move: none happens in the hour
+map_positions            written only by the API (an admin's saved map layout)
 notification_channels    written only by the API
 password_reset_tokens    written only by the API
 speed_samples            the speed-test loop is not part of the hour, and no test is configured

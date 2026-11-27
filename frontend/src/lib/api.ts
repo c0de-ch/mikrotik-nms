@@ -283,6 +283,12 @@ export const api = {
   // Topology
   topology: {
     get: (token: string) => apiFetch<TopologyData>("/topology", { token }),
+    // The map layout an admin saved (shared by every user); PUT replaces it
+    // whole, DELETE forgets it.
+    positions: (token: string) => apiFetch<MapPositions>("/topology/positions", { token }),
+    savePositions: (token: string, positions: Record<string, MapPosition>) =>
+      apiFetch<MapPositions>("/topology/positions", { method: "PUT", token, body: JSON.stringify({ positions }) }),
+    resetPositions: (token: string) => apiFetch<void>("/topology/positions", { method: "DELETE", token }),
   },
 
   // Traffic
@@ -993,6 +999,19 @@ export interface LinkTraffic {
   tx_bps: number;
   device_id: string;
   iface: string;
+  // No port measures this edge itself (a gateway's Internet edge carries its
+  // attachment port's rate, an upper bound).
+  estimated?: boolean;
+}
+
+export interface MapPosition {
+  x: number;
+  y: number;
+}
+
+export interface MapPositions {
+  positions: Record<string, MapPosition>;
+  updated_at: string | null;
 }
 
 // Freshness of rates derived from the port-counter snapshot. sampled_at is
