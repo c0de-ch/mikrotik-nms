@@ -742,6 +742,40 @@ func TestReadTheRouterOSVersionRefuses(t *testing.T) {
 	}
 }
 
+// "The NMS may not read this menu" is a statement about the whole audit. An
+// audit that stopped early, or one of whose reads got no answer, cannot make
+// it: the menu that was refused last time may be among the reads it did not
+// get to. Such a pass neither raises, rewrites nor removes the finding.
+func TestUnreadableIsJudgedOnlyByAWholeAudit(t *testing.T) {
+	// The whole audit, one menu refused: judged.
+	whole := Evaluate(ModeAudit, with(cleanAudit(), SecUserGroups, deniedSec), router())
+	if !contains(whole.Evaluated, KindUnreadable) || find(t, whole, KindUnreadable).Detail != "/user/group" {
+		t.Fatalf("a whole audit: evaluated %v, findings %v", whole.Evaluated, kinds(whole))
+	}
+
+	// The audit ended after its first five reads (it made way for a diagnose
+	// pass, or lost its session); one of the five was refused.
+	early := Sections{}
+	for _, r := range Plan(ModeAudit)[:5] {
+		early[r.Key] = cleanAudit()[r.Key]
+	}
+	early[SecGraphingQueue] = deniedSec
+	res := Evaluate(ModeAudit, early, router())
+	if contains(res.Evaluated, KindUnreadable) {
+		t.Error("an audit that stopped early counts as having evaluated audit_unreadable: the stored finding would be removed or rewritten")
+	}
+	if len(res.Findings) != 0 {
+		t.Errorf("an audit that stopped early reported %v", kinds(res))
+	}
+
+	// Every read was sent, but one got no answer: the menu behind it may be
+	// one the NMS is refused.
+	res = Evaluate(ModeAudit, with(with(cleanAudit(), SecUserGroups, deniedSec), SecScheduler, failedSec), router())
+	if contains(res.Evaluated, KindUnreadable) || len(res.Findings) != 0 {
+		t.Errorf("an audit with a failed read: evaluated %v, findings %v", res.Evaluated, kinds(res))
+	}
+}
+
 // The diagnose pass reads less; it judges what it read and leaves the rest
 // of the device's findings alone.
 func TestDiagnoseEvaluatesOnlyWhatItRead(t *testing.T) {

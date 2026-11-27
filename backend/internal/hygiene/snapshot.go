@@ -87,6 +87,18 @@ func (s Sections) known(keys ...string) bool {
 	return true
 }
 
+// answered reports that every read of a plan has its answer: read, absent,
+// refused by the device, or deliberately not sent. A read the pass did not
+// get to, or one that got no answer, makes it false.
+func (s Sections) answered(plan []Read) bool {
+	for _, r := range plan {
+		if sec, ok := s[r.Key]; !ok || sec.State == routeros.ConfigFailed {
+			return false
+		}
+	}
+	return true
+}
+
 // Denied lists the commands the NMS account was not allowed to read, sorted.
 func (s Sections) Denied() []string {
 	var out []string

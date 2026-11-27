@@ -503,6 +503,38 @@ func TestWaitingAuditMakesWayForTheDiagnosePass(t *testing.T) {
 	}
 }
 
+// An audit that ends early has not asked for every menu: it must leave
+// "the NMS account may not read …" as the last whole audit left it — the
+// refused menu is among the reads it did not get to.
+func TestAuditThatEndsEarlyLeavesTheUnreadableFinding(t *testing.T) {
+	h := newAuditHarness(t)
+	h.add("sw", hygienetest.Load(t, "switch48_clean").
+		With("/snmp/print", map[string]string{"enabled": "true"}).
+		WithReply("/snmp/community/print", hygienetest.Reply{Trap: "not enough permissions (9)"}))
+	// What the last whole audit found.
+	if err := queries.UpsertAuditFinding(h.db, &queries.DeviceFinding{DeviceID: "sw", Kind: hygiene.KindUnreadable, Severity: "info",
+		Title: "The NMS account may not read part of the configuration", Detail: "/snmp/community"}, h.clock.now()); err != nil {
+		t.Fatal(err)
+	}
+
+	h.run(auditStartupDelay + 65*time.Second)
+	if n := h.count("sw"); n < 3 || n > 6 {
+		t.Fatalf("mid-pass: %d commands, want the audit stopped before it reaches SNMP", n)
+	}
+	h.setCPU("sw", 100)
+	h.run(5 * time.Minute)
+	openAlert(t, h.db, alerts.RuleCPUHigh, "sw", alerts.SeverityWarning, true, h.clock.now())
+	h.run(8 * time.Minute)
+
+	if r := h.lastRun("sw", queries.AuditKindAudit); r.Status != queries.AuditPartial || r.FailedReads != 0 {
+		t.Fatalf("the audit = %+v, want it ended early", r)
+	}
+	u, ok := h.findings("sw")[hygiene.KindUnreadable]
+	if !ok || u.Detail != "/snmp/community" || u.Count != 1 {
+		t.Fatalf("audit_unreadable after an audit that ended early = %+v (present %v), want it untouched", u, ok)
+	}
+}
+
 // The snapshot is stored when the configuration changes, and only then.
 func TestAuditStoresTheSnapshotOnlyWhenItChanges(t *testing.T) {
 	h := newAuditHarness(t)

@@ -23,10 +23,12 @@ type rule struct {
 	// reading); nil = none. A rule that is not ready judges nothing: its
 	// kinds are not evaluated and what was found before stays.
 	ready func(s Sections, f Facts) bool
-	// auditOnly: the rule needs the whole audit (it reports on the pass
-	// itself).
-	auditOnly bool
-	eval      func(s Sections, f Facts) []Finding
+	// wholeAudit: the rule reports on the audit itself, so it needs all of
+	// it — every read of the audit's plan answered or deliberately not sent.
+	// An audit that stopped early, or one of whose reads got no answer,
+	// judges nothing here: what it did not get to may be what it reports.
+	wholeAudit bool
+	eval       func(s Sections, f Facts) []Finding
 }
 
 var rules = []rule{
@@ -53,15 +55,16 @@ var rules = []rule{
 	{kinds: []string{KindDeviceMode}, needs: []string{SecDeviceMode}, eval: deviceMode},
 	{kinds: []string{KindParallelAPIPoller}, needs: []string{SecSessions}, eval: foreignSessions,
 		ready: func(_ Sections, f Facts) bool { return len(f.NMSAddresses) > 0 }},
-	{kinds: []string{KindUnreadable}, auditOnly: true, eval: unreadable},
+	{kinds: []string{KindUnreadable}, wholeAudit: true, eval: unreadable},
 }
 
 // Evaluate judges what a pass read. It is a pure function of the answers and
 // the facts: the same input always yields the same findings.
 func Evaluate(mode Mode, s Sections, f Facts) Result {
 	var res Result
+	whole := mode == ModeAudit && s.answered(Plan(ModeAudit))
 	for _, r := range rules {
-		if (r.auditOnly && mode != ModeAudit) || !s.known(r.needs...) || (r.ready != nil && !r.ready(s, f)) {
+		if (r.wholeAudit && !whole) || !s.known(r.needs...) || (r.ready != nil && !r.ready(s, f)) {
 			continue
 		}
 		for _, k := range r.kinds {
