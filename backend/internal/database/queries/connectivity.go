@@ -3,6 +3,7 @@ package queries
 import (
 	"database/sql"
 	"encoding/json"
+	"net/netip"
 	"time"
 
 	"github.com/mikrotik-nms/backend/internal/routeros"
@@ -444,10 +445,23 @@ func GetLoopEventsByDeviceRange(db *sql.DB, deviceID string, from, to time.Time,
 
 // ResolveClientProbe resolves a client-kind target into (probing device,
 // address to ping, client hostname). Shared by the connectivity poller and the
-// run-now endpoint so both pick the probe source identically:
-//   - target.DeviceID if set and online,
-//   - else mac_lookup.device_id if online,
-//   - else any online device.
+// run-now endpoint so both pick the probe source identically.
+//
+// A ping burst every cycle is work for the probing device's CPU, so a strong
+// device (Device.StrongProbeSource) is preferred wherever one can be expected
+// to reach the client; a weak one is used only when it is the one device
+// known to see it. In order:
+//  1. the device chosen for the watch (target.DeviceID), if online — an
+//     admin's choice stands, whatever its class;
+//  2. the device the client cache names (mac_lookup.device_id), if online and
+//     strong;
+//  3. an online, unpaused strong device whose own address is in the client's
+//     IPv4 /24 — it is on the client's network;
+//  4. the client cache's device, if online: weak, but it sees the client;
+//  5. any online, unpaused strong device;
+//  6. any online device.
+//
+// Within a rule the first device by identity wins, so the choice is stable.
 //
 // errReason is non-empty when the client has no known IP or no online device is
 // available; the other return values are best-effort in that case (address may
@@ -467,33 +481,88 @@ func ResolveClientProbe(db *sql.DB, t *PingTarget) (deviceID, address, hostName,
 		return "", "", hostName, "no known IP address for client"
 	}
 
-	// Device statuses, to gate candidates on "online".
-	status := make(map[string]string)
-	var firstOnline string
-	rows, err := db.Query(`SELECT id, status FROM devices ORDER BY identity, address`)
+	// The devices by identity, with what the choice goes by.
+	type candidate struct {
+		id      string
+		online  bool
+		strong  bool // a strong device that is not paused: may be picked without being named
+		address string
+	}
+	var devices []candidate
+	byID := make(map[string]*candidate)
+	rows, err := db.Query(`SELECT id, status, address, COALESCE(device_class, ''), COALESCE(class_override, ''),
+	                              COALESCE(poll_profile, ''), polling_paused_until
+	                         FROM devices ORDER BY identity, address`)
 	if err != nil {
 		return "", address, hostName, "failed to list devices: " + err.Error()
 	}
 	defer rows.Close()
+	now := time.Now()
 	for rows.Next() {
-		var id, st string
-		if err := rows.Scan(&id, &st); err != nil {
+		var d Device
+		if err := rows.Scan(&d.ID, &d.Status, &d.Address, &d.DeviceClass, &d.ClassOverride, &d.PollProfile, &d.PollingPausedUntil); err != nil {
 			return "", address, hostName, "failed to list devices: " + err.Error()
 		}
-		status[id] = st
-		if firstOnline == "" && st == "online" {
-			firstOnline = id
+		devices = append(devices, candidate{
+			id: d.ID, online: d.Status == "online", address: d.Address,
+			strong: d.StrongProbeSource() && !d.PollingPaused(now),
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return "", address, hostName, "failed to list devices: " + err.Error()
+	}
+	for i := range devices {
+		byID[devices[i].id] = &devices[i]
+	}
+	online := func(id string) *candidate {
+		if c := byID[id]; id != "" && c != nil && c.online {
+			return c
 		}
+		return nil
+	}
+	first := func(ok func(c *candidate) bool) string {
+		for i := range devices {
+			if devices[i].online && ok(&devices[i]) {
+				return devices[i].id
+			}
+		}
+		return ""
 	}
 
-	if t.DeviceID != "" && status[t.DeviceID] == "online" {
-		return t.DeviceID, address, hostName, ""
+	if c := online(t.DeviceID); c != nil {
+		return c.id, address, hostName, ""
 	}
-	if lookup.DeviceID != "" && status[lookup.DeviceID] == "online" {
-		return lookup.DeviceID, address, hostName, ""
+	seenBy := online(lookup.DeviceID)
+	if seenBy != nil && seenBy.strong {
+		return seenBy.id, address, hostName, ""
 	}
-	if firstOnline != "" {
-		return firstOnline, address, hostName, ""
+	if network, ok := clientNetwork(address); ok {
+		if id := first(func(c *candidate) bool {
+			a, err := netip.ParseAddr(c.address)
+			return c.strong && err == nil && network.Contains(a.Unmap())
+		}); id != "" {
+			return id, address, hostName, ""
+		}
+	}
+	if seenBy != nil {
+		return seenBy.id, address, hostName, ""
+	}
+	if id := first(func(c *candidate) bool { return c.strong }); id != "" {
+		return id, address, hostName, ""
+	}
+	if id := first(func(*candidate) bool { return true }); id != "" {
+		return id, address, hostName, ""
 	}
 	return "", address, hostName, "no online device available to probe from"
+}
+
+// clientNetwork is the IPv4 /24 around a client's address: the network a
+// device has to be on to count as being next to the client. An IPv6 or
+// unparseable address has none.
+func clientNetwork(address string) (netip.Prefix, bool) {
+	a, err := netip.ParseAddr(address)
+	if err != nil || !a.Unmap().Is4() {
+		return netip.Prefix{}, false
+	}
+	return netip.PrefixFrom(a.Unmap(), 24).Masked(), true
 }

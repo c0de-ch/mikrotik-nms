@@ -36,7 +36,7 @@ func (s *Server) checkProbeSource(w http.ResponseWriter, deviceID string) bool {
 	if d.Profile() == devclass.ProfileLight {
 		class = devclass.C1
 	}
-	if class == devclass.C3 {
+	if d.StrongProbeSource() {
 		return true
 	}
 	const why = "pings and speed tests run only from strong devices (class C3, routers), because they cost the probing device CPU"
