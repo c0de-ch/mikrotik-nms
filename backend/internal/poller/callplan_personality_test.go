@@ -5,6 +5,7 @@ import (
 	"hash/fnv"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/mikrotik-nms/backend/internal/hygiene/hygienetest"
 )
@@ -16,7 +17,8 @@ import (
 // the bridges with their ports and the FDB — are derived here from
 // Personality.Ports, so what the device answers to the scheduled reads and
 // what Personality.Facts says the NMS knows of it are the same thing by
-// construction.
+// construction — down to the traffic: a port's counters move at its Bps on
+// average (callplan_motion_test.go).
 
 // planPersonality is a personality with the tables derived from its ports.
 type planPersonality struct{ hygienetest.Personality }
@@ -109,21 +111,33 @@ func (p planPersonality) bondMembers() map[string]string {
 	return out
 }
 
-// interfaceRows is the /interface/print table. The counters stand still: a
-// quiet device, whose rates are all zero.
-func (p planPersonality) interfaceRows() []map[string]string {
+// interfaceRows is the /interface/print table at the start of the plan.
+func (p planPersonality) interfaceRows() []map[string]string { return p.interfaceRowsAt(0) }
+
+// interfaceRowsAt is the /interface/print table elapsed into the plan: a
+// running port's byte and packet counters have moved on by its traffic since
+// the start (portBytes), its drop and error counters by its counter events —
+// on a port that has them (hasErrorCounters).
+func (p planPersonality) interfaceRowsAt(elapsed time.Duration) []map[string]string {
 	bonded := p.bondMembers()
 	rows := make([]map[string]string, 0, len(p.Ports))
 	for i, port := range p.Ports {
+		rxBase, txBase := int64(1_000_000*(i+1)), int64(2_000_000*(i+1))
+		rx, tx := p.portBytes(i, elapsed)
 		row := map[string]string{
 			".id": fmt.Sprintf("*%X", i+1), "name": port.Name, "type": port.Type, "mac-address": p.mac(i),
 			"mtu": "1500", "actual-mtu": "1500", "running": rosBool(port.Running), "disabled": "false",
 			"slave":      rosBool(port.Bridge != "" || bonded[port.Name] != ""),
 			"link-downs": "0",
-			"rx-byte":    strconv.Itoa(1_000_000 * (i + 1)), "tx-byte": strconv.Itoa(2_000_000 * (i + 1)),
-			"rx-packet": strconv.Itoa(1_000 * (i + 1)), "tx-packet": strconv.Itoa(2_000 * (i + 1)),
-			"rx-error": "0", "tx-error": "0", "rx-drop": "0", "tx-drop": "0", "tx-queue-drop": "0",
+			"rx-byte":    strconv.FormatInt(rxBase+rx, 10), "tx-byte": strconv.FormatInt(txBase+tx, 10),
+			"rx-packet":  strconv.FormatInt(int64(1_000*(i+1))+rx/rxPacketBytes, 10),
+			"tx-packet":  strconv.FormatInt(int64(2_000*(i+1))+tx/txPacketBytes, 10),
 			"fp-rx-byte": "0", "fp-tx-byte": "0",
+		}
+		if p.hasErrorCounters(i) {
+			for _, counter := range errorCounters {
+				row[counter] = strconv.FormatInt(p.eventCount(port.Name, counter, elapsed), 10)
+			}
 		}
 		if port.Running {
 			row["last-link-up-time"] = "2026-01-04 08:00:00"

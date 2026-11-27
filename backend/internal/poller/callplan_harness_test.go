@@ -180,6 +180,8 @@ func newCallPlan(t *testing.T) *callPlan {
 				"active": "true", "static": "true", "dynamic": "false", "disabled": "false",
 			})
 		d.p.ScriptAll(d.fake)
+		// Its counters, CPU, memory and uptime move with the clock.
+		d.animate(h.clock.now)
 
 		res := resourceRow(t, d.p)
 		facts := devclass.ParseResourceFacts(res)
@@ -277,6 +279,10 @@ func (h *callPlan) wire() {
 	m.audit.self = func(*queries.Device, time.Time) []netip.Addr {
 		return []netip.Addr{netip.MustParseAddr(hygienetest.NMSAddress)}
 	}
+	// What Start does first: every command and pooled dial is counted against
+	// its device (device_minutes.nms_*) — here on the simulated clock.
+	routeros.SetObserver(simObserver{rec: m.load, now: now})
+	h.t.Cleanup(func() { routeros.SetObserver(nil) })
 
 	// The loops Start builds — see Manager.Start.
 	logs := NewLogReader()
@@ -342,6 +348,27 @@ func (h *callPlan) wire() {
 	h.add("audit", auditLoopDelay, func(t time.Time) time.Time {
 		return until(m.audit.safeTick(t), t, 200*time.Millisecond, pollerTick)
 	})
+}
+
+// simObserver hands the routeros observer's events to the device-load
+// recorder on the simulated clock. The observer stamps them with the wall
+// clock; here a command takes no simulated time, so it ends at the moment it
+// is sent — the minute the call plan counts it in — and the wall time it is
+// charged is a model of its cost: a millisecond per reply row, at least one.
+type simObserver struct {
+	rec *LoadRecorder
+	now func() time.Time
+}
+
+func (o simObserver) Command(ev routeros.CommandEvent) {
+	ev.Wall = time.Duration(max(ev.Rows, 1)) * time.Millisecond
+	ev.Start = o.now().Add(-ev.Wall)
+	o.rec.Command(ev)
+}
+
+func (o simObserver) Session(ev routeros.SessionEvent) {
+	ev.At = o.now()
+	o.rec.Session(ev)
 }
 
 func (h *callPlan) add(name string, delay time.Duration, tick func(time.Time) time.Time) {
