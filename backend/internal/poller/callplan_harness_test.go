@@ -46,8 +46,8 @@ import (
 type fleetHour struct {
 	// done: the hour ran to its end and everything below was captured.
 	done bool
-	// ranIn is the test the hour ran in, skipped whether that test was
-	// skipped instead (a platform without the loopback addresses).
+	// ranIn is the test the hour ran in; skipped says that test was skipped
+	// instead (a platform without the loopback addresses).
 	ranIn   string
 	skipped bool
 

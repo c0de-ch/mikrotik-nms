@@ -475,12 +475,12 @@ func tableNames(db *sql.DB) ([]string, error) {
 
 // dbColumn is one column of a table, as PRAGMA table_info gives it.
 type dbColumn struct {
-	name, typ, dflt string
-	pk              int // position in the primary key, 0 = not part of it
+	name, dflt string
+	pk         int // position in the primary key, 0 = not part of it
 }
 
 func tableColumns(db *sql.DB, table string) ([]dbColumn, error) {
-	rows, err := db.Query(`SELECT name, type, COALESCE(dflt_value, ''), pk FROM pragma_table_info(?) ORDER BY cid`, table)
+	rows, err := db.Query(`SELECT name, COALESCE(dflt_value, ''), pk FROM pragma_table_info(?) ORDER BY cid`, table)
 	if err != nil {
 		return nil, err
 	}
@@ -488,7 +488,7 @@ func tableColumns(db *sql.DB, table string) ([]dbColumn, error) {
 	var out []dbColumn
 	for rows.Next() {
 		var c dbColumn
-		if err := rows.Scan(&c.name, &c.typ, &c.dflt, &c.pk); err != nil {
+		if err := rows.Scan(&c.name, &c.dflt, &c.pk); err != nil {
 			return nil, err
 		}
 		out = append(out, c)
@@ -1397,16 +1397,28 @@ func TestDBState(t *testing.T) {
 	}
 }
 
-// stateDiff says where a golden file and the state now differ: the row
-// count line, and the first lines that differ.
+// stateDiff says where a golden file and the state now differ: how many
+// lines, and the first lines that differ — as the columns that changed when
+// both are rows (name=value …), whole otherwise.
 func stateDiff(got, want string) string {
 	gl, wl := strings.Split(got, "\n"), strings.Split(want, "\n")
 	var b strings.Builder
-	if len(gl) != len(wl) {
-		fmt.Fprintf(&b, "  lines: %d in the golden file, %d now\n", len(wl), len(gl))
+	var differ []int
+	for i := 0; i < max(len(gl), len(wl)); i++ {
+		if i >= len(gl) || i >= len(wl) || gl[i] != wl[i] {
+			differ = append(differ, i)
+		}
 	}
-	shown := 0
-	for i := 0; i < max(len(gl), len(wl)) && shown < 3; i++ {
+	if len(differ) == 1 {
+		fmt.Fprintf(&b, "  1 line differs")
+	} else {
+		fmt.Fprintf(&b, "  %d lines differ", len(differ))
+	}
+	if len(gl) != len(wl) {
+		fmt.Fprintf(&b, " (%d lines in the golden file, %d now)", len(wl), len(gl))
+	}
+	fmt.Fprintf(&b, "; the first:\n")
+	for _, i := range differ[:min(len(differ), 3)] {
 		var a, z string
 		if i < len(wl) {
 			a = wl[i]
@@ -1414,13 +1426,56 @@ func stateDiff(got, want string) string {
 		if i < len(gl) {
 			z = gl[i]
 		}
-		if a != z {
-			if shown == 0 {
-				fmt.Fprintf(&b, "  first differences:\n")
-			}
-			fmt.Fprintf(&b, "    line %d\n      golden: %s\n      now:    %s\n", i+1, a, z)
-			shown++
+		if changed, row, ok := changedColumns(a, z); ok {
+			fmt.Fprintf(&b, "    line %d, %s: %s\n", i+1, row, strings.Join(changed, ", "))
+			continue
 		}
+		fmt.Fprintf(&b, "    line %d\n      golden: %s\n      now:    %s\n", i+1, a, z)
 	}
 	return b.String()
+}
+
+// rowColumns splits a row line into its name=value pairs, in order; ok is
+// false for a line that is not a row.
+func rowColumns(line string) (names, values []string, ok bool) {
+	for line != "" {
+		eq := strings.IndexByte(line, '=')
+		if eq <= 0 || strings.ContainsAny(line[:eq], " \"") {
+			return nil, nil, false
+		}
+		name, rest := line[:eq], line[eq+1:]
+		value := rest
+		if strings.HasPrefix(rest, `"`) {
+			q, err := strconv.QuotedPrefix(rest)
+			if err != nil {
+				return nil, nil, false
+			}
+			value = q
+		} else if sp := strings.IndexByte(rest, ' '); sp >= 0 {
+			value = rest[:sp]
+		}
+		names, values = append(names, name), append(values, value)
+		line = strings.TrimPrefix(rest[len(value):], " ")
+	}
+	return names, values, len(names) > 0
+}
+
+// changedColumns compares two row lines with the same columns: the columns
+// whose value changed ("cpu_post 10 → NULL"), and the row named by its first
+// two columns.
+func changedColumns(golden, now string) (changed []string, row string, ok bool) {
+	gn, gv, ok1 := rowColumns(golden)
+	nn, nv, ok2 := rowColumns(now)
+	if !ok1 || !ok2 || !slices.Equal(gn, nn) {
+		return nil, "", false
+	}
+	var name []string
+	for i := range gn {
+		if gv[i] != nv[i] {
+			changed = append(changed, fmt.Sprintf("%s %s → %s", gn[i], gv[i], nv[i]))
+		} else if len(name) < 2 && len(changed) == 0 {
+			name = append(name, gn[i]+"="+gv[i])
+		}
+	}
+	return changed, strings.Join(name, " "), len(changed) > 0
 }

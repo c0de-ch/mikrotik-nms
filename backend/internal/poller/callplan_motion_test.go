@@ -28,8 +28,9 @@ import (
 // trafficQuarters is how busy a port is in each minute of a five-minute
 // cycle, in quarters of its nominal rate (hygiene.Port.Bps, the rate the
 // personality's facts give the hygiene audit). The cycle averages the
-// nominal rate, so what the NMS measures is what the personality says; and
-// it changes from minute to minute, so how a read interval is shared out
+// nominal rate, so over the hour the NMS measures what the personality says
+// (and a port with traffic always has some, a port without none); and it
+// changes from minute to minute, so how a read interval is shared out
 // between the minutes it spans shows in every minute row. The port's
 // position in the list shifts its cycle.
 var trafficQuarters = [5]int64{4, 6, 2, 5, 3}
