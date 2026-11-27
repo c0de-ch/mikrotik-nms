@@ -1,0 +1,231 @@
+== (*Manager).Start in manager.go
+{
+ctx, cancel := context.WithCancel(context.Background())
+m.cancel = cancel
+go m.retentionLoop(ctx)
+if !m.cfg.PollersEnabled() {
+m.portStats.startupRollup()
+log.Println("poller: device polling is off (MIKROTIK_NMS_POLLERS=off) — only database maintenance runs")
+return
+}
+routeros.SetObserver(m.load)
+go m.cpu.Run(ctx)
+go m.healthLoop(ctx)
+go m.infoLoop(ctx)
+go m.topologyLoop(ctx)
+go m.firmwareLoop(ctx)
+trafficMgr := NewTrafficManager(m.db, m.pool, m.hub)
+go trafficMgr.Run(ctx)
+liveTraffic := NewLiveTrafficCollector(m.db, m.portStats, m.hub)
+liveTraffic.UseCadence(m.cadence)
+go liveTraffic.Run(ctx)
+go m.portStats.Run(ctx)
+go m.flows.Run(ctx)
+logs := NewLogReader()
+caps := m.caps
+wifiTracker := NewWifiTracker(m.db, m.pool, m.hub, 30*time.Second)
+wifiTracker.UseLogReader(logs)
+wifiTracker.UseCapabilities(caps)
+wifiTracker.UseCadence(m.cadence)
+go wifiTracker.Run(ctx)
+clientDisc := NewClientDiscoveryPoller(m.db, m.pool, resolver.New(m.db), 15*time.Minute)
+clientDisc.UseCadence(m.cadence)
+go clientDisc.Run(ctx)
+netHealth := NewNetworkHealthPoller(m.db, m.pool, m.hub, m.cfg.NetworkHealthInterval)
+netHealth.UseFloor(func() time.Duration { return m.floorOf(devclass.TierBridgePorts, time.Now()) })
+netHealth.UseLogReader(logs)
+netHealth.UseInterfaceSnapshots(m.portStats)
+netHealth.UseCadence(m.cadence)
+go netHealth.Run(ctx)
+connectivity := NewConnectivityPoller(m.db, m.pool, m.hub, defaultConnectivityInterval)
+connectivity.UseWifiReadings(wifiTracker)
+go connectivity.Run(ctx)
+speedTests := NewSpeedTestPoller(m.db, m.hub, defaultSpeedTestInterval)
+go speedTests.Run(ctx)
+go m.audit.Run(ctx)
+alertEngine := alerts.NewEngine(m.db, alerts.NewNotifier(m.db, m.cfg.Mailer()), alerts.DefaultRules(m.db)...)
+alertEngine.OnChange = func() {
+m.hub.Publish(alerts.Topic, map[string]any{"at": time.Now().UTC().Format(time.RFC3339)})
+}
+go alertEngine.Run(ctx.Done())
+log.Println("poller: started all pollers")
+}
+
+== (*Manager).healthLoop in manager.go
+{
+ticker := time.NewTicker(m.cfg.HealthInterval)
+defer ticker.Stop()
+m.pollAllDevices(ctx)
+for {
+select {
+case <-ctx.Done():
+return
+case <-ticker.C:
+m.pollAllDevices(ctx)
+}
+}
+}
+
+== (*Manager).infoLoop in manager.go
+{
+if !sleepCtx(ctx, 8*time.Second) {
+return
+}
+for {
+m.refreshDueInfo(ctx, m.clock())
+if !sleepCtx(ctx, pollerTick) {
+return
+}
+}
+}
+
+== (*Manager).topologyLoop in manager.go
+{
+if !sleepCtx(ctx, 5*time.Second) {
+return
+}
+for {
+m.safePollTopology(ctx)
+if !sleepCtx(ctx, pollerTick) {
+return
+}
+}
+}
+
+== (*CPUSampler).Run in cpusample.go
+{
+if !sleepCtx(ctx, cpuStartupDelay) {
+return
+}
+for {
+now := s.now()
+wake := s.safeTick(now)
+wait := min(max(wake.Sub(now), 200*time.Millisecond), pollerTick)
+if !sleepCtx(ctx, wait) {
+return
+}
+}
+}
+
+== (*PortStatsCollector).Run in portstats.go
+{
+go c.hostsLoop(ctx)
+c.startupRollup()
+if !sleepCtx(ctx, portStatsStartupDelay) {
+return
+}
+for {
+base := PortStatsInterval(c.db)
+next := c.safeCycle(ctx, base)
+wait := min(max(time.Until(next), time.Second), base)
+if !sleepCtx(ctx, wait) {
+return
+}
+}
+}
+
+== (*PortStatsCollector).hostsLoop in portstats.go
+{
+if !sleepCtx(ctx, portHostsStartupDelay) {
+return
+}
+for {
+c.safeHostsTick(ctx)
+if !sleepCtx(ctx, pollerTick) {
+return
+}
+}
+}
+
+== (*WifiTracker).Run in wifi.go
+{
+wt.restoreState()
+if !sleepCtx(ctx, 15*time.Second) {
+return
+}
+for {
+wt.safePoll(ctx)
+if !sleepCtx(ctx, pollerTick) {
+return
+}
+}
+}
+
+== (*ClientDiscoveryPoller).Run in client_discovery.go
+{
+if !sleepCtx(ctx, 10*time.Second) {
+return
+}
+for {
+cdp.safePoll(ctx)
+if !sleepCtx(ctx, pollerTick) {
+return
+}
+}
+}
+
+== (*NetworkHealthPoller).Run in network_health.go
+{
+if err := n.ports.RestoreFromDB(n.db); err != nil {
+log.Printf("network health: restore port state: %v", err)
+}
+if bridges, err := queries.ListBridgeStatus(n.db); err == nil {
+for _, b := range bridges {
+switch strings.ToLower(b.Protocol) {
+case "stp", "rstp", "mstp":
+n.bridgeSTPSeen[b.DeviceID+"|"+b.BridgeName] = true
+}
+}
+}
+if !sleepCtx(ctx, 20*time.Second) {
+return
+}
+for {
+n.safePoll(ctx)
+if !sleepCtx(ctx, pollerTick) {
+return
+}
+}
+}
+
+== (*ConnectivityPoller).Run in connectivity.go
+{
+select {
+case <-ctx.Done():
+return
+case <-time.After(15 * time.Second):
+}
+cp.safePoll(ctx)
+for {
+timer := time.NewTimer(cp.currentInterval())
+select {
+case <-ctx.Done():
+timer.Stop()
+return
+case <-timer.C:
+cp.safePoll(ctx)
+}
+}
+}
+
+== (*Auditor).Run in audit.go
+{
+if !sleepCtx(ctx, auditLoopDelay) {
+return
+}
+for {
+now := a.now()
+wake := a.safeTick(now)
+wait := min(max(wake.Sub(now), 200*time.Millisecond), pollerTick)
+timer := time.NewTimer(wait)
+select {
+case <-ctx.Done():
+timer.Stop()
+return
+case <-a.kick:
+timer.Stop()
+case <-timer.C:
+}
+}
+}
+

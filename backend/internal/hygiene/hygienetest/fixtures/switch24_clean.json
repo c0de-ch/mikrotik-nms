@@ -866,6 +866,12 @@
      "disabled": "false"
     }
    ]
+  },
+  "/caps-man/registration-table/print": {
+   "trap": "no such command prefix"
+  },
+  "/interface/wireless/registration-table/print": {
+   "trap": "no such command prefix"
   }
  }
 }
