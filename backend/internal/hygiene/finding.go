@@ -137,6 +137,9 @@ type Result struct {
 	// A kind that is not listed could not be judged — a read was refused or
 	// failed, or was not part of the pass — and its stored finding stays.
 	Evaluated []string
+	// Checks say what the pass saw of each usual device-side cause of a high
+	// CPU, finding or not (checks.go).
+	Checks []Check
 }
 
 // Worst is the highest severity among the findings ("" = none).

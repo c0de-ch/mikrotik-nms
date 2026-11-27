@@ -10,6 +10,7 @@ import (
 
 	"github.com/mikrotik-nms/backend/internal/alerts"
 	"github.com/mikrotik-nms/backend/internal/database/queries"
+	"github.com/mikrotik-nms/backend/internal/devclass"
 	"github.com/mikrotik-nms/backend/internal/hygiene"
 	"github.com/mikrotik-nms/backend/internal/hygiene/hygienetest"
 	"github.com/mikrotik-nms/backend/internal/routeros"
@@ -343,5 +344,83 @@ func TestCPUHighAlertGetsItsLikelyCauseFromTheDiagnosePass(t *testing.T) {
 	tick()
 	if len(deliverer.sent) != 2 {
 		t.Fatalf("the cause was announced again: %v", deliverer.sent[2:])
+	}
+}
+
+// A router accepted as a flow exporter, its CPU up in the minutes after:
+// flow_export_cpu_high fires and starts the diagnose pass. The pass finds
+// nothing wrong — exporting to this NMS is what a router may do — and the
+// alert must say what the pass saw: traffic-flow is enabled, it is the
+// export the alert is about. It must not say "no traffic-flow".
+func TestFlowExportAlertSaysTheExportIsEnabled(t *testing.T) {
+	h := newAuditHarness(t)
+	start := time.Now().UTC().Truncate(time.Second) // the alert engine runs on the wall clock
+	h.clock.set(start)
+	p := hygienetest.Load(t, "ap_clean")
+	p.Board, p.Role = "RB5009UG+S+", devclass.RoleRouter
+	h.add("r", p.
+		With("/ip/traffic-flow/print", map[string]string{"enabled": "true", "interfaces": "ether1", "cache-entries": "4k", "active-flow-timeout": "30m"}).
+		With("/ip/traffic-flow/target/print", map[string]string{"dst-address": hygienetest.NMSAddress, "port": "2055", "version": "ipfix", "disabled": "false"}))
+	// It routes its own internet egress, and exports to this NMS.
+	if err := queries.ReplaceDeviceUplinks(h.db, "r", []queries.DeviceUplink{{DeviceID: "r", Kind: "default-route", Interface: "ether1", GatewayIP: "203.0.113.1"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := queries.SetSetting(h.db, "flow_advertise_address", hygienetest.NMSAddress); err != nil {
+		t.Fatal(err)
+	}
+	h.setCPU("r", 92)
+
+	// The exporter was accepted twelve minutes ago; the CPU has been up since.
+	accepted := start.Truncate(time.Minute).Add(-12 * time.Minute)
+	if err := queries.StartFlowExportWatch(h.db, &queries.FlowExportWatch{DeviceID: "r", ExporterID: 1, Address: "192.0.2.2",
+		CollectorPort: 2055, AcceptedAt: accepted}); err != nil {
+		t.Fatal(err)
+	}
+	var minutes []queries.DeviceMinute
+	for i := 0; i < 10; i++ {
+		minutes = append(minutes, queries.DeviceMinute{DeviceID: "r", Bucket: accepted.Add(time.Duration(i) * time.Minute),
+			PolledS: 60, CPUSum: 92, CPUSamples: 1, CPUMax: 92})
+	}
+	if err := queries.UpsertDeviceMinutes(h.db, minutes); err != nil {
+		t.Fatal(err)
+	}
+	engine := alerts.NewEngine(h.db, nil, alerts.DefaultRules(h.db)...)
+	if err := engine.Tick(); err != nil {
+		t.Fatal(err)
+	}
+
+	// One pass answers both alerts the device now has (cpu_high opened in
+	// the same evaluation): each words what the pass saw for itself.
+	h.run(2 * time.Minute)
+	run := h.lastRun("r", queries.AuditKindDiagnose)
+	if run == nil || run.Status != queries.AuditComplete || run.Reads != 9 || run.Findings != "[]" {
+		t.Fatalf("the diagnose pass = %+v, want 9 reads and no finding", run)
+	}
+	if n := countRows(t, h.db, `SELECT COUNT(*) FROM device_audit_runs WHERE device_id = 'r'`); n != 1 {
+		t.Fatalf("%d passes, want one for both alerts", n)
+	}
+	saw := map[string]string{}
+	for _, c := range hygiene.ParseChecks(run.Checks) {
+		saw[c.Cause] = c.State
+	}
+	if saw[hygiene.CauseTrafficFlow] != hygiene.CheckPresent || saw[hygiene.CauseGraphing] != hygiene.CheckAbsent || len(saw) != len(hygiene.Causes()) {
+		t.Fatalf("what the pass saw = %v, want traffic-flow present and the rest absent", saw)
+	}
+
+	if err := engine.Tick(); err != nil {
+		t.Fatal(err)
+	}
+	open, _ := queries.ListOpenAlerts(h.db)
+	causes := map[string]string{}
+	for _, a := range open {
+		causes[a.Rule] = fmt.Sprint(alerts.ParsePayload(a.Payload).Facts[alerts.FactLikelyCause])
+	}
+	if c := causes[alerts.RuleFlowExportCPUHigh]; strings.Contains(c, ", traffic-flow") ||
+		!strings.Contains(c, "found that traffic-flow is enabled — the export this alert is about — and nothing else: no graphing,") {
+		t.Errorf("flow_export_cpu_high: likely cause = %q", c)
+	}
+	if c := causes[alerts.RuleCPUHigh]; strings.Contains(c, ", traffic-flow") || strings.Contains(c, "this alert") ||
+		!strings.Contains(c, "found that traffic-flow is enabled — no fault by itself on this device") {
+		t.Errorf("cpu_high: likely cause = %q", c)
 	}
 }

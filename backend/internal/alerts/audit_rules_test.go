@@ -10,6 +10,7 @@ import (
 
 	"github.com/mikrotik-nms/backend/internal/database/queries"
 	"github.com/mikrotik-nms/backend/internal/devclass"
+	"github.com/mikrotik-nms/backend/internal/hygiene"
 	"github.com/mikrotik-nms/backend/internal/mailer"
 )
 
@@ -152,6 +153,70 @@ func TestCPUHighCarriesTheLikelyCause(t *testing.T) {
 		if _, ok := got[id].Facts["likely_cause"]; ok || got[id].Summary == "" {
 			t.Errorf("%s: %+v", id, got[id].Facts)
 		}
+	}
+}
+
+// The sentence of a pass that found nothing must not call absent what the
+// pass saw. A router accepted as an exporter has traffic-flow enabled — it
+// is the export the alert is about — and "no … traffic-flow" on its alert
+// is false.
+func TestLikelyCauseDoesNotCallAbsentWhatThePassSaw(t *testing.T) {
+	db := testDB(t)
+	addDevice(t, db, "r", devclass.C3, 1<<30)
+	accepted := ruleNow.Truncate(time.Minute).Add(-12 * time.Minute)
+	startWatch(t, db, "r", accepted, nil)
+	watchMinutes(t, db, "r", accepted, repeat(92, 10)...)
+
+	// The diagnose pass the alert started: no finding — exporting to this
+	// NMS is what a router may do — and traffic-flow is enabled.
+	var checks []hygiene.Check
+	for _, c := range hygiene.Causes() {
+		state := hygiene.CheckAbsent
+		if c == hygiene.CauseTrafficFlow {
+			state = hygiene.CheckPresent
+		}
+		checks = append(checks, hygiene.Check{Cause: c, State: state})
+	}
+	id, err := queries.InsertAuditRun(db, &queries.AuditRun{DeviceID: "r", Kind: queries.AuditKindDiagnose, Reason: RuleFlowExportCPUHigh,
+		StartedAt: ruleNow.Add(-4 * time.Minute)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := queries.FinishAuditRun(db, &queries.AuditRun{ID: id, FinishedAt: ruleNow.Add(-3 * time.Minute), Status: queries.AuditComplete,
+		Reads: 9, Findings: `[]`, Checks: hygiene.ChecksJSON(checks)}); err != nil {
+		t.Fatal(err)
+	}
+
+	causeOf := func(rule Rule) string {
+		t.Helper()
+		obs, err := rule.Evaluate(ruleNow)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, o := range firing(obs) {
+			if o.Key == "r" {
+				return strings.Join(factStrings(t, o, "likely_cause"), " ")
+			}
+		}
+		t.Fatalf("%s does not fire for r: %+v", rule.Name(), obs)
+		return ""
+	}
+
+	// On the alert about the export.
+	export := causeOf(flowExportCPUHigh{db})
+	if strings.Contains(export, "no graphing, traffic-flow") || strings.Contains(export, ", traffic-flow") {
+		t.Errorf("the alert about the flow export says there is no traffic-flow: %q", export)
+	}
+	if !strings.Contains(export, "(9 reads) found that traffic-flow is enabled — the export this alert is about — and nothing else: no graphing,") {
+		t.Errorf("flow_export_cpu_high cause = %q", export)
+	}
+
+	// On the High CPU alert of the same device: said too, in neutral words.
+	cpuMinutes(t, db, "r", repeat(92, 5)...)
+	high := causeOf(cpuHigh{db})
+	if strings.Contains(high, ", traffic-flow") || strings.Contains(high, "this alert") ||
+		!strings.Contains(high, "found that traffic-flow is enabled — no fault by itself on this device, but work for its CPU — and nothing else") {
+		t.Errorf("cpu_high cause = %q", high)
 	}
 }
 

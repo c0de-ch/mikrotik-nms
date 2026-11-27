@@ -253,6 +253,36 @@ func TestDeviceHygieneView(t *testing.T) {
 	}
 }
 
+// A pass that made no finding says what it saw of the usual causes, in the
+// words the alert carries: on a device that exports flows, traffic-flow is
+// "enabled", never "absent". A pass with findings needs no such sentence.
+func TestHygieneViewSaysWhatACleanPassSaw(t *testing.T) {
+	s, d := pollingTestServer(t)
+	now := time.Now().UTC()
+	checks := `[{"cause":"graphing","state":"absent"},{"cause":"traffic_flow","state":"present"},{"cause":"sniffer","state":"absent"},{"cause":"snmp","state":"unknown"}]`
+	diagID, _ := queries.InsertAuditRun(s.db, &queries.AuditRun{DeviceID: d.ID, Kind: queries.AuditKindDiagnose, Reason: "flow_export_cpu_high", StartedAt: now.Add(-30 * time.Minute)})
+	_ = queries.FinishAuditRun(s.db, &queries.AuditRun{ID: diagID, FinishedAt: now.Add(-29 * time.Minute), Status: queries.AuditComplete, Reads: 9, Checks: checks})
+	auditID, _ := queries.InsertAuditRun(s.db, &queries.AuditRun{DeviceID: d.ID, Kind: queries.AuditKindAudit, Reason: poller.PassScheduled, StartedAt: now.Add(-3 * time.Hour)})
+	_ = queries.FinishAuditRun(s.db, &queries.AuditRun{ID: auditID, FinishedAt: now.Add(-3 * time.Hour), Status: queries.AuditComplete, Reads: 12, Checks: checks,
+		Findings: `[{"kind":"sniffer_running","severity":"warn","title":"The packet sniffer is running","detail":"running"}]`})
+
+	var view deviceHygiene
+	rec := hygieneCall(t, s.handleDeviceHygiene, http.MethodGet, d.ID, "viewer")
+	if err := json.Unmarshal(rec.Body.Bytes(), &view); err != nil {
+		t.Fatalf("decode %s: %v", rec.Body.String(), err)
+	}
+	want := "found that traffic-flow is enabled — the export this alert is about — and nothing else: no graphing or running sniffer. Not checked: SNMP."
+	if dg := view.Diagnose.Last; dg == nil || dg.Summary != want {
+		t.Errorf("clean diagnose pass: summary = %q, want %q", view.Diagnose.Last.Summary, want)
+	}
+	if a := view.Audit.Last; a == nil || a.Summary != "" || len(a.Found) != 1 {
+		t.Errorf("a pass with a finding: %+v", view.Audit.Last)
+	}
+	if strings.Contains(rec.Body.String(), `"checks"`) {
+		t.Errorf("the view returns the raw checks: %s", rec.Body.String())
+	}
+}
+
 // The Network Health page lists every device's hygiene findings, worst
 // first, with the device's name.
 func TestNetworkHealthListsHygieneFindings(t *testing.T) {

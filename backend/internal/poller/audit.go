@@ -752,6 +752,7 @@ func (a *Auditor) finish(p *pass, dev queries.Device, detail string, abort bool,
 		if b, err := json.Marshal(kept); err == nil {
 			run.Findings = string(b)
 		}
+		run.Checks = hygiene.ChecksJSON(res.Checks)
 		if rt := hygiene.RuntimeOf(sections, now); rt.CPUForwarded != nil {
 			run.Runtime = rt.JSON()
 		}

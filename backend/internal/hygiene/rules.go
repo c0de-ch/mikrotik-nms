@@ -94,6 +94,7 @@ func Evaluate(mode Mode, s Sections, f Facts) Result {
 		return a.Detail < b.Detail
 	})
 	sort.Strings(res.Evaluated)
+	res.Checks = checksOf(s, f)
 	return res
 }
 

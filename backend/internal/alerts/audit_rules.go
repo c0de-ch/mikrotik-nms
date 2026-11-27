@@ -11,6 +11,7 @@ import (
 
 	"github.com/mikrotik-nms/backend/internal/database/queries"
 	"github.com/mikrotik-nms/backend/internal/flowguard"
+	"github.com/mikrotik-nms/backend/internal/hygiene"
 )
 
 // Rules that rest on the hygiene audit and the diagnose pass (P0-10), and
@@ -207,11 +208,12 @@ func likelyCauses(db *sql.DB, rule string, now time.Time) (map[string]diagnosed,
 			}
 			d.lines = append(d.lines, "["+f.Severity+"] "+title+" — "+f.Detail)
 		}
-		when := run.FinishedAt.UTC().Format("15:04 UTC")
 		if len(found) == 0 {
-			d.lines = append(d.lines, fmt.Sprintf("The diagnose pass at %s (%d reads) found none of the usual device-side "+
-				"causes: no graphing, traffic-flow, running sniffer, mirror or switch rule to the CPU, unsuitable bond "+
-				"mode, bridged traffic through the IP firewall, SNMP or other API client.", when, run.Reads))
+			// What the pass saw, in the pass's own words: it never calls
+			// absent what it saw present or could not read — on the alert
+			// about a device's flow export, traffic-flow is enabled.
+			d.lines = append(d.lines, fmt.Sprintf("The diagnose pass at %s (%d reads) %s", run.FinishedAt.UTC().Format("15:04 UTC"),
+				run.Reads, hygiene.NothingFound(hygiene.ParseChecks(run.Checks), rule == RuleFlowExportCPUHigh)))
 		}
 		if run.FailedReads > 0 {
 			d.lines = append(d.lines, fmt.Sprintf("The pass is incomplete: %d of its %d reads failed.", run.FailedReads, run.Reads))

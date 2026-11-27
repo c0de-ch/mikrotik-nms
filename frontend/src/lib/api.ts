@@ -833,13 +833,20 @@ export interface HygienePass {
   started_at: string;
   // The zero time ("0001-…") while the pass runs.
   finished_at: string;
-  // partial: a read failed — what was read was judged. aborted: nothing was.
+  // partial: a read failed, or the pass ended early — what was read was
+  // judged. aborted: nothing was.
   status: "running" | "complete" | "partial" | "aborted";
   reads: number;
   failed_reads: number;
+  // Why a pass ended early, which reads failed, or what it left unchecked.
   detail?: string;
   // What this pass found.
   found: { kind: string; severity: FindingSeverity; title: string; detail: string }[];
+  // Only for a pass that judged the device and made no finding: what it saw
+  // of the usual device-side causes of a high CPU, as the rest of a sentence
+  // that begins with the pass ("found none of …: no graphing, …", "found that
+  // traffic-flow is enabled — … — and nothing else: …").
+  summary?: string;
 }
 
 export interface HygienePassState {

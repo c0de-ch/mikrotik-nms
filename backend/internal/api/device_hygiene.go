@@ -7,8 +7,10 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/mikrotik-nms/backend/internal/alerts"
 	"github.com/mikrotik-nms/backend/internal/auth"
 	"github.com/mikrotik-nms/backend/internal/database/queries"
+	"github.com/mikrotik-nms/backend/internal/hygiene"
 	"github.com/mikrotik-nms/backend/internal/poller"
 )
 
@@ -38,6 +40,12 @@ type passView struct {
 	queries.AuditRun
 	// Found is what this pass found (never nil).
 	Found []passFinding `json:"found"`
+	// Summary is set for a pass that judged the device and made no finding:
+	// what it saw of the usual device-side causes of a high CPU, in the
+	// words the alerts carry (hygiene.NothingFound) — the rest of a sentence
+	// that begins with the pass. It never calls absent what the pass saw
+	// present (traffic-flow on a device that exports) or could not read.
+	Summary string `json:"summary,omitempty"`
 }
 
 func toPassView(r *queries.AuditRun) *passView {
@@ -48,6 +56,9 @@ func toPassView(r *queries.AuditRun) *passView {
 	_ = json.Unmarshal([]byte(r.Findings), &v.Found)
 	if v.Found == nil {
 		v.Found = []passFinding{}
+	}
+	if len(v.Found) == 0 && (r.Status == queries.AuditComplete || r.Status == queries.AuditPartial) {
+		v.Summary = hygiene.NothingFound(hygiene.ParseChecks(r.Checks), r.Reason == alerts.RuleFlowExportCPUHigh)
 	}
 	return v
 }

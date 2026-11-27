@@ -94,16 +94,19 @@ type AuditRun struct {
 	Detail      string    `json:"detail,omitempty"`
 	Runtime     string    `json:"-"`
 	Findings    string    `json:"-"` // JSON
+	// Checks is what the pass saw of each usual device-side cause of a high
+	// CPU (JSON list of hygiene.Check; "[]" = none stored).
+	Checks string `json:"-"`
 }
 
 const auditRunColumns = `id, device_id, kind, reason, alert_id, requested_by, started_at, finished_at, status,
-	reads, failed_reads, hash, detail, runtime, findings`
+	reads, failed_reads, hash, detail, runtime, findings, checks`
 
 func scanAuditRun(row rowScanner) (AuditRun, error) {
 	var r AuditRun
 	var started, finished int64
 	if err := row.Scan(&r.ID, &r.DeviceID, &r.Kind, &r.Reason, &r.AlertID, &r.RequestedBy, &started, &finished, &r.Status,
-		&r.Reads, &r.FailedReads, &r.Hash, &r.Detail, &r.Runtime, &r.Findings); err != nil {
+		&r.Reads, &r.FailedReads, &r.Hash, &r.Detail, &r.Runtime, &r.Findings, &r.Checks); err != nil {
 		return r, err
 	}
 	r.StartedAt = time.Unix(started, 0).UTC()
@@ -136,13 +139,16 @@ func InsertAuditRun(db *sql.DB, r *AuditRun) (int64, error) {
 
 // FinishAuditRun records how the pass r.ID ended.
 func FinishAuditRun(db *sql.DB, r *AuditRun) error {
-	findings := r.Findings
+	findings, checks := r.Findings, r.Checks
 	if findings == "" {
 		findings = "[]"
 	}
+	if checks == "" {
+		checks = "[]"
+	}
 	_, err := db.Exec(`UPDATE device_audit_runs SET finished_at = ?, status = ?, reads = ?, failed_reads = ?, hash = ?,
-		detail = ?, runtime = ?, findings = ? WHERE id = ?`,
-		r.FinishedAt.Unix(), r.Status, r.Reads, r.FailedReads, r.Hash, r.Detail, r.Runtime, findings, r.ID)
+		detail = ?, runtime = ?, findings = ?, checks = ? WHERE id = ?`,
+		r.FinishedAt.Unix(), r.Status, r.Reads, r.FailedReads, r.Hash, r.Detail, r.Runtime, findings, checks, r.ID)
 	return err
 }
 

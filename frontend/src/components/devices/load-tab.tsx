@@ -316,8 +316,11 @@ function DeviceSideCauses({ hygiene, now }: { hygiene: DeviceHygiene | null; now
           <p className="text-xs text-muted-foreground">
             <span className="font-medium text-foreground">Diagnose pass, {passSummary(diagnosed, now)}</span>
             {` (${passReason(diagnosed)}): `}
+            {/* What a pass without findings saw is worded by the server from
+                what the pass read: it never calls absent what the pass saw
+                (traffic-flow on a device that exports) or could not read. */}
             {diagnosed.found.length === 0
-              ? "none of the usual device-side causes — no graphing, traffic-flow, running sniffer, mirror or switch rule to the CPU, unsuitable bond mode, SNMP or other API client."
+              ? (diagnosed.summary ?? "it made no finding.")
               : `found ${diagnosed.found.map((f) => f.title || f.kind.replaceAll("_", " ")).join("; ")}.`}
           </p>
         )}

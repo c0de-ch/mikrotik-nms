@@ -37,6 +37,9 @@ CREATE INDEX idx_device_audit_device ON device_audit(device_id, taken_at);
 --   hash         the snapshot hash of a complete audit ('' otherwise)
 --   runtime      counters the next pass compares against (JSON)
 --   findings     what this pass found (JSON)
+--   checks       what this pass saw of each usual device-side cause of a high
+--                CPU — absent, present or not read — finding or not (JSON):
+--                the sentence of a pass that found nothing is built from it
 CREATE TABLE device_audit_runs (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     device_id    TEXT    NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
@@ -52,7 +55,8 @@ CREATE TABLE device_audit_runs (
     hash         TEXT    NOT NULL DEFAULT '',
     detail       TEXT    NOT NULL DEFAULT '',
     runtime      TEXT    NOT NULL DEFAULT '',
-    findings     TEXT    NOT NULL DEFAULT '[]'
+    findings     TEXT    NOT NULL DEFAULT '[]',
+    checks       TEXT    NOT NULL DEFAULT '[]'
 );
 CREATE INDEX idx_device_audit_runs_device ON device_audit_runs(device_id, kind, started_at);
 
