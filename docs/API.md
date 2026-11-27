@@ -232,13 +232,20 @@ anything on a device.
 
 `running` is the kind of pass in progress (`""`, `audit`, `diagnose`). `last`
 is the newest pass that judged something — `status` `complete`, or `partial`
-when a read failed (what was read was judged, no snapshot was stored) — else
-the newest pass at all (`running`, `aborted`); `reason` is `scheduled`,
-`admin` (with `requested_by`) or the alert rule that asked. `next_run` is the
-next scheduled audit (absent while none is scheduled). `available_at` is when
-an admin may next ask for that kind of pass (`null` = now). `snapshot` says
-when the stored configuration snapshot last changed; the snapshot itself is
-not served by the API.
+when a read failed or the pass ended early (what was read was judged, no
+snapshot was stored; `detail` says why, or which reads failed) — else the
+newest pass at all (`running`, `aborted`); `reason` is `scheduled`, `admin`
+(with `requested_by`) or the alert rule that asked. A pass that judged the
+device and made no finding carries `summary`: what it saw of the usual
+device-side causes of a high CPU, as the rest of a sentence that begins with
+the pass — `found none of the usual device-side causes: no graphing, …`, or
+`found that traffic-flow is enabled — … — and nothing else: no …`. It names
+as absent only what the pass read and found absent; what was not read is
+listed as `Not checked: …`. `next_run` is the next scheduled audit (absent
+while none is scheduled). `available_at` is when an admin may next ask for
+that kind of pass (`null` = now). `snapshot` says when the stored
+configuration snapshot last changed; the snapshot itself is not served by
+the API.
 
 `POST /devices/{id}/hygiene/audit` and `/diagnose` (admin) answer `202` with
 the pass (`status: "running"`); the result shows up in the view above when it
@@ -247,16 +254,24 @@ scheduled audit they run whatever the device's CPU says. Refusals: `404`
 unknown device; `409` `polling paused until <time>`, a pass is already
 running on the device, or the device is not reachable over the API; `429`
 with `Retry-After` within an hour of the device's last pass of that kind
-(whoever started it); `503` while polling is off on this instance.
+(whoever started it); `503` while polling is off on this instance. A
+scheduled audit that only waits for the device's CPU to drop is not "a pass
+already running" for **Diagnose now**: it is ended (`partial`, with what it
+had read) and the diagnose pass starts.
 
 A finding stays until a pass reads the device again and no longer finds the
 setting. A pass that could not read a menu leaves the findings behind that
 menu alone: a menu the device does not have is simply empty; `not enough
 permissions`, and any other error the device itself answers a read with
 (this RouterOS version does not take it), are reported as a finding of their
-own (`audit_unreadable`) and do not make the pass partial; a read that got
-no answer (a timeout, a lost session) does — the audit is then run again an
-hour later. Finding kinds:
+own (`audit_unreadable`, judged only by an audit that got an answer to every
+read of its plan) and do not make the pass partial; a read that got no
+answer (a timeout, a lost session) does — the audit is then run again an
+hour later, also across a restart. Several rules apply to one role only, or
+mean something else on a switch. A pass that cannot tell the device's role —
+the lookup failed, or its stored routes are too old to count — judges none
+of them: their findings stay as they are, the pass says so in `detail`, and
+an audit stores no snapshot then. Finding kinds:
 `graphing_enabled`, `traffic_flow_enabled`, `traffic_flow_foreign_target`,
 `snmp_open`, `snmp_write_access`, `snmp_on_weak_device`,
 `bridge_ip_firewall`, `bridge_cpu_forwarding`, `bond_not_offloaded`,
@@ -265,7 +280,11 @@ hour later. Finding kinds:
 `loop_protect_on_trunk`, `switch_filter_rules`, `debug_logging`,
 `fast_scheduler`, `sniffer_running`, `cpu_services_on_switch`,
 `nms_account_privileged`, `device_mode_permissive`, `audit_unreadable`. A
-critical one raises the `audit_critical` alert.
+critical one raises the `audit_critical` alert. A pass also reports an API
+session that is not the NMS's as `parallel_api_poller` — the login watch's
+kind — and holds it (`source: "audit"`) until a pass reads the sessions
+again and no longer sees it; the row then stays as history, without
+`source`.
 
 #### Device role
 
@@ -959,8 +978,11 @@ opens. An alert whose severity rises is notified again at once. Runbooks:
 
 **Rules.** `device_unreachable` (critical): the liveness check reports the
 device `offline`, i.e. past `offline_threshold_seconds`. `parallel_api_poller`
-(warning): the login watch confirmed a live API session from an address that
-is not this NMS. `tls_pin_mismatch` (critical): a device on API-TLS presented
+(warning): a live API session from an address that is not this NMS — the
+login watch confirmed it within the last 2 h 15 min, or the hygiene audit
+saw it and no pass has seen it gone since (the audit looks every six hours;
+the alert stands in between and ends with the pass that no longer sees the
+session). `tls_pin_mismatch` (critical): a device on API-TLS presented
 another certificate than the one pinned for it and the NMS withheld its
 login; it resolves when the device is pinned to the presented certificate or
 taken off TLS, otherwise 2 h 15 min after the last refused handshake. `flow_export_on_switch`: flow datagrams arrive from the
@@ -973,17 +995,26 @@ export; `facts.rollback` then carries the rollback steps as text lines (and
 `flow_export_cpu_high` (warning): in the 30 minutes after a flow exporter of
 a managed device was accepted, its quiet-window CPU reached 80 % in three
 minutes or rose 30 points above its 24-hour baseline; it carries
-`facts.rollback`, stands for the rest of the 30 minutes and then while the
-newest five minutes are still elevated. `audit_critical` (critical): the
+`facts.rollback` and stands for the rest of the 30 minutes (and the ten
+minutes their last samples may take to be stored). After that the watch
+opens nothing any more: an alert that is still open stands while the newest
+five minutes are still elevated, and once it has resolved the watch is over
+— a later CPU spike is `cpu_high`'s. Removing the exporter ends the watch
+too. `audit_critical` (critical): the
 device has a critical hygiene finding ([Hygiene audit](#hygiene-audit));
 `facts.findings` and `facts.fix` are text lines; it resolves when a pass no
 longer finds the setting, never by time.
 
 **Likely cause.** `cpu_high`, `flow_export_cpu_high` and a confirmed
-`flow_export_on_switch` start a diagnose pass on the device. What the
-device's newest pass (at most two hours old) found is attached as
-`facts.likely_cause` (text lines, most severe first — or one line saying
-that none of the usual causes was found) with `facts.diagnosed_at`.
+`flow_export_on_switch` start a diagnose pass on the device. What the pass
+that answered the alert found — the device's newest pass, when it started
+after the alert opened; it stays on the alert for as long as the alert is
+open — is attached as `facts.likely_cause` with `facts.diagnosed_at`. Before
+that pass exists, a pass of the last two hours is shown. The lines are the
+findings, most severe first; a pass without findings is one line that says
+what it saw: which of the usual causes are absent, which are there without
+being a fault (on `flow_export_cpu_high`: "traffic-flow is enabled — the
+export this alert is about"), and which it could not check.
 
 `confirmed: false` marks an alert raised on evidence that can be forged or
 mistaken; such an alert is never critical.

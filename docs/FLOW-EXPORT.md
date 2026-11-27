@@ -121,8 +121,9 @@ What follows from the role:
   accepting a managed device's export, it watches that device's CPU (the one-minute samples
   it takes anyway — no extra command). Three minutes at or above 80 %, or one 30 points
   above the device's average of the day before, raise the warning `flow_export_cpu_high`
-  with the rollback steps, and start a diagnose pass on the device. See
-  [RUNBOOKS.md](RUNBOOKS.md#flow_export_cpu_high).
+  with the rollback steps, and start a diagnose pass on the device. The watch is about that
+  half hour only: once its alert has resolved — or the exporter is removed — a later CPU
+  spike does not bring it back. See [RUNBOOKS.md](RUNBOOKS.md#flow_export_cpu_high).
 - **The hygiene audit sees it too.** Every 6 hours the NMS reads each device's
   `/ip traffic-flow` settings as part of its audit: traffic-flow enabled on a switch, an
   access point or a C1 device is a critical finding (alert `audit_critical`), whatever

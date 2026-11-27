@@ -38,9 +38,12 @@ before you start.
 ## parallel_api_poller
 
 **Fires when** a device's log shows an API login from an address that is not
-this NMS, and a read of `/user/active` confirmed the session is live.
-Severity: warning. **Resolves** about two hours after the last confirmed
-login.
+this NMS, and a read of `/user/active` confirmed the session is live — or
+when the hygiene audit (every six hours) or a diagnose pass sees such a
+session among the open ones. Severity: warning. **Resolves** about two hours
+after the last confirmed login; a session the audit saw stands until a pass
+reads the sessions again and no longer sees it — a client that stays logged
+in for days writes one login line, and is otherwise only seen by the audit.
 
 Something else is polling the device over the API. On small devices a second
 poller can double the management CPU load.
@@ -141,10 +144,14 @@ CPU from the device's own side (graphing, traffic-flow, a running sniffer, a
 mirror or switch rules to the CPU, bond modes, bridged traffic through the IP
 firewall, SNMP, other API sessions) — one every 30 seconds on a weak device,
 so the answer is there after about six minutes. What it found is attached to
-the alert as **Likely cause**, and the alert is sent once more with it. "Found
-none of the usual causes" is an answer too: go on with the steps below. One
-pass per alert, and at most one per device per hour; an admin can ask for
-another with **Diagnose now** on the device page.
+the alert as **Likely cause**, and the alert is sent once more with it; it
+stays on the alert for as long as the alert is open. "Found none of the usual
+causes" is an answer too — the line names what the pass read and found
+absent, what is there without being a fault on this device (traffic-flow on
+a router that exports, SNMP), and what it could not check: go on with the
+steps below. One pass per alert, and at most one per device per hour; an
+admin can ask for another with **Diagnose now** on the device page (it also
+ends a scheduled audit that is waiting for the CPU to drop).
 
 1. **Read the likely cause** on the alert (or on the device page under
    *Findings* and at the bottom of *CPU & NMS load*). A finding there —
@@ -303,9 +310,15 @@ baseline** (the average of the day before; without a day of history only the
 80 % line counts). Severity: warning. The alert carries the rollback steps,
 and it starts a diagnose pass on the device (see [cpu_high](#cpu_high)).
 
-Once tripped it stands for the rest of the 30 minutes. After that it stands
-while the newest five minutes still hold an elevated one, and **resolves**
-when they are calm; a device that is not being measured keeps its state.
+Once tripped it stands for the rest of the 30 minutes (and the ten minutes
+their last samples may take to be stored). After that it stands while the
+newest five minutes still hold an elevated one, and **resolves** when they
+are calm; a device that is not being measured keeps its state. A resolved
+alert is the end of the watch: a CPU spike hours or days later does not
+bring this alert back — that is [cpu_high](#cpu_high). Removing the exporter
+in the NMS ends the watch, and the alert, at once. The likely cause on this
+alert says "traffic-flow is enabled — the export this alert is about" when
+the diagnose pass found nothing else.
 
 1. **Is it the export?** On the device: `/tool profile duration=30` — the
    `traffic-flow` and `traffic-accounting` rows are what the export costs.
@@ -335,7 +348,10 @@ community names, no passwords, keys or scripts) and never changes anything.
 
 **Resolves** when a later pass reads the device and finds the setting gone.
 There is no timeout: a device that cannot be audited (busy, paused,
-unreachable) keeps its finding and its alert.
+unreachable) keeps its finding and its alert. So does a device whose role
+the NMS cannot tell at the moment of a pass (its stored routes are too old,
+or the lookup failed): the findings that depend on the role — most of the
+switch findings — are left as they are until a pass knows it again.
 
 The critical findings:
 
