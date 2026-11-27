@@ -56,7 +56,10 @@ func PreferIP(existing, candidate string) string {
 	}
 }
 
-func UpsertMACLookup(db *sql.DB, m *MACLookup) error {
+// UpsertMACLookup writes m to the MAC lookup cache, on its own or inside a
+// caller's transaction (db). A field m leaves empty keeps the stored value,
+// except source; an IPv6 address never replaces a stored IPv4 one.
+func UpsertMACLookup(db DBTX, m *MACLookup) error {
 	_, err := db.Exec(
 		`INSERT INTO mac_lookup (mac_address, ip_address, host_name, dns_name, source, device_name,
 		    interface_name, device_id, ap, ssid, band, channel, frequency, signal, tx_rate, rx_rate, uptime, updated_at)
@@ -155,7 +158,9 @@ type ClientHistoryEntry struct {
 	RecordedAt time.Time `json:"recorded_at"`
 }
 
-func InsertClientHistory(db *sql.DB, e *ClientHistoryEntry) error {
+// InsertClientHistory appends e to client_history, on its own or inside a
+// caller's transaction (db).
+func InsertClientHistory(db DBTX, e *ClientHistoryEntry) error {
 	_, err := db.Exec(
 		`INSERT INTO client_history (mac_address, ip_address, host_name, source, device_name) VALUES (?, ?, ?, ?, ?)`,
 		e.MACAddress, e.IPAddress, e.HostName, e.Source, e.DeviceName,
