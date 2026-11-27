@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/mikrotik-nms/backend/internal/devclass"
 	"github.com/mikrotik-nms/backend/internal/routeros"
 )
 
@@ -447,4 +448,105 @@ func TestResolveClientProbe(t *testing.T) {
 	if devID, _, _, reason = ResolveClientProbe(db, target); reason != "" || devID != "dev-target2" {
 		t.Errorf("target-device case: dev=%q reason=%q", devID, reason)
 	}
+}
+
+// A watch without a chosen device probes from a strong device where one can
+// be expected to reach the client; a weak device is used only when nothing
+// better is known to see it.
+func TestResolveClientProbePrefersAStrongDeviceOnTheClientsNetwork(t *testing.T) {
+	db := testDB(t)
+	const mac = "02:00:00:00:C0:01"
+	mk := func(id, address string, class devclass.Class) {
+		t.Helper()
+		if err := CreateDevice(db, &Device{ID: id, Identity: id, Address: address, Username: "u", PasswordEnc: "p", APIPort: 8728, Status: "online"}); err != nil {
+			t.Fatalf("CreateDevice(%s): %v", id, err)
+		}
+		if class != "" {
+			if err := SetDeviceClass(db, id, class, devclass.ResourceFacts{}, time.Now()); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	// By identity: a strong device on another network, a strong one on the
+	// client's network, the weak switch that reported the client, an
+	// unclassified device.
+	mk("a-far", "198.51.100.1", devclass.C3)
+	mk("b-rtr", "192.0.2.1", devclass.C3)
+	mk("c-sw", "192.0.2.5", devclass.C1)
+	mk("d-new", "192.0.2.9", "")
+	seenBy := func(deviceID, ip string) {
+		t.Helper()
+		if _, err := db.Exec(`DELETE FROM mac_lookup WHERE mac_address = ?`, mac); err != nil {
+			t.Fatal(err)
+		}
+		if err := UpsertMACLookup(db, &MACLookup{MACAddress: mac, IPAddress: ip, Source: "arp", DeviceID: deviceID}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	watch := &PingTarget{ID: uuid.NewString(), Kind: "client", MACAddress: mac, Enabled: true}
+	resolve := func(want, why string) {
+		t.Helper()
+		got, _, _, reason := ResolveClientProbe(db, watch)
+		if reason != "" || got != want {
+			t.Errorf("%s: probing device = %q (reason %q), want %q", why, got, reason, want)
+		}
+	}
+
+	seenBy("c-sw", "192.0.2.50")
+	resolve("b-rtr", "the client was reported by a weak switch and a strong device is on its network")
+
+	// The strong device on the client's network cannot be used: the weak
+	// device that sees the client stays, not a strong one elsewhere.
+	if err := PauseDevicePolling(db, "b-rtr", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	resolve("c-sw", "the strong device on the client's network is paused")
+	if err := ResumeDevicePolling(db, "b-rtr"); err != nil {
+		t.Fatal(err)
+	}
+	if err := SetDevicePollProfile(db, "b-rtr", devclass.ProfileLight); err != nil {
+		t.Fatal(err)
+	}
+	resolve("c-sw", "the strong device on the client's network is on the light profile")
+	if err := SetDevicePollProfile(db, "b-rtr", devclass.ProfileAuto); err != nil {
+		t.Fatal(err)
+	}
+	if err := SetDeviceClassOverride(db, "b-rtr", devclass.C1); err != nil {
+		t.Fatal(err)
+	}
+	resolve("c-sw", "the strong device on the client's network is overridden to C1")
+	if err := SetDeviceClassOverride(db, "b-rtr", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE devices SET status = 'offline' WHERE id = 'b-rtr'`); err != nil {
+		t.Fatal(err)
+	}
+	resolve("c-sw", "the strong device on the client's network is offline")
+	if _, err := db.Exec(`UPDATE devices SET status = 'online' WHERE id = 'b-rtr'`); err != nil {
+		t.Fatal(err)
+	}
+
+	// A strong device that reported the client itself is used wherever it is.
+	seenBy("a-far", "192.0.2.50")
+	resolve("a-far", "the client was reported by a strong device")
+
+	// Nobody is on record as seeing the client: a strong device on its
+	// network, else any strong device, else any device.
+	seenBy("", "192.0.2.50")
+	resolve("b-rtr", "no reporting device, a strong device on the client's network")
+	seenBy("", "203.0.113.7")
+	resolve("a-far", "no reporting device and no strong device on the client's network")
+	seenBy("", "2001:db8::7")
+	resolve("a-far", "an IPv6 client without a reporting device")
+	for _, id := range []string{"a-far", "b-rtr"} {
+		if err := SetDeviceClassOverride(db, id, devclass.C2); err != nil {
+			t.Fatal(err)
+		}
+	}
+	resolve("a-far", "no strong device at all: the first online device, as before")
+
+	// A device chosen for the watch stands, whatever its class.
+	seenBy("b-rtr", "192.0.2.50")
+	watch.DeviceID = "c-sw"
+	resolve("c-sw", "the watch is pinned to a weak device")
 }

@@ -128,6 +128,14 @@ func (d *Device) Profile() devclass.Profile {
 	return p
 }
 
+// StrongProbeSource reports whether the device may be picked as the source
+// of pings and speed tests: budgeted as class C3 and not on the light
+// profile. A probe is work for the device's CPU; a switch, a small access
+// point and a device not classified yet are not asked to do it.
+func (d *Device) StrongProbeSource() bool {
+	return d.Profile() != devclass.ProfileLight && d.EffectiveClass().Budgeted() == devclass.C3
+}
+
 // PollingPaused reports whether an admin pause is in force at now. Liveness
 // keeps running while paused; every other poller skips the device.
 func (d *Device) PollingPaused(now time.Time) bool {
