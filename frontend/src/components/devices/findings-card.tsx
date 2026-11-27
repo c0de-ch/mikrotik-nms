@@ -279,7 +279,9 @@ export function FindingsCard({ device, token, isAdmin, hygiene, hygieneError, on
             </p>
           ) : groups.length === 0 ? (
             <p className="mt-2 text-sm text-muted-foreground">
-              {"Nothing. Nothing else has been seen logging in to this device's API."}
+              {hygieneFindings.some((f) => f.kind === "parallel_api_poller")
+                ? "Nothing more: the other API client the audit saw is listed with its findings above."
+                : "Nothing. Nothing else has been seen logging in to this device's API."}
             </p>
           ) : (
             <div className="mt-3 space-y-5">
