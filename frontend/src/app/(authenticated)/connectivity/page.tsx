@@ -2029,7 +2029,7 @@ export default function ConnectivityPage() {
                   <Input
                     value={speedForm.src_address}
                     onChange={(e) => setSpeedForm({ ...speedForm, src_address: e.target.value })}
-                    placeholder="e.g. 192.168.28.26"
+                    placeholder="e.g. 192.168.88.1"
                     className="font-mono"
                   />
                 )}

@@ -1359,7 +1359,7 @@ export default function SettingsPage() {
               <Input
                 value={settings[`opnsense${n}_url`] || ""}
                 onChange={(e) => updateSetting(`opnsense${n}_url`, e.target.value)}
-                placeholder="https://192.168.80.1:1443"
+                placeholder="https://192.0.2.1:1443"
               />
             </div>
             <div className="grid grid-cols-2 gap-3">
