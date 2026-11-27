@@ -315,12 +315,19 @@ func (wt *WifiTracker) poll(ctx context.Context) {
 		prev.SSID = snap.ssid
 		prev.Controller = snap.devID
 
-		// Update mac_lookup with lastIP from registration table if available.
+		// Update mac_lookup with lastIP from registration table if available,
+		// reported by the device whose table lists the client (the Clients
+		// page's "Reported By"). Not its device_id: that picks the device a
+		// client watch pings from (queries.ResolveClientProbe), and a client
+		// an access point and its controller both list would move between
+		// them with every read; the on-demand refresh sets it.
 		if snap.lastIP != "" {
+			reporter := byID[snap.devID]
 			_ = queries.UpsertMACLookup(wt.db, &queries.MACLookup{
 				MACAddress: mac,
 				IPAddress:  snap.lastIP,
 				Source:     "wifi",
+				DeviceName: nonempty(reporter.Identity, reporter.Address),
 				AP:         snap.ap,
 				SSID:       snap.ssid,
 				Band:       snap.band,
