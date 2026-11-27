@@ -399,32 +399,32 @@ func (a *Auditor) retain(devices []queries.Device) {
 // tickDevice is one device's share of a tick. It returns when the device
 // needs to be looked at again (zero = at the next regular tick).
 func (a *Auditor) tickDevice(dev queries.Device, trigger *queries.Alert, now time.Time) time.Time {
-	a.mu.Lock()
-	p := a.passes[dev.ID]
-	waiting := p != nil && p.waiting && !p.busy
-	a.mu.Unlock()
-	switch {
-	case p != nil && trigger != nil && waiting:
-		// The audit stepped aside because the CPU is high, and an alert now
-		// asks for the pass that reads a busy device: the audit ends with
-		// what it has, and makes way.
-		a.finish(p, dev, "ended for the diagnose pass: the CPU stayed high", false, now)
-	case p != nil:
-		return a.advance(p, dev, now)
-	}
-
 	online := dev.Status == "online"
 	paused := a.cadence.Paused(dev, now)
 
 	// A diagnose pass for an open alert: also — above all — while the CPU
-	// is high.
-	if trigger != nil && online && !paused && a.runner(dev.ID) != nil {
-		if p, err := a.begin(dev, passRequest{kind: queries.AuditKindDiagnose, reason: trigger.Rule, alertID: trigger.ID}, now); err == nil {
-			a.mu.Lock()
-			delete(a.triggers, dev.ID)
-			a.mu.Unlock()
-			return a.advance(p, dev, now)
+	// is high. A scheduled audit that stepped aside because of it must not
+	// keep that pass waiting: it ends with what it has, and makes way.
+	if running, waiting := a.inProgress(dev.ID); trigger != nil && (running == "" || waiting) &&
+		online && !paused && a.runner(dev.ID) != nil {
+		// The alert was owed a pass when the alerts were last read, up to
+		// alertScanEvery ago. Whether it still is — an admin's "Diagnose
+		// now" may have run since — is asked again here, right before the
+		// pass begins: the hourly budget is the device's, whoever asks.
+		if !a.owed(*trigger, now) {
+			a.dropTrigger(dev.ID)
+		} else if a.endWaitingAudit(dev, now) {
+			if p, err := a.begin(dev, passRequest{kind: queries.AuditKindDiagnose, reason: trigger.Rule, alertID: trigger.ID}, now); err == nil {
+				a.dropTrigger(dev.ID)
+				return a.advance(p, dev, now)
+			}
 		}
+	}
+	a.mu.Lock()
+	p := a.passes[dev.ID]
+	a.mu.Unlock()
+	if p != nil {
+		return a.advance(p, dev, now)
 	}
 
 	// The scheduled audit.
@@ -965,19 +965,35 @@ func (a *Auditor) diagnoseTriggers(devices []queries.Device, now time.Time) map[
 		if _, taken := out[al.DeviceID]; taken {
 			continue
 		}
-		if last, err := queries.LatestFinishedAuditRun(a.db, al.DeviceID, queries.AuditKindDiagnose); err != nil ||
-			(last != nil && !last.StartedAt.Before(al.FirstAt)) {
-			continue // answered already (or cannot tell)
+		if a.owed(al, now) {
+			out[al.DeviceID] = al
 		}
-		if _, free := a.budget(al.DeviceID, queries.AuditKindDiagnose, now); !free {
-			continue
-		}
-		out[al.DeviceID] = al
 	}
 	a.mu.Lock()
 	a.triggers = out
 	a.mu.Unlock()
 	return out
+}
+
+// owed reports whether an open alert is owed a diagnose pass at now: no pass
+// that judged something has started since the alert opened (or that cannot
+// be told), and the device's hourly budget is free. It is asked when the
+// alerts are read and again right before the pass begins.
+func (a *Auditor) owed(al queries.Alert, now time.Time) bool {
+	last, err := queries.LatestFinishedAuditRun(a.db, al.DeviceID, queries.AuditKindDiagnose)
+	if err != nil || (last != nil && !last.StartedAt.Before(al.FirstAt)) {
+		return false // answered already (or cannot tell)
+	}
+	_, free := a.budget(al.DeviceID, queries.AuditKindDiagnose, now)
+	return free
+}
+
+// dropTrigger forgets the alert that asked for a pass on the device until
+// the alerts are read again: its pass has begun, or it is not owed one.
+func (a *Auditor) dropTrigger(deviceID string) {
+	a.mu.Lock()
+	delete(a.triggers, deviceID)
+	a.mu.Unlock()
 }
 
 // endWatches removes the CPU watches that are over: the half hour after the

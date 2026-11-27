@@ -1210,6 +1210,40 @@ func TestDiagnoseNowEndsAWaitingAudit(t *testing.T) {
 	}
 }
 
+// The alerts are read every 30 seconds; a pass they ask for may only start
+// later (the device had no session). By then an admin's "Diagnose now" may
+// have run: the budget — and whether the alert has its answer — is checked
+// when the pass starts, not when the alerts were read.
+func TestAlertTriggeredDiagnoseChecksTheBudgetWhenItStarts(t *testing.T) {
+	h := newAuditHarness(t)
+	h.add("r", hygienetest.Load(t, "ap_clean")) // class C3: a pass takes 16 s
+	h.setCPU("r", 95)                           // no scheduled audit gets in the way
+	h.mu.Lock()
+	h.down["r"] = true
+	h.mu.Unlock()
+	openAlert(t, h.db, alerts.RuleCPUHigh, "r", alerts.SeverityWarning, true, h.clock.now())
+	h.run(time.Second) // the alerts are read: a pass is owed, the device has no session
+	if h.count("r") != 0 {
+		t.Fatalf("%d commands without a session", h.count("r"))
+	}
+
+	// The session is back, and an admin is faster than the loop.
+	h.mu.Lock()
+	h.down["r"] = false
+	h.mu.Unlock()
+	if _, err := h.a.Request("r", queries.AuditKindDiagnose, "alice"); err != nil {
+		t.Fatalf("diagnose now: %v", err)
+	}
+	h.run(25 * time.Second) // the admin's pass, and seconds more — within the 30 s the last read of the alerts stands for
+	if n := countRows(t, h.db, `SELECT COUNT(*) FROM device_audit_runs WHERE device_id = 'r' AND kind = 'diagnose'`); n != 1 {
+		t.Fatalf("%d diagnose passes within half a minute, want the admin's only", n)
+	}
+	h.run(10 * time.Minute)
+	if h.count("r") != 8 {
+		t.Fatalf("%d commands, want one diagnose pass (8): the alert has its answer", h.count("r"))
+	}
+}
+
 // A pass ends when the device is paused under it: nothing more is sent, and
 // nothing it had read is judged.
 func TestPassIsAbortedByAPause(t *testing.T) {
