@@ -136,7 +136,7 @@ func TestAlertLifecycle(t *testing.T) {
 	}
 
 	// Acknowledged: open, but quiet.
-	if err := queries.AckAlert(e.db, open[0].ID, "kim", *now); err != nil {
+	if err := queries.AckAlert(e.db, open[0].ID, "admin", *now); err != nil {
 		t.Fatal(err)
 	}
 	*now = now.Add(2 * RenotifyEvery)
@@ -144,7 +144,7 @@ func TestAlertLifecycle(t *testing.T) {
 	if got := d.take(); len(got) != 0 {
 		t.Fatalf("an acknowledged alert was re-notified: %v", got)
 	}
-	if open := openAlerts(t, e); len(open) != 1 || open[0].State != queries.AlertAcked || open[0].AckedBy != "kim" {
+	if open := openAlerts(t, e); len(open) != 1 || open[0].State != queries.AlertAcked || open[0].AckedBy != "admin" {
 		t.Fatalf("after the ack: %+v", open)
 	}
 
@@ -219,7 +219,7 @@ func TestSilences(t *testing.T) {
 		{Key: "d2", DeviceID: "d2", Severity: SeverityCritical, Summary: "d2"},
 	}}
 	e, d, now := newTestEngine(t, rule)
-	if _, err := queries.InsertAlertSilence(e.db, &queries.AlertSilence{Scope: "device", Target: "d1", Until: now.Add(time.Hour), CreatedBy: "kim", CreatedAt: *now}); err != nil {
+	if _, err := queries.InsertAlertSilence(e.db, &queries.AlertSilence{Scope: "device", Target: "d1", Until: now.Add(time.Hour), CreatedBy: "admin", CreatedAt: *now}); err != nil {
 		t.Fatal(err)
 	}
 	mustTick(t, e)
@@ -238,7 +238,7 @@ func TestSilences(t *testing.T) {
 	}
 
 	// A rule-wide silence: d1 resolves under it — nobody is told.
-	if _, err := queries.InsertAlertSilence(e.db, &queries.AlertSilence{Scope: "rule", Target: RuleDeviceUnreachable, Until: now.Add(time.Hour), CreatedBy: "kim", CreatedAt: *now}); err != nil {
+	if _, err := queries.InsertAlertSilence(e.db, &queries.AlertSilence{Scope: "rule", Target: RuleDeviceUnreachable, Until: now.Add(time.Hour), CreatedBy: "admin", CreatedAt: *now}); err != nil {
 		t.Fatal(err)
 	}
 	rule.obs = rule.obs[1:]

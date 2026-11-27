@@ -32,8 +32,8 @@ func TestFlowIPBlobRoundTrip(t *testing.T) {
 		wantLen int
 		want    netip.Addr
 	}{
-		{mustAddr("192.168.28.33"), 4, mustAddr("192.168.28.33")},
-		{mustAddr("2a01:4f8:202:13d1:28::33"), 16, mustAddr("2a01:4f8:202:13d1:28::33")},
+		{mustAddr("192.168.40.33"), 4, mustAddr("192.168.40.33")},
+		{mustAddr("2001:db8:100:10:28::33"), 16, mustAddr("2001:db8:100:10:28::33")},
 		{mustAddr("::ffff:10.1.2.3"), 4, mustAddr("10.1.2.3")},
 		{netip.Addr{}, 0, netip.Addr{}},
 	}
@@ -58,16 +58,16 @@ func TestFlowExporterCRUDAndAutoincrement(t *testing.T) {
 	db := testDB(t)
 	seedPortStatsDevice(t, db, "dev1")
 
-	e := &FlowExporter{Name: "firewall003", Address: "192.168.78.81", Kind: "opnsense", Enabled: true,
-		NATAddresses: []netip.Addr{mustAddr("192.168.28.81"), mustAddr("192.168.111.81")}}
+	e := &FlowExporter{Name: "fw03", Address: "192.168.60.81", Kind: "opnsense", Enabled: true,
+		NATAddresses: []netip.Addr{mustAddr("192.168.40.81"), mustAddr("192.168.150.81")}}
 	id1, err := CreateFlowExporter(db, e)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if _, err := CreateFlowExporter(db, &FlowExporter{Name: "dup", Address: "192.168.78.81", Kind: "other"}); !errors.Is(err, ErrFlowExporterExists) {
+	if _, err := CreateFlowExporter(db, &FlowExporter{Name: "dup", Address: "192.168.60.81", Kind: "other"}); !errors.Is(err, ErrFlowExporterExists) {
 		t.Fatalf("duplicate address err = %v, want ErrFlowExporterExists", err)
 	}
-	id2, err := CreateFlowExporter(db, &FlowExporter{Name: "rb5009", Address: "192.168.78.202", Kind: "routeros",
+	id2, err := CreateFlowExporter(db, &FlowExporter{Name: "rb5009", Address: "192.168.60.202", Kind: "routeros",
 		DeviceID: "dev1", Enabled: true, Auto: true})
 	if err != nil {
 		t.Fatalf("create 2: %v", err)
@@ -78,7 +78,7 @@ func TestFlowExporterCRUDAndAutoincrement(t *testing.T) {
 		t.Fatalf("get: %v %v", got, err)
 	}
 	if got.Kind != "opnsense" || got.DeviceID != "" || !got.Enabled || got.Auto || len(got.NATAddresses) != 2 ||
-		got.NATAddresses[1] != mustAddr("192.168.111.81") || got.CreatedAt.IsZero() || !got.LastSeen.IsZero() ||
+		got.NATAddresses[1] != mustAddr("192.168.150.81") || got.CreatedAt.IsZero() || !got.LastSeen.IsZero() ||
 		got.SamplingRate != 1 {
 		t.Fatalf("round trip: %+v", got)
 	}
@@ -87,7 +87,7 @@ func TestFlowExporterCRUDAndAutoincrement(t *testing.T) {
 	}
 
 	list, err := ListFlowExporters(db)
-	if err != nil || len(list) != 2 || list[0].Name != "firewall003" || list[1].DeviceID != "dev1" || !list[1].Auto {
+	if err != nil || len(list) != 2 || list[0].Name != "fw03" || list[1].DeviceID != "dev1" || !list[1].Auto {
 		t.Fatalf("list = %+v, %v", list, err)
 	}
 
@@ -100,7 +100,7 @@ func TestFlowExporterCRUDAndAutoincrement(t *testing.T) {
 	if got2.Name != "fw3" || got2.Enabled || got2.SamplingOverride != 100 || len(got2.NATAddresses) != 0 {
 		t.Fatalf("after update: %+v", got2)
 	}
-	got2.Address = "192.168.78.202"
+	got2.Address = "192.168.60.202"
 	if err := UpdateFlowExporterConfig(db, got2); !errors.Is(err, ErrFlowExporterExists) {
 		t.Fatalf("update to duplicate address err = %v", err)
 	}
@@ -133,7 +133,7 @@ func TestFlowExporterCRUDAndAutoincrement(t *testing.T) {
 	if err := DeleteFlowExporter(db, id2); !errors.Is(err, ErrFlowNotFound) {
 		t.Fatalf("delete missing err = %v", err)
 	}
-	id3 := newFlowExporter(t, db, "new", "192.168.78.203")
+	id3 := newFlowExporter(t, db, "new", "192.168.60.203")
 	if id3 <= id2 {
 		t.Fatalf("new id %d reuses deleted max id %d", id3, id2)
 	}
@@ -190,14 +190,14 @@ func TestTouchFlowIfacesHintRules(t *testing.T) {
 	_ = UpsertDeviceFlowIfaces(db, exp, []FlowIface{{IfIndex: 5, Name: "synced"}})
 
 	t1, t2 := flowMinute(10, 0), flowMinute(10, 5)
-	if err := TouchFlowIfaces(db, exp, []FlowIfaceSeen{{IfIndex: 1, Hint: "192.168.78.0/24"}, {IfIndex: 5}, {IfIndex: 0}}, t1); err != nil {
+	if err := TouchFlowIfaces(db, exp, []FlowIfaceSeen{{IfIndex: 1, Hint: "192.168.60.0/24"}, {IfIndex: 5}, {IfIndex: 0}}, t1); err != nil {
 		t.Fatalf("touch: %v", err)
 	}
 	if err := TouchFlowIfaces(db, exp, []FlowIfaceSeen{{IfIndex: 1}, {IfIndex: 7, Hint: "10.0.0.0/24"}}, t2); err != nil {
 		t.Fatalf("touch 2: %v", err)
 	}
 	// An older touch never lowers last_seen.
-	if err := TouchFlowIfaces(db, exp, []FlowIfaceSeen{{IfIndex: 1, Hint: "192.168.79.0/24"}}, t1); err != nil {
+	if err := TouchFlowIfaces(db, exp, []FlowIfaceSeen{{IfIndex: 1, Hint: "192.168.61.0/24"}}, t1); err != nil {
 		t.Fatalf("touch 3: %v", err)
 	}
 	ifs, _ := ListFlowIfaces(db, exp)
@@ -210,7 +210,7 @@ func TestTouchFlowIfacesHintRules(t *testing.T) {
 	}
 	f1 := byIdx[1]
 	if f1.Source != "learned" || f1.Name != "" || !f1.FirstSeen.Equal(t1) || !f1.LastSeen.Equal(t2) ||
-		f1.Hint != "192.168.79.0/24" {
+		f1.Hint != "192.168.61.0/24" {
 		t.Errorf("learned row = %+v (empty hint must keep, non-empty replace)", f1)
 	}
 	f5 := byIdx[5]
@@ -350,7 +350,7 @@ func TestInsertFlows1mAdditive(t *testing.T) {
 	m := flowMinute(12, 0)
 	rows := []FlowRow{
 		{ExporterID: exp, Bucket: m.Add(15 * time.Second), InIf: 1, OutIf: 13, Src: mustAddr("1.1.1.1"),
-			Dst: mustAddr("192.168.28.33"), Proto: 6, Port: 443, Bytes: 1000, Packets: 10, Flows: 1},
+			Dst: mustAddr("192.168.40.33"), Proto: 6, Port: 443, Bytes: 1000, Packets: 10, Flows: 1},
 		{ExporterID: exp, Bucket: m, InIf: 1, OutIf: 13, Bytes: 50, Packets: 1, Flows: 2}, // other
 	}
 	meta := []FlowMeta{{ExporterID: exp, Bucket: m, Datagrams: 3, Records: 4, Bytes: 1050, Sampling: 1, Overflow: 0, Late: 1}}
@@ -398,7 +398,7 @@ func TestAggregateFlowsOrFilterAndStep(t *testing.T) {
 	db := testDB(t)
 	exp := newFlowExporter(t, db, "rb", "10.0.0.6")
 	other := newFlowExporter(t, db, "rb2", "10.0.0.7")
-	a, b := mustAddr("192.168.28.33"), mustAddr("1.1.1.1")
+	a, b := mustAddr("192.168.40.33"), mustAddr("1.1.1.1")
 	var rows []FlowRow
 	for mm := 0; mm < 10; mm++ {
 		rows = append(rows,
@@ -458,11 +458,11 @@ func TestRollupFlows1hTopNOtherExactAndIdempotent(t *testing.T) {
 		m := hour.Add(time.Duration(mm) * time.Minute)
 		for h := 1; h <= 5; h++ {
 			// 5 hosts on pair (1,7) with distinct volumes, 2 on pair (7,1).
-			add(FlowRow{ExporterID: exp, Bucket: m, InIf: 1, OutIf: 7, Src: netip.AddrFrom4([4]byte{192, 168, 78, byte(h)}),
+			add(FlowRow{ExporterID: exp, Bucket: m, InIf: 1, OutIf: 7, Src: netip.AddrFrom4([4]byte{192, 168, 60, byte(h)}),
 				Dst: mustAddr("9.9.9.9"), Proto: 6, Port: 853, Bytes: int64(h * 100), Packets: int64(h), Flows: 1})
 		}
-		add(FlowRow{ExporterID: exp, Bucket: m, InIf: 7, OutIf: 1, Src: mustAddr("9.9.9.9"), Dst: mustAddr("192.168.78.1"), Proto: 6, Port: 853, Bytes: 50, Packets: 1, Flows: 1})
-		add(FlowRow{ExporterID: exp, Bucket: m, InIf: 7, OutIf: 1, Src: mustAddr("2620:fe::fe"), Dst: mustAddr("2a01::1"), Proto: 6, Port: 853, Bytes: 40, Packets: 1, Flows: 1})
+		add(FlowRow{ExporterID: exp, Bucket: m, InIf: 7, OutIf: 1, Src: mustAddr("9.9.9.9"), Dst: mustAddr("192.168.60.1"), Proto: 6, Port: 853, Bytes: 50, Packets: 1, Flows: 1})
+		add(FlowRow{ExporterID: exp, Bucket: m, InIf: 7, OutIf: 1, Src: mustAddr("2620:fe::fe"), Dst: mustAddr("2001:db8::1"), Proto: 6, Port: 853, Bytes: 40, Packets: 1, Flows: 1})
 		// An existing folded other row of pair (1,7) must fold into the new one.
 		add(FlowRow{ExporterID: exp, Bucket: m, InIf: 1, OutIf: 7, Bytes: 3, Packets: 1, Flows: 4})
 		meta = append(meta, FlowMeta{ExporterID: exp, Bucket: m, Datagrams: 2, Records: 8, Bytes: 1, Sampling: int64(mm + 1), Late: 1})
@@ -517,7 +517,7 @@ func TestRollupFlows1hTopNOtherExactAndIdempotent(t *testing.T) {
 			t.Fatalf("rows = %+v (want 2 top rows + 1 other for pair 1/7, pair 7/1 fits)", got)
 		}
 		for _, s := range topSrc {
-			if !bytes.Equal(s, []byte{192, 168, 78, 5}) && !bytes.Equal(s, []byte{192, 168, 78, 4}) {
+			if !bytes.Equal(s, []byte{192, 168, 60, 5}) && !bytes.Equal(s, []byte{192, 168, 60, 4}) {
 				t.Errorf("unexpected top src %v", s)
 			}
 		}
@@ -649,7 +649,7 @@ func TestFlowTemplatesAndPrefixes(t *testing.T) {
 	_ = DeleteFlowTemplates(db, exp)
 
 	ps := []FlowPrefix{
-		{Prefix: netip.MustParsePrefix("192.168.78.202/23"), Class: "internal", DeviceID: "d", Iface: "bridge", UpdatedAt: t0},
+		{Prefix: netip.MustParsePrefix("192.168.60.202/23"), Class: "internal", DeviceID: "d", Iface: "bridge", UpdatedAt: t0},
 		{Prefix: netip.MustParsePrefix("100.64.0.0/10"), Class: "transit", DeviceID: "d", Iface: "eth1-wan", UpdatedAt: t0},
 	}
 	if err := ReplaceFlowPrefixes(db, ps); err != nil {
@@ -659,7 +659,7 @@ func TestFlowTemplatesAndPrefixes(t *testing.T) {
 		t.Fatal(err)
 	}
 	list, err := ListFlowPrefixes(db)
-	if err != nil || len(list) != 1 || list[0].Prefix.String() != "192.168.78.0/23" || list[0].Class != "internal" ||
+	if err != nil || len(list) != 1 || list[0].Prefix.String() != "192.168.60.0/23" || list[0].Class != "internal" ||
 		!list[0].UpdatedAt.Equal(t0) {
 		t.Fatalf("prefixes = %+v, %v", list, err)
 	}

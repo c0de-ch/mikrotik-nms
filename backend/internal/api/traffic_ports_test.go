@@ -112,9 +112,9 @@ func newTrafficFixture(t *testing.T) *trafficFixture {
 		must(queries.UpsertPortHosts(db, dev, hosts, time.Now()))
 	}
 
-	must(queries.UpsertMACLookup(db, &queries.MACLookup{MACAddress: "BB:00:00:00:00:07", IPAddress: "192.168.78.50",
+	must(queries.UpsertMACLookup(db, &queries.MACLookup{MACAddress: "BB:00:00:00:00:07", IPAddress: "192.168.60.50",
 		HostName: "printer", Source: "dhcp"}))
-	must(queries.UpsertMACLookup(db, &queries.MACLookup{MACAddress: "AA:00:00:00:00:01", IPAddress: "192.168.78.20",
+	must(queries.UpsertMACLookup(db, &queries.MACLookup{MACAddress: "AA:00:00:00:00:01", IPAddress: "192.168.60.20",
 		DNSName: "laptop.lan", Source: "capsman", AP: "A1", SSID: "home", Signal: "-55"}))
 
 	must(queries.UpsertBridgeVLAN(db, &queries.BridgeVLAN{ID: uuid.NewString(), DeviceID: "s", BridgeName: "bridge",
@@ -690,7 +690,7 @@ func TestTrafficPortBehind(t *testing.T) {
 		t.Fatalf("s/ether7 = %+v", b)
 	}
 	c := b.Clients[0]
-	if c.MAC != "BB:00:00:00:00:07" || c.IP != "192.168.78.50" || c.HostName != "printer" || c.VID != 78 || c.Wireless ||
+	if c.MAC != "BB:00:00:00:00:07" || c.IP != "192.168.60.50" || c.HostName != "printer" || c.VID != 78 || c.Wireless ||
 		c.AttachedDeviceID != "s" || c.AttachedIface != "ether7" || c.AttachedDeviceName != "S" || c.LastSeen.IsZero() {
 		t.Fatalf("client = %+v", c)
 	}

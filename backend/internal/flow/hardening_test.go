@@ -161,7 +161,7 @@ func TestRebootFlapIsThrottled(t *testing.T) {
 		if i%2 == 1 {
 			si += 60_000 // IE 160 flapping: a "reboot" every datagram
 		}
-		flows := pktgen.LabRouterOS(tLab, si, true, rosAddr.String(), "192.168.79.216", 2055)
+		flows := pktgen.LabRouterOS(tLab, si, true, rosAddr.String(), "192.168.61.216", 2055)
 		feed(c, rosAddr, pktgen.RouterOSIPFIXMessage(uint32(tLab.Unix()), uint32(1+i*10), 0, true, flows...),
 			recv.Add(time.Duration(i)*time.Second))
 		drain()
@@ -171,7 +171,7 @@ func TestRebootFlapIsThrottled(t *testing.T) {
 		t.Fatalf("reboots %d, template deletes %d (want 19, 1)", st.Counters["reboots"], deletes)
 	}
 	// A minute later the pending delete goes through once.
-	flows := pktgen.LabRouterOS(tLab, sysInit+60_000, true, rosAddr.String(), "192.168.79.216", 2055)
+	flows := pktgen.LabRouterOS(tLab, sysInit+60_000, true, rosAddr.String(), "192.168.61.216", 2055)
 	feed(c, rosAddr, pktgen.RouterOSIPFIXMessage(uint32(tLab.Unix()), 500, 0, true, flows...), recv.Add(2*time.Minute))
 	drain()
 	if deletes != 2 {
@@ -200,7 +200,7 @@ func TestOversizedDatagramRejected(t *testing.T) {
 // a third copy arrives with a receive skew over 5 s: all but one dropped.
 func TestDupFilterIgnoresHeaderPhaseAndSkew(t *testing.T) {
 	db := testDB(t)
-	id := seedExporter(t, db, queries.FlowExporter{Name: "firewall003", Address: opnAddr.String(), Kind: "opnsense"})
+	id := seedExporter(t, db, queries.FlowExporter{Name: "fw03", Address: opnAddr.String(), Kind: "opnsense"})
 	c := newTestCollector(t, db)
 	recv := tLab.Add(lag)
 	c.now = func() time.Time { return recv }
@@ -208,7 +208,7 @@ func TestDupFilterIgnoresHeaderPhaseAndSkew(t *testing.T) {
 
 	up := uint32(500_000_000)
 	unix := uint32(tLab.Unix())
-	f := pktgen.V9Flow{Src: "192.168.78.60", Dst: "192.168.28.25", NextHop: "0.0.0.0", InIf: 1, OutIf: 2,
+	f := pktgen.V9Flow{Src: "192.168.60.60", Dst: "192.168.40.25", NextHop: "0.0.0.0", InIf: 1, OutIf: 2,
 		Packets: 100, Bytes: 100_000, First: up - 40_000, Last: up - 1_000, SrcPort: 50000, DstPort: 22, Proto: 6}
 	feed(c, opnAddr, pktgen.OPNsenseV9TemplatesAndData(unix, up, 1, f), recv)
 	feed(c, opnAddr, pktgen.OPNsenseV9Data(unix+1, up, 1, f), recv.Add(200*time.Millisecond))
@@ -229,7 +229,7 @@ func minuteRows(id int64, from time.Time, n int) ([]queries.FlowRow, []queries.F
 	for m := 0; m < n; m++ {
 		b := from.Add(time.Duration(m) * time.Minute)
 		rows = append(rows, queries.FlowRow{ExporterID: id, Bucket: b, InIf: 1, OutIf: 13,
-			Src: netip.MustParseAddr("1.1.1.1"), Dst: netip.MustParseAddr("192.168.28.33"), Proto: 6, Port: 443,
+			Src: netip.MustParseAddr("1.1.1.1"), Dst: netip.MustParseAddr("192.168.40.33"), Proto: 6, Port: 443,
 			Bytes: 1000, Packets: 1, Flows: 1})
 		meta = append(meta, queries.FlowMeta{ExporterID: id, Bucket: b, Datagrams: 1, Records: 1, Bytes: 1000, Sampling: 1})
 	}

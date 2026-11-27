@@ -31,9 +31,9 @@ func TestFlowTop(t *testing.T) {
 	if top.TotalBytes != 606000 || top.TotalBps != 8080 || top.SamplingRate != 1 || top.Dir != "download" || top.Group != "pair" {
 		t.Fatalf("totals = %d bytes %d bps sampling %d dir %s group %s", top.TotalBytes, top.TotalBps, top.SamplingRate, top.Dir, top.Group)
 	}
-	if len(top.Rows) != 2 || top.Rows[0].Key != "1.1.1.1|192.168.28.33" || top.Rows[0].Bytes != 600000 ||
+	if len(top.Rows) != 2 || top.Rows[0].Key != "1.1.1.1|192.168.40.33" || top.Rows[0].Bytes != 600000 ||
 		top.Rows[0].Share != 0.9901 || top.Rows[0].AvgBps != 8000 || top.Rows[0].Rank != 1 ||
-		top.Rows[1].Key != "2606:4700::1111|192.168.28.33" || top.Rows[1].Rank != 2 {
+		top.Rows[1].Key != "2606:4700::1111|192.168.40.33" || top.Rows[1].Rank != 2 {
 		t.Fatalf("rows = %+v", top.Rows)
 	}
 	if top.Other.Bytes != 5000 || top.Other.AvgBps != 67 || top.Other.Share != 0.0083 {
@@ -44,11 +44,11 @@ func TestFlowTop(t *testing.T) {
 		t.Fatalf("src endpoint = %+v app %+v", src, top.Rows[0].App)
 	}
 	if dst == nil || dst.Class != "internal" || dst.Name != "net28-client01" || dst.MAC != macC01 || dst.DeviceID != nil ||
-		dst.Attached == nil || *dst.Attached != (flowAttached{DeviceID: labSW, DeviceName: "switch001", Iface: "ether12"}) {
+		dst.Attached == nil || *dst.Attached != (flowAttached{DeviceID: labSW, DeviceName: "sw01", Iface: "ether12"}) {
 		t.Fatalf("dst endpoint = %+v attached %+v", dst, dst.Attached)
 	}
-	if top.Point.ID != f.pWAN || top.Point.ExporterName != "switch002-rb5009" || !reflect.DeepEqual(top.Point.IfNames, []string{"eth1-wan"}) ||
-		top.Point.DeviceName != "switch002-rb5009" || !top.Point.CoverageCapable || top.Point.LastData == nil || !top.Point.LastData.Equal(f.end) {
+	if top.Point.ID != f.pWAN || top.Point.ExporterName != "sw02-rb5009" || !reflect.DeepEqual(top.Point.IfNames, []string{"eth1-wan"}) ||
+		top.Point.DeviceName != "sw02-rb5009" || !top.Point.CoverageCapable || top.Point.LastData == nil || !top.Point.LastData.Equal(f.end) {
 		t.Fatalf("point view = %+v", top.Point)
 	}
 
@@ -58,10 +58,10 @@ func TestFlowTop(t *testing.T) {
 		src, dst, app   bool
 	}{
 		{"src", "download", "1.1.1.1", true, false, false},
-		{"dst", "download", "192.168.28.33", false, true, false},
-		{"conv", "download", "1.1.1.1|192.168.28.33|6/443", true, true, true},
+		{"dst", "download", "192.168.40.33", false, true, false},
+		{"conv", "download", "1.1.1.1|192.168.40.33|6/443", true, true, true},
 		{"app", "download", "6/443", false, false, true},
-		{"src", "upload", "192.168.28.33", true, false, false},
+		{"src", "upload", "192.168.40.33", true, false, false},
 	} {
 		var r flowTopResponse
 		if code, body := f.get(t, "/flows/top", map[string]string{"point": itoa(f.pWAN), "group": c.group, "dir": c.dir}, &r); code != 200 {
@@ -81,11 +81,11 @@ func TestFlowTop(t *testing.T) {
 		t.Errorf("quic app = %+v", a)
 	}
 
-	// Upload of the WAN: firewall003's NATed address is labelled.
+	// Upload of the WAN: fw03's NATed address is labelled.
 	var up flowTopResponse
 	f.get(t, "/flows/top", map[string]string{"point": itoa(f.pWAN), "dir": "upload", "group": "src"}, &up)
-	if up.TotalBytes != 90000 || len(up.Rows) != 2 || up.Rows[1].Src.IP != "192.168.28.81" || up.Rows[1].Src.NATOf == nil ||
-		*up.Rows[1].Src.NATOf != "firewall003" || up.Rows[1].Src.Class != "internal" {
+	if up.TotalBytes != 90000 || len(up.Rows) != 2 || up.Rows[1].Src.IP != "192.168.40.81" || up.Rows[1].Src.NATOf == nil ||
+		*up.Rows[1].Src.NATOf != "fw03" || up.Rows[1].Src.Class != "internal" {
 		t.Fatalf("upload src rows = %+v", up.Rows)
 	}
 
@@ -104,19 +104,19 @@ func TestFlowTop(t *testing.T) {
 		t.Fatalf("trunk upload total = %d, want 110000", trunk.TotalBytes)
 	}
 	for _, r := range trunk.Rows {
-		if r.Src.IP == "192.168.28.25" {
+		if r.Src.IP == "192.168.40.25" {
 			t.Errorf("excluded host present: %+v", r.Src)
 		}
-		if r.Dst.IP == "192.168.78.202" && (r.Dst.Class != "self" || r.Dst.Name != "switch002-rb5009" || r.Dst.DeviceID == nil) {
+		if r.Dst.IP == "192.168.60.202" && (r.Dst.Class != "self" || r.Dst.Name != "sw02-rb5009" || r.Dst.DeviceID == nil) {
 			t.Errorf("router endpoint = %+v", r.Dst)
 		}
 	}
 
-	// firewall003 LAN (local_internal): the WAN-copy row to its own NAT
+	// fw03 LAN (local_internal): the WAN-copy row to its own NAT
 	// address is dropped.
 	var lan flowTopResponse
 	f.get(t, "/flows/top", map[string]string{"point": itoa(f.pFwLAN)}, &lan)
-	if lan.TotalBytes != 640000 || len(lan.Rows) != 1 || lan.Rows[0].Dst.IP != "192.168.78.60" {
+	if lan.TotalBytes != 640000 || len(lan.Rows) != 1 || lan.Rows[0].Dst.IP != "192.168.60.60" {
 		t.Fatalf("fw LAN download = %d %+v", lan.TotalBytes, lan.Rows)
 	}
 
@@ -202,7 +202,7 @@ func TestFlowPort(t *testing.T) {
 		t.Fatalf("eth1-wan choice: %+v alts %+v", r.Point, r.Alternatives)
 	}
 	if r.Download.TotalBytes != 606000 || r.Upload.TotalBytes != 90000 || len(r.Download.Rows) != 2 ||
-		r.Download.Rows[0].Key != "1.1.1.1|192.168.28.33|6/443" || r.Download.Rows[0].App == nil || r.Seconds != 600 {
+		r.Download.Rows[0].Key != "1.1.1.1|192.168.40.33|6/443" || r.Download.Rows[0].App == nil || r.Seconds != 600 {
 		t.Fatalf("eth1-wan rows: down %d up %d rows %+v", r.Download.TotalBytes, r.Upload.TotalBytes, r.Download.Rows)
 	}
 	// (up, same): download = rx.
@@ -235,7 +235,7 @@ func TestFlowPort(t *testing.T) {
 	r = port(labSW, "ether1", nil)
 	if r.Point.ID != f.pSwEther1 || r.Point.Kind != "derived" || r.Coverage.CounterDownBytes != 700000 ||
 		r.Coverage.FlowDownBytes != 640000 || ratio(r.Coverage.Download) != "0.9143" || ratio(r.Coverage.Upload) != "0.74" {
-		t.Fatalf("switch001 ether1 coverage = %+v", r.Coverage)
+		t.Fatalf("sw01 ether1 coverage = %+v", r.Coverage)
 	}
 	// (down, peer) trunk: download = rx.
 	r = port(labSW, "sfp-sfpplus2", nil)
@@ -503,21 +503,21 @@ func TestFlowSankey(t *testing.T) {
 		"remote:1.1.1.1>" + pt:                          8000,
 		"remote:2606:4700::1111>" + pt:                  13,
 		"other:remote>" + pt:                            67,
-		pt + ">host:192.168.28.33":                      8013,
+		pt + ">host:192.168.40.33":                      8013,
 		pt + ">other:local":                             67,
-		"host:192.168.28.33>port:" + labSW + ":ether12": 8013,
+		"host:192.168.40.33>port:" + labSW + ":ether12": 8013,
 	}
 	if got := flowSankeyEdges(sk, false); !reflect.DeepEqual(got, want) {
 		t.Fatalf("download edges = %v\nwant %v", got, want)
 	}
 	for _, n := range sk.Nodes {
 		switch n.ID {
-		case "host:192.168.28.33":
-			if n.Name != "net28-client01" || n.Class != "internal" || n.IP != "192.168.28.33" {
+		case "host:192.168.40.33":
+			if n.Name != "net28-client01" || n.Class != "internal" || n.IP != "192.168.40.33" {
 				t.Errorf("host node %+v", n)
 			}
 		case "port:" + labSW + ":ether12":
-			if n.Name != "switch001 · ether12" || n.DeviceID != labSW || n.Iface != "ether12" || n.Type != "port" {
+			if n.Name != "sw01 · ether12" || n.DeviceID != labSW || n.Iface != "ether12" || n.Type != "port" {
 				t.Errorf("port node %+v", n)
 			}
 		case "remote:1.1.1.1":
@@ -531,8 +531,8 @@ func TestFlowSankey(t *testing.T) {
 	var up flowSankeyResponse
 	f.get(t, "/traffic/sankey", map[string]string{"source": "flows", "point": itoa(f.pWAN), "dir": "upload"}, &up)
 	checkFlowSankey(t, up)
-	if got := flowSankeyEdges(up, true); got["remote:9.9.9.9>"+pt] != 400 || got[pt+">host:192.168.28.81"] != 400 ||
-		got["host:192.168.28.33>port:"+labSW+":ether12"] != 800 || len(got) != 5 {
+	if got := flowSankeyEdges(up, true); got["remote:9.9.9.9>"+pt] != 400 || got[pt+">host:192.168.40.81"] != 400 ||
+		got["host:192.168.40.33>port:"+labSW+":ether12"] != 800 || len(got) != 5 {
 		t.Fatalf("upload edges (reversed) = %v", got)
 	}
 	if up.Coverage == nil || *up.Coverage != 0.9474 {

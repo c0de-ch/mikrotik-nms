@@ -12,8 +12,8 @@
         "kind": "ipfix",
         "obs_domain": 0,
         "proto": 6,
-        "src": "192.168.28.33",
-        "dst": "142.250.203.100",
+        "src": "192.168.40.33",
+        "dst": "203.0.113.100",
         "src_port": 50514,
         "dst_port": 443,
         "in_if": 13,
@@ -29,8 +29,8 @@
         "start": "2026-09-21T14:12:35Z",
         "end": "2026-09-21T14:13:18Z",
         "time_source": "sysuptime",
-        "post_nat_src": "100.114.241.213",
-        "post_nat_dst": "142.250.203.100",
+        "post_nat_src": "100.101.102.103",
+        "post_nat_dst": "203.0.113.100",
         "post_nat_src_port": 61000,
         "post_nat_dst_port": 443
       }

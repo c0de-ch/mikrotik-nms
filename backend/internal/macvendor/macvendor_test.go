@@ -28,7 +28,7 @@ func TestIsRandomized(t *testing.T) {
 		mac  string
 		want bool
 	}{
-		{"1C:F6:4C:9E:40:4A", false}, // real burned-in MAC (0x1C, U/L bit clear)
+		{"1C:F6:4C:00:00:50", false}, // real burned-in MAC (0x1C, U/L bit clear)
 		{"08:F9:E0:FF:D9:E4", false}, // real
 		{"00:00:00:00:00:00", false},
 		{"4E:9B:CC:36:96:E8", true}, // locally administered (0x4E)

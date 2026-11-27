@@ -22,8 +22,8 @@ func TestPlanMoves(t *testing.T) {
 	fresh := now
 	stale := now.Add(-1 * time.Hour)
 
-	const mac = "04:F4:1C:85:97:B2"
-	dev := queries.Device{ID: "d1", Identity: "ap02", Address: "192.168.78.56", Board: "cAP ax"}
+	const mac = "04:F4:1C:00:00:56"
+	dev := queries.Device{ID: "d1", Identity: "ap02", Address: "192.168.60.56", Board: "cAP ax"}
 
 	tests := []struct {
 		name          string
@@ -38,40 +38,40 @@ func TestPlanMoves(t *testing.T) {
 			name:          "detects simple move (MAC uppercased)",
 			devices:       []queries.Device{dev},
 			macToDeviceID: map[string]string{mac: "d1"},
-			neighbors:     []queries.Neighbor{{NeighborMAC: "04:f4:1c:85:97:b2", NeighborAddress: "192.168.78.232", LastSeen: fresh}},
-			wantAddrs:     map[string]string{"d1": "192.168.78.232"},
+			neighbors:     []queries.Neighbor{{NeighborMAC: "04:f4:1c:00:00:56", NeighborAddress: "192.168.60.232", LastSeen: fresh}},
+			wantAddrs:     map[string]string{"d1": "192.168.60.232"},
 		},
 		{
 			name:          "no change when address already matches",
 			devices:       []queries.Device{dev},
 			macToDeviceID: map[string]string{mac: "d1"},
-			neighbors:     []queries.Neighbor{{NeighborMAC: mac, NeighborAddress: "192.168.78.56", LastSeen: fresh}},
+			neighbors:     []queries.Neighbor{{NeighborMAC: mac, NeighborAddress: "192.168.60.56", LastSeen: fresh}},
 			wantAddrs:     map[string]string{},
 		},
 		{
 			name:          "multiple MACs per device, match on any",
 			devices:       []queries.Device{dev},
 			macToDeviceID: map[string]string{"AA:BB:CC:DD:EE:01": "d1", "AA:BB:CC:DD:EE:02": "d1"},
-			neighbors:     []queries.Neighbor{{NeighborMAC: "AA:BB:CC:DD:EE:02", NeighborAddress: "192.168.78.232", LastSeen: fresh}},
-			wantAddrs:     map[string]string{"d1": "192.168.78.232"},
+			neighbors:     []queries.Neighbor{{NeighborMAC: "AA:BB:CC:DD:EE:02", NeighborAddress: "192.168.60.232", LastSeen: fresh}},
+			wantAddrs:     map[string]string{"d1": "192.168.60.232"},
 		},
 		{
 			name:          "same device, multiple sightings, one move",
 			devices:       []queries.Device{dev},
 			macToDeviceID: map[string]string{mac: "d1"},
 			neighbors: []queries.Neighbor{
-				{NeighborMAC: mac, NeighborAddress: "192.168.78.232", LastSeen: fresh, LocalInterface: "ether1"},
-				{NeighborMAC: mac, NeighborAddress: "192.168.78.232", LastSeen: fresh, LocalInterface: "ether2"},
+				{NeighborMAC: mac, NeighborAddress: "192.168.60.232", LastSeen: fresh, LocalInterface: "ether1"},
+				{NeighborMAC: mac, NeighborAddress: "192.168.60.232", LastSeen: fresh, LocalInterface: "ether2"},
 			},
-			wantAddrs: map[string]string{"d1": "192.168.78.232"},
+			wantAddrs: map[string]string{"d1": "192.168.60.232"},
 		},
 		{
 			name:          "conflicting new addresses skipped",
 			devices:       []queries.Device{dev},
 			macToDeviceID: map[string]string{mac: "d1"},
 			neighbors: []queries.Neighbor{
-				{NeighborMAC: mac, NeighborAddress: "192.168.78.232", LastSeen: fresh},
-				{NeighborMAC: mac, NeighborAddress: "192.168.78.240", LastSeen: fresh},
+				{NeighborMAC: mac, NeighborAddress: "192.168.60.232", LastSeen: fresh},
+				{NeighborMAC: mac, NeighborAddress: "192.168.60.240", LastSeen: fresh},
 			},
 			wantAddrs: map[string]string{},
 		},
@@ -80,14 +80,14 @@ func TestPlanMoves(t *testing.T) {
 			devices:       []queries.Device{dev},
 			macToDeviceID: map[string]string{mac: "d1"},
 			ambiguous:     map[string]bool{mac: true},
-			neighbors:     []queries.Neighbor{{NeighborMAC: mac, NeighborAddress: "192.168.78.232", LastSeen: fresh}},
+			neighbors:     []queries.Neighbor{{NeighborMAC: mac, NeighborAddress: "192.168.60.232", LastSeen: fresh}},
 			wantAddrs:     map[string]string{},
 		},
 		{
 			name:          "stale neighbor ignored",
 			devices:       []queries.Device{dev},
 			macToDeviceID: map[string]string{mac: "d1"},
-			neighbors:     []queries.Neighbor{{NeighborMAC: mac, NeighborAddress: "192.168.78.232", LastSeen: stale}},
+			neighbors:     []queries.Neighbor{{NeighborMAC: mac, NeighborAddress: "192.168.60.232", LastSeen: stale}},
 			wantAddrs:     map[string]string{},
 		},
 		{
@@ -95,17 +95,17 @@ func TestPlanMoves(t *testing.T) {
 			devices:       []queries.Device{dev},
 			macToDeviceID: map[string]string{mac: "d1"},
 			neighbors: []queries.Neighbor{
-				{NeighborMAC: "", NeighborAddress: "192.168.78.232", LastSeen: fresh},
+				{NeighborMAC: "", NeighborAddress: "192.168.60.232", LastSeen: fresh},
 				{NeighborMAC: mac, NeighborAddress: "", LastSeen: fresh},
 			},
 			wantAddrs: map[string]string{},
 		},
 		{
 			name:          "target IP already managed by another device",
-			devices:       []queries.Device{dev, {ID: "d2", Identity: "other", Address: "192.168.78.232", Board: "RB5009"}},
+			devices:       []queries.Device{dev, {ID: "d2", Identity: "other", Address: "192.168.60.232", Board: "RB5009"}},
 			macToDeviceID: map[string]string{mac: "d1"},
-			addrToDevice:  map[string]string{"192.168.78.56": "d1", "192.168.78.232": "d2"},
-			neighbors:     []queries.Neighbor{{NeighborMAC: mac, NeighborAddress: "192.168.78.232", LastSeen: fresh}},
+			addrToDevice:  map[string]string{"192.168.60.56": "d1", "192.168.60.232": "d2"},
+			neighbors:     []queries.Neighbor{{NeighborMAC: mac, NeighborAddress: "192.168.60.232", LastSeen: fresh}},
 			wantAddrs:     map[string]string{},
 		},
 		{
@@ -117,8 +117,8 @@ func TestPlanMoves(t *testing.T) {
 			devices:       []queries.Device{dev},
 			macToDeviceID: map[string]string{mac: "d1"},
 			neighbors: []queries.Neighbor{
-				{NeighborMAC: mac, NeighborAddress: "192.168.78.56", LastSeen: fresh},  // current dev.Address
-				{NeighborMAC: mac, NeighborAddress: "192.168.78.232", LastSeen: fresh}, // also live
+				{NeighborMAC: mac, NeighborAddress: "192.168.60.56", LastSeen: fresh},  // current dev.Address
+				{NeighborMAC: mac, NeighborAddress: "192.168.60.232", LastSeen: fresh}, // also live
 			},
 			wantAddrs: map[string]string{},
 		},
@@ -129,10 +129,10 @@ func TestPlanMoves(t *testing.T) {
 			devices:       []queries.Device{dev},
 			macToDeviceID: map[string]string{mac: "d1"},
 			neighbors: []queries.Neighbor{
-				{NeighborMAC: mac, NeighborAddress: "192.168.78.56", LastSeen: stale},  // old: stale
-				{NeighborMAC: mac, NeighborAddress: "192.168.78.232", LastSeen: fresh}, // new: live
+				{NeighborMAC: mac, NeighborAddress: "192.168.60.56", LastSeen: stale},  // old: stale
+				{NeighborMAC: mac, NeighborAddress: "192.168.60.232", LastSeen: fresh}, // new: live
 			},
-			wantAddrs: map[string]string{"d1": "192.168.78.232"},
+			wantAddrs: map[string]string{"d1": "192.168.60.232"},
 		},
 		{
 			// An IPv6 link-local sighting is never a management move target (and
@@ -142,7 +142,7 @@ func TestPlanMoves(t *testing.T) {
 			name:          "ipv6 link-local candidate skipped",
 			devices:       []queries.Device{dev},
 			macToDeviceID: map[string]string{mac: "d1"},
-			neighbors:     []queries.Neighbor{{NeighborMAC: mac, NeighborAddress: "fe80::1afd:74ff:fe4c:419e", LastSeen: fresh}},
+			neighbors:     []queries.Neighbor{{NeighborMAC: mac, NeighborAddress: "fe80::1afd:74ff:fe00:1", LastSeen: fresh}},
 			wantAddrs:     map[string]string{},
 		},
 		{
@@ -247,8 +247,8 @@ func TestAutoFollowEnabled(t *testing.T) {
 
 func TestBuildDeviceMACIndex_FlagsAmbiguous(t *testing.T) {
 	db := pollerTestDB(t)
-	mustCreateDevice(t, db, &queries.Device{ID: "d1", Identity: "a", Address: "192.168.78.10", APIPort: 8728})
-	mustCreateDevice(t, db, &queries.Device{ID: "d2", Identity: "b", Address: "192.168.78.11", APIPort: 8728})
+	mustCreateDevice(t, db, &queries.Device{ID: "d1", Identity: "a", Address: "192.168.60.10", APIPort: 8728})
+	mustCreateDevice(t, db, &queries.Device{ID: "d2", Identity: "b", Address: "192.168.60.11", APIPort: 8728})
 	// Shared MAC across two devices => ambiguous.
 	mustUpsertIface(t, db, "d1", "bridge", "AA:BB:CC:DD:EE:FF")
 	mustUpsertIface(t, db, "d1", "ether1", "11:11:11:11:11:11")
@@ -267,7 +267,7 @@ func TestBuildDeviceMACIndex_FlagsAmbiguous(t *testing.T) {
 	if ambiguous["11:11:11:11:11:11"] || ambiguous["22:22:22:22:22:22"] {
 		t.Fatalf("unique MACs should not be ambiguous")
 	}
-	if addrToDevice["192.168.78.10"] != "d1" || addrToDevice["192.168.78.11"] != "d2" {
+	if addrToDevice["192.168.60.10"] != "d1" || addrToDevice["192.168.60.11"] != "d2" {
 		t.Fatalf("addrToDevice mapping wrong: %v", addrToDevice)
 	}
 }
@@ -277,14 +277,14 @@ func TestBuildDeviceMACIndex_FlagsAmbiguous(t *testing.T) {
 func TestReconcileAddresses_DisabledByDefault(t *testing.T) {
 	db := pollerTestDB(t)
 	mustCreateDevice(t, db, &queries.Device{
-		ID: "d1", Identity: "ap02", Address: "192.168.78.56", Board: "cAP ax",
+		ID: "d1", Identity: "ap02", Address: "192.168.60.56", Board: "cAP ax",
 		Username: "admin", PasswordEnc: "secret", APIPort: 8728, Status: "online",
 	})
-	mustUpsertIface(t, db, "d1", "ether1", "04:F4:1C:85:97:B2")
+	mustUpsertIface(t, db, "d1", "ether1", "04:F4:1C:00:00:56")
 	// A fresh neighbor advertising d1's MAC at a NEW ip (would be a move if enabled).
 	if err := queries.UpsertNeighbor(db, &queries.Neighbor{
-		ID: "d1:ether1:04:F4:1C:85:97:B2", DeviceID: "d1", LocalInterface: "ether1",
-		NeighborAddress: "192.168.78.232", NeighborMAC: "04:F4:1C:85:97:B2",
+		ID: "d1:ether1:04:F4:1C:00:00:56", DeviceID: "d1", LocalInterface: "ether1",
+		NeighborAddress: "192.168.60.232", NeighborMAC: "04:F4:1C:00:00:56",
 	}); err != nil {
 		t.Fatalf("upsert neighbor: %v", err)
 	}
@@ -296,7 +296,7 @@ func TestReconcileAddresses_DisabledByDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get device: %v", err)
 	}
-	if got.Address != "192.168.78.56" {
+	if got.Address != "192.168.60.56" {
 		t.Fatalf("address changed while feature disabled: %s", got.Address)
 	}
 	if n := countLoopEvents(t, db); n != 0 {
@@ -309,11 +309,11 @@ func TestReconcileAddresses_DisabledByDefault(t *testing.T) {
 func TestPlanMoves_AuditMACIsDiscoveredMAC(t *testing.T) {
 	now := time.Now()
 	cutoff := now.Add(-2 * time.Minute)
-	dev := queries.Device{ID: "d1", Identity: "sw", Address: "192.168.78.10", Board: "CRS"}
+	dev := queries.Device{ID: "d1", Identity: "sw", Address: "192.168.60.10", Board: "CRS"}
 	// Device owns two MACs; the sighting is on the SECOND one.
 	macIdx := map[string]string{"AA:BB:CC:DD:EE:01": "d1", "AA:BB:CC:DD:EE:02": "d1"}
-	neigh := []queries.Neighbor{{NeighborMAC: "aa:bb:cc:dd:ee:02", NeighborAddress: "192.168.78.50", LastSeen: now}}
-	moves := planMoves([]queries.Device{dev}, macIdx, map[string]bool{}, map[string]string{"192.168.78.10": "d1"}, neigh, seenSince(cutoff))
+	neigh := []queries.Neighbor{{NeighborMAC: "aa:bb:cc:dd:ee:02", NeighborAddress: "192.168.60.50", LastSeen: now}}
+	moves := planMoves([]queries.Device{dev}, macIdx, map[string]bool{}, map[string]string{"192.168.60.10": "d1"}, neigh, seenSince(cutoff))
 	if len(moves) != 1 {
 		t.Fatalf("want 1 move, got %d", len(moves))
 	}
@@ -328,13 +328,13 @@ func TestPlanMoves_BatchReservesTargetIP(t *testing.T) {
 	// Two devices, both sighted (via their own MACs) at the SAME new IP in one
 	// batch. Only one move may be emitted (the other is blocked by the in-batch
 	// reservation) to avoid a UNIQUE collision / IP swap at commit time.
-	d1 := queries.Device{ID: "d1", Identity: "a", Address: "192.168.78.10"}
-	d2 := queries.Device{ID: "d2", Identity: "b", Address: "192.168.78.11"}
+	d1 := queries.Device{ID: "d1", Identity: "a", Address: "192.168.60.10"}
+	d2 := queries.Device{ID: "d2", Identity: "b", Address: "192.168.60.11"}
 	macIdx := map[string]string{"AA:AA:AA:AA:AA:01": "d1", "BB:BB:BB:BB:BB:02": "d2"}
-	addr := map[string]string{"192.168.78.10": "d1", "192.168.78.11": "d2"}
+	addr := map[string]string{"192.168.60.10": "d1", "192.168.60.11": "d2"}
 	neigh := []queries.Neighbor{
-		{NeighborMAC: "AA:AA:AA:AA:AA:01", NeighborAddress: "192.168.78.99", LastSeen: now},
-		{NeighborMAC: "BB:BB:BB:BB:BB:02", NeighborAddress: "192.168.78.99", LastSeen: now},
+		{NeighborMAC: "AA:AA:AA:AA:AA:01", NeighborAddress: "192.168.60.99", LastSeen: now},
+		{NeighborMAC: "BB:BB:BB:BB:BB:02", NeighborAddress: "192.168.60.99", LastSeen: now},
 	}
 	moves := planMoves([]queries.Device{d1, d2}, macIdx, map[string]bool{}, addr, neigh, seenSince(cutoff))
 	if len(moves) != 1 {
@@ -343,8 +343,8 @@ func TestPlanMoves_BatchReservesTargetIP(t *testing.T) {
 }
 
 func TestInterfacesContainMAC(t *testing.T) {
-	ifaces := []routeros.InterfaceInfo{{Name: "ether1", MACAddress: "04:F4:1C:85:97:B2"}, {Name: "bridge", MACAddress: "04:F4:1C:85:97:B2"}}
-	if !interfacesContainMAC(ifaces, "04:f4:1c:85:97:b2") {
+	ifaces := []routeros.InterfaceInfo{{Name: "ether1", MACAddress: "04:F4:1C:00:00:56"}, {Name: "bridge", MACAddress: "04:F4:1C:00:00:56"}}
+	if !interfacesContainMAC(ifaces, "04:f4:1c:00:00:56") {
 		t.Fatal("should match case-insensitively")
 	}
 	if interfacesContainMAC(ifaces, "AA:BB:CC:DD:EE:FF") {
@@ -357,16 +357,16 @@ func TestInterfacesContainMAC(t *testing.T) {
 
 func TestIsFollowableCandidate(t *testing.T) {
 	cases := map[string]bool{
-		"192.168.78.232":            true,  // routable v4
-		"10.0.0.1":                  true,  // routable v4
-		"2001:db8::1":               true,  // global v6
-		"fe80::1afd:74ff:fe4c:419e": false, // v6 link-local (the prod crash source)
-		"169.254.10.5":              false, // v4 link-local
-		"127.0.0.1":                 false, // loopback
-		"0.0.0.0":                   false, // unspecified
-		"224.0.0.1":                 false, // multicast
-		"not-an-ip":                 false, // not an IP literal
-		"":                          false, // empty
+		"192.168.60.232":         true,  // routable v4
+		"10.0.0.1":               true,  // routable v4
+		"2001:db8::1":            true,  // global v6
+		"fe80::1afd:74ff:fe00:1": false, // v6 link-local (the prod crash source)
+		"169.254.10.5":           false, // v4 link-local
+		"127.0.0.1":              false, // loopback
+		"0.0.0.0":                false, // unspecified
+		"224.0.0.1":              false, // multicast
+		"not-an-ip":              false, // not an IP literal
+		"":                       false, // empty
 	}
 	for addr, want := range cases {
 		if got := isFollowableCandidate(addr); got != want {
@@ -440,10 +440,10 @@ func followFixture(t *testing.T, oldAddr, newAddr string) (*sql.DB, *routerostes
 		ID: "d1", Identity: "ap02", Address: oldAddr, Board: "cAP ax", ROSVersion: "7.16",
 		Username: "admin", PasswordEnc: "secret", APIPort: fake.Port,
 	})
-	mustUpsertIface(t, db, "d1", "ether1", "04:F4:1C:85:97:B2")
+	mustUpsertIface(t, db, "d1", "ether1", "04:F4:1C:00:00:56")
 	if err := queries.UpsertNeighbor(db, &queries.Neighbor{
 		ID: "d1:ether1:x", DeviceID: "d1", LocalInterface: "ether1",
-		NeighborAddress: newAddr, NeighborMAC: "04:F4:1C:85:97:B2",
+		NeighborAddress: newAddr, NeighborMAC: "04:F4:1C:00:00:56",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -483,7 +483,7 @@ func TestReconcileAddresses_ProposesWithoutDialing(t *testing.T) {
 		t.Fatalf("want 1 pending proposal, got %+v", ps)
 	}
 	p := ps[0]
-	if p.DeviceID != "d1" || p.OldAddress != old || p.NewAddress != "192.0.2.232" || p.MAC != "04:F4:1C:85:97:B2" || p.DeviceIdentity != "ap02" {
+	if p.DeviceID != "d1" || p.OldAddress != old || p.NewAddress != "192.0.2.232" || p.MAC != "04:F4:1C:00:00:56" || p.DeviceIdentity != "ap02" {
 		t.Fatalf("proposal = %+v", p)
 	}
 	if n := countLoopEvents(t, db); n != 1 {
@@ -601,7 +601,7 @@ func TestVerifyAndCommitAddressMove_IdentityMismatch(t *testing.T) {
 	db, fake, _ := followFixture(t, "192.0.2.56", "127.0.0.1")
 	fake.Reply("/system/resource/print", map[string]string{"board-name": "CRS326", "version": "7.16"})
 	_, err := VerifyAndCommitAddressMove(db, routeros.NewPool(), ws.NewHub(),
-		AddressMove{DeviceID: "d1", OldAddr: "192.0.2.56", NewAddr: "127.0.0.1", MAC: "04:F4:1C:85:97:B2"})
+		AddressMove{DeviceID: "d1", OldAddr: "192.0.2.56", NewAddr: "127.0.0.1", MAC: "04:F4:1C:00:00:56"})
 	var me *MoveError
 	if !errors.As(err, &me) || me.Category != MoveIdentityMismatch {
 		t.Fatalf("want identity_mismatch, got %v", err)
@@ -614,7 +614,7 @@ func TestVerifyAndCommitAddressMove_MACMismatch(t *testing.T) {
 	fake.Reply("/system/resource/print", map[string]string{"board-name": "cAP ax", "version": "7.16"})
 	fake.Reply("/interface/print", map[string]string{"name": "ether1", "type": "ether", "mac-address": "AA:AA:AA:AA:AA:AA"})
 	_, err := VerifyAndCommitAddressMove(db, routeros.NewPool(), ws.NewHub(),
-		AddressMove{DeviceID: "d1", OldAddr: "192.0.2.56", NewAddr: "127.0.0.1", MAC: "04:F4:1C:85:97:B2"})
+		AddressMove{DeviceID: "d1", OldAddr: "192.0.2.56", NewAddr: "127.0.0.1", MAC: "04:F4:1C:00:00:56"})
 	var me *MoveError
 	if !errors.As(err, &me) || me.Category != MoveMACMismatch {
 		t.Fatalf("want mac_mismatch, got %v", err)
@@ -625,9 +625,9 @@ func TestVerifyAndCommitAddressMove_MACMismatch(t *testing.T) {
 func TestVerifyAndCommitAddressMove_Commits(t *testing.T) {
 	db, fake, _ := followFixture(t, "192.0.2.56", "127.0.0.1")
 	fake.Reply("/system/resource/print", map[string]string{"board-name": "cAP ax", "version": "7.16"})
-	fake.Reply("/interface/print", map[string]string{"name": "ether1", "type": "ether", "mac-address": "04:f4:1c:85:97:b2"})
+	fake.Reply("/interface/print", map[string]string{"name": "ether1", "type": "ether", "mac-address": "04:f4:1c:00:00:56"})
 	summary, err := VerifyAndCommitAddressMove(db, routeros.NewPool(), ws.NewHub(),
-		AddressMove{DeviceID: "d1", OldAddr: "192.0.2.56", NewAddr: "127.0.0.1", MAC: "04:F4:1C:85:97:B2"})
+		AddressMove{DeviceID: "d1", OldAddr: "192.0.2.56", NewAddr: "127.0.0.1", MAC: "04:F4:1C:00:00:56"})
 	if err != nil {
 		t.Fatalf("verify: %v", err)
 	}
