@@ -635,6 +635,10 @@ func (n *NetworkHealthPoller) readBridges(dev queries.Device, run routeros.Runne
 			HWOffloadGroup:   p.HWOffloadGroup,
 			PortState:        p.PortState,
 			EdgeConfig:       p.EdgeConfig,
+			Horizon:          p.Horizon,
+		}
+		if p.HWReported {
+			ps.HW = ptr(p.HW)
 		}
 		// Unknown stays NULL: a device that reports no runtime state
 		// or counter must not look like "not forwarding, 0 changes".

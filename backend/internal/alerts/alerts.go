@@ -282,6 +282,17 @@ func (e *Engine) Tick() error {
 				changed = true
 			}
 		}
+		// The likely cause of an alert arrives minutes after it was
+		// announced (the diagnose pass spaces its reads out). A firing alert
+		// is then announced once more, with the cause; an acknowledged one is
+		// not — its cause shows on the page.
+		if a.State == queries.AlertFiring && a.LastNotifiedAt != nil && newLikelyCause(a.Payload, o) {
+			if err := queries.RenotifyAlert(e.db, a.ID); err != nil {
+				errs = append(errs, err)
+			} else {
+				changed = true
+			}
+		}
 	}
 	for k, o := range seen {
 		if _, err := queries.InsertAlert(e.db, &queries.Alert{
@@ -303,6 +314,17 @@ func (e *Engine) Tick() error {
 		e.OnChange()
 	}
 	return errors.Join(errs...)
+}
+
+// newLikelyCause reports an observation that carries the findings of a
+// diagnose pass the alert's stored payload does not have yet.
+func newLikelyCause(stored string, o Observation) bool {
+	at, _ := o.Facts[FactDiagnosedAt].(string)
+	if at == "" {
+		return false
+	}
+	prev, _ := ParsePayload(stored).Facts[FactDiagnosedAt].(string)
+	return prev != at
 }
 
 // notify sends what is due: a firing alert that was never delivered or was

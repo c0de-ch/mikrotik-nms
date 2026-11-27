@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/mikrotik-nms/backend/internal/crypto"
-	"github.com/mikrotik-nms/backend/internal/database"
+	"github.com/mikrotik-nms/backend/internal/database/dbtest"
 	"github.com/mikrotik-nms/backend/internal/database/queries"
 	"github.com/mikrotik-nms/backend/internal/mailer"
 )
@@ -24,14 +24,11 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
+// testDB opens a fresh, fully migrated database for one test (a copy of one
+// migrated per test binary: see dbtest).
 func testDB(t *testing.T) *sql.DB {
 	t.Helper()
-	db, err := database.OpenFresh(t.TempDir() + "/test.db")
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
-	return db
+	return dbtest.Open(t)
 }
 
 // fakeRule reports whatever the test sets.

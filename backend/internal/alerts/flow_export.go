@@ -64,6 +64,9 @@ func (r flowExportOnSwitch) Evaluate(now time.Time) ([]Observation, error) {
 		}
 	}
 	advertise, _ := queries.GetSetting(r.db, "flow_advertise_address")
+	// The diagnose pass that a confirmed export starts; without it (a read
+	// error) the alert still fires.
+	causes, _ := likelyCauses(r.db, now)
 
 	var out []Observation
 	for i := range devices {
@@ -97,6 +100,7 @@ func (r flowExportOnSwitch) Evaluate(now time.Time) ([]Observation, error) {
 			facts["confirmed"] = true
 			target, port := flowguard.RollbackTarget(advertise, chk.CollectorPort, chk.Targets)
 			facts["rollback"] = flowguard.Rollback(d.ROSVersion, target, port).Lines()
+			causes[d.ID].attach(facts)
 		case chk.Result == queries.FlowExportExporting && chk.CheckedAt.Before(chk.FirstSeen) &&
 			now.Sub(chk.CheckedAt) <= queries.FlowExportConfirmationValid:
 			// The device confirmed an export, but before these datagrams

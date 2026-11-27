@@ -43,7 +43,7 @@ func newAlertsFixture(t *testing.T) *alertsFixture {
 	f := &alertsFixture{t: t, tokens: map[string]string{}}
 	f.s = &Server{db: db, cfg: cfg}
 	// The real router, so the role gates are the production ones.
-	r := NewRouter(db, nil, cfg, nil, nil, nil, nil, nil, nil)
+	r := NewRouter(db, nil, cfg, nil, nil, nil, nil, nil, nil, nil)
 	f.h = r
 	for _, role := range []string{"admin", "viewer"} {
 		if err := queries.CreateUser(db, &queries.User{ID: "u-" + role, Username: role, PasswordHash: "x", Role: role}); err != nil {

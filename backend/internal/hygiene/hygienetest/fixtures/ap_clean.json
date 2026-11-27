@@ -1,0 +1,312 @@
+{
+ "name": "ap_clean",
+ "board": "cAP ax",
+ "architecture": "arm64",
+ "version": "7.20.4",
+ "class": "C3",
+ "role": "ap-cpe",
+ "nms_user": "nms",
+ "wifi_package": true,
+ "ports": [
+  {
+   "name": "bridge",
+   "type": "bridge",
+   "running": true,
+   "bps": 0,
+   "rate_known": true
+  },
+  {
+   "name": "ether1",
+   "type": "ether",
+   "running": true,
+   "switch": "",
+   "rx_flow_control": "off",
+   "tx_flow_control": "off",
+   "loop_protect": "default",
+   "trunk": true,
+   "bridge": "bridge",
+   "hw": true,
+   "hw_known": true,
+   "hw_offload": false,
+   "hw_offload_known": true,
+   "horizon": "none",
+   "bps": 4200000,
+   "rate_known": true
+  },
+  {
+   "name": "ether2",
+   "type": "ether",
+   "running": false,
+   "switch": "",
+   "rx_flow_control": "off",
+   "tx_flow_control": "off",
+   "loop_protect": "default",
+   "bridge": "bridge",
+   "hw": true,
+   "hw_known": true,
+   "hw_offload": false,
+   "hw_offload_known": true,
+   "horizon": "none"
+  },
+  {
+   "name": "wifi1",
+   "type": "wifi",
+   "running": true,
+   "bridge": "bridge",
+   "hw": true,
+   "hw_known": true,
+   "hw_offload": false,
+   "hw_offload_known": true,
+   "horizon": "none",
+   "bps": 2500000,
+   "rate_known": true
+  },
+  {
+   "name": "wifi2",
+   "type": "wifi",
+   "running": true,
+   "bridge": "bridge",
+   "hw": true,
+   "hw_known": true,
+   "hw_offload": false,
+   "hw_offload_known": true,
+   "horizon": "none",
+   "bps": 1700000,
+   "rate_known": true
+  }
+ ],
+ "replies": {
+  "/tool/graphing/interface/print": {},
+  "/tool/graphing/resource/print": {},
+  "/tool/graphing/queue/print": {},
+  "/ip/traffic-flow/print": {
+   "rows": [
+    {
+     "enabled": "false",
+     "interfaces": "all",
+     "cache-entries": "256k",
+     "active-flow-timeout": "30m",
+     "inactive-flow-timeout": "15s",
+     "packet-sampling": "false",
+     "sampling-interval": "0",
+     "sampling-space": "0"
+    }
+   ]
+  },
+  "/ip/traffic-flow/target/print": {},
+  "/tool/sniffer/print": {
+   "rows": [
+    {
+     "running": "false",
+     "interface": "all",
+     "only-headers": "false",
+     "memory-limit": "100KiB",
+     "file-name": "",
+     "streaming-enabled": "false",
+     "streaming-server": "0.0.0.0:37008",
+     "filter-stream": "false"
+    }
+   ]
+  },
+  "/interface/ethernet/switch/print": {},
+  "/interface/ethernet/switch/rule/print": {},
+  "/interface/bridge/settings/print": {
+   "rows": [
+    {
+     "use-ip-firewall": "false",
+     "use-ip-firewall-for-vlan": "false",
+     "use-ip-firewall-for-pppoe": "false",
+     "allow-fast-path": "true",
+     "bridge-fast-path-active": "true",
+     "bridge-fast-path-packets": "98234511",
+     "bridge-fast-path-bytes": "9823451100",
+     "bridge-fast-forward-packets": "0",
+     "bridge-fast-forward-bytes": "0"
+    }
+   ]
+  },
+  "/interface/bonding/print": {},
+  "/snmp/print": {
+   "rows": [
+    {
+     "enabled": "false",
+     "contact": "",
+     "location": "",
+     "engine-id-suffix": "",
+     "trap-target": "",
+     "trap-community": "DO-NOT-STORE-trap-community",
+     "trap-version": "1",
+     "trap-generators": "temp-exception",
+     "vrf": "main"
+    }
+   ]
+  },
+  "/snmp/community/print": {
+   "rows": [
+    {
+     "name": "DO-NOT-STORE-community",
+     "addresses": "::/0",
+     "security": "none",
+     "read-access": "true",
+     "write-access": "false",
+     "authentication-protocol": "MD5",
+     "encryption-protocol": "DES",
+     "authentication-password": "DO-NOT-STORE-auth",
+     "encryption-password": "DO-NOT-STORE-priv",
+     "disabled": "false",
+     "default": "true"
+    }
+   ]
+  },
+  "/user/active/print": {
+   "rows": [
+    {
+     ".id": "*1",
+     "when": "2026-01-10 08:00:00",
+     "name": "nms",
+     "address": "192.0.2.10",
+     "via": "api",
+     "group": "nms-read"
+    }
+   ]
+  },
+  "/ip/firewall/filter/print": {
+   "count": 0
+  },
+  "/interface/bridge/filter/print": {
+   "count": 0
+  },
+  "/system/logging/print": {
+   "rows": [
+    {
+     ".id": "*1",
+     "topics": "info",
+     "action": "memory",
+     "disabled": "false",
+     "prefix": ""
+    },
+    {
+     ".id": "*2",
+     "topics": "error",
+     "action": "memory",
+     "disabled": "false",
+     "prefix": ""
+    },
+    {
+     ".id": "*3",
+     "topics": "warning",
+     "action": "memory",
+     "disabled": "false",
+     "prefix": ""
+    },
+    {
+     ".id": "*4",
+     "topics": "critical",
+     "action": "echo",
+     "disabled": "false",
+     "prefix": ""
+    }
+   ]
+  },
+  "/system/logging/action/print": {
+   "rows": [
+    {
+     "name": "memory",
+     "target": "memory",
+     "memory-lines": "1000",
+     "default": "true"
+    },
+    {
+     "name": "disk",
+     "target": "disk",
+     "disk-file-name": "log",
+     "default": "true"
+    },
+    {
+     "name": "echo",
+     "target": "echo",
+     "default": "true"
+    },
+    {
+     "name": "remote",
+     "target": "remote",
+     "remote": "0.0.0.0",
+     "remote-port": "514",
+     "default": "true"
+    }
+   ]
+  },
+  "/system/scheduler/print": {},
+  "/user/group/print": {
+   "rows": [
+    {
+     "name": "read",
+     "policy": "local,telnet,ssh,reboot,read,test,winbox,password,web,sniff,sensitive,api,romon,rest-api,!ftp,!write,!policy",
+     "skin": "default"
+    },
+    {
+     "name": "write",
+     "policy": "local,telnet,ssh,reboot,read,write,test,winbox,password,web,sniff,sensitive,api,romon,rest-api,!ftp,!policy",
+     "skin": "default"
+    },
+    {
+     "name": "full",
+     "policy": "local,telnet,ssh,ftp,reboot,read,write,policy,test,winbox,password,web,sniff,sensitive,api,romon,rest-api",
+     "skin": "default"
+    },
+    {
+     "name": "nms-read",
+     "policy": "read,test,api,!local,!telnet,!ssh,!ftp,!reboot,!write,!policy,!winbox,!password,!web,!sniff,!sensitive,!romon,!rest-api",
+     "skin": "default"
+    }
+   ]
+  },
+  "/ip/dns/print": {
+   "rows": [
+    {
+     "allow-remote-requests": "false",
+     "servers": "",
+     "cache-size": "2048KiB"
+    }
+   ]
+  },
+  "/ip/dhcp-server/print": {},
+  "/interface/wifi/capsman/print": {
+   "rows": [
+    {
+     "enabled": "false"
+    }
+   ]
+  },
+  "/system/device-mode/print": {
+   "rows": [
+    {
+     "mode": "advanced",
+     "allowed-versions": "7.13+,6.49.8+",
+     "flagged": "false",
+     "flagging-enabled": "true",
+     "scheduler": "true",
+     "socks": "true",
+     "fetch": "true",
+     "pptp": "true",
+     "l2tp": "true",
+     "bandwidth-test": "true",
+     "traffic-gen": "false",
+     "sniffer": "true",
+     "ipsec": "true",
+     "romon": "true",
+     "proxy": "true",
+     "hotspot": "true",
+     "smb": "true",
+     "email": "true",
+     "zerotier": "true",
+     "container": "false",
+     "install-any-version": "false",
+     "partitions": "false",
+     "routerboard": "false",
+     "attempt-count": "0"
+    }
+   ]
+  }
+ }
+}

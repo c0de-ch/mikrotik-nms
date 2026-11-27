@@ -165,6 +165,10 @@ user), **admin** (admin role required).
 | GET | `/devices/{id}/live-limits` | any | What a per-port live stream (WS `traffic.<id>.<iface>`) of the device may do for the caller: `{device_id, class, profile, min_period_seconds, max_ifaces, leases, admin_only, snapshot_interval_seconds, allowed, reason?, message?}`. `class` is the one the caps follow (`C1` on the `light` profile). `allowed` covers role, an admin pause and the polling mode (`reason`: `admin_only`, `polling_paused`, `pollers_off`); the interface and viewer ceilings depend on other viewers and are decided on subscribe. Database only. See [Live streams](#live-streams). |
 | GET | `/devices/{id}/load` | any | The device's CPU and memory telemetry next to what the NMS itself sent it. Query `range` (`1h` default, `6h`, `24h`: 1-minute points; `7d`, `30d`: hourly; anything else `400`). **Database only — no device call.** See [Device load](#device-load). `404` for an unknown device. |
 | GET | `/devices/{id}/audit` | any | Operator actions on the device (pauses, profile and class changes, address-move decisions, firmware requests — `firmware_upgrade_requested` / `firmware_channel_requested` / `firmware_routerboard_requested`, never with the RouterOS login typed for them), newest first. Query `limit` (default 50, max 500). `[{id, at, user_id, username, action, device_id, detail}]`. |
+| GET | `/devices/{id}/findings` | any | What the NMS found on the device, most recently seen first: `[{id, device_id, kind, severity, detail, first_seen, last_seen, count, title?, explanation?, fix?, source?}]`. `severity` ∈ `info`/`warn`/`critical`. The hygiene audit's findings carry `source: "audit"`, a `title`, a plain `explanation` and `fix` — a list of steps `{text, commands?, read_only?, window?}` (`window`: the step interrupts traffic; `read_only`: the commands only print). Query `limit` (default 100, max 1000). |
+| GET | `/devices/{id}/hygiene` | any | The hygiene audit's view of the device. **Database only.** See [Hygiene audit](#hygiene-audit). |
+| POST | `/devices/{id}/hygiene/audit` | admin | "Audit now": start an audit of the device. `202` with the pass. See [Hygiene audit](#hygiene-audit) for the refusals. Audited (`audit_requested`). |
+| POST | `/devices/{id}/hygiene/diagnose` | admin | "Diagnose now": start a diagnose pass. Same answers. Audited (`diagnose_requested`). |
 | POST | `/devices` | admin | Add a device. `username` and `password` are **required** (there are no default credentials); with `use_tls` so is `pin_cert_sha256`, the fingerprint of the device's api-ssl certificate (`400` without it, before anything is dialled). Tests the RouterOS connection first; `400` if unreachable — or, over TLS, if the device presents another certificate than the pinned one (no login is sent). `500` when the password cannot be stored encrypted — it is never stored in plaintext instead. |
 | PUT | `/devices/{id}` | admin | Update device fields (only non-empty fields override; `use_tls` and `pin_cert_sha256` change only when the body carries them, and an empty `pin_cert_sha256` clears the pin). The stored password changes only when the body carries a new `password`. `400` for a malformed fingerprint (nothing is changed). A change of address, port, TLS flag, pin, username or password closes the device's pooled API session and forgets its reconnect backoff, so the next poll connects with the new values. |
 | DELETE | `/devices/{id}` | admin | Remove a device (and its pooled API session). |
@@ -185,6 +189,83 @@ whatever the class); `polling_paused_until` / `polling_paused` show an
 active pause. Pauses and profile/override changes are written to the audit
 log with the acting user. `PUT /devices/{id}/polling` validates the whole
 body before writing anything: a `400` leaves every field as it was.
+
+#### Hygiene audit
+
+Every 6 hours per device (tier `audit` in `polling.next_runs`) the NMS reads
+the device's configuration — read-only prints that each carry a `.proplist`
+(or `=count-only=`), one at a time on the pooled session, spaced by class
+(every 20 s on `C1`, 5 s on `C2`, 2 s on `C3`) — and reports the settings
+known to cost CPU or to be unsafe as findings (`device_findings`,
+`source: "audit"`). A scheduled audit does not run while the device's last
+quiet-window CPU sample is at or above 80 %, while it is paused, offline or
+without an API session, or while polling is off; it is tried again later.
+The *diagnose pass* is the shorter list of reads (about a dozen, every 30 s
+on `C1`) that covers the usual device-side causes of a high CPU; it runs
+once per alert when `cpu_high`, `flow_export_cpu_high` or a confirmed
+`flow_export_on_switch` opens, also while the CPU is high, and at most once
+per device per hour. No pass reads a secret (SNMP community names,
+passwords, keys, scheduler scripts are never asked for) and none changes
+anything on a device.
+
+`GET /devices/{id}/hygiene`:
+
+```json
+{
+  "pollers": "local",
+  "running": "",
+  "audit": {
+    "last": {"id": 41, "device_id": "…", "kind": "audit", "reason": "scheduled",
+             "started_at": "…", "finished_at": "…", "status": "complete",
+             "reads": 19, "failed_reads": 0,
+             "found": [{"kind": "graphing_enabled", "severity": "critical",
+                        "title": "Graphing is enabled on a weak device",
+                        "detail": "interface rule interface=all store-on-disk=yes"}]},
+    "next_run": "2026-01-10T18:08:00Z",
+    "available_at": null
+  },
+  "diagnose": {"last": null, "available_at": null},
+  "snapshot": {"taken_at": "…", "hash": "…", "ros_version": "7.20.4"},
+  "findings": [ /* the device's audit findings, most severe first, with explanation and fix */ ]
+}
+```
+
+`running` is the kind of pass in progress (`""`, `audit`, `diagnose`). `last`
+is the newest pass that judged something — `status` `complete`, or `partial`
+when a read failed (what was read was judged, no snapshot was stored) — else
+the newest pass at all (`running`, `aborted`); `reason` is `scheduled`,
+`admin` (with `requested_by`) or the alert rule that asked. `next_run` is the
+next scheduled audit (absent while none is scheduled). `available_at` is when
+an admin may next ask for that kind of pass (`null` = now). `snapshot` says
+when the stored configuration snapshot last changed; the snapshot itself is
+not served by the API.
+
+`POST /devices/{id}/hygiene/audit` and `/diagnose` (admin) answer `202` with
+the pass (`status: "running"`); the result shows up in the view above when it
+is through — an audit of a `C1` device takes about six minutes. Unlike the
+scheduled audit they run whatever the device's CPU says. Refusals: `404`
+unknown device; `409` `polling paused until <time>`, a pass is already
+running on the device, or the device is not reachable over the API; `429`
+with `Retry-After` within an hour of the device's last pass of that kind
+(whoever started it); `503` while polling is off on this instance.
+
+A finding stays until a pass reads the device again and no longer finds the
+setting. A pass that could not read a menu leaves the findings behind that
+menu alone: a menu the device does not have is simply empty; `not enough
+permissions`, and any other error the device itself answers a read with
+(this RouterOS version does not take it), are reported as a finding of their
+own (`audit_unreadable`) and do not make the pass partial; a read that got
+no answer (a timeout, a lost session) does — the audit is then run again an
+hour later. Finding kinds:
+`graphing_enabled`, `traffic_flow_enabled`, `traffic_flow_foreign_target`,
+`snmp_open`, `snmp_write_access`, `snmp_on_weak_device`,
+`bridge_ip_firewall`, `bridge_cpu_forwarding`, `bond_not_offloaded`,
+`bridge_port_not_offloaded`, `bridge_horizon_set`, `multiple_hw_bridges`,
+`switch_mirror_to_cpu`, `switch_rules_to_cpu`, `flow_control_enabled`,
+`loop_protect_on_trunk`, `switch_filter_rules`, `debug_logging`,
+`fast_scheduler`, `sniffer_running`, `cpu_services_on_switch`,
+`nms_account_privileged`, `device_mode_permissive`, `audit_unreadable`. A
+critical one raises the `audit_critical` alert.
 
 #### Device role
 
@@ -889,6 +970,20 @@ source address says so, **critical** with `confirmed: true` once the
 collector's read of the device's own traffic-flow settings confirmed the
 export; `facts.rollback` then carries the rollback steps as text lines (and
 `facts.check` the read-only commands while unconfirmed).
+`flow_export_cpu_high` (warning): in the 30 minutes after a flow exporter of
+a managed device was accepted, its quiet-window CPU reached 80 % in three
+minutes or rose 30 points above its 24-hour baseline; it carries
+`facts.rollback`, stands for the rest of the 30 minutes and then while the
+newest five minutes are still elevated. `audit_critical` (critical): the
+device has a critical hygiene finding ([Hygiene audit](#hygiene-audit));
+`facts.findings` and `facts.fix` are text lines; it resolves when a pass no
+longer finds the setting, never by time.
+
+**Likely cause.** `cpu_high`, `flow_export_cpu_high` and a confirmed
+`flow_export_on_switch` start a diagnose pass on the device. What the
+device's newest pass (at most two hours old) found is attached as
+`facts.likely_cause` (text lines, most severe first — or one line saying
+that none of the usual causes was found) with `facts.diagnosed_at`.
 
 `confirmed: false` marks an alert raised on evidence that can be forged or
 mistaken; such an alert is never critical.
@@ -897,8 +992,11 @@ mistaken; such an alert is never critical.
 `min_severity` it reaches: when it starts, every 4 hours while nobody
 acknowledged it, and when it resolves (only if its start was delivered). An
 alert whose severity rises fires again — an acknowledgement of the lower
-severity is dropped — and is notified at once. A firing alert's mail carries
-its `facts.rollback` lines. An
+severity is dropped — and is notified at once. A firing alert whose likely
+cause arrives (`facts.diagnosed_at` changes — the diagnose pass takes a few
+minutes) is notified once more, with it; an acknowledged one is not. A
+firing alert's mail carries its `facts.likely_cause`, `facts.findings`,
+`facts.fix` and `facts.rollback` lines. An
 alert that could not be delivered anywhere is tried again at the next
 evaluation. E-mail uses the SMTP relay from Settings (no public base URL
 needed). A webhook receives a JSON `POST`:
@@ -982,7 +1080,7 @@ OPNsense).
 
 | Method | Path | Role | Description |
 |---|---|---|---|
-| GET | `/network-health` | any | Bridges (with ports), recent loop events, and per-interface port states. |
+| GET | `/network-health` | any | Bridges (with ports), recent loop events, per-interface port states, and `findings`: every device's hygiene findings ([Hygiene audit](#hygiene-audit)), most severe first, each with `device_name`. |
 | GET | `/network-health/events` | any | Loop/flap/port events. Query `limit` (1–5000, default 200). |
 | POST | `/network-health/events/{id}/ack` | any | Acknowledge one event (integer `id`). |
 | POST | `/network-health/events/ack-all` | any | Acknowledge all events. Returns `{"acknowledged": <count>}`. |

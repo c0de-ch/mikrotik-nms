@@ -135,7 +135,22 @@ own reads are not what is measured), stays at or above
 **Resolves** after 5 minutes without a single minute at or above the warning
 threshold.
 
-1. **Is it us?** Open the device page → **CPU & NMS load**. Compare the
+**Likely cause.** When the alert opens, the NMS runs a *diagnose pass* on the
+device: about a dozen read-only prints of the settings that usually load a
+CPU from the device's own side (graphing, traffic-flow, a running sniffer, a
+mirror or switch rules to the CPU, bond modes, bridged traffic through the IP
+firewall, SNMP, other API sessions) — one every 30 seconds on a weak device,
+so the answer is there after about six minutes. What it found is attached to
+the alert as **Likely cause**, and the alert is sent once more with it. "Found
+none of the usual causes" is an answer too: go on with the steps below. One
+pass per alert, and at most one per device per hour; an admin can ask for
+another with **Diagnose now** on the device page.
+
+1. **Read the likely cause** on the alert (or on the device page under
+   *Findings* and at the bottom of *CPU & NMS load*). A finding there —
+   graphing on a weak switch, traffic-flow, a mirror to the CPU — comes with
+   its suggested fix; start with that.
+2. **Is it us?** Open the device page → **CPU & NMS load**. Compare the
    quiet-window line with the post-poll markers (the CPU 3 s after an
    interface-counter read) and the NMS's commands and wall time per minute.
    High only around the markers, calm in between: the NMS's reads are the
@@ -143,17 +158,19 @@ threshold.
    the same page, and check whether a live traffic view of it is open in some
    browser tab. High throughout, with a handful of commands a minute: it is
    not the NMS.
-2. **Another poller?** A `parallel_api_poller` alert or finding on the same
-   device means a second system polls it. SNMP polling and RouterOS
-   `/tool graphing` do not show up there — check them on the device.
-3. **The device's own work.** On the device: `/tool profile duration=10`
+3. **Another poller?** A `parallel_api_poller` alert or finding on the same
+   device means a second system polls it over the API. An SNMP poller does
+   not show up there: the diagnose pass says whether SNMP is enabled, not who
+   polls it.
+4. **The device's own work.** On the device: `/tool profile duration=10`
    names what uses the CPU (`bridging`, `firewall`, `management`, `wireless`
    …). `bridging` or `networking` on a switch whose traffic should be
    hardware-offloaded points at a port that lost `hw-offload`
    (`/interface bridge port print` on the device), a loop, or a broadcast
    storm (look for port-flap and loop events on the Network Health page at
-   the same time).
-4. **Since when?** The 7-day range of the same tab shows whether this began
+   the same time). Do not run the profiler over and over on a weak device:
+   it is load too.
+5. **Since when?** The 7-day range of the same tab shows whether this began
    with a reboot (marked), a RouterOS upgrade, or a change in the network.
 
 ## mem_low
@@ -275,3 +292,86 @@ What to do:
 
 Want the traffic of a switch port? Add a derived view from the router or
 firewall next to it instead (FLOW-EXPORT.md, "Switches that cannot export").
+
+## flow_export_cpu_high
+
+**Fires when** a device's CPU goes up in the **30 minutes after** the NMS
+started accepting its flow export (an exporter was added, auto-accepted, or
+switched back from "ignore datagrams"): its quiet-window CPU reached **80 %
+in three of those minutes**, or once rose **30 points above its 24-hour
+baseline** (the average of the day before; without a day of history only the
+80 % line counts). Severity: warning. The alert carries the rollback steps,
+and it starts a diagnose pass on the device (see [cpu_high](#cpu_high)).
+
+Once tripped it stands for the rest of the 30 minutes. After that it stands
+while the newest five minutes still hold an elevated one, and **resolves**
+when they are calm; a device that is not being measured keeps its state.
+
+1. **Is it the export?** On the device: `/tool profile duration=30` — the
+   `traffic-flow` and `traffic-accounting` rows are what the export costs.
+   Also read the alert's likely cause: the diagnose pass looks at the other
+   usual suspects.
+2. **It is.** Narrow it before you remove it: export only the routed
+   interfaces (never `interfaces=all`, which also accounts bridged ports).
+   If that is not enough, stop the export with the rollback steps in the
+   alert — in their order; before RouterOS 7.25 the last step needs a
+   maintenance window.
+3. **It is not.** The CPU went up for another reason in the same half hour.
+   Follow [cpu_high](#cpu_high); this alert resolves by itself once the CPU
+   is calm.
+
+## audit_critical
+
+**Fires when** the hygiene audit — or the diagnose pass — found a setting on
+a device that is known to cost its CPU badly or to take traffic out of the
+hardware path. Severity: critical. One alert per device; it lists the
+findings and their suggested fix.
+
+The audit reads each device's configuration every 6 hours: read-only prints
+that name the fields they want, spaced well apart (one every 20 seconds on a
+weak device), and never while the device's CPU is at or above 80 % — the
+diagnose pass covers a busy device. It never reads a secret (no SNMP
+community names, no passwords, keys or scripts) and never changes anything.
+
+**Resolves** when a later pass reads the device and finds the setting gone.
+There is no timeout: a device that cannot be audited (busy, paused,
+unreachable) keeps its finding and its alert.
+
+The critical findings:
+
+| Finding | What it means |
+|---|---|
+| Graphing is enabled on a weak device | Tools → Graphing samples counters and draws graphs on the device's own CPU. On a C1 device that alone can peg it. Remove the rules: the NMS keeps per-port history. |
+| Traffic-flow is enabled on a device that must not export flows | A switch, an access point or a C1 device accounts flows. Stop it with the rollback steps — mind the order, and the maintenance window before RouterOS 7.25. |
+| Bridged traffic is sent through the IP firewall (on a switch) | `use-ip-firewall=yes` hands every bridged packet to the firewall and switches the bridge fast path off. |
+| Switch ports are forwarded by the CPU | Switch-chip ports with hardware offload requested, up and carrying traffic, but not offloaded. Find what took offload away. |
+| Bond in a mode the switch chip cannot offload | Only 802.3ad, balance-xor and active-backup are forwarded in hardware; any other mode goes through the CPU. |
+| The switch mirrors traffic to the CPU | A port mirror with `mirror-target=cpu`: a forgotten capture. |
+| Switch rules send packets to the CPU | Static switch rules with `copy-to-cpu`, `redirect-to-cpu` or `mirror`. |
+
+What to do:
+
+1. **Open the device page → Findings.** Each finding says what was found,
+   why it matters and how to fix it. Commands are shown apart from the text;
+   a step marked *maintenance window* interrupts traffic. Run the commands
+   yourself, on the device, after reading them — the NMS never applies a
+   fix.
+2. **Fix it, then confirm.** An admin can run **Audit now** on the device
+   page (once per hour per device) instead of waiting for the next audit;
+   the finding — and the alert — go away when the audit no longer sees the
+   setting.
+3. **It is intended?** Acknowledge the alert: it stays open as a reminder
+   and is not notified again. (A finding cannot be dismissed: it is what the
+   device's configuration says.)
+4. **"The NMS account may not read part of the configuration"** next to it
+   means some menus were refused: what is configured there was not checked.
+   Give the NMS account's group the `read` policy for them. "Refused by this
+   RouterOS version" in the same finding is different: the device does not
+   take that read as the NMS sends it — nothing to change on the device;
+   report the menu and the RouterOS version.
+
+Warnings and informational findings (an open SNMP community, 802.3x flow
+control on trunks, debug logging to a remote server, a scheduler that runs
+every few seconds, an NMS account that can change the device, device-mode
+defaults, …) raise no alert. They are listed on the device page and on the
+Network Health page under *Configuration hygiene*.

@@ -136,6 +136,17 @@ func EscalateAlert(db *sql.DB, id int64, severity string) error {
 	return err
 }
 
+// RenotifyAlert makes a firing alert that was already announced due for its
+// next notification now instead of at the four-hourly reminder: the rule has
+// learned something worth sending (the likely cause). It stays "notified" —
+// its resolution is still announced — and an acknowledged alert is left
+// alone.
+func RenotifyAlert(db *sql.DB, id int64) error {
+	_, err := db.Exec(`UPDATE alerts SET last_notified_at = 0
+		WHERE id = ? AND state = 'firing' AND last_notified_at IS NOT NULL`, id)
+	return err
+}
+
 // ResolveAlert closes an open alert.
 func ResolveAlert(db *sql.DB, id int64, at time.Time) error {
 	_, err := db.Exec(`UPDATE alerts SET state = 'resolved', resolved_at = ? WHERE id = ? AND state <> 'resolved'`, at.Unix(), id)

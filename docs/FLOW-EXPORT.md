@@ -117,6 +117,16 @@ What follows from the role:
   device whose polling is paused). Only when the device itself confirms the export does
   the alert become critical, with the rollback steps attached. See
   [RUNBOOKS.md](RUNBOOKS.md#flow_export_on_switch).
+- **CPU watch after an exporter is accepted.** For the 30 minutes after the NMS starts
+  accepting a managed device's export, it watches that device's CPU (the one-minute samples
+  it takes anyway — no extra command). Three minutes at or above 80 %, or one 30 points
+  above the device's average of the day before, raise the warning `flow_export_cpu_high`
+  with the rollback steps, and start a diagnose pass on the device. See
+  [RUNBOOKS.md](RUNBOOKS.md#flow_export_cpu_high).
+- **The hygiene audit sees it too.** Every 6 hours the NMS reads each device's
+  `/ip traffic-flow` settings as part of its audit: traffic-flow enabled on a switch, an
+  access point or a C1 device is a critical finding (alert `audit_critical`), whatever
+  collector it points at; on a router, a target that is not this NMS is a warning.
 - **Exporters that already exist keep working**, whatever their device's role. One on a
   device that must not export is flagged in the exporter list.
 - **"Ignore datagrams" and "Delete" do not stop a device.** They only decide what the NMS
@@ -124,7 +134,8 @@ What follows from the role:
   run the [rollback](#rollback) on it.
 
 Do not enable Tools → Graphing on switches either; the NMS keeps per-port history (1 min
-for 2 d, 1 h for 365 d by default) from the interface counters it already reads.
+for 2 d, 1 h for 365 d by default) from the interface counters it already reads. The
+hygiene audit reports a graphing rule on a weak device as a critical finding.
 
 ---
 

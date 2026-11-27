@@ -51,6 +51,11 @@ type Server struct {
 	// cache.
 	clients clientRefresher
 
+	// auditor runs the hygiene audit and the diagnose pass behind "Audit
+	// now" and "Diagnose now". nil = not wired (polling off, tests): the
+	// hygiene view is still served from the database.
+	auditor passRunner
+
 	// firmware is the release-feed checker behind /firmware/check. nil = one
 	// over the database per request (tests inject one with a fake feed).
 	firmware *poller.FirmwareChecker
@@ -86,10 +91,13 @@ type flowSource interface {
 
 func NewRouter(db *sql.DB, hub *ws.Hub, cfg *config.Config, pool *routeros.Pool, m mailer.Sender,
 	portStats *poller.PortStatsCollector, flows *flow.Collector, cadence poller.CadenceSource,
-	clients *poller.ClientRefresher) http.Handler {
+	clients *poller.ClientRefresher, auditor *poller.Auditor) http.Handler {
 	s := &Server{db: db, hub: hub, cfg: cfg, pool: pool, mailer: m, resolver: resolver.New(db), cadence: cadence}
 	if portStats != nil {
 		s.portStats = portStats
+	}
+	if auditor != nil && cfg.PollersEnabled() { // avoid a typed-nil interface; no passes on an instance that does not poll
+		s.auditor = auditor
 	}
 	if clients != nil { // avoid a typed-nil interface
 		s.clients = clients
@@ -193,6 +201,8 @@ func NewRouter(db *sql.DB, hub *ws.Hub, cfg *config.Config, pool *routeros.Pool,
 			r.Get("/devices/{id}/addresses", s.handleDeviceAddresses)
 			r.Get("/devices/{id}/audit", s.handleDeviceAudit)
 			r.Get("/devices/{id}/findings", s.handleListDeviceFindings)
+			// The hygiene audit and the diagnose pass: what they found.
+			r.Get("/devices/{id}/hygiene", s.handleDeviceHygiene)
 
 			// IP auto-follow proposals: list for every user; approve
 			// (admin + fresh password) and dismiss (admin).
@@ -208,6 +218,9 @@ func NewRouter(db *sql.DB, hub *ws.Hub, cfg *config.Config, pool *routeros.Pool,
 				r.Post("/devices/{id}/polling/pause", s.handlePausePolling)
 				r.Post("/devices/{id}/polling/resume", s.handleResumePolling)
 				r.Put("/devices/{id}/polling", s.handleUpdatePolling)
+				// "Audit now" / "Diagnose now": one of each per device and hour.
+				r.Post("/devices/{id}/hygiene/audit", s.handleAuditNow)
+				r.Post("/devices/{id}/hygiene/diagnose", s.handleDiagnoseNow)
 				r.Get("/discovery/deep", s.handleDeepScan)
 			})
 

@@ -169,7 +169,7 @@ func main() {
 		return out
 	})
 
-	router := api.NewRouter(db, hub, cfg, pool, nil, pollerMgr.PortStats(), flows, pollerMgr.Cadence(), pollerMgr.ClientRefresh())
+	router := api.NewRouter(db, hub, cfg, pool, nil, pollerMgr.PortStats(), flows, pollerMgr.Cadence(), pollerMgr.ClientRefresh(), pollerMgr.Audit())
 
 	srv := &http.Server{
 		Addr:         cfg.Listen,

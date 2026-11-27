@@ -26,6 +26,7 @@ import {
   type StpSource,
 } from "@/lib/api";
 import { DeviceLoadBadges } from "@/components/devices/device-load";
+import { FleetHygieneCard } from "@/components/devices/hygiene";
 import { useWebSocket } from "@/hooks/use-websocket";
 import { foldEvents, foldOptions, type FoldBucket } from "@/lib/fold";
 import { explainEvent, explainPortState, type HealthHint } from "@/lib/health-hints";
@@ -604,6 +605,9 @@ export default function NetworkHealthPage() {
           </Button>
         </div>
       )}
+
+      {/* What the hygiene audit found configured on the devices. */}
+      {filter === "none" && data && <FleetHygieneCard findings={data.findings ?? []} />}
 
       {/* Recent events */}
       {showEventsSection && (

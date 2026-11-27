@@ -15,7 +15,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/mikrotik-nms/backend/internal/auth"
 	"github.com/mikrotik-nms/backend/internal/config"
-	"github.com/mikrotik-nms/backend/internal/database"
+	"github.com/mikrotik-nms/backend/internal/database/dbtest"
 	"github.com/mikrotik-nms/backend/internal/database/queries"
 )
 
@@ -83,14 +83,11 @@ func (f *fakeMailer) waitForSend(t *testing.T) {
 	}
 }
 
+// newTestDB opens a fresh, fully migrated database for one test (a copy of
+// one migrated per test binary: see dbtest).
 func newTestDB(t *testing.T) *sql.DB {
 	t.Helper()
-	db, err := database.OpenFresh(t.TempDir() + "/test.db")
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
-	return db
+	return dbtest.Open(t)
 }
 
 func newTestServer(t *testing.T, db *sql.DB, m *fakeMailer) *Server {
