@@ -24,15 +24,28 @@ func TestSnapshotHoldsConfigurationOnly(t *testing.T) {
 			t.Errorf("the snapshot holds the runtime section %s", key)
 		}
 	}
-	// … what was read is, and so is a refusal; a read that was not sent is
-	// simply not there.
-	for _, kept := range []string{`"use-ip-firewall":"false"`, SecGraphingInterface, SecUserGroups, `"count":0`} {
+	// … what was read is, and so is a refusal.
+	for _, kept := range []string{`"use-ip-firewall":"false"`, SecUserGroups, `"count":0`} {
 		if !strings.Contains(raw, kept) {
 			t.Errorf("the snapshot lacks %q:\n%s", kept, raw)
 		}
 	}
-	if _, ok := snap.Sections[SecSNMPCommunities]; ok {
-		t.Error("a skipped read is part of the snapshot")
+	// A menu with nothing in it is not there, whichever way the pass learned
+	// that: an empty table, a read that was not sent, a menu the device does
+	// not have. Which of the three it was must not move the hash.
+	for _, key := range []string{SecGraphingInterface, SecSNMPCommunities} {
+		if _, ok := snap.Sections[key]; ok {
+			t.Errorf("the empty section %s is part of the snapshot", key)
+		}
+	}
+	for name, same := range map[string]Sections{
+		"an empty table that was skipped":  with(s, SecBonding, skippedSec),
+		"an empty table on a missing menu": with(s, SecGraphingQueue, absentSec),
+		"a skipped read that was sent":     with(s, SecSNMPCommunities, sec()),
+	} {
+		if got, _ := SnapshotOf(same); got.Hash() != snap.Hash() {
+			t.Errorf("%s changed the hash", name)
+		}
 	}
 	denied, _ := SnapshotOf(with(s, SecUserGroups, deniedSec))
 	if denied.Sections[SecUserGroups].State != "denied" || denied.Hash() == snap.Hash() {

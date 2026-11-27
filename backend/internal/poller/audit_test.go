@@ -466,6 +466,43 @@ func TestAuditStepsAsideWhenTheCPUGoesUpMidPass(t *testing.T) {
 	}
 }
 
+// An audit that stepped aside must not keep the diagnose pass waiting: when
+// cpu_high opens, the audit ends with what it has read, and the diagnose
+// pass — the one that reads a busy device — starts.
+func TestWaitingAuditMakesWayForTheDiagnosePass(t *testing.T) {
+	h := newAuditHarness(t)
+	h.add("sw", hygienetest.Load(t, "switch48_clean").With("/tool/graphing/interface/print", graphingRule))
+	h.run(auditStartupDelay + 65*time.Second)
+	audited := h.count("sw")
+	if audited < 3 || audited >= 19 {
+		t.Fatalf("mid-pass: %d commands", audited)
+	}
+	h.setCPU("sw", 100)
+	h.run(5 * time.Minute)
+	if h.count("sw") != audited {
+		t.Fatalf("the audit went on at 100 %% CPU")
+	}
+	opened := h.clock.now()
+	openAlert(t, h.db, alerts.RuleCPUHigh, "sw", alerts.SeverityWarning, true, opened)
+	h.run(8 * time.Minute)
+
+	audit := h.lastRun("sw", queries.AuditKindAudit)
+	if audit.Status != queries.AuditPartial || audit.Reads != audited || !strings.Contains(audit.Detail, "diagnose") {
+		t.Fatalf("the waiting audit = %+v, want it ended as partial for the diagnose pass", audit)
+	}
+	diag := h.lastRun("sw", queries.AuditKindDiagnose)
+	if diag == nil || diag.Status != queries.AuditComplete || diag.Reads != 11 || diag.StartedAt.Sub(opened) > alertScanEvery+pollerTick {
+		t.Fatalf("the diagnose pass = %+v, want it started within a scan of the alert", diag)
+	}
+	if h.count("sw") != audited+11 {
+		t.Fatalf("%d commands in all, want the audit's %d and the diagnose pass's 11", h.count("sw"), audited)
+	}
+	// What the audit had read before it stopped still counts.
+	if g, ok := h.findings("sw")[hygiene.KindGraphing]; !ok || g.Count < 1 {
+		t.Fatalf("findings = %v", h.findings("sw"))
+	}
+}
+
 // The snapshot is stored when the configuration changes, and only then.
 func TestAuditStoresTheSnapshotOnlyWhenItChanges(t *testing.T) {
 	h := newAuditHarness(t)

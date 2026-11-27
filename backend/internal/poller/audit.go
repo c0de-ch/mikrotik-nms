@@ -172,6 +172,7 @@ type pass struct {
 	nextAt    time.Time // no read before this
 	noSession time.Time // since when the device has had no session (zero = it has one)
 	busy      bool      // a read is in flight, or the pass is being set up
+	waiting   bool      // a scheduled audit that stepped aside for a high CPU
 }
 
 func (p *pass) mode() hygiene.Mode {
@@ -397,8 +398,15 @@ func (a *Auditor) retain(devices []queries.Device) {
 func (a *Auditor) tickDevice(dev queries.Device, trigger *queries.Alert, now time.Time) time.Time {
 	a.mu.Lock()
 	p := a.passes[dev.ID]
+	waiting := p != nil && p.waiting && !p.busy
 	a.mu.Unlock()
-	if p != nil {
+	switch {
+	case p != nil && trigger != nil && waiting:
+		// The audit stepped aside because the CPU is high, and an alert now
+		// asks for the pass that reads a busy device: the audit ends with
+		// what it has, and makes way.
+		a.finish(p, dev, "ended for the diagnose pass: the CPU stayed high", false, now)
+	case p != nil:
 		return a.advance(p, dev, now)
 	}
 
@@ -609,12 +617,13 @@ func (a *Auditor) advance(p *pass, dev queries.Device, now time.Time) time.Time 
 	// go on — that is what they are for.)
 	if p.req.reason == PassScheduled {
 		if s, ok := a.cpu(dev.ID); ok && now.Sub(s.At) <= auditCPUFresh && s.CPU >= auditCPULimit {
-			p.nextAt = now.Add(auditHoldRetry)
+			p.waiting, p.nextAt = true, now.Add(auditHoldRetry)
 			at := p.nextAt
 			a.mu.Unlock()
 			return at
 		}
 	}
+	p.waiting = false
 	read := a.nextReadLocked(p)
 	if read == nil {
 		a.mu.Unlock()

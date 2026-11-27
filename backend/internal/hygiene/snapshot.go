@@ -126,10 +126,18 @@ type Snapshot struct {
 // part of the hash, so such a change stores every device's snapshot anew.
 const snapshotSchema = 1
 
-// SnapshotOf builds the stored snapshot from the answers of a pass: the
-// sections that were read, without the runtime ones and without volatile
-// fields. complete is false when a read failed — a partial answer is not the
+// SnapshotOf builds the stored snapshot from the answers of a pass: what the
+// device has configured in the menus that were read, without the runtime
+// sections and without volatile fields, and the menus the NMS was refused.
+// complete is false when a read failed — a partial answer is not the
 // device's configuration, and is not stored as if it were.
+//
+// A menu with nothing in it is left out, whether the table was empty, the
+// menu does not exist on the device, or the read was not sent because it
+// did not apply: all three say "nothing configured there", and which of them
+// it was can change from one audit to the next without anyone touching the
+// device (the interface snapshot was not at hand, so a read was sent that is
+// otherwise skipped). The hash must not move for that.
 func SnapshotOf(s Sections) (snap Snapshot, complete bool) {
 	snap = Snapshot{Schema: snapshotSchema, Sections: map[string]Section{}}
 	complete = true
@@ -142,8 +150,12 @@ func SnapshotOf(s Sections) (snap Snapshot, complete bool) {
 		case routeros.ConfigFailed:
 			complete = false
 			continue
-		case StateSkipped:
+		case StateSkipped, routeros.ConfigAbsent:
 			continue
+		case routeros.ConfigOK:
+			if len(sec.Rows) == 0 && sec.Count == nil {
+				continue
+			}
 		}
 		out := Section{State: sec.State, Count: sec.Count}
 		for _, row := range sec.Rows {
