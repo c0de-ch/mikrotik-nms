@@ -60,8 +60,5 @@ jobs:
         run: npm run build
         env:
           NEXT_TELEMETRY_DISABLED: "1"
-      # Lint is reported but not yet a hard gate — there is pre-existing lint
-      # debt (see IMPROVEMENTS.md). Flip continue-on-error to false once cleared.
       - name: Lint
         run: npm run lint
-        continue-on-error: true
