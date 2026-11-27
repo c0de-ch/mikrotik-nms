@@ -70,6 +70,12 @@ func TestClassifyRole(t *testing.T) {
 			RoleFacts{Board: "hAP ax3", Class: C3, Radios: 2}, RoleUnknown, "no default route"},
 		{"AP board that is the internet edge routes", RoleFacts{Board: "hAP ax3", Class: C3, Egress: EgressInternet,
 			EgressVia: "ether1"}, RoleRouter, "internet"},
+		{"home router board behind another router (double NAT, or used as an access point) is not called an access point",
+			RoleFacts{Board: "hAP ax3", Class: C3, Radios: 2, BridgePorts: 4, Gateway: "192.0.2.1"}, RoleUnknown, "cannot tell"},
+		{"the same for an LTE home router whose default route goes to a LAN router",
+			RoleFacts{Board: "Chateau LTE12", Class: C2, Radios: 2, Gateway: "192.0.2.1"}, RoleUnknown, "192.0.2.1"},
+		{"a home router board with only a VPN tunnel of its own is not called an access point either",
+			RoleFacts{Board: "hAP ax2", Class: C3, Egress: EgressVPN, EgressVia: "wg0", Gateway: "192.0.2.1"}, RoleUnknown, "cannot tell"},
 		{"LTE CPE that is the internet edge is a weak router", RoleFacts{Board: "LHG LTE6 kit", Class: C1,
 			Egress: EgressInternet, EgressVia: "lte1"}, RoleWeakRouter, "lte1"},
 		{"unknown board with radios behind a router", RoleFacts{Board: "SomeOtherBoard", Class: C2, Radios: 2,
@@ -154,5 +160,25 @@ func TestParseRole(t *testing.T) {
 	}
 	if !RoleSwitch.NeverExports() || !RoleAPCPE.NeverExports() || RoleRouter.NeverExports() || RoleUnknown.NeverExports() {
 		t.Error("NeverExports: only switch and ap-cpe")
+	}
+}
+
+// A home router board (hAP, Chateau, …) can be an access point behind the
+// real router, or a router behind an ISP modem that hands out a private
+// address. A private default gateway does not tell the two apart, and
+// "ap-cpe" gets a sender blocked and alarmed: such a board is unknown —
+// neither offered nor blocked — while a pure access point or CPE board with
+// the same route is ap-cpe.
+func TestHomeRouterBoardsAreNotAccessPointsOnARouteAlone(t *testing.T) {
+	for _, board := range []string{"hAP ax3", "hAP ac^2", "hAP ax lite LTE6", "Chateau 5G ax", "Audience", "LtAP mini LTE kit", "KNOT LR8 kit"} {
+		r, reason := ClassifyRole(RoleFacts{Board: board, Class: C2, Radios: 2, Gateway: "192.0.2.1"})
+		if r != RoleUnknown || r.NeverExports() {
+			t.Errorf("%q behind a private gateway = %s (%s), want unknown", board, r, reason)
+		}
+	}
+	for _, board := range []string{"cAP ax", "wAP ac", "mAP lite", "SXTsq 5 ax", "LHG 5 ax", "Disc Lite5 ac"} {
+		if r, reason := ClassifyRole(RoleFacts{Board: board, Class: C2, Radios: 1, Gateway: "192.0.2.1"}); r != RoleAPCPE {
+			t.Errorf("%q behind a private gateway = %s (%s), want ap-cpe", board, r, reason)
+		}
 	}
 }

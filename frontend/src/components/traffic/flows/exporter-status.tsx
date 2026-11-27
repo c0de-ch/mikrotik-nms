@@ -232,7 +232,13 @@ function ExporterDialog({
                 className="font-mono"
                 placeholder="192.0.2.10"
                 value={form.address}
-                onChange={(e) => set({ address: e.target.value })}
+                onChange={(e) => {
+                  // "Blocked" and the tick to add it anyway were about the
+                  // address that was typed before: a new address is checked
+                  // by the server again.
+                  set({ address: e.target.value, blocked: "" });
+                  setOverride(false);
+                }}
               />
             </div>
             <div className="space-y-1">
@@ -868,7 +874,7 @@ export function ExporterStatusCard({
                   const auto = b.source === "auto";
                   // A device that still must not export is blocked again by
                   // its next datagram: "Unblock" alone would do nothing.
-                  const stillNever = auto && (b.device_role === "switch" || b.device_role === "ap-cpe");
+                  const stillNever = auto && b.still_never;
                   return (
                     <li key={b.address} className="flex flex-wrap items-start justify-between gap-2 px-3 py-2 text-xs">
                       <div className="min-w-0 flex-1">

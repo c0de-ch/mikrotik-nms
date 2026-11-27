@@ -85,6 +85,26 @@ var (
 // "RB5009UG+S+") and architecture to its hardware family. An x86 device is PC
 // hardware and counts as a router board whatever its name. Unknown names are
 // FamilyUnknown — never a router by default.
+// homeRouterBoards are the boards of the AP family that are sold as home
+// routers and work as one about as often as they work as an access point
+// (hAP = "home access point", Chateau, …). For them a default route to a
+// private gateway proves nothing: an access point behind the real router has
+// one, and so has a router behind an ISP modem that hands out a private
+// address (double NAT).
+var homeRouterBoards = []string{"hap", "chateau", "audience", "ltap", "knot"}
+
+// IsHomeRouterBoard reports a board of the AP family that is as likely a
+// router as an access point (see homeRouterBoards).
+func IsHomeRouterBoard(board string) bool {
+	b := strings.ToLower(strings.TrimSpace(board))
+	for _, p := range homeRouterBoards {
+		if strings.HasPrefix(b, p) {
+			return true
+		}
+	}
+	return false
+}
+
 func BoardFamilyOf(board, arch string) BoardFamily {
 	b := strings.ToLower(strings.TrimSpace(board))
 	hasPrefix := func(list []string) bool {
@@ -153,7 +173,9 @@ type RoleFacts struct {
 //     when its default route points at another router on the LAN, and
 //     unknown while the NMS knows no default route on it (a router whose WAN
 //     is down must not turn into an access point). A VPN tunnel alone does
-//     not make such a board a router.
+//     not make such a board a router. A home router board (hAP, Chateau, …)
+//     with such a route stays unknown: it is an access point behind the real
+//     router as often as a router behind an ISP modem (double NAT).
 //  3. A device with an internet or VPN egress of its own is an L3 boundary:
 //     router on class C3, weak-router on anything else.
 //  4. Everything else is unknown. Router hardware without an egress of its
@@ -192,6 +214,13 @@ func ClassifyRole(f RoleFacts) (Role, string) {
 		if f.Gateway == "" {
 			return RoleUnknown, what + ", but the NMS knows no default route on it right now, so it cannot tell " +
 				"whether it routes" + vpn
+		}
+		if family == FamilyAP && IsHomeRouterBoard(board) {
+			// ap-cpe gets a sender blocked and alarmed: not on a route that
+			// a router behind an ISP modem has just the same.
+			return RoleUnknown, name + " is a home router board whose default route points at another router (" +
+				f.Gateway + "): it may be an access point here, or a router behind another router — the NMS " +
+				"cannot tell, so it neither offers flow export for it nor blocks it" + vpn
 		}
 		return RoleAPCPE, what + " and its default route points at another router (" + f.Gateway +
 			"), so it is treated as an access point or CPE" + vpn

@@ -264,3 +264,80 @@ func TestFlowExportRuleIsRegistered(t *testing.T) {
 		t.Fatalf("DefaultRules = %v", names)
 	}
 }
+
+// A confirmation belongs to the run of datagrams it was read during. After
+// the export was stopped and the datagrams ended, a new datagram from the
+// same address — which may be forged — starts a new run: the old "yes" does
+// not make it critical. It stays an unconfirmed warning until the device is
+// read again.
+func TestOldConfirmationDoesNotConfirmANewRun(t *testing.T) {
+	db := testDB(t)
+	t0 := time.Now().UTC().Truncate(time.Second).Add(-3 * time.Hour)
+	exportDevice(t, db, "sw", "192.0.2.10", "7.25.2 (stable)", t0)
+	rule := flowExportOnSwitch{db}
+	only := func(at time.Time) Observation {
+		t.Helper()
+		obs, err := rule.Evaluate(at)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(obs) != 1 {
+			t.Fatalf("observations at %s = %+v, want one", at.Format(time.TimeOnly), obs)
+		}
+		return obs[0]
+	}
+	sight := func(at time.Time) {
+		t.Helper()
+		if err := queries.NoteFlowExportSighting(db, "sw", "192.0.2.10", 2055, at); err != nil {
+			t.Fatal(err)
+		}
+		if err := queries.UpsertFlowExportFinding(db, "sw", RuleFlowExportOnSwitch, "flow datagrams from 192.0.2.10", at); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// The device is read one minute into the run and says it exports.
+	if err := queries.SetFlowExportCheckResult(db, "sw", t0.Add(time.Minute), queries.FlowExportExporting, "traffic-flow enabled", nil); err != nil {
+		t.Fatal(err)
+	}
+	sight(t0.Add(2 * time.Minute))
+	if o := only(t0.Add(3 * time.Minute)); o.Severity != SeverityCritical || o.Unconfirmed {
+		t.Fatalf("during the confirmed run: %s unconfirmed=%v, want critical and confirmed", o.Severity, o.Unconfirmed)
+	}
+
+	// The export is stopped; the datagrams end. 45 minutes later one
+	// datagram carries the switch's address again — inside the 2 h 15 min a
+	// confirmation is valid, and inside the hour before the next read.
+	later := t0.Add(50 * time.Minute)
+	sight(later)
+	o := only(later.Add(time.Minute))
+	if o.Severity != SeverityWarning || !o.Unconfirmed {
+		t.Errorf("a new run after the datagrams had ended: %s unconfirmed=%v — an old confirmation made it critical", o.Severity, o.Unconfirmed)
+	}
+	if lines := factStrings(t, o, "rollback"); len(lines) != 0 {
+		t.Errorf("an unconfirmed alert carries rollback steps: %v", lines)
+	}
+	f, err := queries.ListDeviceFindings(db, "sw", 10)
+	if err != nil || len(f) != 1 || f[0].Severity != "warn" {
+		t.Errorf("finding after the new run = %+v %v, want one warn", f, err)
+	}
+
+	// A read during the new run that says "exporting" confirms it again.
+	if err := queries.SetFlowExportCheckResult(db, "sw", later.Add(2*time.Minute), queries.FlowExportExporting, "traffic-flow enabled", nil); err != nil {
+		t.Fatal(err)
+	}
+	sight(later.Add(3 * time.Minute))
+	if o := only(later.Add(4 * time.Minute)); o.Severity != SeverityCritical || o.Unconfirmed {
+		t.Errorf("after a read during the new run: %s unconfirmed=%v, want critical and confirmed", o.Severity, o.Unconfirmed)
+	}
+
+	// Datagrams that keep coming are one run: its confirmation holds.
+	run := later.Add(4 * time.Minute)
+	for i := 0; i < 4; i++ {
+		run = run.Add(20 * time.Minute)
+		sight(run)
+	}
+	if o := only(run.Add(time.Minute)); o.Severity != SeverityCritical {
+		t.Errorf("80 minutes into an uninterrupted run: %s, want still critical", o.Severity)
+	}
+}

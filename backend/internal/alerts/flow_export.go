@@ -97,6 +97,14 @@ func (r flowExportOnSwitch) Evaluate(now time.Time) ([]Observation, error) {
 			facts["confirmed"] = true
 			target, port := flowguard.RollbackTarget(advertise, chk.CollectorPort, chk.Targets)
 			facts["rollback"] = flowguard.Rollback(d.ROSVersion, target, port).Lines()
+		case chk.Result == queries.FlowExportExporting && chk.CheckedAt.Before(chk.FirstSeen) &&
+			now.Sub(chk.CheckedAt) <= queries.FlowExportConfirmationValid:
+			// The device confirmed an export, but before these datagrams
+			// began: after the export was stopped, a datagram with its
+			// address may just as well be forged.
+			o.Summary = "Flow datagrams arrive again from the address of " + who + ", which must not export flows — not " +
+				"confirmed: the device was last read at " + chk.CheckedAt.UTC().Format("2006-01-02 15:04 UTC") +
+				", before these datagrams began"
 		case chk.Result == queries.FlowExportExporting:
 			// The device confirmed it once, but nobody has read it since
 			// (it is paused, or unreachable): that is no confirmation of

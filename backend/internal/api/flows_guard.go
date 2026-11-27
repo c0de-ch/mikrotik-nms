@@ -123,6 +123,7 @@ func (g *flowGuard) apply(st *flow.Status) {
 				b.DeviceName = deviceDisplayName(*d)
 				b.DeviceRole, b.DeviceRoleReason = g.roleAt(a)
 			}
+			b.StillNever = g.never[a] != ""
 		}
 		st.Blocked = append(st.Blocked, b)
 	}

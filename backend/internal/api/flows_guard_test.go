@@ -626,3 +626,56 @@ func TestBlockListIsBackedUp(t *testing.T) {
 		t.Fatalf("restored row = %+v", p)
 	}
 }
+
+// A blocked sender says whether removing the block would last: a device that
+// must still not export — by its role, or because it is a C1 device whatever
+// its role — is blocked again by its next datagram.
+func TestBlockedSendersSayWhetherUnblockingLasts(t *testing.T) {
+	g := newGuardFixture(t)
+	now := time.Now()
+	for _, p := range []queries.FlowSenderPolicy{
+		{Address: "192.0.2.3", Reason: "a C1 device", Source: queries.FlowBlockAuto, Name: "tiny", Kind: "routeros", DeviceID: "tiny", CreatedAt: now},         // weak-router on C1
+		{Address: "192.0.2.10", Reason: "a switch", Source: queries.FlowBlockAuto, Name: "sw", Kind: "routeros", DeviceID: "sw", CreatedAt: now},               // switch
+		{Address: "192.0.2.1", Reason: "exporter deleted", Source: queries.FlowBlockDeleted, Name: "edge", Kind: "routeros", DeviceID: "edge", CreatedAt: now}, // a router someone deleted
+		{Address: "198.51.100.77", Reason: "exporter deleted", Source: queries.FlowBlockDeleted, Name: "fw", Kind: "opnsense", CreatedAt: now},                 // no managed device
+	} {
+		p.Policy = queries.FlowPolicyBlocked
+		if _, err := queries.BlockFlowSender(g.db, &p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var st flowStatusResponse
+	if code, raw := g.get(t, "/flows/status", nil, &st); code != http.StatusOK {
+		t.Fatalf("status: %d %s", code, raw)
+	}
+	want := map[string]bool{"192.0.2.3": true, "192.0.2.10": true, "192.0.2.1": false, "198.51.100.77": false}
+	if len(st.Blocked) != len(want) {
+		t.Fatalf("blocked senders = %+v", st.Blocked)
+	}
+	for _, b := range st.Blocked {
+		if b.StillNever != want[b.Address] {
+			t.Errorf("%s (%s): still_never = %v, want %v", b.Address, b.DeviceRole, b.StillNever, want[b.Address])
+		}
+	}
+}
+
+// The device list does not depend on the roles: when they cannot be derived
+// (here the uplink table is gone) the devices are listed without them.
+func TestDeviceListSurvivesAFailedRoleDerivation(t *testing.T) {
+	g := newGuardFixture(t)
+	if _, err := g.db.Exec(`DROP TABLE device_uplinks`); err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	g.s.handleListDevices(rec, httptest.NewRequest(http.MethodGet, "/api/v1/devices", nil))
+	var devices []struct {
+		ID   string `json:"id"`
+		Role string `json:"role"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &devices); rec.Code != http.StatusOK || err != nil {
+		t.Fatalf("GET /devices = %d %s", rec.Code, rec.Body.String())
+	}
+	if len(devices) != len(guardDevices) {
+		t.Errorf("listed %d devices, want %d", len(devices), len(guardDevices))
+	}
+}

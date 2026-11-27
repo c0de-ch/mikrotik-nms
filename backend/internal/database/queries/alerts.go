@@ -29,16 +29,16 @@ type Alert struct {
 	AckedBy        string     `json:"acked_by,omitempty"`
 	AckedAt        *time.Time `json:"acked_at,omitempty"`
 	Confirmed      bool       `json:"confirmed"`
-	// NotifiedSeverity is the highest severity a notification of this alert
-	// was delivered for ("" = none yet).
-	NotifiedSeverity string `json:"-"`
+	// PeakSeverity is the highest severity the alert has reached while open
+	// ("" on a row from before the column existed).
+	PeakSeverity string `json:"-"`
 	// Payload is the rule's JSON object ({"summary": …, …}).
 	Payload string `json:"-"`
 }
 
 const alertColumns = `id, rule, key, COALESCE(device_id, ''), severity, state, first_at, last_at,
 	last_notified_at, resolved_at, COALESCE(acked_by, ''), acked_at, confirmed, payload,
-	COALESCE(notified_severity, '')`
+	COALESCE(peak_severity, '')`
 
 func unixPtr(v sql.NullInt64) *time.Time {
 	if !v.Valid {
@@ -53,7 +53,7 @@ func scanAlert(row rowScanner) (Alert, error) {
 	var first, last int64
 	var notified, resolved, acked sql.NullInt64
 	if err := row.Scan(&a.ID, &a.Rule, &a.Key, &a.DeviceID, &a.Severity, &a.State, &first, &last,
-		&notified, &resolved, &a.AckedBy, &acked, &a.Confirmed, &a.Payload, &a.NotifiedSeverity); err != nil {
+		&notified, &resolved, &a.AckedBy, &acked, &a.Confirmed, &a.Payload, &a.PeakSeverity); err != nil {
 		return a, err
 	}
 	a.FirstAt, a.LastAt = time.Unix(first, 0).UTC(), time.Unix(last, 0).UTC()
@@ -102,9 +102,9 @@ func GetAlert(db *sql.DB, id int64) (Alert, error) {
 // InsertAlert opens an alert in state firing and returns its id. The unique
 // index on open (rule, key) makes a second open alert for the same key fail.
 func InsertAlert(db *sql.DB, a *Alert) (int64, error) {
-	res, err := db.Exec(`INSERT INTO alerts (rule, key, device_id, severity, state, first_at, last_at, confirmed, payload)
-		VALUES (?, ?, NULLIF(?, ''), ?, 'firing', ?, ?, ?, ?)`,
-		a.Rule, a.Key, a.DeviceID, a.Severity, a.FirstAt.Unix(), a.LastAt.Unix(), a.Confirmed, a.Payload)
+	res, err := db.Exec(`INSERT INTO alerts (rule, key, device_id, severity, peak_severity, state, first_at, last_at, confirmed, payload)
+		VALUES (?, ?, NULLIF(?, ''), ?, ?, 'firing', ?, ?, ?, ?)`,
+		a.Rule, a.Key, a.DeviceID, a.Severity, a.Severity, a.FirstAt.Unix(), a.LastAt.Unix(), a.Confirmed, a.Payload)
 	if err != nil {
 		return 0, err
 	}
@@ -125,12 +125,14 @@ func SetAlertConfirmed(db *sql.DB, id int64, confirmed bool) error {
 	return err
 }
 
-// EscalateAlert makes an open alert fire again after its severity rose: an
-// acknowledgement of the lower severity is dropped and the alert counts as
-// not notified yet, so the next notification pass delivers it.
-func EscalateAlert(db *sql.DB, id int64) error {
-	_, err := db.Exec(`UPDATE alerts SET state = 'firing', acked_by = NULL, acked_at = NULL, last_notified_at = NULL
-		WHERE id = ? AND state <> 'resolved'`, id)
+// EscalateAlert makes an open alert fire again because it reached severity
+// for the first time: an acknowledgement of the lower severity is dropped,
+// the alert counts as not notified yet (the next notification pass delivers
+// it), and severity becomes its peak — recorded here, not when a
+// notification goes out, so that it also holds where nothing is delivered.
+func EscalateAlert(db *sql.DB, id int64, severity string) error {
+	_, err := db.Exec(`UPDATE alerts SET state = 'firing', acked_by = NULL, acked_at = NULL, last_notified_at = NULL, peak_severity = ?
+		WHERE id = ? AND state <> 'resolved'`, severity, id)
 	return err
 }
 
@@ -140,10 +142,9 @@ func ResolveAlert(db *sql.DB, id int64, at time.Time) error {
 	return err
 }
 
-// MarkAlertNotified records a delivered notification; notifiedSeverity is
-// the highest severity the alert has now been announced at.
-func MarkAlertNotified(db *sql.DB, id int64, at time.Time, notifiedSeverity string) error {
-	_, err := db.Exec(`UPDATE alerts SET last_notified_at = ?, notified_severity = ? WHERE id = ?`, at.Unix(), notifiedSeverity, id)
+// MarkAlertNotified records a delivered notification.
+func MarkAlertNotified(db *sql.DB, id int64, at time.Time) error {
+	_, err := db.Exec(`UPDATE alerts SET last_notified_at = ? WHERE id = ?`, at.Unix(), id)
 	return err
 }
 

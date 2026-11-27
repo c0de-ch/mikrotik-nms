@@ -75,8 +75,19 @@ function isCRS3xx(board: string | undefined): boolean {
   return /^CRS[35]\d\d/i.test((board || "").trim());
 }
 
+// An interface name as a RouterOS console word: plain when it is made of
+// letters, digits, ".", "_", "+" and "-"; quoted otherwise ("ether5 printer"
+// would otherwise be two words — a syntax error, or a command on "ether5").
+export function rosName(name: string): string {
+  if (/^[A-Za-z0-9._+-]+$/.test(name)) return name;
+  return `"${name.replace(/[\\"$]/g, "\\$&")}"`;
+}
+
+// The same inside a [find …] value, which is always quoted.
+const rosQuoted = (name: string) => `"${name.replace(/[\\"$]/g, "\\$&")}"`;
+
 // A bridge port has no name of its own: it is addressed by its interface.
-const bridgePort = (port: string) => `/interface bridge port set [find interface="${port}"]`;
+const bridgePort = (port: string) => `/interface bridge port set [find interface=${rosQuoted(port)}]`;
 
 // Why no command is offered for this port.
 function noCommandReason(port: string, role: PortRoleName | "" | undefined): HintFix {
@@ -117,7 +128,7 @@ function endDevicePortProtection(
   if (crs) {
     fixes.push(
       fix(`Limit broadcast storms on ${port} in the switch chip (percent of the link speed):`, {
-        command: `/interface ethernet switch port set ${port} storm-rate=1 limit-broadcasts=yes limit-unknown-unicasts=yes`,
+        command: `/interface ethernet switch port set ${rosName(port)} storm-rate=1 limit-broadcasts=yes limit-unknown-unicasts=yes`,
       }),
     );
   }
@@ -126,7 +137,7 @@ function endDevicePortProtection(
       crs
         ? `Optional: loop-protect on ${port}. On this switch, changing loop-protect reinitialises the switch chip — every port drops for about 4 seconds.`
         : `Optional: loop-protect on ${port}, so the port disables itself when its own probe frame comes back.`,
-      { command: `/interface ethernet set ${port} loop-protect=on`, window: crs },
+      { command: `/interface ethernet set ${rosName(port)} loop-protect=on`, window: crs },
     ),
   );
   return fixes;
@@ -240,7 +251,7 @@ export function explainEvent(e: EventCtx): HealthHint {
             "If a protection tripped: fix the underlying loop/rogue device first. loop-protect recovers by itself after about 5 minutes by default; a port shut by bpdu-guard comes back when its bridge port is disabled and enabled again.",
           ),
           endDevice
-            ? fix(`If it was switched off by hand and should be on:`, { command: `/interface enable ${namedPort}` })
+            ? fix(`If it was switched off by hand and should be on:`, { command: `/interface enable ${rosName(namedPort)}` })
             : fix(
                 isInfrastructurePort(e.port_role)
                   ? `${port} is ${ROLE_WORDS[e.port_role as PortRoleName]}. Re-enable it only when you know why it is off — a disabled link between switches is often a loop someone broke on purpose.`

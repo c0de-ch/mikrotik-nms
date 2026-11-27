@@ -1360,6 +1360,9 @@ export interface FlowBlockedSender {
   device_name: string;
   device_role: DeviceRole | "";
   device_role_reason: string;
+  // The device at this address must still not export: its next datagram
+  // would block it again, so removing the block alone does nothing.
+  still_never: boolean;
   created_by: string;
   created_at: string | null;
   last_seen: string | null;

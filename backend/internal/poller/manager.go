@@ -28,6 +28,10 @@ type Manager struct {
 	cfg        *config.Config
 	cancel     context.CancelFunc
 	lastVacuum time.Time
+	// floors caches the fleet floors (settings, or the environment) for the
+	// loops that ask outside a CadenceSource: the map rebuild and the
+	// network-health maintenance.
+	floors *floors
 
 	// portStats is built in NewManager (not Start) because main reads it via
 	// PortStats() right after launching Start asynchronously.
@@ -91,6 +95,15 @@ func (m *Manager) clock() time.Time {
 	return time.Now()
 }
 
+// floorOf is the fleet floor of tier: from the cache NewManager builds, or
+// read directly by a Manager that was put together without it (tests).
+func (m *Manager) floorOf(tier devclass.Tier, now time.Time) time.Duration {
+	if m.floors != nil {
+		return m.floors.of(tier, now)
+	}
+	return settingFloors(m.db, m.cfg)[tier]
+}
+
 func NewManager(db *sql.DB, pool *routeros.Pool, hub *ws.Hub, cfg *config.Config) *Manager {
 	flowCfg := flow.Config{Listen: cfg.FlowListen, CaptureDir: cfg.FlowCaptureDir}
 	if !cfg.PollersEnabled() {
@@ -109,6 +122,7 @@ func NewManager(db *sql.DB, pool *routeros.Pool, hub *ws.Hub, cfg *config.Config
 		portStats: NewPortStatsCollector(db, pool, hub),
 		flows:     flow.New(db, pool, hub, flowCfg),
 		cadence:   NewCadence(db, cfg),
+		floors:    newFloors(db, cfg),
 		inventory: newTierClock(Schedule()),
 		topoClock: newTierClock(Schedule()),
 		classes:   newClassGate(),
@@ -223,7 +237,9 @@ func (m *Manager) Start() {
 	go clientDisc.Run(ctx)
 
 	netHealth := NewNetworkHealthPoller(m.db, m.pool, m.hub, m.cfg.NetworkHealthInterval)
-	netHealth.UseFloor(func() time.Duration { return NetworkHealthFloor(m.db, m.cfg) })
+	// Both loops ask on every wake-up and per device: the floors' own
+	// cache answers (one settings read per floorTTL).
+	netHealth.UseFloor(func() time.Duration { return m.floorOf(devclass.TierBridgePorts, time.Now()) })
 	netHealth.UseLogReader(logs)
 	netHealth.UseInterfaceSnapshots(m.portStats)
 	netHealth.UseCadence(m.cadence)
@@ -615,7 +631,7 @@ func (m *Manager) pollTopology(ctx context.Context) {
 		}
 	}
 
-	if !m.lastBuild.IsZero() && now.Sub(m.lastBuild) < TopologyFloor(m.db, m.cfg) {
+	if !m.lastBuild.IsZero() && now.Sub(m.lastBuild) < m.floorOf(devclass.TierNeighbors, now) {
 		return
 	}
 	m.lastBuild = now

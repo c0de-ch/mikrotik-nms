@@ -271,11 +271,12 @@ func (e *Engine) Tick() error {
 		// again and is notified in this tick, even when the lower severity
 		// had been delivered or acknowledged (a warning someone acknowledged
 		// as "maybe" that is now a confirmed critical must reach them). One
-		// it was already announced at is not — an alert swinging between
-		// warning and critical does not notify at every swing, and an
-		// acknowledgement given since stays.
-		if SeverityRank(o.Severity) > SeverityRank(a.Severity) && SeverityRank(o.Severity) > SeverityRank(a.NotifiedSeverity) {
-			if err := queries.EscalateAlert(e.db, a.ID); err != nil {
+		// it has been at before (its peak) is not — an alert swinging
+		// between warning and critical does not fire at every swing, and an
+		// acknowledgement given since stays, whether or not any notification
+		// could be delivered.
+		if SeverityRank(o.Severity) > SeverityRank(a.Severity) && SeverityRank(o.Severity) > SeverityRank(a.PeakSeverity) {
+			if err := queries.EscalateAlert(e.db, a.ID, o.Severity); err != nil {
 				errs = append(errs, err)
 			} else {
 				changed = true
@@ -346,11 +347,7 @@ func (e *Engine) notify(now time.Time, resolved []queries.Alert) bool {
 		if n == 0 {
 			continue // nothing delivered: try again next tick
 		}
-		told := a.Severity
-		if SeverityRank(a.NotifiedSeverity) > SeverityRank(told) {
-			told = a.NotifiedSeverity
-		}
-		if err := queries.MarkAlertNotified(e.db, a.ID, now, told); err != nil {
+		if err := queries.MarkAlertNotified(e.db, a.ID, now); err != nil {
 			log.Printf("alerts: mark notified: %v", err)
 		}
 		sent = true

@@ -235,10 +235,18 @@ type FlowExportCheck struct {
 // possibly forged datagram critical.
 const FlowExportConfirmationValid = 2*time.Hour + 15*time.Minute
 
+// FlowExportRunGap ends a run of sightings: a datagram that arrives after
+// none for this long starts a new run (first_seen moves to it). It is the
+// time a flow_export_on_switch finding stays current.
+const FlowExportRunGap = 30 * time.Minute
+
 // Confirmed reports whether the device's own settings confirmed the export
-// recently enough to count at now.
+// recently enough to count at now — and during the current run of
+// sightings: a "yes" read before the export was stopped says nothing about
+// a datagram that arrives later, which may be forged.
 func (c FlowExportCheck) Confirmed(now time.Time) bool {
-	return c.Result == FlowExportExporting && !c.CheckedAt.IsZero() && now.Sub(c.CheckedAt) <= FlowExportConfirmationValid
+	return c.Result == FlowExportExporting && !c.CheckedAt.IsZero() &&
+		now.Sub(c.CheckedAt) <= FlowExportConfirmationValid && !c.CheckedAt.Before(c.FirstSeen)
 }
 
 const flowExportCheckCols = `device_id, address, collector_port, first_seen, last_seen, checked_at, result, detail, targets`
@@ -268,8 +276,9 @@ func NoteFlowExportSighting(db *sql.DB, deviceID, address string, collectorPort 
 	_, err := db.Exec(`INSERT INTO flow_export_checks (device_id, address, collector_port, first_seen, last_seen)
 		VALUES (?, ?, ?, ?, ?)
 		ON CONFLICT(device_id) DO UPDATE SET address = excluded.address, collector_port = excluded.collector_port,
+		  first_seen = CASE WHEN first_seen = 0 OR excluded.last_seen - last_seen > ? THEN excluded.first_seen ELSE first_seen END,
 		  last_seen = CASE WHEN excluded.last_seen > last_seen THEN excluded.last_seen ELSE last_seen END`,
-		deviceID, address, collectorPort, ts, ts)
+		deviceID, address, collectorPort, ts, ts, int64(FlowExportRunGap/time.Second))
 	return err
 }
 
@@ -326,7 +335,7 @@ func SetFlowExportCheckResult(db *sql.DB, deviceID string, at time.Time, result,
 // settings confirmed the export recently enough (FlowExportCheck.Confirmed),
 // warn otherwise (unconfirmed). Binds: the confirmation cutoff (unix
 // seconds), the device id.
-const exportFindingSeverity = `COALESCE((SELECT CASE WHEN result = 'exporting' AND checked_at >= ? THEN 'critical' ELSE 'warn' END
+const exportFindingSeverity = `COALESCE((SELECT CASE WHEN result = 'exporting' AND checked_at >= ? AND checked_at >= first_seen THEN 'critical' ELSE 'warn' END
 	FROM flow_export_checks WHERE device_id = ?), 'warn')`
 
 // UpsertFlowExportFinding records one sighting at now as a device_findings

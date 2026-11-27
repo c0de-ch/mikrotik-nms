@@ -17,11 +17,14 @@ data:
   # every user shares the ingress pod's address and its 10 logins a minute.
   # MIKROTIK_NMS_TRUSTED_PROXIES: "10.42.0.0/16"
   MIKROTIK_NMS_HEALTH_INTERVAL: "30s"
-  MIKROTIK_NMS_TOPOLOGY_INTERVAL: "60s"
   MIKROTIK_NMS_FIRMWARE_INTERVAL: "24h"
-  MIKROTIK_NMS_NETWORK_HEALTH_INTERVAL: "60s"
   MIKROTIK_NMS_RETENTION_INTERVAL: "1h"
-  MIKROTIK_NMS_RETENTION_DAYS: "7"
+  # These three are managed on the Settings page. A variable set here fixes
+  # its value and makes the Settings field read-only: uncomment only to
+  # configure them from this ConfigMap instead.
+  # MIKROTIK_NMS_TOPOLOGY_INTERVAL: "60s"
+  # MIKROTIK_NMS_NETWORK_HEALTH_INTERVAL: "60s"
+  # MIKROTIK_NMS_RETENTION_DAYS: "7"
   MIKROTIK_NMS_DEFAULT_ROS_PORT: "8728"
   MIKROTIK_NMS_DEFAULT_ROS_TLS: "false"
   # Flow collector (NetFlow v5/v9, IPFIX, sFlow over UDP) — off unless set.

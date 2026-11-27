@@ -136,14 +136,18 @@ type BlockedSender struct {
 	Reason  string `json:"reason"`
 	Source  string `json:"source"` // deleted (a deleted exporter) | auto (a device that must not export)
 	// DeviceID is the managed device the block was created for ("" = none).
-	DeviceID         string     `json:"device_id"`
-	DeviceName       string     `json:"device_name"`
-	DeviceRole       string     `json:"device_role"`
-	DeviceRoleReason string     `json:"device_role_reason"`
-	CreatedBy        string     `json:"created_by"` // "" = the collector
-	CreatedAt        *time.Time `json:"created_at"`
-	LastSeen         *time.Time `json:"last_seen"` // last dropped datagram
-	Datagrams        int64      `json:"datagrams"` // dropped since blocked
+	DeviceID         string `json:"device_id"`
+	DeviceName       string `json:"device_name"`
+	DeviceRole       string `json:"device_role"`
+	DeviceRoleReason string `json:"device_role_reason"`
+	// StillNever: the device at this address must still not export (its
+	// role, or its class), so its next datagram would block it again —
+	// removing the block alone does nothing.
+	StillNever bool       `json:"still_never"`
+	CreatedBy  string     `json:"created_by"` // "" = the collector
+	CreatedAt  *time.Time `json:"created_at"`
+	LastSeen   *time.Time `json:"last_seen"` // last dropped datagram
+	Datagrams  int64      `json:"datagrams"` // dropped since blocked
 }
 
 // BlockedSenderFromRow builds a blocked sender from its row (persisted

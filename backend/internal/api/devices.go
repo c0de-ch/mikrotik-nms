@@ -55,8 +55,15 @@ func (s *Server) handleListDevices(w http.ResponseWriter, r *http.Request) {
 	// unknown) with the reason, derived from stored facts only.
 	roles, devices, err := s.deviceRoles(time.Now())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list devices")
-		return
+		// The roles need the uplinks, the interface list and the bridge
+		// ports as well; the list itself only the devices. A device list
+		// without roles is better than no device list.
+		log.Printf("api: device roles: %v (listing devices without roles)", err)
+		roles = nil
+		if devices, err = queries.ListDevices(s.db); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to list devices")
+			return
+		}
 	}
 	if devices == nil {
 		devices = []queries.Device{}

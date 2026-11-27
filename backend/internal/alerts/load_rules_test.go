@@ -96,7 +96,7 @@ func TestEscalationNotifiesOncePerSeverity(t *testing.T) {
 		t.Fatalf("first escalation sent %v, want the alert again", got)
 	}
 	open = openAlerts(t, e)
-	if len(open) != 1 || open[0].Severity != SeverityCritical || open[0].State != queries.AlertFiring || open[0].NotifiedSeverity != SeverityCritical {
+	if len(open) != 1 || open[0].Severity != SeverityCritical || open[0].State != queries.AlertFiring || open[0].PeakSeverity != SeverityCritical {
 		t.Fatalf("after the escalation: %+v", open)
 	}
 
@@ -139,6 +139,49 @@ func TestEscalationNotifiesOncePerSeverity(t *testing.T) {
 		}
 		if i > 0 && len(got) != 0 {
 			t.Fatalf("swing %d notified: %v", i, got)
+		}
+	}
+}
+
+// The same holds where nothing is ever delivered — no channel configured, a
+// silence in force, a relay that is down: an acknowledgement given after the
+// alert had been critical survives the next swing to critical. (The rule
+// must not hang on a notification having gone out.)
+func TestEscalationKeepsAnAckWithoutAnyDelivery(t *testing.T) {
+	rule := &fakeRule{name: "r", obs: []Observation{{Key: "d1", Severity: SeverityWarning, Summary: "warm"}}}
+	e, d, now := newTestEngine(t, rule)
+	d.delivered = 0 // nowhere to send anything
+	mustTick(t, e)
+
+	step := func(sev string) queries.Alert {
+		t.Helper()
+		rule.obs = []Observation{{Key: "d1", Severity: sev, Summary: sev}}
+		*now = now.Add(time.Minute)
+		mustTick(t, e)
+		open := openAlerts(t, e)
+		if len(open) != 1 {
+			t.Fatalf("open alerts = %+v", open)
+		}
+		return open[0]
+	}
+	ack := func(a queries.Alert) {
+		t.Helper()
+		if err := queries.AckAlert(e.db, a.ID, "operator", *now); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Critical for the first time: an acknowledgement of the warning goes.
+	ack(openAlerts(t, e)[0])
+	if a := step(SeverityCritical); a.State != queries.AlertFiring {
+		t.Fatalf("first time critical: state %q, want firing again", a.State)
+	}
+	// Acknowledged as critical; it eases and comes back, twice.
+	ack(openAlerts(t, e)[0])
+	for i := range 2 {
+		step(SeverityWarning)
+		if a := step(SeverityCritical); a.State != queries.AlertAcked {
+			t.Fatalf("swing %d back to critical: state %q — the acknowledgement was dropped although the operator had seen it critical", i+1, a.State)
 		}
 	}
 }
