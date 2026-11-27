@@ -329,13 +329,16 @@ func DeleteNotificationChannel(db *sql.DB, id int64) error {
 	return err
 }
 
-// ListCurrentDeviceFindings returns the findings of a kind last seen since
-// the cutoff, across all devices.
+// ListCurrentDeviceFindings returns the findings of a kind that are current,
+// across all devices: last seen since the cutoff, or held by the hygiene
+// audit (FindingSourceAudit) — a pass saw the condition and none has seen it
+// gone since, however long ago that was. Only a kind the audit shares
+// (parallel_api_poller) ever has held rows.
 func ListCurrentDeviceFindings(db *sql.DB, kind string, since time.Time) ([]DeviceFinding, error) {
 	rows, err := db.Query(
-		`SELECT id, device_id, kind, severity, detail, first_seen, last_seen, count
-		 FROM device_findings WHERE kind = ? AND last_seen >= ?
-		 ORDER BY device_id, detail`, kind, since.UTC())
+		`SELECT id, device_id, kind, severity, detail, first_seen, last_seen, count, COALESCE(source, '')
+		 FROM device_findings WHERE kind = ? AND (last_seen >= ? OR source = ?)
+		 ORDER BY device_id, detail`, kind, since.UTC(), FindingSourceAudit)
 	if err != nil {
 		return nil, err
 	}
@@ -343,7 +346,7 @@ func ListCurrentDeviceFindings(db *sql.DB, kind string, since time.Time) ([]Devi
 	out := make([]DeviceFinding, 0, 4)
 	for rows.Next() {
 		var f DeviceFinding
-		if err := rows.Scan(&f.ID, &f.DeviceID, &f.Kind, &f.Severity, &f.Detail, &f.FirstSeen, &f.LastSeen, &f.Count); err != nil {
+		if err := rows.Scan(&f.ID, &f.DeviceID, &f.Kind, &f.Severity, &f.Detail, &f.FirstSeen, &f.LastSeen, &f.Count, &f.Source); err != nil {
 			return nil, err
 		}
 		out = append(out, f)

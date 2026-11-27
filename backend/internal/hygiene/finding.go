@@ -54,7 +54,10 @@ const (
 	KindDeviceMode        = "device_mode_permissive"
 	KindUnreadable        = "audit_unreadable"
 	// KindParallelAPIPoller is shared with the login watch and not owned by
-	// the audit: a pass may raise it, and never removes it.
+	// the audit. A pass that sees a foreign API session holds the finding —
+	// it stands, without ageing, until a pass reads the sessions again and
+	// no longer sees it; that pass lets go of it and never removes the row,
+	// which the login watch may be keeping current by its own sightings.
 	KindParallelAPIPoller = "parallel_api_poller"
 )
 
@@ -110,9 +113,10 @@ type Finding struct {
 	// Explanation says in plain language why it matters.
 	Explanation string    `json:"explanation"`
 	Fix         []FixStep `json:"fix,omitempty"`
-	// Foreign marks a finding of a kind the audit does not own
-	// (parallel_api_poller): it is recorded like the login watch records
-	// it, and never removed by a pass.
+	// Foreign marks a finding of a kind the audit shares with another
+	// watcher (parallel_api_poller): a pass holds it while it sees it and
+	// lets go of it when it no longer does (Result.Shared); it never removes
+	// the row.
 	Foreign bool `json:"-"`
 }
 
@@ -137,6 +141,10 @@ type Result struct {
 	// A kind that is not listed could not be judged — a read was refused or
 	// failed, or was not part of the pass — and its stored finding stays.
 	Evaluated []string
+	// Shared lists the kinds the audit shares with another watcher that this
+	// pass judged: a finding of such a kind the pass held before and does
+	// not report now is let go of, not removed.
+	Shared []string
 	// Checks say what the pass saw of each usual device-side cause of a high
 	// CPU, finding or not (checks.go).
 	Checks []Check

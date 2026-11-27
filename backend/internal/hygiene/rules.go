@@ -79,6 +79,8 @@ func Evaluate(mode Mode, s Sections, f Facts) Result {
 		for _, k := range r.kinds {
 			if Owned(k) {
 				res.Evaluated = append(res.Evaluated, k)
+			} else {
+				res.Shared = append(res.Shared, k)
 			}
 		}
 		res.Findings = append(res.Findings, r.eval(s, f)...)

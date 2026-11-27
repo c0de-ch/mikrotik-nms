@@ -635,6 +635,108 @@ func TestAuditFindingsAppearAndAreRemovedWhenFixed(t *testing.T) {
 	}
 }
 
+// Another monitoring system keeps one API session open for days. The login
+// watch saw its login once, long ago; the audit sees the session every six
+// hours. The parallel_api_poller alert must stand through the hours between
+// two audits — not resolve two hours after each and fire again with the
+// next — and end with the audit that no longer sees the session. A sighting
+// the login watch keeps fresh is not ended by a pass that happens to miss
+// the session.
+func TestForeignAPISessionAlertDoesNotFlapBetweenAudits(t *testing.T) {
+	h := newAuditHarness(t)
+	// A finding the login watch writes is stamped by the database's own
+	// clock: this test's time starts there.
+	h.clock.set(time.Now().UTC().Truncate(time.Second))
+	clean := hygienetest.Load(t, "ap_clean")
+	own := map[string]string{".id": "*1", "name": "nms", "address": hygienetest.NMSAddress, "via": "api", "group": "nms-read"}
+	other := map[string]string{".id": "*2", "name": "zbx", "address": "198.51.100.20", "via": "api", "group": "read"}
+	logged := clean.With("/user/active/print", own, other)
+	const detail = "user zbx from 198.51.100.20 via api"
+	h.add("r", logged)
+
+	var rule alerts.Rule
+	for _, r := range alerts.DefaultRules(h.db) {
+		if r.Name() == alerts.RuleParallelAPIPoller {
+			rule = r
+		}
+	}
+	fires := func() bool {
+		t.Helper()
+		obs, err := rule.Evaluate(h.clock.now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, o := range obs {
+			if o.DeviceID == "r" && o.Key == "r|"+detail {
+				return true
+			}
+		}
+		return false
+	}
+	audits := func() int {
+		return countRows(t, h.db, `SELECT COUNT(*) FROM device_audit_runs WHERE device_id = 'r' AND kind = 'audit' AND status = 'complete'`)
+	}
+	nextAudit := func(want int) {
+		t.Helper()
+		h.idle(5*time.Hour + 50*time.Minute)
+		h.run(20 * time.Minute)
+		if got := audits(); got != want {
+			t.Fatalf("%d audits on record, want %d", got, want)
+		}
+	}
+
+	h.run(15 * time.Minute)
+	if audits() != 1 || !fires() {
+		t.Fatalf("after the first audit: %d audits, alert firing %v; want the session reported", audits(), fires())
+	}
+	// Between two audits nobody looks at the sessions.
+	for _, after := range []time.Duration{time.Hour, 2 * time.Hour, 2 * time.Hour} {
+		h.idle(after)
+		if !fires() {
+			t.Fatalf("the alert resolved between two audits (at %s) although the session was last seen there and nothing has looked since",
+				h.clock.now().Format("15:04"))
+		}
+	}
+	h.run(time.Hour + 10*time.Minute) // the second audit sees it again
+	if audits() != 2 || !fires() {
+		t.Fatalf("after the second audit: %d audits, firing %v", audits(), fires())
+	}
+	if f := h.findings("r")[FindingParallelAPIPoller]; f.Count != 2 || f.Severity != "warn" || f.Detail != detail || f.Explanation == "" {
+		t.Fatalf("finding = %+v", f)
+	}
+
+	// The other system is switched off: the next audit ends the alert at once.
+	h.change("r", clean)
+	nextAudit(3)
+	if fires() {
+		t.Fatal("the alert stands although the audit read the sessions and the foreign one is gone")
+	}
+	if _, ok := h.findings("r")[FindingParallelAPIPoller]; !ok {
+		t.Fatal("the row itself is history the device page shows: it stays")
+	}
+
+	// It comes back, logging in every few minutes now: the audit sees it …
+	h.change("r", logged)
+	nextAudit(4)
+	if !fires() {
+		t.Fatal("the session is back and the audit saw it: no alert")
+	}
+	// … the login watch records each login …
+	if err := queries.UpsertDeviceFinding(h.db, &queries.DeviceFinding{DeviceID: "r", Kind: FindingParallelAPIPoller, Severity: "warn", Detail: detail}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.db.Exec(`UPDATE device_findings SET last_seen = ? WHERE detail = ?`,
+		h.clock.now().Add(6*time.Hour).UTC().Format("2006-01-02 15:04:05"), detail); err != nil { // "a moment before the next audit"
+		t.Fatal(err)
+	}
+	// … and the next audit happens to read the sessions between two logins.
+	h.change("r", clean)
+	nextAudit(5)
+	if !fires() {
+		t.Fatal("an audit that missed the session ended an alert the login watch keeps confirming")
+	}
+}
+
 // A menu the device does not have is not an error; a menu the NMS account
 // may not read is reported as exactly that — and the findings behind it are
 // neither raised nor removed.

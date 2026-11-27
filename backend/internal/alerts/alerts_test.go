@@ -335,6 +335,50 @@ func TestParallelAPIPollerRule(t *testing.T) {
 	}
 }
 
+// The hygiene audit sees a foreign API session that stays logged in for
+// days — one login line, long ago — once every six hours. Such a sighting
+// stands until a pass looks again and no longer sees it: the alert must not
+// resolve two hours after each audit and fire again with the next. Once the
+// audit lets go of it, it counts like any sighting of the login watch — by
+// when it was last seen.
+func TestParallelAPIPollerHeldByTheAudit(t *testing.T) {
+	db := testDB(t)
+	if err := queries.CreateDevice(db, &queries.Device{ID: "d1", Identity: "rb", Address: "192.0.2.1", Username: "u", APIPort: 8728, Status: "online", Tags: "[]"}); err != nil {
+		t.Fatal(err)
+	}
+	const session = "user zbx from 198.51.100.20 via api"
+	seen := ruleNow.Add(-5 * time.Hour) // the last audit, most of an audit interval ago
+	if err := queries.UpsertAuditFinding(db, &queries.DeviceFinding{DeviceID: "d1", Kind: RuleParallelAPIPoller, Severity: "warn",
+		Detail: session, Title: "Another API client is logged in"}, seen); err != nil {
+		t.Fatal(err)
+	}
+	fires := func() bool {
+		t.Helper()
+		obs, err := parallelAPIPoller{db}.Evaluate(ruleNow)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(obs) == 1 && obs[0].Key == "d1|"+session && obs[0].Severity == SeverityWarning
+	}
+	if !fires() {
+		t.Fatal("a session the audit saw five hours ago — and has not looked for since — does not count: the alert resolves between two audits")
+	}
+	// The next pass reads the sessions and does not see it any more.
+	if n, err := queries.ReleaseAuditFindings(db, "d1", RuleParallelAPIPoller, nil); err != nil || n != 1 {
+		t.Fatalf("released %d, %v", n, err)
+	}
+	if fires() {
+		t.Fatal("the alert stands although a pass no longer sees the session and nothing else has seen it for five hours")
+	}
+	// Seen again by the login watch a moment ago: current by its own rule.
+	if _, err := db.Exec(`UPDATE device_findings SET last_seen = ? WHERE detail = ?`, ruleNow.Add(-time.Minute), session); err != nil {
+		t.Fatal(err)
+	}
+	if !fires() {
+		t.Fatal("a sighting of a minute ago does not count")
+	}
+}
+
 func TestTargetValidationAndHint(t *testing.T) {
 	for _, ok := range [][2]string{{ChannelSMTP, "ops@example.com"}, {ChannelWebhook, "https://hooks.example.com/services/T0/B0/secret"}, {ChannelWebhook, "http://ntfy.lan:8080/alerts"}} {
 		if err := ValidateTarget(ok[0], ok[1]); err != nil {

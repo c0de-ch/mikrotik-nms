@@ -820,20 +820,16 @@ func (a *Auditor) finish(p *pass, dev queries.Device, detail string, abort bool,
 	}
 }
 
-// storeFindings writes what a pass found: its own findings with their
-// explanation and fix, the ones of the kinds it evaluated and no longer
-// found removed, and a foreign API session the way the login watch records
-// it.
+// storeFindings writes what a pass found, each finding with its explanation
+// and fix. The audit's own findings of the kinds it evaluated and no longer
+// found are removed. A foreign API session is held: it stands until a pass
+// that read the sessions no longer sees it, which then only lets go of it —
+// the row is the login watch's too, and counts by when it was last seen from
+// then on.
 func (a *Auditor) storeFindings(dev queries.Device, res hygiene.Result, now time.Time) {
 	keep := make([]queries.FindingKey, 0, len(res.Findings))
+	held := map[string][]string{} // shared kind → the details this pass saw
 	for _, f := range res.Findings {
-		if f.Foreign {
-			if err := queries.UpsertDeviceFinding(a.db, &queries.DeviceFinding{DeviceID: dev.ID, Kind: f.Kind,
-				Severity: f.Severity, Detail: f.Detail}); err != nil {
-				log.Printf("poller audit: record finding: %v", err)
-			}
-			continue
-		}
 		row := &queries.DeviceFinding{DeviceID: dev.ID, Kind: f.Kind, Severity: f.Severity, Detail: f.Detail,
 			Title: f.Title, Explanation: f.Explanation}
 		for _, step := range f.Fix {
@@ -843,10 +839,20 @@ func (a *Auditor) storeFindings(dev queries.Device, res hygiene.Result, now time
 			log.Printf("poller audit: record finding: %v", err)
 			continue
 		}
+		if f.Foreign {
+			held[f.Kind] = append(held[f.Kind], f.Detail)
+			continue
+		}
 		keep = append(keep, queries.FindingKey{Kind: f.Kind, Detail: f.Detail})
 	}
+	name := nonempty(dev.Identity, dev.Address)
 	if _, err := queries.DeleteAuditFindingsExcept(a.db, dev.ID, res.Evaluated, keep); err != nil {
-		log.Printf("poller audit: remove the findings that are gone from %s: %v", nonempty(dev.Identity, dev.Address), err)
+		log.Printf("poller audit: remove the findings that are gone from %s: %v", name, err)
+	}
+	for _, kind := range res.Shared {
+		if _, err := queries.ReleaseAuditFindings(a.db, dev.ID, kind, held[kind]); err != nil {
+			log.Printf("poller audit: let go of the %s findings that are gone from %s: %v", kind, name, err)
+		}
 	}
 }
 

@@ -7,9 +7,14 @@ import (
 	"time"
 )
 
-// FindingSourceAudit marks the findings the hygiene audit owns: it writes
-// them with their explanation and fix, and removes them again when a pass
-// finds the setting gone.
+// FindingSourceAudit marks the findings the hygiene audit holds: a pass saw
+// the condition and wrote the row with its explanation and fix, and no pass
+// has seen it gone since. Such a finding does not age: it stands until a
+// pass looks again and no longer finds it. For the audit's own kinds that
+// pass removes the row (DeleteAuditFindingsExcept); for a kind it shares
+// with another watcher — an API session that is not the NMS's, which the
+// login watch records too — it only lets go of it (ReleaseAuditFindings),
+// and the row then counts by when it was last seen.
 const FindingSourceAudit = "audit"
 
 // FindingFix is one step of a finding's suggested fix: advice for an
@@ -162,6 +167,28 @@ func DeleteAuditFindingsExcept(db *sql.DB, deviceID string, kinds []string, keep
 		n += affected
 	}
 	return n, nil
+}
+
+// ReleaseAuditFindings ends the audit's hold on a device's findings of a
+// kind it shares with another watcher, except the ones among keep (their
+// details): a pass looked and no longer saw them. The rows stay — the other
+// watcher may be seeing the same thing — and from then on count by their
+// last_seen, like any row the audit never held. It reports how many rows
+// were let go.
+func ReleaseAuditFindings(db *sql.DB, deviceID, kind string, keep []string) (int64, error) {
+	q := `UPDATE device_findings SET source = NULL WHERE device_id = ? AND kind = ? AND source = ?`
+	args := []any{deviceID, kind, FindingSourceAudit}
+	if len(keep) > 0 {
+		q += ` AND detail NOT IN (?` + strings.Repeat(",?", len(keep)-1) + `)`
+		for _, d := range keep {
+			args = append(args, d)
+		}
+	}
+	res, err := db.Exec(q, args...)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 // ListDeviceFindings returns a device's findings, most recent first.

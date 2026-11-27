@@ -99,6 +99,60 @@ func TestAuditFindingsUpsertAndReplace(t *testing.T) {
 	}
 }
 
+// A finding of a kind the audit shares with the login watch is held while a
+// pass sees it — it is current whatever its age — and let go of, never
+// deleted, by the pass that no longer does.
+func TestAuditHoldsAndReleasesSharedFindings(t *testing.T) {
+	db := auditTestDevices(t, "d1", "d2")
+	t1 := time.Date(2026, 3, 2, 12, 0, 0, 0, time.UTC)
+	const kind = "parallel_api_poller"
+	// The login watch recorded one; the audit then saw it, and two more.
+	if err := UpsertDeviceFinding(db, &DeviceFinding{DeviceID: "d1", Kind: kind, Severity: "warn", Detail: "user a from 198.51.100.1 via api"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []*DeviceFinding{
+		{DeviceID: "d1", Kind: kind, Severity: "warn", Detail: "user a from 198.51.100.1 via api", Title: "Another API client is logged in"},
+		{DeviceID: "d1", Kind: kind, Severity: "warn", Detail: "user b from 198.51.100.2 via api"},
+		{DeviceID: "d2", Kind: kind, Severity: "warn", Detail: "user b from 198.51.100.2 via api"},
+	} {
+		if err := UpsertAuditFinding(db, f, t1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	current := func(at time.Time) []string {
+		t.Helper()
+		rows, err := ListCurrentDeviceFindings(db, kind, at.Add(-2*time.Hour))
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := []string{}
+		for _, r := range rows {
+			out = append(out, r.DeviceID+" "+r.Detail[5:6])
+		}
+		return out
+	}
+	week := t1.Add(7 * 24 * time.Hour)
+	if got := current(week); len(got) != 3 {
+		t.Fatalf("held findings a week after they were seen = %v, want all three", got)
+	}
+	// A pass on d1 still sees a, not b.
+	n, err := ReleaseAuditFindings(db, "d1", kind, []string{"user a from 198.51.100.1 via api"})
+	if err != nil || n != 1 {
+		t.Fatalf("released %d, %v; want b of d1", n, err)
+	}
+	if got := current(week); len(got) != 2 || got[0] != "d1 a" || got[1] != "d2 b" {
+		t.Fatalf("after the release = %v, want a of d1 and b of d2", got)
+	}
+	// The released row is still there, and current while it was seen lately.
+	if got := current(t1.Add(time.Hour)); len(got) != 3 {
+		t.Fatalf("an hour after it was seen = %v, want the released one too", got)
+	}
+	rows, _ := ListDeviceFindings(db, "d1", 0)
+	if len(rows) != 2 {
+		t.Fatalf("d1 has %d findings, want both rows kept", len(rows))
+	}
+}
+
 func TestDeviceAuditSnapshots(t *testing.T) {
 	db := auditTestDevices(t, "d1")
 	if a, err := LatestDeviceAudit(db, "d1"); err != nil || a != nil {
