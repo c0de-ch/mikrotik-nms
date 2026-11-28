@@ -98,7 +98,7 @@ sudo ./deploy/webhook-agent/install.sh
 
 The installer:
 
-1. Installs Go 1.25.x to `/usr/local/go` (skip with `--skip-go` if already installed).
+1. Installs Go 1.27.4 — the toolchain `backend/go.mod` pins, sha256-checked — to `/usr/local/go` when it holds another version (`--skip-go` leaves Go alone; the build then needs Go 1.26+ there and never downloads one).
 2. Builds `backend/cmd/deploy-agent` to `/opt/mikrotik-nms-deploy-agent/bin/deploy-agent`.
 3. Creates the system user `mikrotik-nms-agent`.
 4. Drops a templated env file to `/etc/mikrotik-nms-deploy-agent/env` with a randomly-generated `WEBHOOK_SECRET`.
@@ -452,7 +452,7 @@ curl -s http://127.0.0.1:9000/healthz | jq
 ```sh
 cd /path/to/mikrotik-c0de
 git pull
-sudo ./deploy/webhook-agent/install.sh --skip-go
+sudo ./deploy/webhook-agent/install.sh   # replaces /usr/local/go only if go.mod pins another Go
 sudo systemctl restart mikrotik-nms-deploy-agent
 ```
 

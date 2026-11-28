@@ -20,7 +20,10 @@ jobs:
         working-directory: backend
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      # v6 and later install go.mod's toolchain line (v5 read only its go
+      # line) and set GOTOOLCHAIN=local for the steps below: CI runs exactly
+      # the pinned Go and never downloads another.
+      - uses: actions/setup-go@v6
         with:
           go-version-file: backend/go.mod
           cache-dependency-path: |
@@ -57,8 +60,5 @@ jobs:
         run: npm run build
         env:
           NEXT_TELEMETRY_DISABLED: "1"
-      # Lint is reported but not yet a hard gate — there is pre-existing lint
-      # debt (see IMPROVEMENTS.md). Flip continue-on-error to false once cleared.
       - name: Lint
         run: npm run lint
-        continue-on-error: true

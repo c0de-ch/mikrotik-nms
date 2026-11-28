@@ -30,8 +30,10 @@ Two independent jobs; both must pass before a PR can be merged.
 
 **Backend (build · vet · test)** — working directory `backend/`
 
-1. `actions/setup-go@v5` with `go-version-file: backend/go.mod` (the Go version is
-   whatever `go.mod` declares; the module cache is keyed on `go.sum`).
+1. `actions/setup-go@v6` with `go-version-file: backend/go.mod`: it installs
+   the `toolchain` line (`go1.27.4`; v5 read only the `go` line) and sets
+   `GOTOOLCHAIN=local`, so every step runs exactly that Go and none downloads
+   another. The module cache is keyed on `go.sum`.
 2. `go vet ./...`
 3. `go build ./...`
 4. `go test -race ./...` — the whole backend suite under the race detector. Fuzz
@@ -49,9 +51,7 @@ Two independent jobs; both must pass before a PR can be merged.
 2. `npm ci`
 3. `npm run build` (`NEXT_TELEMETRY_DISABLED=1`) — a full Next.js production
    build, so type errors and broken imports fail here.
-4. `npm run lint` with `continue-on-error: true`: lint results are **annotated
-   but do not fail the job** while pre-existing lint debt is worked off (see
-   `IMPROVEMENTS.md`). Flip it to `false` once `npm run lint` is clean.
+4. `npm run lint` — a lint error fails the job.
 
 The workflow only needs `contents: read`.
 
@@ -105,7 +105,7 @@ to log in to `ghcr.io` (`username: ${{ github.actor }}`).
 |---|---|---|
 | Dockerfile | [`deploy/docker/Dockerfile.backend`](../deploy/docker/Dockerfile.backend) | [`deploy/docker/Dockerfile.frontend`](../deploy/docker/Dockerfile.frontend) |
 | Build context | `./backend` | `./frontend` |
-| Builder | `golang:alpine`, `CGO_ENABLED=0 go build -ldflags="-s -w"` (`GOTOOLCHAIN=local`) | `node:22-alpine`, `npm ci && npm run build` (standalone output) |
+| Builder | `golang:1.27.4-alpine3.24` (go.mod's toolchain), `CGO_ENABLED=0 go build -ldflags="-s -w"` (`GOTOOLCHAIN=local`) | `node:22-alpine`, `npm ci && npm run build` (standalone output) |
 | Runtime | `alpine:3.21` + `ca-certificates`, `tzdata`; `ENTRYPOINT mikrotik-nms` | `node:22-alpine`, `USER node`, `CMD node server.js` |
 | Ports | `8080/tcp`, `2055/udp` (flow collector, off unless `MIKROTIK_NMS_FLOW_LISTEN` is set) | `3000/tcp` |
 | Healthcheck | none in the image (Compose/K8s probe `/api/v1/health`) | `wget http://localhost:3000/login` every 30 s |

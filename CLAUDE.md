@@ -16,6 +16,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Test:** `make test` or `cd backend && go test ./...`
 - **Test single package:** `cd backend && go test -v ./internal/topology/ -run TestBuildLinks`
 - **Lint:** `make lint` (runs `go vet` + `npm run lint`)
+- **Go toolchain:** the `toolchain` line of `backend/go.mod` is the one Go every build path uses, each pinning it itself — `deploy/lxc/install.sh` and `deploy/webhook-agent/install.sh` (`GO_VERSION` + the archives' sha256 from `https://go.dev/dl/?mode=json`; `--skip-deps` still installs it), the `golang:` builder of `Dockerfile.backend`, CI (`setup-go` ≥ v6 reads it); all build with `GOTOOLCHAIN=local`. Bump them together: `go test ./internal/toolchain` fails otherwise
 - **Docker:** `docker compose build` then `docker compose up -d`
 - **K8s:** `kubectl apply -f deploy/k8s/` (edit `secret.yaml`, `ingress.yaml` and the `MIKROTIK_NMS_ALLOWED_TARGET_CIDRS` in `configmap.yaml` first — the backend refuses to start with polling on and an empty allow-list)
 - **Dev (both):** `./scripts/dev.sh` starts backend + frontend concurrently

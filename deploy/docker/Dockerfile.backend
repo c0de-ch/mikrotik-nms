@@ -1,4 +1,6 @@
-FROM golang:alpine AS builder
+# Exactly the toolchain line of backend/go.mod; GOTOOLCHAIN=local makes a
+# go.mod this image cannot build an error, never a toolchain download.
+FROM golang:1.27.4-alpine3.24 AS builder
 ENV GOTOOLCHAIN=local
 RUN apk add --no-cache git
 WORKDIR /app

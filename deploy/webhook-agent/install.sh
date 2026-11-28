@@ -3,7 +3,7 @@
 # Install the MikroTik NMS deploy webhook agent on a Debian/Ubuntu host.
 #
 # What it does:
-#   - Installs Go (if missing) and builds backend/cmd/deploy-agent
+#   - Installs Go GO_VERSION (unless present), builds backend/cmd/deploy-agent
 #   - Creates a system user mikrotik-nms-agent
 #   - Installs the binary to /opt/mikrotik-nms-deploy-agent/bin/
 #   - Drops env, run.sh, and the SSH key into /etc/mikrotik-nms-deploy-agent/
@@ -27,7 +27,11 @@
 
 set -euo pipefail
 
-GO_VERSION="1.25.3"
+# Exactly the `toolchain` line of backend/go.mod, like deploy/lxc/install.sh
+# (both install /usr/local/go); sha256 from https://go.dev/dl/?mode=json.
+GO_VERSION="1.27.4"
+GO_SHA256_AMD64="7226736c2339719cda28fbf3a54d71aa63bcefe376e98cef00034268dab24840"
+GO_SHA256_ARM64="3392582988a273a87ab5043ee1b2c9c17a2c3c00580bf9326c47a2e0aaaeac92"
 INSTALL_PREFIX="/opt/mikrotik-nms-deploy-agent"
 DATA_DIR="/var/lib/mikrotik-nms-deploy-agent"
 CONFIG_DIR="/etc/mikrotik-nms-deploy-agent"
@@ -58,19 +62,22 @@ REPO_DIR="$(cd -- "$SCRIPT_DIR/../.." &>/dev/null && pwd)"
 
 # --- Go ---
 if [[ $SKIP_GO -eq 0 ]]; then
-    if ! /usr/local/go/bin/go version 2>/dev/null | grep -q "go${GO_VERSION}"; then
+    # GOTOOLCHAIN=local: report the installed Go, not one a go.mod asks for.
+    if [[ "$(GOTOOLCHAIN=local /usr/local/go/bin/go version 2>/dev/null | awk '{print $3}' || true)" != "go${GO_VERSION}" ]]; then
         log "installing Go ${GO_VERSION}"
         export DEBIAN_FRONTEND=noninteractive
         apt-get update -qq
         apt-get install -y -qq curl ca-certificates
         arch=$(uname -m)
         case "$arch" in
-            x86_64)  goarch=amd64 ;;
-            aarch64) goarch=arm64 ;;
+            x86_64)  goarch=amd64; gosum="$GO_SHA256_AMD64" ;;
+            aarch64) goarch=arm64; gosum="$GO_SHA256_ARM64" ;;
             *) die "unsupported arch: $arch" ;;
         esac
         tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
         curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${goarch}.tar.gz" -o "$tmp/go.tgz"
+        [[ "$(sha256sum "$tmp/go.tgz" | awk '{print $1}')" == "$gosum" ]] \
+            || die "go${GO_VERSION}.linux-${goarch}.tar.gz: sha256 mismatch (/usr/local/go left as it was)"
         rm -rf /usr/local/go
         tar -C /usr/local -xzf "$tmp/go.tgz"
     else
@@ -83,7 +90,7 @@ export PATH="/usr/local/go/bin:$PATH"
 log "building deploy-agent"
 (
     cd "$REPO_DIR/backend"
-    CGO_ENABLED=0 /usr/local/go/bin/go build \
+    GOTOOLCHAIN=local CGO_ENABLED=0 /usr/local/go/bin/go build \
         -trimpath -ldflags="-s -w" \
         -o "$INSTALL_PREFIX/bin/deploy-agent" \
         ./cmd/deploy-agent
