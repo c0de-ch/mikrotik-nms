@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/mikrotik-nms/backend/internal/database/dbtest"
+	"github.com/mikrotik-nms/backend/internal/database/queries"
 	"github.com/mikrotik-nms/backend/internal/edgeproto"
 )
 
@@ -147,5 +148,31 @@ func TestSinkEmitWithoutWork(t *testing.T) {
 	}
 	if err := NewSink(nil).Emit(context.Background(), nil); err != nil {
 		t.Errorf("Emit of no observations = %v", err)
+	}
+}
+
+// An apply function that panics after a write leaves no transaction open:
+// the sink rolls it back on the way out, so the connection — and SQLite's
+// write lock with it — is free for the next writer, and nothing of the Emit
+// was stored.
+func TestSinkEmitRollsBackWhenAnApplyPanics(t *testing.T) {
+	db := dbtest.Open(t)
+	const kindPanics edgeproto.Kind = "test.panics"
+	applyFuncs[kindPanics] = func(queries.DBTX, edgeproto.Observation) error { panic("apply panicked") }
+	t.Cleanup(func() { delete(applyFuncs, kindPanics) })
+
+	func() {
+		defer func() {
+			if r := recover(); r == nil {
+				t.Fatal("Emit did not pass the panic on")
+			}
+		}()
+		_ = NewSink(db).Emit(context.Background(), nil, aPass()[0], edgeproto.Observation{Kind: kindPanics})
+	}()
+	if inUse := db.Stats().InUse; inUse != 0 {
+		t.Fatalf("%d connection(s) still in use after the panic: the Emit's transaction was left open", inUse)
+	}
+	if n := count(t, db, "mac_lookup"); n != 0 {
+		t.Errorf("mac_lookup has %d rows after a panicked Emit, want 0", n)
 	}
 }

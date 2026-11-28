@@ -27,6 +27,17 @@ var _ edgeproto.Sink = (*Sink)(nil)
 // their own, committed when every one applied and rolled back at the first
 // that did not — nothing of obs is then written. With the caller's tx they
 // are applied in it and the caller commits or rolls back.
+//
+// Its own transaction begins DEFERRED: SQLite takes the write lock at the
+// first write and waits out busy_timeout for it, as the pollers' single
+// writes did. An apply function therefore writes before it reads — a read
+// first would make the transaction a reader that fails at once with
+// SQLITE_BUSY when another writer got in between. One that must read first
+// needs this Emit to begin IMMEDIATE, not a workaround of its own.
+//
+// ctx bounds the wait for the connection; a flush at shutdown passes
+// context.WithoutCancel. A panic in an apply function rolls the transaction
+// back before it travels on.
 func (s *Sink) Emit(ctx context.Context, tx edgeproto.StateTx, obs ...edgeproto.Observation) error {
 	if len(obs) == 0 {
 		return nil
@@ -38,8 +49,9 @@ func (s *Sink) Emit(ctx context.Context, tx edgeproto.StateTx, obs ...edgeproto.
 	if err != nil {
 		return fmt.Errorf("ingest: begin: %w", err)
 	}
+	// After a Commit this returns sql.ErrTxDone and does nothing.
+	defer func() { _ = own.Rollback() }()
 	if err := applyAll(own, obs); err != nil {
-		_ = own.Rollback()
 		return err
 	}
 	if err := own.Commit(); err != nil {
