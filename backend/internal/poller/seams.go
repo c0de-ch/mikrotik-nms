@@ -15,8 +15,9 @@ import (
 // Seams are what a poller split into its collect half is built on (design
 // 3.5, the M1 series converts one poller at a time): where it learns what to
 // read (Config), how it reaches a device (Exec), and where what it saw goes
-// (Sink). Its collect half touches neither the database nor the pool
-// (internal/fences). The manager builds the monolith's seams once.
+// (Sink). Its collect half holds neither the database nor the pool
+// (internal/fences, which list what it may hold). The manager builds the
+// monolith's seams once.
 type Seams struct {
 	Config edgeproto.ConfigSource
 	Exec   routeros.DeviceExec
@@ -76,7 +77,8 @@ func deviceSpec(dev queries.Device, cadence CadenceSource, now time.Time) edgepr
 }
 
 // Setting is the stored value of key, "" when there is none or it cannot be
-// read.
+// read — the row, also for a key an environment variable fixes
+// (edgeproto.ConfigSource.Setting).
 func (c *dbConfig) Setting(key string) string {
 	if c.db == nil {
 		return ""

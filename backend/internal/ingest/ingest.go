@@ -7,10 +7,13 @@
 // Observation.ObservedAt yet.
 //
 // Sink is the monolith's edgeproto.Sink: each Emit applied in one
-// transaction, all of it or none.
+// transaction, all of it or none (what that asks of a collect half is in
+// edgeproto.Sink; what it asks of an apply function — write before you read —
+// in Sink.Emit).
 //
 // The package reaches no device and no network: of this module it imports
-// only edgeproto and database/queries (internal/fences).
+// only edgeproto and database/queries, and nothing they link reaches
+// internal/routeros, a library or a socket (internal/fences).
 package ingest
 
 import (

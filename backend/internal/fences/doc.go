@@ -7,9 +7,15 @@
 //
 // The seams fences (seams_test.go) keep the collect/apply split of the
 // pollers apart: internal/edgeproto imports only the standard library and
-// devclass, internal/ingest reaches no device and no network, only the
-// monolith's wiring imports ingest, and a poller split into its collect half
-// (collectHalves) neither holds the database nor opens a device session.
+// devclass, internal/ingest only edgeproto and queries — and nothing either
+// links reaches internal/routeros, a library or a socket; only the
+// monolith's wiring imports ingest; and a poller split into its collect half
+// is fenced by type, not by file: every file that declares a struct with a
+// seam field, or a method of one, is listed in collectHalves, its fields
+// have only the types collectHalfFieldTypes allows (one of them, the
+// resolver, still reads dns_servers itself), and none of its files imports
+// database/sql or ingest, uses a queries function that touches the
+// database, or opens a device session.
 //
 // The fences are a ratchet: what exists today is listed with its reason, a
 // new crossing fails the test, and so does a listed crossing that is gone

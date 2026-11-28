@@ -48,6 +48,8 @@ func TestDBConfigDescribesTheDevicesAsTheCadenceDoes(t *testing.T) {
 	db := pollerTestDB(t)
 	classFleet(t, db, map[string]devclass.Class{"r3": devclass.C3, "s1": devclass.C1, "held": devclass.C3}, "held")
 	mustCreateDevice(t, db, &queries.Device{ID: "down", Address: "198.51.100.40", Status: "offline"})
+	// "unknown" is the gray "not responding" state: not read either.
+	mustCreateDevice(t, db, &queries.Device{ID: "quiet", Address: "198.51.100.41", Status: "unknown"})
 	if err := queries.SetSetting(db, "client_discovery_interval", "1200"); err != nil {
 		t.Fatal(err)
 	}
@@ -88,10 +90,11 @@ func TestDBConfigDescribesTheDevicesAsTheCadenceDoes(t *testing.T) {
 		online, paused bool
 		arp, dhcp      time.Duration
 	}{
-		"r3":   {name: "r3", online: true, arp: 20 * time.Minute, dhcp: 20 * time.Minute},
-		"s1":   {name: "s1", online: true, arp: 30 * time.Minute},
-		"held": {name: "held", online: true, paused: true},
-		"down": {name: "198.51.100.40", arp: 30 * time.Minute},
+		"r3":    {name: "r3", online: true, arp: 20 * time.Minute, dhcp: 20 * time.Minute},
+		"s1":    {name: "s1", online: true, arp: 30 * time.Minute},
+		"held":  {name: "held", online: true, paused: true},
+		"down":  {name: "198.51.100.40", arp: 30 * time.Minute},
+		"quiet": {name: "198.51.100.41", arp: 30 * time.Minute},
 	} {
 		spec := byID[id]
 		if spec.Name != want.name || spec.Online != want.online || spec.Paused != want.paused {

@@ -75,6 +75,20 @@ type Sink interface {
 	// half's tx they are written into it, and the collect half commits or
 	// rolls back its own writes and them together; Emit never ends a tx it
 	// is given, and after an error that tx must be rolled back.
+	//
+	// So an Emit is the unit that fails together, and a collect half
+	// chooses it by what may fail alone:
+	//   - observations of a kind keyed to a device go in one Emit per
+	//     device (as the per-device Replace* transactions did before the
+	//     split), unless every apply function of the kind skips a device
+	//     that is gone (WHERE EXISTS (SELECT 1 FROM devices WHERE id = ?), as
+	//     the port-minute and device-minute batches do): a device deleted
+	//     during a pass must not cost the others their rows;
+	//   - in-memory state derived from what is emitted (a detector's
+	//     previous reading, a cursor) advances only once Emit returned nil,
+	//     or is written in the same tx — after an error it stays as it was,
+	//     so the next pass reports the same thing again.
+	// ctx bounds the wait to begin, not the writes once begun.
 	Emit(ctx context.Context, tx StateTx, obs ...Observation) error
 	// Live hands over an observation that matters only now (a port snapshot,
 	// a live sample): best effort, nothing is stored and nothing waits.
@@ -90,8 +104,13 @@ type ConfigSource interface {
 	// means the list could not be read, not that there are none: the caller
 	// keeps what it knows of every device and asks again later.
 	Devices() ([]DeviceSpec, error)
-	// Setting is the value of an app setting, "" when it is not set or
-	// cannot be read; the caller applies its default and its bounds.
+	// Setting is the stored value of an app setting, "" when it is not set
+	// or cannot be read; the caller applies its default and its bounds. It
+	// is the row, not the value in force: a setting an environment variable
+	// fixes (config.EnvLocked — topology_interval, network_health_interval,
+	// retention_days) answers what is stored, so a poller that reads one
+	// keeps its floor helper (TopologyFloor, NetworkHealthFloor,
+	// RetentionDays) until ConfigSource answers effective values.
 	Setting(key string) string
 }
 

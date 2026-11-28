@@ -13,11 +13,15 @@ import "context"
 // Runner would link the device package into it.
 type DeviceExec interface {
 	// Device returns the link one turn of reads of deviceID runs on, or nil
-	// when the device has no session now — not dialled yet, or a redial held
-	// back by the pool's backoff: nothing was sent, and the caller tries
-	// again later. Every read of the turn goes to the session the turn
-	// started with. ctx is the turn's: today the pool's own deadlines bound
-	// each command, devsched will bound its requests by it.
+	// when there is no usable session now: not dialled yet, a redial held
+	// back by the pool's backoff, or a dial that just failed. No read of the
+	// turn was sent then, and the caller tries again later. Device may
+	// (re)establish the session itself — dial and log in, blocking up to the
+	// dial deadlines (PoolExec redials a device whose session ended); a
+	// devsched behind it keeps that redial. Every read of the turn goes to
+	// the session the turn started with. ctx is the turn's: today the pool's
+	// own deadlines bound each command, devsched will bound its requests by
+	// it.
 	Device(ctx context.Context, deviceID string) Runner
 }
 

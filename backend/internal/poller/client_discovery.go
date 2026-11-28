@@ -23,7 +23,8 @@ import (
 //
 // It is the collect half of the client discovery, built on the seams: the
 // devices and the settings come from Config, every device read goes through
-// Exec, and nothing is written but through Sink.
+// Exec, and nothing is written but through Sink. One database read is left:
+// the resolver reads the dns_servers table itself on an uncached lookup.
 type ClientDiscoveryPoller struct {
 	config   edgeproto.ConfigSource
 	exec     routeros.DeviceExec
