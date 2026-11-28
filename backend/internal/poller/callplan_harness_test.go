@@ -357,9 +357,9 @@ func (h *callPlan) wire() {
 	wifi.now, wifi.clock.phase = now, noJitter
 
 	// Start hands this one a DNS resolver for the clients' names; names are
-	// not device I/O, and the test must not query a resolver.
-	clients := NewClientDiscoveryPoller(h.db, h.pool, nil, 15*time.Minute)
-	clients.UseCadence(m.cadence)
+	// not device I/O, and the test must not query a resolver. Its seams are
+	// the manager's: their Config judges the cadence on m's clock, now.
+	clients := NewClientDiscoveryPoller(m.seams, m.externalLeases, nil, 15*time.Minute)
 	clients.now, clients.clock.phase = now, noJitter
 
 	health := NewNetworkHealthPoller(h.db, h.pool, hub, cfg.NetworkHealthInterval)

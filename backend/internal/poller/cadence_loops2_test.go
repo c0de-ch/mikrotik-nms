@@ -41,6 +41,16 @@ func scriptedRunners(byID map[string]*fakeRunner) func(string) routeros.Runner {
 	}
 }
 
+// execFunc is a function as a routeros.DeviceExec.
+type execFunc func(deviceID string) routeros.Runner
+
+func (f execFunc) Device(_ context.Context, deviceID string) routeros.Runner { return f(deviceID) }
+
+// scriptedExec is scriptedRunners as the Exec of a loop built on the seams.
+func scriptedExec(byID map[string]*fakeRunner) routeros.DeviceExec {
+	return execFunc(scriptedRunners(byID))
+}
+
 // bridgeDevice answers the network-health reads of a device without bridges.
 func bridgeDevice() *fakeRunner {
 	return &fakeRunner{byCmd: map[string]fakeReply{
@@ -322,13 +332,13 @@ func TestClientDiscoveryPerClassCadenceAndPause(t *testing.T) {
 		}}
 	}
 	runners := map[string]*fakeRunner{"r3": device("02:00:00:00:B0:01"), "s2": device("02:00:00:00:B0:02"), "held": device("02:00:00:00:B0:03")}
-	cdp := NewClientDiscoveryPoller(db, nil, nil, 15*time.Minute)
 	clock := &testClock{t: at(12, 0, 0)}
+	seams := monolithSeams(db, nil, NewCadence(db, nil), clock.now)
+	seams.Exec = scriptedExec(runners)
+	cdp := NewClientDiscoveryPoller(seams, nil, nil, 15*time.Minute)
 	cdp.now = clock.now
 	cdp.clock = newTierClock(NewScheduleRegistry())
 	cdp.clock.phase = noJitter
-	cdp.UseCadence(NewCadence(db, nil))
-	cdp.runner = scriptedRunners(runners)
 	reads := func(id string) [2]int {
 		return [2]int{runners[id].countCalls("/ip/arp/print"), runners[id].countCalls("/ip/dhcp-server/lease/print")}
 	}

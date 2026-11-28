@@ -125,10 +125,10 @@ var dbTables = []dbTable{
 	},
 	{
 		name:    "client_history",
-		writers: []string{"ClientDiscoveryPoller.store → queries.InsertClientHistory"},
+		writers: []string{"ClientDiscoveryPoller.store → ingest.Sink.Emit → ingest.ApplyClientSeen → queries.InsertClientHistory"},
 		times:   map[string]dbClock{"recorded_at": sqliteNow},
-		unstable: map[string]string{"id": "ClientDiscoveryPoller.store inserts a pass's clients in the order of a Go map, " +
-			"which is random"},
+		unstable: map[string]string{"id": "ClientDiscoveryPoller.store emits a pass's clients in the order of a Go map, " +
+			"which is random, and the sink applies them in that order"},
 	},
 	{
 		name:    "client_signal_samples",
@@ -214,9 +214,12 @@ var dbTables = []dbTable{
 		uuids:   []string{"id"},
 	},
 	{
-		name:    "mac_lookup",
-		writers: []string{"ClientDiscoveryPoller.store → queries.UpsertMACLookup", "WifiTracker.poll → queries.UpsertMACLookup"},
-		times:   map[string]dbClock{"updated_at": sqliteNow},
+		name: "mac_lookup",
+		writers: []string{
+			"ClientDiscoveryPoller.store → ingest.Sink.Emit → ingest.ApplyClientSeen → queries.UpsertMACLookup",
+			"WifiTracker.poll → queries.UpsertMACLookup",
+		},
+		times: map[string]dbClock{"updated_at": sqliteNow},
 	},
 	{
 		name:    "neighbors",

@@ -2,13 +2,13 @@ package poller
 
 import (
 	"context"
-	"database/sql"
 	"log"
 	"strings"
 	"time"
 
 	"github.com/mikrotik-nms/backend/internal/database/queries"
 	"github.com/mikrotik-nms/backend/internal/devclass"
+	"github.com/mikrotik-nms/backend/internal/edgeproto"
 	"github.com/mikrotik-nms/backend/internal/leasesource"
 	"github.com/mikrotik-nms/backend/internal/resolver"
 	"github.com/mikrotik-nms/backend/internal/routeros"
@@ -18,44 +18,46 @@ import (
 // leases (Tier 5b, only where the class plan runs it — C3), each on the
 // device's own cadence with client_discovery_interval as the floor, plus the
 // external DHCP sources (Kea / OPNsense) once per client_discovery_interval.
-// What a pass finds updates the MAC lookup cache and is saved to
-// client_history.
+// What a pass finds it reports to the sink, one KindClientSeen per client:
+// ingest updates the MAC lookup cache and saves it to client_history.
+//
+// It is the collect half of the client discovery, built on the seams: the
+// devices and the settings come from Config, every device read goes through
+// Exec, and nothing is written but through Sink. One database read is left:
+// the resolver reads the dns_servers table itself on an uncached lookup.
 type ClientDiscoveryPoller struct {
-	db       *sql.DB
-	pool     *routeros.Pool
+	config   edgeproto.ConfigSource
+	exec     routeros.DeviceExec
+	sink     edgeproto.Sink
+	leases   func() []leasesource.Lease
 	resolver *resolver.Resolver
 	interval time.Duration
 
-	// cadence and clock schedule the device reads (UseCadence); runner is
-	// the device link (nil = no pooled connection) and now the clock (test
+	// clock schedules the device reads, now is the loop's time (both test
 	// seams). The external lease sources run on lastExternal + the floor;
 	// their latest leases enrich the device reads in between.
-	cadence      CadenceSource
 	clock        *tierClock
-	runner       func(deviceID string) routeros.Runner
 	now          func() time.Time
 	lastExternal time.Time
 	external     []leasesource.Lease
 }
 
-func NewClientDiscoveryPoller(db *sql.DB, pool *routeros.Pool, res *resolver.Resolver, interval time.Duration) *ClientDiscoveryPoller {
+// NewClientDiscoveryPoller builds the client discovery on s. leases fetches
+// the external lease servers' leases (nil: there are none); res resolves
+// the clients' reverse-DNS names (nil: none); interval is the floor and the
+// external sources' period while client_discovery_interval is not set.
+func NewClientDiscoveryPoller(s Seams, leases func() []leasesource.Lease, res *resolver.Resolver, interval time.Duration) *ClientDiscoveryPoller {
 	if interval <= 0 {
 		interval = defaultClientDiscovery
 	}
-	cdp := &ClientDiscoveryPoller{
-		db: db, pool: pool, resolver: res, interval: interval,
-		cadence: newFleetCadence(db),
-		clock:   newTierClock(Schedule()),
-		now:     time.Now,
+	if leases == nil {
+		leases = func() []leasesource.Lease { return nil }
 	}
-	cdp.runner = func(deviceID string) routeros.Runner { return poolRunner(cdp.pool, deviceID) }
-	return cdp
-}
-
-// UseCadence schedules the device reads by cs. Call before Run.
-func (cdp *ClientDiscoveryPoller) UseCadence(cs CadenceSource) {
-	if cs != nil {
-		cdp.cadence = cs
+	return &ClientDiscoveryPoller{
+		config: s.Config, exec: s.Exec, sink: s.Sink, leases: leases,
+		resolver: res, interval: interval,
+		clock: newTierClock(Schedule()),
+		now:   time.Now,
 	}
 }
 
@@ -63,7 +65,7 @@ func (cdp *ClientDiscoveryPoller) UseCadence(cs CadenceSource) {
 // client_discovery_interval (seconds), falling back to the constructed
 // interval, re-read each tick so a Settings change applies without a restart.
 func (cdp *ClientDiscoveryPoller) externalInterval() time.Duration {
-	return settingSeconds(cdp.db, "client_discovery_interval", cdp.interval)
+	return secondsOr(cdp.config.Setting("client_discovery_interval"), cdp.interval)
 }
 
 func (cdp *ClientDiscoveryPoller) Run(ctx context.Context) {
@@ -95,14 +97,14 @@ type clientEntry struct {
 
 // poll is one tick: the ARP and DHCP reads that are due, and the external
 // lease sources when their interval is up; then the clients found are
-// resolved and stored. A tick with nothing due does nothing.
+// resolved and reported. A tick with nothing due does nothing.
 func (cdp *ClientDiscoveryPoller) poll(ctx context.Context) {
-	devices, err := queries.ListDevices(cdp.db)
+	devices, err := cdp.config.Devices()
 	if err != nil {
 		return
 	}
 	now := cdp.now()
-	cdp.clock.retain(deviceIDs(devices))
+	cdp.clock.retain(specIDs(devices))
 
 	clientMap := make(map[string]*clientEntry)
 	readAny := false
@@ -111,16 +113,16 @@ func (cdp *ClientDiscoveryPoller) poll(ctx context.Context) {
 			return
 		}
 		var arpIv, dhcpIv time.Duration
-		if dev.Status == "online" {
-			arpIv = runInterval(cdp.cadence, dev, devclass.TierARP, now)
-			dhcpIv = runInterval(cdp.cadence, dev, devclass.TierDHCPLeases, now)
+		if dev.Online {
+			arpIv = dev.RunInterval(devclass.TierARP)
+			dhcpIv = dev.RunInterval(devclass.TierDHCPLeases)
 		}
 		arpDue := cdp.clock.due(dev.ID, devclass.TierARP, arpIv, now)
 		dhcpDue := cdp.clock.due(dev.ID, devclass.TierDHCPLeases, dhcpIv, now)
 		if !arpDue && !dhcpDue {
 			continue
 		}
-		run := cdp.runner(dev.ID)
+		run := cdp.exec.Device(ctx, dev.ID)
 		if run == nil {
 			if arpDue {
 				cdp.clock.retryAt(dev.ID, devclass.TierARP, now.Add(noClientRetry))
@@ -130,14 +132,13 @@ func (cdp *ClientDiscoveryPoller) poll(ctx context.Context) {
 			}
 			continue
 		}
-		devName := nonempty(dev.Identity, dev.Address)
 		readAny = true
 		if arpDue {
-			cdp.readARP(run, devName, clientMap)
+			cdp.readARP(run, dev.Name, clientMap)
 			cdp.clock.ran(dev.ID, devclass.TierARP, arpIv, cdp.now())
 		}
 		if dhcpDue {
-			cdp.readDHCP(run, devName, clientMap)
+			cdp.readDHCP(run, dev.Name, clientMap)
 			cdp.clock.ran(dev.ID, devclass.TierDHCPLeases, dhcpIv, cdp.now())
 		}
 	}
@@ -149,7 +150,7 @@ func (cdp *ClientDiscoveryPoller) poll(ctx context.Context) {
 	// clients a device read found.
 	externalDue := cdp.lastExternal.IsZero() || now.Sub(cdp.lastExternal) >= cdp.externalInterval()
 	if externalDue {
-		cdp.external = leasesource.FromSettings(cdp.db)
+		cdp.external = cdp.leases()
 		cdp.lastExternal = now
 		if len(cdp.external) > 0 {
 			log.Printf("client discovery: external dhcp: %d leases", len(cdp.external))
@@ -171,7 +172,7 @@ func (cdp *ClientDiscoveryPoller) poll(ctx context.Context) {
 	if len(clientMap) == 0 {
 		return
 	}
-	cdp.store(clientMap)
+	cdp.store(ctx, now, clientMap)
 }
 
 // readARP adds one device's ARP table to clientMap.
@@ -224,9 +225,10 @@ func (cdp *ClientDiscoveryPoller) readDHCP(run routeros.Runner, devName string, 
 	}
 }
 
-// store resolves the clients' DNS names and writes them to the MAC lookup
-// cache and client_history.
-func (cdp *ClientDiscoveryPoller) store(clientMap map[string]*clientEntry) {
+// store resolves the clients' DNS names and reports every client the pass
+// found, seen at now, in one Emit: the sink stores the pass whole or not at
+// all.
+func (cdp *ClientDiscoveryPoller) store(ctx context.Context, now time.Time, clientMap map[string]*clientEntry) {
 	ips := make([]string, 0, len(clientMap))
 	for _, c := range clientMap {
 		if c.ip != "" {
@@ -238,30 +240,24 @@ func (cdp *ClientDiscoveryPoller) store(clientMap map[string]*clientEntry) {
 		dnsNames = cdp.resolver.ResolveMany(ips)
 	}
 
+	obs := make([]edgeproto.Observation, 0, len(clientMap))
 	for _, c := range clientMap {
-		dns := dnsNames[c.ip]
-		hostname := c.hostname
-		if hostname == "" {
-			hostname = dns
-		}
-
-		_ = queries.UpsertMACLookup(cdp.db, &queries.MACLookup{
-			MACAddress: c.mac,
-			IPAddress:  c.ip,
-			HostName:   hostname,
-			DNSName:    dns,
-			Source:     c.source,
-			DeviceName: c.deviceName,
-		})
-
-		_ = queries.InsertClientHistory(cdp.db, &queries.ClientHistoryEntry{
-			MACAddress: c.mac,
-			IPAddress:  c.ip,
-			HostName:   hostname,
-			Source:     c.source,
-			DeviceName: c.deviceName,
+		obs = append(obs, edgeproto.Observation{
+			Kind:       edgeproto.KindClientSeen,
+			Subject:    c.mac,
+			ObservedAt: now,
+			Body: edgeproto.ClientSeen{
+				IP:         c.ip,
+				HostName:   c.hostname,
+				DNSName:    dnsNames[c.ip],
+				Source:     c.source,
+				DeviceName: c.deviceName,
+			},
 		})
 	}
-
+	if err := cdp.sink.Emit(ctx, nil, obs...); err != nil {
+		log.Printf("client discovery: store %d MAC entries: %v", len(obs), err)
+		return
+	}
 	log.Printf("client discovery: updated %d MAC entries", len(clientMap))
 }

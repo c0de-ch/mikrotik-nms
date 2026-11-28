@@ -6,7 +6,7 @@ import (
 	"net/netip"
 	"time"
 
-	"github.com/mikrotik-nms/backend/internal/routeros"
+	"github.com/mikrotik-nms/backend/internal/edgeproto"
 )
 
 // PingTarget is something the connectivity poller probes with ICMP from a
@@ -311,17 +311,18 @@ func GetClientSignalSamples(db *sql.DB, mac string, from, to time.Time, limit in
 // TracerouteRun is one stored /tool/traceroute pass against an internet ping
 // target (manual run-now, or auto-captured when probe loss crossed
 // traceroute_loss_threshold). Hops marshals to/from the traceroute_runs.hops
-// JSON TEXT column in this layer; the hop struct lives in the routeros package
-// (where it is parsed) and carries the wire-contract json tags — queries →
-// routeros is a one-way import with no cycle (routeros depends only on stdlib
-// and the go-routeros client).
+// JSON TEXT column in this layer; the hop struct is edgeproto.TracerouteHop
+// (routeros.TracerouteHop, where it is parsed, is an alias) and carries the
+// wire-contract json tags. queries does not import internal/routeros: the
+// apply half (internal/ingest) links queries, and it must not link the device
+// package (internal/fences).
 type TracerouteRun struct {
-	ID         int64                    `json:"id"`
-	TargetID   string                   `json:"target_id"`
-	Address    string                   `json:"address"`
-	Hops       []routeros.TracerouteHop `json:"hops"`
-	Error      string                   `json:"error"`
-	RecordedAt time.Time                `json:"recorded_at"`
+	ID         int64                     `json:"id"`
+	TargetID   string                    `json:"target_id"`
+	Address    string                    `json:"address"`
+	Hops       []edgeproto.TracerouteHop `json:"hops"`
+	Error      string                    `json:"error"`
+	RecordedAt time.Time                 `json:"recorded_at"`
 }
 
 // InsertTracerouteRun persists a run, filling in RecordedAt (now, if unset) and
@@ -331,7 +332,7 @@ func InsertTracerouteRun(db *sql.DB, r *TracerouteRun) error {
 		r.RecordedAt = time.Now().UTC()
 	}
 	if r.Hops == nil {
-		r.Hops = []routeros.TracerouteHop{}
+		r.Hops = []edgeproto.TracerouteHop{}
 	}
 	hops, err := json.Marshal(r.Hops)
 	if err != nil {
@@ -370,7 +371,7 @@ func GetTracerouteRuns(db *sql.DB, targetID string, limit int) ([]TracerouteRun,
 			return nil, err
 		}
 		if err := json.Unmarshal([]byte(hops), &r.Hops); err != nil || r.Hops == nil {
-			r.Hops = []routeros.TracerouteHop{}
+			r.Hops = []edgeproto.TracerouteHop{}
 		}
 		out = append(out, r)
 	}

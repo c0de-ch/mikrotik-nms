@@ -1,6 +1,7 @@
 package poller
 
 import (
+	"context"
 	"database/sql"
 	"log"
 	"strconv"
@@ -209,6 +210,13 @@ func settingSeconds(db *sql.DB, key string, def time.Duration) time.Duration {
 	if err != nil {
 		return def
 	}
+	return secondsOr(v, def)
+}
+
+// secondsOr is a setting's value v in seconds, capped at maxFloor, or def
+// when v is empty, not a number or not positive (settingSeconds' parsing,
+// for a value a ConfigSource returned).
+func secondsOr(v string, def time.Duration) time.Duration {
 	n, err := strconv.Atoi(strings.TrimSpace(v))
 	if err != nil || n <= 0 {
 		return def
@@ -269,16 +277,11 @@ func (c fleetCadence) Paused(dev queries.Device, now time.Time) bool {
 	return dev.PollingPaused(now)
 }
 
-// poolRunner is a loop's production device link: deviceID's pooled client,
-// or nil while the pool holds no connection for it.
+// poolRunner is the production device link of the loops not yet built on the
+// seams: deviceID's pooled client, or nil while the pool holds no connection
+// for it. It is routeros.PoolExec, the Exec the converted loops get.
 func poolRunner(pool *routeros.Pool, deviceID string) routeros.Runner {
-	if pool == nil {
-		return nil
-	}
-	if client := pool.GetLive(deviceID); client != nil {
-		return routeros.ClientRunner{Client: client}
-	}
-	return nil
+	return routeros.PoolExec{Pool: pool}.Device(context.Background(), deviceID)
 }
 
 // DevicePaused reports whether an admin pause of deviceID's polling is in
