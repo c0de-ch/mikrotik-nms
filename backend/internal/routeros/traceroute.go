@@ -6,23 +6,14 @@ import (
 	"time"
 
 	ros "github.com/go-routeros/routeros/v3"
+
+	"github.com/mikrotik-nms/backend/internal/edgeproto"
 )
 
-// TracerouteHop is one row of a /tool/traceroute hop table. The ms fields are
-// nil for hops that never answered (RouterOS shows "timeout"). The json tags
-// are the wire contract — this struct is marshalled into traceroute_runs.hops
-// and served as-is by the API.
-type TracerouteHop struct {
-	Hop     int      `json:"hop"`
-	Address string   `json:"address"`
-	LossPct float64  `json:"loss_pct"`
-	Sent    int      `json:"sent"`
-	LastMs  *float64 `json:"last_ms"`
-	AvgMs   *float64 `json:"avg_ms"`
-	BestMs  *float64 `json:"best_ms"`
-	WorstMs *float64 `json:"worst_ms"`
-	Status  string   `json:"status"`
-}
+// TracerouteHop is one row of a /tool/traceroute hop table
+// (edgeproto.TracerouteHop: the database stores it, and the apply half must
+// not link this package).
+type TracerouteHop = edgeproto.TracerouteHop
 
 // Traceroute runs /tool/traceroute on the RouterOS device and returns the
 // final hop table. srcAddress / iface are optional probe-source selectors

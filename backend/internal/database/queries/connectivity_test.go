@@ -7,7 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/mikrotik-nms/backend/internal/devclass"
-	"github.com/mikrotik-nms/backend/internal/routeros"
+	"github.com/mikrotik-nms/backend/internal/edgeproto"
 )
 
 func TestPingTargetCRUDRoundtrip(t *testing.T) {
@@ -334,7 +334,7 @@ func TestTracerouteRunRoundtrip(t *testing.T) {
 	older := &TracerouteRun{
 		TargetID: target.ID,
 		Address:  "8.8.8.8",
-		Hops: []routeros.TracerouteHop{
+		Hops: []edgeproto.TracerouteHop{
 			{Hop: 1, Address: "192.168.1.1", LossPct: 0, Sent: 1, LastMs: &last, AvgMs: &last, BestMs: &last, WorstMs: &last},
 			{Hop: 2, Address: "", LossPct: 100, Sent: 1, Status: "timeout"},
 		},
